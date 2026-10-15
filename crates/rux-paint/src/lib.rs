@@ -186,6 +186,45 @@ fn to_gradient(g: &Gradient, x: f32, y: f32, w: f32, h: f32) -> PenikoGradient {
     grad.with_stops(stops.as_slice())
 }
 
+/// A background over a box with its corners rounded: a colour, a gradient
+/// across the box, or an image covering it.
+fn fill_background(
+    scene: &mut Scene,
+    cur: Affine,
+    bg: &Background,
+    (x, y, width, height): (f32, f32, f32, f32),
+    radius: Corners,
+    images: &mut ImageCache,
+) {
+    let shape = rounded_rect(x, y, width, height, radius, 0.0);
+    match bg {
+        Background::Color(c) => {
+            scene.fill(Fill::NonZero, cur, to_color(*c), None, &shape);
+        }
+        Background::Gradient(g) => {
+            let brush = to_gradient(g, x, y, width, height);
+            scene.fill(Fill::NonZero, cur, &brush, None, &shape);
+        }
+        Background::Image(src) => {
+            if let Some(brush) = images.get(src) {
+                let (iw, ih) = (brush.image.width as f64, brush.image.height as f64);
+                if iw > 0.0 && ih > 0.0 {
+                    // `cover`: scale to fill the box, centre, and
+                    // clip to the box's rounded corners.
+                    let scale = (width as f64 / iw).max(height as f64 / ih);
+                    let (sw, sh) = (iw * scale, ih * scale);
+                    let ox = x as f64 + (width as f64 - sw) / 2.0;
+                    let oy = y as f64 + (height as f64 - sh) / 2.0;
+                    let tf = Affine::scale(scale).then_translate(Vec2::new(ox, oy));
+                    scene.push_clip_layer(Fill::NonZero, cur, &shape);
+                    scene.draw_image(brush, cur * tf);
+                    scene.pop_layer();
+                }
+            }
+        }
+    }
+}
+
 /// A path from Rux's commands, moved by `(ox, oy)`.
 fn bez_path(commands: &[PathCmd], ox: f64, oy: f64) -> BezPath {
     let mut path = BezPath::new();
@@ -442,6 +481,8 @@ pub fn visible_paints(
                 saved.push((reach, true));
                 true
             }
+            // Its layer's content is already in or out by the paints above.
+            Paint::MaskWith { .. } => true,
             Paint::PopClip | Paint::PopTransform | Paint::PopOpacity => match saved.pop() {
                 Some((back, kept)) => {
                     reach = back;
@@ -548,33 +589,7 @@ fn build(
         match item {
             Paint::Rect(r) => {
                 if let Some(bg) = &r.background {
-                    let shape = rounded_rect(r.x, r.y, r.width, r.height, r.radius, 0.0);
-                    match bg {
-                        Background::Color(c) => {
-                            scene.fill(Fill::NonZero, cur, to_color(*c), None, &shape);
-                        }
-                        Background::Gradient(g) => {
-                            let brush = to_gradient(g, r.x, r.y, r.width, r.height);
-                            scene.fill(Fill::NonZero, cur, &brush, None, &shape);
-                        }
-                        Background::Image(src) => {
-                            if let Some(brush) = images.get(src) {
-                                let (iw, ih) = (brush.image.width as f64, brush.image.height as f64);
-                                if iw > 0.0 && ih > 0.0 {
-                                    // `cover`: scale to fill the box, centre, and
-                                    // clip to the box's rounded corners.
-                                    let scale = (r.width as f64 / iw).max(r.height as f64 / ih);
-                                    let (sw, sh) = (iw * scale, ih * scale);
-                                    let ox = r.x as f64 + (r.width as f64 - sw) / 2.0;
-                                    let oy = r.y as f64 + (r.height as f64 - sh) / 2.0;
-                                    let tf = Affine::scale(scale).then_translate(Vec2::new(ox, oy));
-                                    scene.push_clip_layer(Fill::NonZero, cur, &shape);
-                                    scene.draw_image(brush, cur * tf);
-                                    scene.pop_layer();
-                                }
-                            }
-                        }
-                    }
+                    fill_background(&mut scene, cur, bg, (r.x, r.y, r.width, r.height), r.radius, images);
                 }
                 // Border. Two ways to draw one, because a rounded corner and an
                 // uneven edge want different things.
@@ -843,6 +858,22 @@ fn build(
             } => {
                 let shape = rounded_rect(*x, *y, *width, *height, *radius, 0.0);
                 scene.push_clip_layer(Fill::NonZero, cur, &shape);
+            }
+            // The layer so far is kept only where the mask is: drawn over the
+            // whole window, so outside the box, where the mask is transparent,
+            // nothing is kept. An alpha mask is a `DestIn` layer; vello's
+            // luminance layer is already a mask by lightness, laid onto what
+            // is under it the same way.
+            Paint::MaskWith { x, y, width, height, image, luminance, view } => {
+                let all = Rect::new(0.0, 0.0, view.0 as f64, view.1 as f64);
+                if *luminance {
+                    scene.push_luminance_mask_layer(Fill::NonZero, 1.0, Affine::IDENTITY, &all);
+                } else {
+                    let keep = PenikoBlend::new(Mix::Normal, Compose::DestIn);
+                    scene.push_layer(Fill::NonZero, keep, 1.0, Affine::IDENTITY, &all);
+                }
+                fill_background(&mut scene, cur, image, (*x, *y, *width, *height), [0.0; 4], images);
+                scene.pop_layer();
             }
             Paint::PushShapeClip { commands, evenodd } => {
                 let rule = if *evenodd { Fill::EvenOdd } else { Fill::NonZero };

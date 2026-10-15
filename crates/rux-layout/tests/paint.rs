@@ -428,3 +428,27 @@ fn a_blend_mode_opens_a_layer_around_the_subtree() {
     assert!(matches!(items[1], Paint::Rect(_)));
     assert!(matches!(items.last(), Some(Paint::PopOpacity)));
 }
+
+/// A mask opens a layer before the box and keeps only what it covers just
+/// before the layer closes, after the box's children.
+#[test]
+fn a_mask_closes_its_layer_after_the_subtree() {
+    let mut parent = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(50.0)),
+        background: Some(Background::Color(Rgba::new(1.0, 0.0, 0.0, 1.0))),
+        mask: Some(Box::new(Mask { image: Background::Color(Rgba::new(0.0, 0.0, 0.0, 1.0)), luminance: false })),
+        ..Default::default()
+    });
+    parent.children.push(Node::new(Style {
+        height: Some(Len::Px(10.0)),
+        background: Some(Background::Color(Rgba::new(0.0, 1.0, 0.0, 1.0))),
+        ..Default::default()
+    }));
+    let items = paints(parent);
+    let n = items.len();
+    assert!(matches!(items[0], Paint::PushOpacity { alpha, .. } if alpha == 1.0));
+    assert!(matches!(items[n - 3], Paint::Rect(_)), "the child");
+    assert!(matches!(items[n - 2], Paint::MaskWith { width, .. } if width == 100.0));
+    assert!(matches!(items[n - 1], Paint::PopOpacity));
+}

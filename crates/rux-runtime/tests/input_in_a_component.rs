@@ -68,7 +68,7 @@ fn shown(node: &rux_layout::Node, model: &str) -> Option<String> {
 /// the key arrived, not one built after it.
 fn baked_input(node: &rux_layout::Node, model: &str) -> Option<String> {
     if node.model.as_deref() == Some(model) {
-        return node.field.on_input.clone();
+        return node.field().on_input.clone();
     }
     node.children.iter().find_map(|c| baked_input(c, model))
 }

@@ -1998,6 +1998,12 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
             *src = base.join(&*src).to_string_lossy().into_owned();
         }
     }
+    // So does a `mask-image: url(…)`.
+    if let Some(rux_layout::Background::Image(src)) = node.style.mask.as_mut().map(|m| &mut m.image) {
+        if !src.is_empty() {
+            *src = base.join(&*src).to_string_lossy().into_owned();
+        }
+    }
     for child in &mut node.children {
         resolve_images(child, base);
     }
@@ -5653,7 +5659,7 @@ fn form_fields(
         return;
     }
     let row = node.key.clone().or(row);
-    let field = &node.field;
+    let field = node.field();
     if field.bind.is_some() && !field.disabled && field.form.as_deref() == Some(form_path) {
         out.push((field.clone(), row.clone(), node.instance.clone(), node.model.is_some()));
     }

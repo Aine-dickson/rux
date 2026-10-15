@@ -71,6 +71,11 @@ clip-path (inset() with `round`, xywh(), rect(), circle() and ellipse() with
                        outline and subtree are all cut. Not yet: taps are not
                        cut, so a tap in a clipped-away corner still lands, and
                        url() to an SVG clipPath, which Rux does not have)
+mask, mask-image, mask-mode (a gradient or url() over the border box; alpha,
+                       or luminance; the box and its subtree show only where the
+                       mask does, and nothing outside the box. Not yet:
+                       mask-size, -position and -repeat: an image covers the
+                       box, as background-image does)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)

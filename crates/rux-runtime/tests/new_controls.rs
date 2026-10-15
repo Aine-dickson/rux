@@ -339,8 +339,8 @@ fn a_date_field_is_its_own_kind() {
     let field = input(&d, "due");
     assert_eq!(field.kind, InputKind::Date);
     assert_eq!(field.access.role, rux_layout::AccessRole::DateInput);
-    assert_eq!(field.field.min, Some((2026, 1, 1)));
-    assert_eq!(field.field.max, Some((2026, 12, 31)));
+    assert_eq!(field.field().min, Some((2026, 1, 1)));
+    assert_eq!(field.field().max, Some((2026, 12, 31)));
     assert_eq!(shown(&d, "due"), "2026-09-23");
 }
 

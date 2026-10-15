@@ -2003,7 +2003,7 @@ fn collect_label_targets(node: &LayoutNode, targets: &mut HashMap<String, LabelT
     // cannot take the label over, but it hands the label nothing to do.
     if let Some(id) = &node.id {
         targets.entry(id.clone()).or_insert_with(|| {
-            if node.field.disabled {
+            if node.field().disabled {
                 (None, None)
             } else {
                 (node.on_tap.clone(), node.model.clone())
@@ -3771,7 +3771,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "cursor", "touch-action", "box-shadow", "transform",
+    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
@@ -4041,7 +4041,7 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
     "filter", "backdrop-filter",
-    "mask", "text-shadow",
+    "text-shadow",
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
     "place-items", "place-content", "place-self", "resize",
@@ -5715,7 +5715,7 @@ fn build_node_inner(
             }
         }
         node.field =
-            rux_layout::Field { disabled, ..form_part.clone().unwrap_or_default() };
+            rux_layout::Field { disabled, ..form_part.clone().unwrap_or_default() }.boxed();
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.label_for = el.attr("for").map(str::to_string);
@@ -5828,7 +5828,7 @@ fn build_node_inner(
             ));
         }
         node.field =
-            rux_layout::Field { disabled, ..form_part.clone().unwrap_or_default() };
+            rux_layout::Field { disabled, ..form_part.clone().unwrap_or_default() }.boxed();
         node.hidden = hidden;
         node.id = el.attr("id").map(str::to_string);
         node.state_path = state_path.clone();
@@ -5986,7 +5986,7 @@ fn build_node_inner(
         node.instance = instance.map(str::to_string);
         node.kind = kind;
         node.field =
-            field_of(el, disabled, readonly, baked, form_part.clone().unwrap_or_default());
+            field_of(el, disabled, readonly, baked, form_part.clone().unwrap_or_default()).boxed();
         node.options = options;
         node.on_tap = on_tap;
         node.gestures = gestures;
@@ -6101,7 +6101,7 @@ fn build_node_inner(
         on_key: None,
         model: None,
         kind: InputKind::Text,
-        field: rux_layout::Field::default(),
+        field: None,
         options: None,
         hidden,
         id: el.attr("id").map(str::to_string),
@@ -8678,8 +8678,11 @@ fn rebase(p: &mut Vec<usize>, from: &[usize], to: &[usize]) {
 
 /// Every path a built node carries, rebased from `from` to `to`.
 fn rebase_node(node: &mut LayoutNode, from: &[usize], to: &[usize]) {
-    for p in [&mut node.state_path, &mut node.focus_path, &mut node.field.form].into_iter().flatten() {
+    for p in [&mut node.state_path, &mut node.focus_path].into_iter().flatten() {
         rebase(p, from, to);
+    }
+    if let Some(form) = node.field.as_mut().and_then(|f| f.form.as_mut()) {
+        rebase(form, from, to);
     }
     for child in &mut node.children {
         rebase_node(child, from, to);
@@ -9085,6 +9088,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("clip-path") {
         st.clip_path = parse_clip_path(v).map(Box::new);
     }
+    st.mask = interpret_mask(p).map(Box::new);
     if let Some(v) = p.get("mix-blend-mode") {
         st.blend = match v.trim() {
             "normal" => BlendMode::Normal,
@@ -10902,6 +10906,38 @@ fn interpret_path_paint(p: &HashMap<String, String>, st: &mut Style) {
             _ => FillRule::NonZero,
         };
     }
+}
+
+/// `mask-image` and `mask-mode`, or the `mask` shorthand's image and mode,
+/// the longhands winning. An image is a gradient or a `url()`; `none`, or a
+/// colour, which is not an image, is no mask.
+fn interpret_mask(p: &HashMap<String, String>) -> Option<rux_layout::Mask> {
+    let image = |v: &str| match parse_background(v) {
+        Some(Background::Color(_)) | None => None,
+        some => some,
+    };
+    let mode = |v: &str| match v {
+        "luminance" => Some(true),
+        "alpha" | "match-source" => Some(false),
+        _ => None,
+    };
+    let (mut picture, mut luminance) = (None, false);
+    if let Some(v) = p.get("mask") {
+        for token in split_top_level(v) {
+            if let Some(m) = mode(token) {
+                luminance = m;
+            } else if let Some(i) = image(token) {
+                picture = Some(i);
+            }
+        }
+    }
+    if let Some(v) = p.get("mask-image") {
+        picture = image(v.trim());
+    }
+    if let Some(m) = p.get("mask-mode").and_then(|v| mode(v.trim())) {
+        luminance = m;
+    }
+    Some(rux_layout::Mask { image: picture?, luminance })
 }
 
 /// `clip-path`: a basic shape and the box it is of, either alone, or `none`.
@@ -14372,5 +14408,29 @@ mod clip_tests {
         let _ = super::take_warnings();
         assert!(p(r##"url("#x")"##).is_none());
         assert!(super::take_warnings().iter().any(|w| w.message.contains("SVG `<clipPath>`")));
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::Background;
+
+    fn mask(pairs: &[(&str, &str)]) -> Option<rux_layout::Mask> {
+        let p: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        super::interpret_mask(&p)
+    }
+
+    #[test]
+    fn a_mask_is_an_image_and_a_mode() {
+        let m = mask(&[("mask", "linear-gradient(to right, #000, #0000)")]).unwrap();
+        assert!(matches!(m.image, Background::Gradient(_)) && !m.luminance);
+        let m = mask(&[("mask-image", "url(a.png)"), ("mask-mode", "luminance")]).unwrap();
+        assert!(matches!(m.image, Background::Image(ref s) if s == "a.png") && m.luminance);
+        // The longhand wins over the shorthand, and `none` is no mask.
+        assert!(mask(&[("mask", "url(a.png)"), ("mask-image", "none")]).is_none());
+        // A colour is not an image.
+        assert!(mask(&[("mask-image", "red")]).is_none());
     }
 }

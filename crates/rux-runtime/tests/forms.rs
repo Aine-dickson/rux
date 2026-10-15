@@ -28,7 +28,7 @@ fn find<'a>(node: &'a Node, pred: &dyn Fn(&Node) -> bool) -> Option<&'a Node> {
 }
 
 fn input<'a>(doc: &'a Document, model: &str) -> &'a Node {
-    find(&doc.root, &|n| n.field.bind.as_deref() == Some(model)).expect("the input is built")
+    find(&doc.root, &|n| n.field().bind.as_deref() == Some(model)).expect("the input is built")
 }
 
 fn background(doc: &Document, model: &str) -> Option<[f32; 4]> {
@@ -90,14 +90,14 @@ fn fields_belong_to_the_form_around_them() {
     assert!(!problems(&d).contains("level: Error"), "{}", problems(&d));
     let form = form_path(&d);
     for model in ["email", "code", "terms", "off"] {
-        assert_eq!(input(&d, model).field.form.as_ref(), Some(&form), "{model}");
+        assert_eq!(input(&d, model).field().form.as_ref(), Some(&form), "{model}");
     }
-    assert_eq!(input(&d, "elsewhere").field.form, None, "outside the form");
-    let email = &input(&d, "email").field;
+    assert_eq!(input(&d, "elsewhere").field().form, None, "outside the form");
+    let email = input(&d, "email").field();
     assert_eq!(email.name.as_deref(), Some("email"));
     assert!(email.checks.required);
-    assert_eq!(input(&d, "code").field.checks.minlength, Some(4));
-    assert_eq!(input(&d, "terms").field.shape, rux_layout::Shape::Flag);
+    assert_eq!(input(&d, "code").field().checks.minlength, Some(4));
+    assert_eq!(input(&d, "terms").field().shape, rux_layout::Shape::Flag);
 }
 
 /// The button's tap ends by asking for its form, which is what makes a
@@ -253,7 +253,7 @@ fn autocomplete_reaches_the_field_and_a_typo_warns() {
         r#"<input r-model="a" autocomplete="section-x shipping postal-code" /><input r-model="b" autocomplete="new-pasword" />"#,
         "let a = signal(\"\"); let b = signal(\"\");",
     );
-    assert_eq!(input(&d, "a").field.autocomplete.as_deref(), Some("section-x shipping postal-code"));
+    assert_eq!(input(&d, "a").field().autocomplete.as_deref(), Some("section-x shipping postal-code"));
     let said = problems(&d);
     assert!(said.contains("new-pasword") && !said.contains("postal-code` is not"), "{said}");
 }

@@ -42,7 +42,7 @@ fn every_attribute_reaches_the_field() {
     );
     // The four events are an input's own, so none of this is an error.
     assert!(!problems(&d).contains("level: Error"), "{}", problems(&d));
-    let field = &input(&d, "code").field;
+    let field = input(&d, "code").field();
     assert_eq!(field.maxlength, Some(6));
     assert_eq!(field.keyboard, Keyboard::Numeric);
     assert_eq!(field.enter_key, EnterKey::Go);
@@ -63,7 +63,7 @@ fn a_plain_field_has_the_defaults() {
     let d = doc(r#"<input r-model="name" />"#, "let name = signal(\"\");");
     // All but where a form would read its value from.
     let plain = rux_layout::Field { bind: Some("name".into()), ..rux_layout::Field::default() };
-    assert_eq!(input(&d, "name").field, plain);
+    assert_eq!(*input(&d, "name").field(), plain);
 }
 
 /// A disabled field keeps showing its value, and has nothing to focus: no
@@ -118,12 +118,12 @@ fn disabled_and_enabled_match_and_bind() {
         let c = input(d, m).children[0].text.as_ref().unwrap().color;
         (c.r, c.g)
     };
-    assert!(input(&d, "a").field.disabled);
+    assert!(input(&d, "a").field().disabled);
     assert_eq!(colour(&d, "a"), red);
     assert_eq!(colour(&d, "b"), green);
     let mut d = d;
     d.apply_handler("locked = false");
-    assert!(!input(&d, "a").field.disabled, "the bound form follows its signal");
+    assert!(!input(&d, "a").field().disabled, "the bound form follows its signal");
     assert_eq!(colour(&d, "a"), green);
 }
 
@@ -131,7 +131,7 @@ fn disabled_and_enabled_match_and_bind() {
 #[test]
 fn disabled_false_is_still_disabled_and_warns() {
     let d = doc(r#"<input r-model="a" disabled="false" />"#, "let a = signal(\"\");");
-    assert!(input(&d, "a").field.disabled);
+    assert!(input(&d, "a").field().disabled);
     assert!(problems(&d).contains("still means disabled"), "{}", problems(&d));
 }
 

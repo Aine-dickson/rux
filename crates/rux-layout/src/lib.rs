@@ -1105,6 +1105,8 @@ pub struct Style {
     pub blend: BlendMode,
     /// `clip-path`, boxed: few boxes have one (watchlist #41).
     pub clip_path: Option<Box<clip::ClipPath>>,
+    /// `mask-image`, boxed for the same reason.
+    pub mask: Option<Box<Mask>>,
     /// Anchor positioning, `None` for almost every box.
     ///
     /// **Boxed on purpose.** Laid out flat it made every `Style` some 300
@@ -1246,6 +1248,7 @@ impl Default for Style {
             isolate: false,
             blend: BlendMode::Normal,
             clip_path: None,
+            mask: None,
             anchor: None,
             content_visibility: ContentVisibility::Visible,
             invisible: false,
@@ -1894,6 +1897,22 @@ pub const AUTOCOMPLETE_MODIFIERS: &[&str] =
 /// The Android autofill hints for a field, from its `autocomplete` or, with
 /// none, from what it is: a password, or an email or phone keyboard.
 /// Empty for `autocomplete="off"`, which [`Field::autofill`] also refuses.
+impl Field {
+    /// For [`Node::field`]: `None` when every attribute is the default.
+    pub fn boxed(self) -> Option<Box<Field>> {
+        (self != Field::default()).then(|| Box::new(self))
+    }
+}
+
+impl Node {
+    /// This element's control attributes, the defaults for anything that is
+    /// not a control.
+    pub fn field(&self) -> &Field {
+        static NONE: std::sync::LazyLock<Field> = std::sync::LazyLock::new(Field::default);
+        self.field.as_deref().unwrap_or(&NONE)
+    }
+}
+
 pub fn autofill_hints(field: &Field, kind: InputKind) -> Vec<&'static str> {
     if let Some(tokens) = &field.autocomplete {
         let hints: Vec<&'static str> = tokens
@@ -1981,8 +2000,12 @@ pub struct Node {
     pub model: Option<String>,
     /// Which text field an `<input>` is. See [`InputKind`].
     pub kind: InputKind,
-    /// An `<input>`'s attributes and handlers. See [`Field`].
-    pub field: Field,
+    /// An `<input>`'s attributes and handlers, `None` where they are all the
+    /// defaults, which is every element but a control: a `Field` is 328
+    /// bytes, and a `Node` is held by value at every level of the recursive
+    /// build (watchlist #41). Read it through [`Node::field`]; write it with
+    /// [`Field::boxed`].
+    pub field: Option<Box<Field>>,
     /// `type="select"`: the bound `:options`, so the shell can open a dropdown.
     pub options: Option<Vec<String>>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
@@ -2056,7 +2079,7 @@ impl Node {
             on_key: None,
             model: None,
             kind: InputKind::Text,
-            field: Field::default(),
+            field: None,
             options: None,
             hidden: false,
             id: None,
@@ -2084,7 +2107,7 @@ impl Node {
             on_key: None,
             model: None,
             kind: InputKind::Text,
-            field: Field::default(),
+            field: None,
             options: None,
             hidden: false,
             id: None,
@@ -2112,7 +2135,7 @@ impl Node {
             on_key: None,
             model: None,
             kind: InputKind::Text,
-            field: Field::default(),
+            field: None,
             options: None,
             hidden: false,
             id: None,
@@ -2145,7 +2168,7 @@ impl Node {
             on_key: None,
             model: None,
             kind: InputKind::Text,
-            field: Field::default(),
+            field: None,
             options: None,
             hidden: false,
             id: None,
@@ -2273,6 +2296,20 @@ pub enum Paint {
         commands: std::sync::Arc<[PathCmd]>,
         evenodd: bool,
     },
+    /// Keep what the open layer holds only where `image`, laid over this
+    /// box, is opaque (or light, for `luminance`): `mask-image`. Comes just
+    /// before the [`Paint::PopOpacity`] that closes the layer.
+    MaskWith {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        image: Background,
+        luminance: bool,
+        /// The window, which the mask's layer covers: outside the box, the
+        /// mask is transparent, so nothing there shows.
+        view: (f32, f32),
+    },
     /// End the most recent clip.
     PopClip,
     /// Begin an affine `transform` on the subtree. The matrix already has the
@@ -2291,6 +2328,16 @@ pub enum Paint {
     },
     /// End the most recent opacity layer.
     PopOpacity,
+}
+
+/// `mask-image`: how much of the box and its subtree shows, at each point,
+/// from an image or a gradient laid over its border box.
+#[derive(Clone, Debug)]
+pub struct Mask {
+    pub image: Background,
+    /// `mask-mode: luminance`: how light the mask is, rather than how
+    /// opaque, which is what an image or a gradient means by default.
+    pub luminance: bool,
 }
 
 /// `mix-blend-mode`: CSS's separable and non-separable blend modes.
@@ -2850,6 +2897,8 @@ enum PaintKind {
     Tick(Rgba),
     /// `clip-path`, read by the walk around the box rather than drawn.
     ClipPath(std::sync::Arc<clip::ClipPath>),
+    /// `mask-image`, likewise.
+    Mask(std::sync::Arc<Mask>),
     /// Vector geometry with the paint properties its style resolved to.
     ///
     /// The paint travels with the geometry rather than being looked up later
@@ -3951,6 +4000,9 @@ fn build(
     if let Some(c) = &node.style.clip_path {
         paint.push((id, PaintKind::ClipPath(std::sync::Arc::new((**c).clone()))));
     }
+    if let Some(m) = &node.style.mask {
+        paint.push((id, PaintKind::Mask(std::sync::Arc::new((**m).clone()))));
+    }
     if let Some(outline) = node.style.outline {
         paint.push((id, PaintKind::Outline(outline)));
     }
@@ -3970,14 +4022,14 @@ fn build(
     // A disabled field is not a field as far as focus is concerned: no region
     // to tap, nothing for Tab to land on, no label that can focus it. What it
     // shows still paints, from the node, like any other box.
-    if let Some(model) = node.model.as_ref().filter(|_| !node.field.disabled) {
+    if let Some(model) = node.model.as_ref().filter(|_| !node.field().disabled) {
         models.push(Bound {
             id,
             model: model.clone(),
             row: row.map(str::to_string),
             instance: node.instance.clone(),
             kind: node.kind,
-            field: node.field.clone(),
+            field: node.field().clone(),
             options: node.options.clone(),
             focus_path: node.focus_path.clone(),
         });
@@ -3997,7 +4049,7 @@ fn build(
     } else if node.style.invisible {
         hidden.push((id, false));
     }
-    if node.style.opacity < 1.0 || node.style.blend != BlendMode::Normal {
+    if node.style.opacity < 1.0 || node.style.blend != BlendMode::Normal || node.style.mask.is_some() {
         opacities.push((id, node.style.opacity.max(0.0), node.style.blend));
     }
     if let Some(tf) = node.style.transform {
@@ -4882,7 +4934,12 @@ fn collect(
         let (_, alpha, blend) = b.opacities[i as usize];
         (alpha, blend)
     });
-    let layered = alpha < 1.0 || blend != BlendMode::Normal;
+    // And a mask, which keeps only some of the layer before it is closed.
+    let mask = b.paints(id).iter().find_map(|(_, k)| match k {
+        PaintKind::Mask(m) => Some(m),
+        _ => None,
+    });
+    let layered = alpha < 1.0 || blend != BlendMode::Normal || mask.is_some();
     if layered {
         out.paints.push(Paint::PushOpacity {
             alpha,
@@ -5039,7 +5096,7 @@ fn collect(
                     content: ic.clone(),
                 })),
                 // Drawn after the children, below.
-                PaintKind::Outline(_) | PaintKind::ClipPath(_) => {}
+                PaintKind::Outline(_) | PaintKind::ClipPath(_) | PaintKind::Mask(_) => {}
                 // Each box of a sentence where its glyphs left room for it, and
                 // each part's rectangles kept for its regions, made below
                 // after the sentence's own so the part is found first.
@@ -5433,6 +5490,17 @@ fn collect(
     }
     if shape_clip.is_some() {
         out.paints.push(Paint::PopClip);
+    }
+    if let Some(m) = mask {
+        out.paints.push(Paint::MaskWith {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            image: m.image.clone(),
+            luminance: m.luminance,
+            view: vp,
+        });
     }
     if transform.is_some() {
         out.paints.push(Paint::PopTransform);
@@ -6217,5 +6285,22 @@ mod date_tests {
             assert_eq!(parse_date(not), None, "{not:?}");
         }
         assert_eq!(format_date((2026, 9, 3)), "2026-09-03");
+    }
+}
+
+/// Watchlist #41: a debug build's 1 MB main thread holds a `Node` and its
+/// `Style` at every level of the recursive build, and five times in two days
+/// a new field tipped a fresh project's `rux check` over. Growing either
+/// past these needs a reason, and almost always the fix is to box the new
+/// field (or a group of rarely used ones), as `clip_path`, `mask`, `anchor`
+/// and `field` are.
+#[cfg(test)]
+mod size_budget_tests {
+    #[test]
+    fn a_node_and_its_style_stay_inside_their_budget() {
+        let style = std::mem::size_of::<crate::Style>();
+        let node = std::mem::size_of::<crate::Node>();
+        assert!(style <= 744, "Style is {style} bytes: box the new field (watchlist #41)");
+        assert!(node <= 1536, "Node is {node} bytes: box the new field (watchlist #41)");
     }
 }
