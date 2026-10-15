@@ -9134,12 +9134,12 @@ use components::detail;
     fn warnings_are_collected_for_the_overlay() {
         let doc = Document::from_source(
             "<template><screen><view class=\"card\" /></screen></template>
-             <style>.card { filter: blur(2px); background: var(--nope); }</style>",
+             <style>.card { float: left; background: var(--nope); }</style>",
         )
         .expect("load");
         let warnings = &doc.diagnostics().warnings;
         assert!(
-            warnings.iter().any(|w| w.message.contains("filter")),
+            warnings.iter().any(|w| w.message.contains("float")),
             "unhonored property reported: {warnings:?}"
         );
         assert!(

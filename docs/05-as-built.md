@@ -678,6 +678,13 @@ mask, mask-image, mask-mode (a gradient or url() over the border box; alpha,
                        mask does, and nothing outside the box. Not yet:
                        mask-size, -position and -repeat: an image covers the
                        box, as background-image does)
+filter, backdrop-filter (blur(), brightness(), contrast(), drop-shadow(),
+                       grayscale(), hue-rotate(), invert(), opacity(), saturate(),
+                       sepia(), in any order; a stacking context and a containing
+                       block, as in CSS. The box and its subtree, or what is behind
+                       the box, are drawn apart and run through the GPU; a
+                       drop-shadow with no colour is currentColor. Not yet: url()
+                       to an SVG filter)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)
@@ -1281,10 +1288,10 @@ yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
 Real CSS Rux has not built includes `box-sizing`,
-`transform-origin`, `filter`, `text-transform`, `background-size`,
+`transform-origin`, `text-transform`, `background-size`,
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
-`isolation` and `visibility` used to be on that list and are honored now.
+`isolation`, `visibility` and `filter` used to be on that list and are honored now.
 
 Colours accept `#hex` (3/6/8-digit), the full CSS named-colour list (`red`,
 `rebeccapurple`, …), `transparent`, `currentColor`, and every CSS colour

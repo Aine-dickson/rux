@@ -37,6 +37,9 @@ pub mod calc;
 /// `clip-path`: the shapes and the box they are of.
 pub mod clip;
 
+/// `filter` and `backdrop-filter`: the steps, and the colour matrices.
+pub mod filter;
+
 mod inline;
 pub mod rich;
 pub mod white_space;
@@ -1107,6 +1110,8 @@ pub struct Style {
     pub clip_path: Option<Box<clip::ClipPath>>,
     /// `mask-image`, boxed for the same reason.
     pub mask: Option<Box<Mask>>,
+    /// `filter` and `backdrop-filter`, boxed together, likewise.
+    pub filters: Option<Box<filter::Filters>>,
     /// Anchor positioning, `None` for almost every box.
     ///
     /// **Boxed on purpose.** Laid out flat it made every `Style` some 300
@@ -1249,6 +1254,7 @@ impl Default for Style {
             blend: BlendMode::Normal,
             clip_path: None,
             mask: None,
+            filters: None,
             anchor: None,
             content_visibility: ContentVisibility::Visible,
             invisible: false,
@@ -2310,6 +2316,21 @@ pub enum Paint {
         /// mask is transparent, so nothing there shows.
         view: (f32, f32),
     },
+    /// Draw everything up to the matching [`Paint::PopFilter`] apart, then
+    /// put it through these steps (`filter`) and draw the result in its
+    /// place. A renderer that cannot draw apart draws it unfiltered.
+    PushFilter { ops: std::sync::Arc<[filter::FilterOp]> },
+    PopFilter,
+    /// `backdrop-filter`: what is drawn so far, put through these steps, in
+    /// this box with its corners rounded, under the box's own paint.
+    Backdrop {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: Corners,
+        ops: std::sync::Arc<[filter::FilterOp]>,
+    },
     /// End the most recent clip.
     PopClip,
     /// Begin an affine `transform` on the subtree. The matrix already has the
@@ -2899,6 +2920,8 @@ enum PaintKind {
     ClipPath(std::sync::Arc<clip::ClipPath>),
     /// `mask-image`, likewise.
     Mask(std::sync::Arc<Mask>),
+    /// `filter` and `backdrop-filter`, likewise.
+    Filters(std::sync::Arc<filter::Filters>),
     /// Vector geometry with the paint properties its style resolved to.
     ///
     /// The paint travels with the geometry rather than being looked up later
@@ -3863,8 +3886,10 @@ fn build(
         // descendant is drawn over its containing block's in-flow content.
         // `content-visibility` other than `visible` contains layout, which
         // makes a containing block for both kinds, as a transform does.
-        let transformed =
-            node.style.transform.is_some() || node.style.content_visibility != ContentVisibility::Visible;
+        // A filter, or a backdrop filter, makes one as well, as in CSS.
+        let transformed = node.style.transform.is_some()
+            || node.style.content_visibility != ContentVisibility::Visible
+            || node.style.filters.is_some();
         if transformed || node.style.position.is_containing_block() {
             let mut i = mark;
             while i < hoisted.len() {
@@ -4003,6 +4028,9 @@ fn build(
     if let Some(m) = &node.style.mask {
         paint.push((id, PaintKind::Mask(std::sync::Arc::new((**m).clone()))));
     }
+    if let Some(f) = &node.style.filters {
+        paint.push((id, PaintKind::Filters(std::sync::Arc::new((**f).clone()))));
+    }
     if let Some(outline) = node.style.outline {
         paint.push((id, PaintKind::Outline(outline)));
     }
@@ -4049,7 +4077,12 @@ fn build(
     } else if node.style.invisible {
         hidden.push((id, false));
     }
-    if node.style.opacity < 1.0 || node.style.blend != BlendMode::Normal || node.style.mask.is_some() {
+    // A filter makes a stacking context too, and draws as a group.
+    if node.style.opacity < 1.0
+        || node.style.blend != BlendMode::Normal
+        || node.style.mask.is_some()
+        || node.style.filters.is_some()
+    {
         opacities.push((id, node.style.opacity.max(0.0), node.style.blend));
     }
     if let Some(tf) = node.style.transform {
@@ -4988,6 +5021,32 @@ fn collect(
         };
         out.paints.push(Paint::PushShapeClip { commands: c.commands(reference, vp).into(), evenodd: c.evenodd() });
     }
+    // `backdrop-filter` under the box's own paint, and `filter` around all of
+    // it, inside the shape it is cut to, as CSS orders them.
+    let filters = b.paints(id).iter().find_map(|(_, k)| match k {
+        PaintKind::Filters(f) => Some(f),
+        _ => None,
+    });
+    let filtered = filters.is_some_and(|f| !f.filter.is_empty());
+    if let Some(f) = filters.filter(|f| !f.backdrop.is_empty()) {
+        let radius = b.paints(id).iter().find_map(|(_, k)| match k {
+            PaintKind::Box { radius, radius_pct, .. } => {
+                Some(resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height))
+            }
+            _ => None,
+        });
+        out.paints.push(Paint::Backdrop {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            radius: radius.unwrap_or([0.0; 4]),
+            ops: f.backdrop.clone().into(),
+        });
+    }
+    if let Some(f) = filters.filter(|_| filtered) {
+        out.paints.push(Paint::PushFilter { ops: f.filter.clone().into() });
+    }
 
     let mut clip = false;
     let mut clip_radius = [0.0; 4];
@@ -5096,7 +5155,7 @@ fn collect(
                     content: ic.clone(),
                 })),
                 // Drawn after the children, below.
-                PaintKind::Outline(_) | PaintKind::ClipPath(_) | PaintKind::Mask(_) => {}
+                PaintKind::Outline(_) | PaintKind::ClipPath(_) | PaintKind::Mask(_) | PaintKind::Filters(_) => {}
                 // Each box of a sentence where its glyphs left room for it, and
                 // each part's rectangles kept for its regions, made below
                 // after the sentence's own so the part is found first.
@@ -5487,6 +5546,9 @@ fn collect(
         if let PaintKind::Outline(o) = kind {
             out.paints.push(outline_paint(o, x, y, layout.size.width, layout.size.height, clip_radius));
         }
+    }
+    if filtered {
+        out.paints.push(Paint::PopFilter);
     }
     if shape_clip.is_some() {
         out.paints.push(Paint::PopClip);

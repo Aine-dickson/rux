@@ -31,6 +31,7 @@
 
 use std::collections::HashMap;
 
+use rux_layout::filter::FilterOp;
 use rux_layout::{
     Background, BlendMode, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
     TextAlign, TextContent, TextWrap,
@@ -483,7 +484,12 @@ pub fn visible_paints(
             }
             // Its layer's content is already in or out by the paints above.
             Paint::MaskWith { .. } => true,
-            Paint::PopClip | Paint::PopTransform | Paint::PopOpacity => match saved.pop() {
+            Paint::PushFilter { .. } => {
+                saved.push((reach, true));
+                true
+            }
+            Paint::Backdrop { .. } => true,
+            Paint::PopClip | Paint::PopTransform | Paint::PopOpacity | Paint::PopFilter => match saved.pop() {
                 Some((back, kept)) => {
                     reach = back;
                     kept
@@ -553,7 +559,68 @@ pub fn build_scene(
     images: &mut ImageCache,
     caret_visible: bool,
 ) -> Scene {
-    build(items, text, images, caret_visible, None)
+    build(items, text, images, caret_visible, None, None)
+}
+
+/// A part of the frame drawn apart, to be put through `ops` by the renderer
+/// and drawn back in its place, which the frame's scene holds as `image`:
+/// a `filter`ed subtree, or a `backdrop-filter`'s backdrop.
+///
+/// `scene` is in logical pixels, as a frame's is, and covers the whole
+/// window; `image` is the window's size in device pixels. The renderer
+/// draws `scene` scaled, runs the steps over it, and binds the result to
+/// `image` (vello's `Renderer::override_image`) before it draws the frame.
+pub struct Offscreen {
+    pub scene: Scene,
+    pub ops: std::sync::Arc<[FilterOp]>,
+    pub image: ImageData,
+    /// A backdrop, drawn over the window's background colour; a filtered
+    /// subtree is drawn over nothing.
+    pub backdrop: bool,
+}
+
+/// [`build_scene_within`], with each `filter` and `backdrop-filter` drawn
+/// apart, in the order the renderer must make them: a part nested in
+/// another comes first. `scale` is device pixels per logical pixel.
+pub fn build_scene_apart(
+    items: &[Paint],
+    text: &mut TextEngine,
+    images: &mut ImageCache,
+    caret_visible: bool,
+    view: (f32, f32),
+    scale: f32,
+) -> (Scene, Vec<Offscreen>) {
+    let shown = visible_paints(items, view, |tc, width| text.measure(&tc.text, &text_style(tc), Some(width)));
+    let mut apart = Apart { view, scale, jobs: Vec::new() };
+    let scene = build(items, text, images, caret_visible, Some(&shown), Some(&mut apart));
+    (scene, apart.jobs)
+}
+
+struct Apart {
+    view: (f32, f32),
+    scale: f32,
+    jobs: Vec<Offscreen>,
+}
+
+impl Apart {
+    /// A window-sized image for a part drawn apart, which nothing has drawn
+    /// yet: its pixels come from the renderer. An empty blob, so each one is
+    /// a new identity to bind.
+    fn placeholder(&self) -> ImageData {
+        let device = |v: f32| ((v * self.scale).ceil() as u32).max(1);
+        ImageData {
+            data: Blob::new(std::sync::Arc::new(Vec::<u8>::new())),
+            format: ImageFormat::Rgba8,
+            alpha_type: ImageAlphaType::Alpha,
+            width: device(self.view.0),
+            height: device(self.view.1),
+        }
+    }
+
+    /// The placeholder drawn into a logical scene: device pixels, scaled back.
+    fn draw(&self, scene: &mut Scene, image: &ImageData) {
+        scene.draw_image(&ImageBrush::new(image.clone()), Affine::scale(1.0 / self.scale as f64));
+    }
 }
 
 /// [`build_scene`] for a window `view` wide and high, leaving out what cannot
@@ -566,7 +633,7 @@ pub fn build_scene_within(
     view: (f32, f32),
 ) -> Scene {
     let shown = visible_paints(items, view, |tc, width| text.measure(&tc.text, &text_style(tc), Some(width)));
-    build(items, text, images, caret_visible, Some(&shown))
+    build(items, text, images, caret_visible, Some(&shown), None)
 }
 
 fn build(
@@ -575,8 +642,14 @@ fn build(
     images: &mut ImageCache,
     caret_visible: bool,
     shown: Option<&[bool]>,
+    mut apart: Option<&mut Apart>,
 ) -> Scene {
     let mut scene = Scene::new();
+    // Each `filter` group being drawn apart: the scene it interrupted, the
+    // layers open in that scene when it did, and the steps it will get.
+    let mut levels: Vec<(Scene, usize, std::sync::Arc<[FilterOp]>)> = Vec::new();
+    // Layers open in `scene`, which a backdrop's copy of it has to close.
+    let mut depth = 0usize;
     // Active `transform` stack. Every draw uses the accumulated transform so a
     // transformed element carries its subtree with it. (Hit regions are computed
     // untransformed, so they don't follow, a documented limitation.)
@@ -587,6 +660,50 @@ fn build(
         }
         let cur = tstack.last().copied().unwrap_or(Affine::IDENTITY);
         match item {
+            Paint::PushClip { .. } | Paint::PushShapeClip { .. } | Paint::PushOpacity { .. } => depth += 1,
+            Paint::PopClip | Paint::PopOpacity => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        match item {
+            // Drawn apart only for a renderer that can filter; otherwise the
+            // subtree is drawn as it is, unfiltered.
+            Paint::PushFilter { ops } => {
+                if apart.is_some() {
+                    levels.push((std::mem::take(&mut scene), depth, ops.clone()));
+                    depth = 0;
+                }
+            }
+            Paint::PopFilter => {
+                if let (Some(a), Some((parent, open, ops))) = (apart.as_deref_mut(), levels.pop()) {
+                    let part = std::mem::replace(&mut scene, parent);
+                    depth = open;
+                    let image = a.placeholder();
+                    a.draw(&mut scene, &image);
+                    a.jobs.push(Offscreen { scene: part, ops, image, backdrop: false });
+                }
+            }
+            // Everything drawn so far, each level of it with its open layers
+            // closed, drawn apart; the result shows inside this box.
+            Paint::Backdrop { x, y, width, height, radius, ops } => {
+                if let Some(a) = apart.as_deref_mut() {
+                    let mut behind = Scene::new();
+                    let closed = |s: &Scene, open: usize| {
+                        let mut s = s.clone();
+                        (0..open).for_each(|_| s.pop_layer());
+                        s
+                    };
+                    for (s, open, _) in &levels {
+                        behind.append(&closed(s, *open), None);
+                    }
+                    behind.append(&closed(&scene, depth), None);
+                    let image = a.placeholder();
+                    let shape = rounded_rect(*x, *y, *width, *height, *radius, 0.0);
+                    scene.push_clip_layer(Fill::NonZero, cur, &shape);
+                    a.draw(&mut scene, &image);
+                    scene.pop_layer();
+                    a.jobs.push(Offscreen { scene: behind, ops: ops.clone(), image, backdrop: true });
+                }
+            }
             Paint::Rect(r) => {
                 if let Some(bg) = &r.background {
                     fill_background(&mut scene, cur, bg, (r.x, r.y, r.width, r.height), r.radius, images);

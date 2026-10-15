@@ -3771,7 +3771,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "cursor", "touch-action", "box-shadow", "transform",
+    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "filter", "backdrop-filter", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
@@ -4040,7 +4040,6 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 /// moving it to [`HONORED_PROPERTIES`] is the second.
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
-    "filter", "backdrop-filter",
     "text-shadow",
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
@@ -4744,6 +4743,11 @@ fn resolve_colors(props: &mut HashMap<String, String>, inherited: Rgba, inherite
         }
         if property == "box-shadow" {
             if let Some(out) = shadow_colors(value, own) {
+                *value = out;
+            }
+        }
+        if property == "filter" || property == "backdrop-filter" {
+            if let Some(out) = drop_shadow_colors(value, own) {
                 *value = out;
             }
         }
@@ -9089,6 +9093,11 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         st.clip_path = parse_clip_path(v).map(Box::new);
     }
     st.mask = interpret_mask(p).map(Box::new);
+    let filter = p.get("filter").map(|v| parse_filter("filter", v)).unwrap_or_default();
+    let backdrop = p.get("backdrop-filter").map(|v| parse_filter("backdrop-filter", v)).unwrap_or_default();
+    if !filter.is_empty() || !backdrop.is_empty() {
+        st.filters = Some(Box::new(rux_layout::filter::Filters { filter, backdrop }));
+    }
     if let Some(v) = p.get("mix-blend-mode") {
         st.blend = match v.trim() {
             "normal" => BlendMode::Normal,
@@ -10940,6 +10949,106 @@ fn interpret_mask(p: &HashMap<String, String>) -> Option<rux_layout::Mask> {
     Some(rux_layout::Mask { image: picture?, luminance })
 }
 
+/// `filter` or `backdrop-filter`: the functions in the order written, each
+/// run of colour functions folded into one matrix. `none` is no filter, and
+/// so is a list with a function Rux does not draw, which is said once: CSS
+/// drops the whole declaration when one function is invalid.
+fn parse_filter(property: &str, value: &str) -> Vec<rux_layout::filter::FilterOp> {
+    use rux_layout::filter::{fold, FilterOp};
+    let value = value.trim();
+    if value == "none" {
+        return Vec::new();
+    }
+    // A number or a percentage, `default` when left out.
+    let amount = |args: &str, default: f32| -> Option<f32> {
+        let a = args.trim();
+        if a.is_empty() {
+            return Some(default);
+        }
+        match a.strip_suffix('%') {
+            Some(p) => p.trim().parse::<f32>().ok().map(|v| v / 100.0),
+            None => a.parse::<f32>().ok(),
+        }
+        .filter(|v| *v >= 0.0)
+    };
+    let mut ops = Vec::new();
+    for token in split_top_level(value) {
+        let parsed = token.split_once('(').and_then(|(name, rest)| {
+            let args = rest.strip_suffix(')')?;
+            Some(match name.trim() {
+                "blur" => FilterOp::Blur(if args.trim().is_empty() { 0.0 } else { parse_px(args.trim())?.max(0.0) }),
+                "brightness" => FilterOp::Matrix(FilterOp::brightness(amount(args, 1.0)?)),
+                "contrast" => FilterOp::Matrix(FilterOp::contrast(amount(args, 1.0)?)),
+                "grayscale" => FilterOp::Matrix(FilterOp::grayscale(amount(args, 1.0)?)),
+                "sepia" => FilterOp::Matrix(FilterOp::sepia(amount(args, 1.0)?)),
+                "saturate" => FilterOp::Matrix(FilterOp::saturate(amount(args, 1.0)?)),
+                "invert" => FilterOp::Matrix(FilterOp::invert(amount(args, 1.0)?)),
+                "opacity" => FilterOp::Matrix(FilterOp::opacity(amount(args, 1.0)?)),
+                "hue-rotate" => {
+                    let a = args.trim();
+                    let deg = if a.is_empty() { 0.0 } else { parse_angle(a)?.to_degrees() };
+                    FilterOp::Matrix(FilterOp::hue_rotate(deg))
+                }
+                "drop-shadow" => {
+                    let mut lengths = Vec::new();
+                    let mut color = None;
+                    for t in split_top_level(args) {
+                        match parse_px(t) {
+                            Some(px) => lengths.push(px),
+                            None => color = Some(parse_color(t)?),
+                        }
+                    }
+                    let [dx, dy, ref rest @ ..] = lengths[..] else { return None };
+                    FilterOp::DropShadow {
+                        dx,
+                        dy,
+                        blur: rest.first().copied().unwrap_or(0.0).max(0.0),
+                        color: color.unwrap_or(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+                    }
+                }
+                _ => return None,
+            })
+        });
+        match parsed {
+            Some(op) => ops.push(op),
+            None => {
+                let why = if token.starts_with("url(") {
+                    "an SVG `<filter>` is not something Rux has; the functions are blur(), brightness(), \
+                     contrast(), drop-shadow(), grayscale(), hue-rotate(), invert(), opacity(), \
+                     saturate() and sepia()"
+                } else {
+                    "it is not one of blur(), brightness(), contrast(), drop-shadow(), grayscale(), \
+                     hue-rotate(), invert(), opacity(), saturate() or sepia(), written right"
+                };
+                warn_once(format!("`{property}: {value}` does nothing: `{token}` is the reason: {why}."));
+                return Vec::new();
+            }
+        }
+    }
+    fold(ops)
+}
+
+/// A `filter` with its `drop-shadow()`s given `color` where they have no
+/// colour of their own, which CSS draws in `currentColor`. `None` when
+/// nothing changed.
+fn drop_shadow_colors(value: &str, color: Rgba) -> Option<String> {
+    if !value.contains("drop-shadow(") {
+        return None;
+    }
+    let mut changed = false;
+    let words: Vec<String> = split_top_level(value)
+        .into_iter()
+        .map(|token| match token.strip_prefix("drop-shadow(").and_then(|r| r.strip_suffix(')')) {
+            Some(args) if !split_top_level(args).into_iter().any(|t| parse_color(t).is_some()) => {
+                changed = true;
+                format!("drop-shadow({args} {})", color::hex(color))
+            }
+            _ => token.to_string(),
+        })
+        .collect();
+    changed.then(|| words.join(" "))
+}
+
 /// `clip-path`: a basic shape and the box it is of, either alone, or `none`.
 /// A shape that does not parse is said once, and clips nothing.
 fn parse_clip_path(value: &str) -> Option<rux_layout::clip::ClipPath> {
@@ -11580,7 +11689,7 @@ mod tests {
 
         // Real CSS, unbuilt: named as such, and never offered as a correction
         // for itself.
-        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"filter"));
+        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"float"));
         assert!(UNIMPLEMENTED_PROPERTIES.contains(&"transform-origin"));
 
         // A typo finds the property it was reaching for.
@@ -14432,5 +14541,44 @@ mod mask_tests {
         assert!(mask(&[("mask", "url(a.png)"), ("mask-image", "none")]).is_none());
         // A colour is not an image.
         assert!(mask(&[("mask-image", "red")]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod filter_tests {
+    use rux_layout::filter::FilterOp;
+    use rux_layout::Rgba;
+
+    use super::parse_filter as p;
+
+    #[test]
+    fn filters_parse_in_order_with_colour_runs_folded() {
+        let ops = p("filter", "blur(4px) brightness(1.2) contrast(50%) drop-shadow(2px 3px 4px #0008)");
+        assert_eq!(ops.len(), 3);
+        assert!(matches!(ops[0], FilterOp::Blur(b) if b == 4.0));
+        assert!(matches!(ops[1], FilterOp::Matrix(_)));
+        let FilterOp::DropShadow { dx, dy, blur, color } = ops[2].clone() else { panic!("{ops:?}") };
+        assert_eq!((dx, dy, blur), (2.0, 3.0, 4.0));
+        assert!((color.a - 136.0 / 255.0).abs() < 1e-6);
+        // Left out, each function takes CSS's default: grayscale() is all of it.
+        let FilterOp::Matrix(m) = p("filter", "grayscale()")[0].clone() else { panic!() };
+        let g = FilterOp::apply(&m, Rgba::new(1.0, 0.0, 0.0, 1.0));
+        assert!((g.r - g.b).abs() < 1e-6);
+        assert!(p("filter", "none").is_empty());
+    }
+
+    #[test]
+    fn a_bad_function_drops_the_whole_filter_and_says_so() {
+        let _ = super::take_warnings();
+        assert!(p("filter", r##"blur(2px) url("#f")"##).is_empty());
+        assert!(super::take_warnings().iter().any(|w| w.message.contains("SVG `<filter>`")));
+        assert!(p("backdrop-filter", "brightness(-1)").is_empty());
+    }
+
+    #[test]
+    fn a_drop_shadow_with_no_colour_is_current_color() {
+        let out = super::drop_shadow_colors("blur(1px) drop-shadow(2px 2px)", Rgba::new(1.0, 0.0, 0.0, 1.0)).unwrap();
+        assert_eq!(out, "blur(1px) drop-shadow(2px 2px #ff0000ff)");
+        assert!(super::drop_shadow_colors("drop-shadow(2px 2px red)", Rgba::new(1.0, 0.0, 0.0, 1.0)).is_none());
     }
 }

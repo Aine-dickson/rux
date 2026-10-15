@@ -76,6 +76,13 @@ mask, mask-image, mask-mode (a gradient or url() over the border box; alpha,
                        mask does, and nothing outside the box. Not yet:
                        mask-size, -position and -repeat: an image covers the
                        box, as background-image does)
+filter, backdrop-filter (blur(), brightness(), contrast(), drop-shadow(),
+                       grayscale(), hue-rotate(), invert(), opacity(), saturate(),
+                       sepia(), in any order; a stacking context and a containing
+                       block, as in CSS. The box and its subtree, or what is behind
+                       the box, are drawn apart and run through the GPU; a
+                       drop-shadow with no colour is currentColor. Not yet: url()
+                       to an SVG filter)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)

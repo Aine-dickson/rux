@@ -27,6 +27,8 @@
 //! because two places doing the same coordinate arithmetic eventually disagree.
 
 mod dialogs;
+/// `filter` and `backdrop-filter`, as compute passes. See [`filter::GpuFilters`].
+mod filter;
 mod settings;
 
 pub use settings::set_app_id;
@@ -1590,6 +1592,9 @@ struct RenderState {
     surface: RenderSurface<'static>,
     renderer: Renderer,
     scene: Scene,
+    /// The passes `filter` and `backdrop-filter` run through, made the first
+    /// time a frame has one.
+    filters: Option<filter::GpuFilters>,
     /// Publishes the accessibility tree to the platform (UI Automation on
     /// Windows, AT-SPI on Linux, NSAccessibility on macOS). It only does work
     /// while assistive technology is actually attached, so this costs nothing in
@@ -6877,8 +6882,10 @@ impl App {
         // Only what can be seen is drawn: the whole surface, in logical pixels,
         // the part under a soft keyboard included, since a paint may reach it.
         let surface = ((width as f64 / scale) as f32, (height as f64 / scale) as f32);
-        let content = profile::time(Phase::Scene, || {
-            rux_paint::build_scene_within(&layout.paints, text, images, caret_visible, surface)
+        // A `filter` or `backdrop-filter` is drawn apart, and run through its
+        // passes just before the frame is drawn: see `filter`.
+        let (content, apart) = profile::time(Phase::Scene, || {
+            rux_paint::build_scene_apart(&layout.paints, text, images, caret_visible, surface, scale as f32)
         });
         state.scene.reset();
         state
@@ -7067,6 +7074,11 @@ impl App {
                 return;
             }
         };
+        if !apart.is_empty() {
+            let device = &device_handle.device;
+            let filters = state.filters.get_or_insert_with(|| filter::GpuFilters::new(device));
+            filters.run(device, &device_handle.queue, &mut state.renderer, &apart, scale, BG);
+        }
         // vello renders with a compute shader, so it can't write the surface
         // texture directly (the surface is Bgra8, the storage target Rgba8).
         // render_to_surface used to hide this; in 0.9 we render into the
@@ -7102,6 +7114,9 @@ impl App {
         device_handle.queue.submit([encoder.finish()]);
 
         surface_texture.present();
+        if let Some(filters) = state.filters.as_mut() {
+            filters.finish(&mut state.renderer);
+        }
         if let Some(start) = gpu_start {
             profile::add(Phase::Gpu, start.elapsed().as_nanos() as u64);
             report_frame();
@@ -7215,6 +7230,7 @@ impl ApplicationHandler<RuxEvent> for App {
             surface,
             renderer,
             scene: Scene::new(),
+            filters: None,
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             access,
         });
@@ -7308,7 +7324,7 @@ impl ApplicationHandler<RuxEvent> for App {
 
             *pending.borrow_mut() = Some((
                 context,
-                RenderState { window, surface, renderer, scene: Scene::new() },
+                RenderState { window, surface, renderer, scene: Scene::new(), filters: None },
             ));
             let _ = proxy.send_event(RuxEvent::SurfaceReady);
         });
