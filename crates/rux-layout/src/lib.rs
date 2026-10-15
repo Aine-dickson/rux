@@ -975,6 +975,8 @@ pub struct Outline {
     /// stylesheet gives a focused element, so an author's `outline` of any
     /// kind replaces it, and `outline: none` removes it, as in CSS.
     pub auto: bool,
+    /// The line: `solid`, or `dashed`, `dotted` and the rest, as a border's.
+    pub style: BorderStyle,
 }
 
 impl Outline {
@@ -1031,6 +1033,10 @@ pub struct Style {
     pub margin_pct: [Option<f32>; 4],
     pub border: Sides,
     pub border_color: Option<Rgba>,
+    /// `border-style` per side, top, right, bottom, left. The cascade gives a
+    /// side whose style is `none` no width, as CSS does; a `Style` built in
+    /// code with a width and no style is drawn solid.
+    pub border_style: [BorderStyle; 4],
     pub gap: f32,
     /// `row-gap` / `column-gap` overrides for the shorthand `gap`. `None` keeps
     /// the shorthand (`gap`) value on that axis.
@@ -1222,6 +1228,7 @@ impl Default for Style {
             margin_pct: [None; 4],
             border: Sides::default(),
             border_color: None,
+            border_style: [BorderStyle::None; 4],
             gap: 0.0,
             row_gap: None,
             column_gap: None,
@@ -2272,6 +2279,8 @@ pub struct PaintImage {
 #[derive(Clone, Debug)]
 pub enum Paint {
     Rect(PaintRect),
+    /// A dashed, dotted, double or 3D border. See [`PaintBorder`].
+    Border(PaintBorder),
     Text(PaintText),
     /// A text's glyphs in one colour, whatever its runs' colours: a
     /// `text-shadow`.
@@ -2381,6 +2390,60 @@ pub struct Mask {
     /// `mask-mode: luminance`: how light the mask is, rather than how
     /// opaque, which is what an image or a gradient means by default.
     pub luminance: bool,
+}
+
+/// `border-style`, one side's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BorderStyle {
+    #[default]
+    None,
+    Hidden,
+    Solid,
+    Dashed,
+    Dotted,
+    Double,
+    Groove,
+    Ridge,
+    Inset,
+    Outset,
+}
+
+impl BorderStyle {
+    pub fn parse(s: &str) -> Option<BorderStyle> {
+        Some(match s {
+            "none" => BorderStyle::None,
+            "hidden" => BorderStyle::Hidden,
+            "solid" => BorderStyle::Solid,
+            "dashed" => BorderStyle::Dashed,
+            "dotted" => BorderStyle::Dotted,
+            "double" => BorderStyle::Double,
+            "groove" => BorderStyle::Groove,
+            "ridge" => BorderStyle::Ridge,
+            "inset" => BorderStyle::Inset,
+            "outset" => BorderStyle::Outset,
+            _ => return None,
+        })
+    }
+
+    /// Drawn as a plain solid line: `solid` itself, and the styles that are
+    /// no line at all, which only a `Style` built in code reaches with a width.
+    pub fn is_solid(self) -> bool {
+        matches!(self, BorderStyle::None | BorderStyle::Hidden | BorderStyle::Solid)
+    }
+}
+
+/// A border that is not plain solid on every side, drawn over the box's
+/// background on its own.
+#[derive(Clone, Debug)]
+pub struct PaintBorder {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub radius: Corners,
+    pub border: Sides,
+    pub styles: [BorderStyle; 4],
+    pub color: Rgba,
 }
 
 /// `mix-blend-mode`: CSS's separable and non-separable blend modes.
@@ -2932,6 +2995,7 @@ enum PaintKind {
         radius_pct: [Option<f32>; 4],
         border: Sides,
         border_color: Option<Rgba>,
+        border_style: [BorderStyle; 4],
         clip: bool,
         shadow: Shadows,
     },
@@ -3976,6 +4040,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
+                border_style: node.style.border_style,
                 clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow.clone(),
             },
@@ -3995,6 +4060,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
+                border_style: node.style.border_style,
                 clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow.clone(),
             },
@@ -4009,6 +4075,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
+                border_style: node.style.border_style,
                 clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow.clone(),
             },
@@ -4037,6 +4104,7 @@ fn build(
                 // Uniform border for rendering (top width is representative).
                 border: node.style.border,
                 border_color: node.style.border_color,
+                border_style: node.style.border_style,
                 clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow.clone(),
             },
@@ -5097,6 +5165,7 @@ fn collect(
                     radius_pct,
                     border,
                     border_color,
+                    border_style,
                     clip: c,
                     shadow,
                 } => {
@@ -5113,6 +5182,9 @@ fn collect(
                     shadow_paints(shadows, rect, radius, border, false, &mut out.paints);
                     let widest = border.top.max(border.right).max(border.bottom).max(border.left);
                     let has_border = widest > 0.0 && border_color.is_some();
+                    // A border that is not solid all round is drawn on its
+                    // own, over the background.
+                    let styled = has_border && !border_style.iter().all(|s| s.is_solid());
                     if bg.is_some() || has_border {
                         out.paints.push(Paint::Rect(PaintRect {
                             x,
@@ -5122,7 +5194,19 @@ fn collect(
                             background: bg.clone(),
                             radius: *radius,
                             border: *border,
-                            border_color: *border_color,
+                            border_color: if styled { None } else { *border_color },
+                        }));
+                    }
+                    if let (true, Some(color)) = (styled, *border_color) {
+                        out.paints.push(Paint::Border(PaintBorder {
+                            x,
+                            y,
+                            width: layout.size.width,
+                            height: layout.size.height,
+                            radius: *radius,
+                            border: *border,
+                            styles: *border_style,
+                            color,
                         }));
                     }
                     shadow_paints(shadows, rect, radius, border, true, &mut out.paints);
@@ -5630,15 +5714,22 @@ fn outline_paint(o: &Outline, x: f32, y: f32, width: f32, height: f32, radius: C
             grown
         }
     };
+    let (x, y, width, height) = (x - out, y - out, (width + 2.0 * out).max(0.0), (height + 2.0 * out).max(0.0));
+    let radius = [corner(radius[0]), corner(radius[1]), corner(radius[2]), corner(radius[3])];
+    let color = o.color.unwrap_or(Outline::RING);
+    if !o.style.is_solid() {
+        let (border, styles) = (Sides::uniform(o.width), [o.style; 4]);
+        return Paint::Border(PaintBorder { x, y, width, height, radius, border, styles, color });
+    }
     Paint::Rect(PaintRect {
-        x: x - out,
-        y: y - out,
-        width: (width + 2.0 * out).max(0.0),
-        height: (height + 2.0 * out).max(0.0),
+        x,
+        y,
+        width,
+        height,
         background: None,
-        radius: [corner(radius[0]), corner(radius[1]), corner(radius[2]), corner(radius[3])],
+        radius,
         border: Sides::uniform(o.width),
-        border_color: Some(o.color.unwrap_or(Outline::RING)),
+        border_color: Some(color),
     })
 }
 

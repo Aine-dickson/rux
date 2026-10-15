@@ -33,11 +33,11 @@ use std::collections::HashMap;
 
 use rux_layout::filter::FilterOp;
 use rux_layout::{
-    Background, BlendMode, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
+    Background, BlendMode, BorderStyle, PaintBorder, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
     TextAlign, TextContent, TextWrap,
 };
 use rux_text::{Align, TextEngine, TextStyle, Wrap};
-use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, RoundedRect, RoundedRectRadii, Stroke, Vec2};
+use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke, Vec2};
 use vello::peniko::{
     BlendMode as PenikoBlend, Blob, Color, ColorStop, Compose, Fill, Gradient as PenikoGradient, ImageAlphaType, ImageBrush,
     ImageData, ImageFormat, Mix,
@@ -222,6 +222,172 @@ fn fill_background(
                     scene.pop_layer();
                 }
             }
+        }
+    }
+}
+
+/// The dash pattern that draws a row of dots `width` across with round caps:
+/// a dash too short to see, which the caps round into a dot, every two
+/// widths. A dash of length zero would be the exact pattern, and vello draws
+/// nothing for it.
+fn dots(width: f64) -> [f64; 2] {
+    let tiny = width * 0.01;
+    [tiny, width * 2.0 - tiny]
+}
+
+/// A border that is not plain solid all round: `dashed`, `dotted`, `double`,
+/// `groove`, `ridge`, `inset` and `outset`.
+///
+/// One width and one style on every side is stroked once around the box,
+/// following its corners, dashes and dots included. Anything else is drawn a
+/// side at a time, each side a band from corner to corner whose ends are cut
+/// on the diagonal, as CSS mitres them, and its dashes laid along its middle.
+///
+/// The 3D styles are shaded from the colour: the side that would be in
+/// light keeps it and the one in shade is a third darker. CSS leaves the
+/// exact shades to the browser, and browsers differ.
+fn draw_border(scene: &mut Scene, cur: Affine, b: &PaintBorder) {
+    let w = [b.border.top, b.border.right, b.border.bottom, b.border.left];
+    let color = to_color(b.color);
+    let dark = to_color(Rgba::new(b.color.r * 2.0 / 3.0, b.color.g * 2.0 / 3.0, b.color.b * 2.0 / 3.0, b.color.a));
+    // Which sides are in light: top and left for `outset` and `ridge`'s
+    // outer half, bottom and right for `inset` and `groove`'s.
+    let lit = |style: BorderStyle, side: usize, outer: bool| -> Color {
+        let top_left = side == 0 || side == 3;
+        let raised = match style {
+            BorderStyle::Outset => true,
+            BorderStyle::Inset => false,
+            BorderStyle::Ridge => outer,
+            BorderStyle::Groove => !outer,
+            _ => return color,
+        };
+        if raised == top_left { color } else { dark }
+    };
+    let uniform = w.iter().all(|v| *v == w[0]) && b.styles.iter().all(|s| *s == b.styles[0]);
+    let style = b.styles[0];
+    let shaded = matches!(style, BorderStyle::Groove | BorderStyle::Ridge | BorderStyle::Inset | BorderStyle::Outset);
+    if uniform && !shaded && w[0] > 0.0 {
+        let width = w[0] as f64;
+        let ring = |inset: f64, thick: f64| (rounded_rect(b.x, b.y, b.width, b.height, b.radius, inset), Stroke::new(thick));
+        match style {
+            BorderStyle::Dashed => {
+                let (shape, stroke) = ring(width / 2.0, width);
+                let stroke = stroke.with_dashes(0.0, [width * 3.0, width * 3.0]);
+                scene.stroke(&stroke, cur, color, None, &shape);
+            }
+            BorderStyle::Dotted => {
+                let (shape, stroke) = ring(width / 2.0, width);
+                let stroke = stroke.with_caps(Cap::Round).with_dashes(0.0, dots(width));
+                scene.stroke(&stroke, cur, color, None, &shape);
+            }
+            BorderStyle::Double => {
+                for inset in [width / 6.0, width * 5.0 / 6.0] {
+                    let (shape, stroke) = ring(inset, width / 3.0);
+                    scene.stroke(&stroke, cur, color, None, &shape);
+                }
+            }
+            _ => {
+                let (shape, stroke) = ring(width / 2.0, width);
+                scene.stroke(&stroke, cur, color, None, &shape);
+            }
+        }
+        return;
+    }
+    // A side at a time. The box's corners, outer and inner, clockwise from
+    // the top left; each side is the band between its two outer corners and
+    // the two inner ones.
+    let (x0, y0, x1, y1) = (b.x as f64, b.y as f64, (b.x + b.width) as f64, (b.y + b.height) as f64);
+    let (t, r, bt, l) = (w[0] as f64, w[1] as f64, w[2] as f64, w[3] as f64);
+    let outer = [(x0, y0), (x1, y0), (x1, y1), (x0, y1)];
+    let inner = [(x0 + l, y0 + t), (x1 - r, y0 + t), (x1 - r, y1 - bt), (x0 + l, y1 - bt)];
+    // With rounded corners a side is a wedge instead: its band carried on
+    // past each inner corner as far as the padding box's curve reaches, and
+    // cut to its slice of the ring between two rounded rectangles. A corner's
+    // radius shrinks by the wider of the two widths either side of it.
+    let rounded = b.radius.iter().any(|v| *v > 0.0);
+    let across = [t.max(l), t.max(r), bt.max(r), bt.max(l)];
+    // The rounded rectangle `f` of the way from the border box (0) to the
+    // padding box (1).
+    let ring_at = |f: f64| {
+        let rad = |i: usize| (b.radius[i] as f64 - across[i] * f).max(0.0);
+        RoundedRect::from_rect(
+            Rect::new(x0 + l * f, y0 + t * f, x1 - r * f, y1 - bt * f),
+            RoundedRectRadii::new(rad(0), rad(1), rad(2), rad(3)),
+        )
+    };
+    let slice = |from: f64, to: f64| {
+        let mut path = ring_at(from).to_path(0.1);
+        path.extend(ring_at(to).to_path(0.1));
+        path
+    };
+    let toward = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
+    let far: [(f64, f64); 4] = std::array::from_fn(|i| {
+        let k = (b.radius[i] as f64 - across[i]).max(0.0);
+        (inner[i].0 + toward[i].0 * k, inner[i].1 + toward[i].1 * k)
+    });
+    for (side, &wide) in w.iter().enumerate() {
+        if wide <= 0.0 {
+            continue;
+        }
+        let (a, z) = (side, (side + 1) % 4);
+        let band = |from: f64, to: f64| {
+            // The part of the band between `from` and `to` of its depth,
+            // 0 at the outer edge and 1 at the inner.
+            let at = |o: (f64, f64), i: (f64, f64), f: f64| (o.0 + (i.0 - o.0) * f, o.1 + (i.1 - o.1) * f);
+            let mut path = BezPath::new();
+            path.move_to(at(outer[a], inner[a], from));
+            path.line_to(at(outer[z], inner[z], from));
+            path.line_to(at(outer[z], inner[z], to));
+            path.line_to(at(outer[a], inner[a], to));
+            path.close_path();
+            path
+        };
+        let piece = |scene: &mut Scene, from: f64, to: f64, paint: Color| {
+            if !rounded {
+                scene.fill(Fill::NonZero, cur, paint, None, &band(from, to));
+                return;
+            }
+            let mut wedge = BezPath::new();
+            wedge.move_to(outer[a]);
+            for p in [outer[z], inner[z], far[z], far[a], inner[a]] {
+                wedge.line_to(p);
+            }
+            wedge.close_path();
+            scene.push_clip_layer(Fill::EvenOdd, cur, &slice(from, to));
+            scene.fill(Fill::NonZero, cur, paint, None, &wedge);
+            scene.pop_layer();
+        };
+        let style = b.styles[side];
+        match style {
+            BorderStyle::Dashed | BorderStyle::Dotted => {
+                let width = wide as f64;
+                let mid = |o: (f64, f64), i: (f64, f64)| ((o.0 + i.0) / 2.0, (o.1 + i.1) / 2.0);
+                let mut line = BezPath::new();
+                line.move_to(mid(outer[a], inner[a]));
+                line.line_to(mid(outer[z], inner[z]));
+                let stroke = if style == BorderStyle::Dotted {
+                    Stroke::new(width).with_caps(Cap::Round).with_dashes(0.0, dots(width))
+                } else {
+                    Stroke::new(width).with_caps(Cap::Butt).with_dashes(0.0, [width * 3.0, width * 3.0])
+                };
+                // Rounded, the straight line is cut to the ring.
+                if rounded {
+                    scene.push_clip_layer(Fill::EvenOdd, cur, &slice(0.0, 1.0));
+                }
+                scene.stroke(&stroke, cur, color, None, &line);
+                if rounded {
+                    scene.pop_layer();
+                }
+            }
+            BorderStyle::Double => {
+                piece(scene, 0.0, 1.0 / 3.0, color);
+                piece(scene, 2.0 / 3.0, 1.0, color);
+            }
+            BorderStyle::Groove | BorderStyle::Ridge => {
+                piece(scene, 0.0, 0.5, lit(style, side, true));
+                piece(scene, 0.5, 1.0, lit(style, side, false));
+            }
+            _ => piece(scene, 0.0, 1.0, lit(style, side, true)),
         }
     }
 }
@@ -497,6 +663,7 @@ pub fn visible_paints(
                 None => true,
             },
             Paint::Rect(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
+            Paint::Border(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
             Paint::Image(i) => reaches(reach.local, rect_of(i.x, i.y, i.width, i.height)),
             // vello's blur reaches about three standard deviations, and the
             // standard deviation is half the CSS blur.
@@ -818,6 +985,7 @@ fn build(
                 }
                 scene.pop_layer();
             }
+            Paint::Border(b) => draw_border(&mut scene, cur, b),
             Paint::Ink(t, color) => {
                 text.draw_ink(
                     &mut scene,

@@ -145,13 +145,17 @@ fn an_outline_in_a_scroller_is_clipped_by_it() {
     assert!(push < ring && ring < pop, "clip {push}, outline {ring}, pop {pop}");
 }
 
-/// A dashed or dotted outline is drawn solid, as a border is, and says so.
+/// A dashed outline is drawn dashed, as a dashed border is, and nothing
+/// is said: until v0.9 every style was drawn solid with a warning.
 #[test]
-fn a_style_rux_cannot_draw_is_drawn_solid_and_said() {
+fn a_dashed_outline_is_drawn_dashed() {
     let d = doc("<view class=\"a\"></view>", ".a { width: 10px; height: 10px; outline: 2px dashed red; }");
-    assert_eq!(outlines(&d).len(), 1);
+    let dashed = paints(&d).into_iter().filter(|p| {
+        matches!(p, Paint::Border(b) if b.styles == [rux_layout::BorderStyle::Dashed; 4] && b.border.top == 2.0)
+    });
+    assert_eq!(dashed.count(), 1);
     let said = format!("{:?}", d.diagnostics());
-    assert!(said.contains("drawn solid"), "{said}");
+    assert!(!said.contains("outline-style"), "{said}");
 }
 
 // ---- The focus ring ---------------------------------------------------------

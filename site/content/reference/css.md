@@ -29,9 +29,13 @@ width, height, min-width, max-width, min-height, max-height
 padding, padding-top, padding-right, padding-bottom, padding-left
 margin, margin-top, margin-right, margin-bottom, margin-left
                        (each shorthand takes 1–4 values)
-border, border-width, border-color
+border, border-width, border-color, border-style (and each side's -width and
+                       -style; none, hidden, solid, dashed, dotted, double,
+                       groove, ridge, inset, outset; with no style a border is
+                       none and has no width, as in CSS; one colour for all four)
 border-top, border-right, border-bottom, border-left
 border-top-width, border-right-width, border-bottom-width, border-left-width
+border-top-style, border-right-style, border-bottom-style, border-left-style
 background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
 box-shadow (a comma list, the first on top; `inset` drawn inside the border, over
@@ -113,6 +117,21 @@ while the length check validated with a percentage-capable one: the value was
 dropped and then pronounced fine. An animated `padding`, `margin` or `gap`
 walks the pixel value, so a side written as a percentage does not animate.
 
+**A border needs a style, as in CSS.** `border-style` is `none` until one is
+written, and a side whose style is `none` (or `hidden`) has no width, so
+`border: 2px red` draws nothing and takes no room. Rux drew it solid until
+v0.9, so a border given a width or a colour and no style anywhere is said,
+quoting the declaration. A style with no width is `medium`, 3px, and
+`thin`, `medium` and `thick` are 1, 3 and 5px.
+
+Every style is drawn. `dashed` is dashes three widths long with gaps as
+long, and `dotted` round dots a width across, two widths apart; both follow
+the corners when all four sides match. `double` is two lines a third of the
+width each. `groove`, `ridge`, `inset` and `outset` are shaded from the
+colour, a third darker on the side in shade; CSS leaves the shades to the
+browser, and browsers differ. Every style follows `border-radius`; on a rounded
+corner the shade changes on the diagonal, as it does in browsers.
+
 **A border may differ per side.** `border-bottom: 2px solid #89b4fa` draws under
 the box and nowhere else, which is the underlined-field shape most forms want.
 Until v0.7.1 it drew *nothing*: the cascade computed all four sides, and paint
@@ -176,9 +195,9 @@ adjust it. `auto` is 2px in the ring's own blue, a little round even on a
 square box. `outline` works on any element, focused or not, and takes no room
 in the layout. It is painted over the element's content, outside the element's
 own `overflow` clip and inside every ancestor's, so an outline on a row in a
-scrolled list is clipped by the list, as in a browser. **Only solid lines are
-drawn**, as for `border`: `dashed`, `dotted`, `double` and the 3D styles are
-drawn solid and say so once. That is a capability Rux lacks, not a choice.
+scrolled list is clipped by the list, as in a browser. Its style is a border's:
+`dashed`, `dotted`, `double` and the 3D styles are drawn as they are for
+`border`.
 
 Any *other* pseudo-class (`:nth-child(…)`, `::before`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently

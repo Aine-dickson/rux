@@ -22,7 +22,7 @@ use rux_layout::{
     Len, Node as LayoutNode, Overflow, Position, Rgba, SelectionStyle, Sides, Style, TextAlign, TextContent,
     TextWrap, TouchAction, Track, TrackSide,
 };
-use rux_layout::{AnimProp, BlendMode, Easing, GradientKind, GridFlow, StepPosition, Transform, Transition};
+use rux_layout::{AnimProp, BlendMode, BorderStyle, Easing, GradientKind, GridFlow, StepPosition, Transform, Transition};
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_layout::{ContentVisibility, IntrinsicSize};
@@ -3776,6 +3776,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
+    "border-style", "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
     "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "filter", "backdrop-filter", "text-shadow", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
     // Scrolling
@@ -4048,8 +4049,6 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
     "place-items", "place-content", "place-self", "resize",
-    "border-style", "border-top-style", "border-right-style",
-    "border-bottom-style", "border-left-style",
     // Backgrounds. `background-image` is honored and always covers its box, so
     // the properties that would size or place it are the common near miss.
     "background-size", "background-position", "background-repeat",
@@ -10702,37 +10701,6 @@ fn split_top_level(value: &str) -> Vec<&str> {
     out.into_iter().filter(|t| !t.is_empty()).collect()
 }
 
-/// Expand a 1–4 value shorthand (`5px`, `5px 10px`, `1 2 3`, `1 2 3 4`) into
-/// per-side lengths, CSS order (top, right, bottom, left).
-fn parse_shorthand_sides(value: &str) -> Sides {
-    let v: Vec<f32> = value
-        .split_whitespace()
-        .filter_map(parse_px)
-        .collect();
-    match v.len() {
-        1 => Sides::uniform(v[0]),
-        2 => Sides {
-            top: v[0],
-            right: v[1],
-            bottom: v[0],
-            left: v[1],
-        },
-        3 => Sides {
-            top: v[0],
-            right: v[1],
-            bottom: v[2],
-            left: v[1],
-        },
-        n if n >= 4 => Sides {
-            top: v[0],
-            right: v[1],
-            bottom: v[2],
-            left: v[3],
-        },
-        _ => Sides::default(),
-    }
-}
-
 /// The percentage half of `border-radius`, in the same diagonal grouping.
 ///
 /// Returned separately from the pixels because the two resolve at different
@@ -11297,8 +11265,8 @@ fn parse_clip_shape(token: &str) -> Option<rux_layout::clip::ClipShape> {
 /// `currentColor`, which is not known yet here.
 ///
 /// An `auto` style is the platform's ring and is 2px unless a width is
-/// written. Only solid lines are drawn, as with `border`, so a `dashed` or
-/// `dotted` outline is drawn solid and says so once.
+/// written. Every other style is a border's: `dashed`, `dotted`, `double`
+/// and the 3D ones are drawn as a border with that style would be.
 fn interpret_outline(p: &HashMap<String, String>) -> Option<Outline> {
     let mut width: Option<f32> = None;
     let mut style: Option<String> = None;
@@ -11327,15 +11295,12 @@ fn interpret_outline(p: &HashMap<String, String>) -> Option<Outline> {
     let auto = style == "auto";
     match style.as_str() {
         "none" | "hidden" => return None,
-        "auto" | "solid" => {}
-        other if OUTLINE_STYLES.contains(&other) => warn_once(format!(
-            "`outline-style: {other}` is drawn solid: Rux draws outlines, like borders, \
-             as solid lines only."
-        )),
+        other if OUTLINE_STYLES.contains(&other) => {}
         other => {
             warn_once(format!(
                 "`outline-style: {other}` is not an outline style, so the outline is not \
-                 drawn. Use solid, auto or none."
+                 drawn. Use solid, dashed, dotted, double, groove, ridge, inset, outset, \
+                 auto or none."
             ));
             return None;
         }
@@ -11346,7 +11311,9 @@ fn interpret_outline(p: &HashMap<String, String>) -> Option<Outline> {
         return None;
     }
     let offset = p.get("outline-offset").and_then(|v| parse_px(first(v))).unwrap_or(0.0);
-    Some(Outline { width, color, offset, auto })
+    // `auto` is the platform's ring, drawn solid.
+    let style = BorderStyle::parse(&style).unwrap_or(BorderStyle::Solid);
+    Some(Outline { width, color, offset, auto, style })
 }
 
 /// Every `outline-style` keyword CSS has. What Rux draws of each is decided
@@ -11367,37 +11334,105 @@ fn outline_width(token: &str) -> Option<f32> {
     }
 }
 
-/// Parse `border` box-model props: `border`, `border-width`, `border-color`,
-/// `border-<side>`, `border-<side>-width`.
+/// `border` and its longhands, as CSS reads them: per side, a width
+/// (`medium`, 3px, until one is written), a style (`none` until one is
+/// written) and the one colour Rux keeps for all four (`currentColor` until
+/// one is written). The shorthands reset all three of what they cover and
+/// the longhands then override one each.
+///
+/// **A side whose style is `none` or `hidden` has no width**, as in CSS:
+/// `border: 2px red` draws nothing and takes no room. Rux drew it solid
+/// until v0.9, so a border given a width or a colour and no style anywhere
+/// is said once, with the word that was missing.
 fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
-    // `border: <width> <style> <color>` shorthand.
+    const SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
+    let mut widths = [3.0f32; 4];
+    let mut styles = [BorderStyle::None; 4];
+    // One `border` value: whichever of a width, a style and a colour it has.
+    let shorthand = |v: &str, sides: &[usize], widths: &mut [f32; 4], styles: &mut [BorderStyle; 4], st: &mut Style| {
+        let (mut width, mut style, mut color) = (3.0, BorderStyle::None, None);
+        for token in split_top_level(v) {
+            if let Some(s) = BorderStyle::parse(token) {
+                style = s;
+            } else if let Some(w) = outline_width(token) {
+                width = w;
+            } else if let Some(c) = parse_color(token) {
+                color = Some(c);
+            }
+        }
+        for &i in sides {
+            widths[i] = width;
+            styles[i] = style;
+        }
+        st.border_color = color;
+    };
     if let Some(v) = p.get("border") {
-        let (w, c) = parse_border(v);
-        st.border = Sides::uniform(w);
-        if c.is_some() {
-            st.border_color = c;
+        shorthand(v, &[0, 1, 2, 3], &mut widths, &mut styles, st);
+    }
+    for (i, side) in SIDES.iter().enumerate() {
+        if let Some(v) = p.get(&format!("border-{side}")) {
+            shorthand(v, &[i], &mut widths, &mut styles, st);
         }
     }
     if let Some(v) = p.get("border-width") {
-        st.border = parse_shorthand_sides(v);
+        let w: Vec<f32> = split_top_level(v).into_iter().filter_map(outline_width).collect();
+        if let Some(w) = four_sides(&w) {
+            widths = w;
+        }
+    }
+    if let Some(v) = p.get("border-style") {
+        let s: Vec<BorderStyle> = split_top_level(v).into_iter().filter_map(BorderStyle::parse).collect();
+        if let Some(s) = four_sides(&s) {
+            styles = s;
+        }
     }
     if let Some(v) = p.get("border-color") {
-        st.border_color = parse_color(v);
+        st.border_color = parse_color(first(v));
     }
-    for side in ["top", "right", "bottom", "left"] {
-        if let Some(v) = p.get(&format!("border-{side}")) {
-            let (w, c) = parse_border(v);
-            set_side(&mut st.border, side, w);
-            if c.is_some() {
-                st.border_color = c;
-            }
+    for (i, side) in SIDES.iter().enumerate() {
+        if let Some(w) = p.get(&format!("border-{side}-width")).and_then(|v| outline_width(first(v))) {
+            widths[i] = w;
         }
-        if let Some(v) = p.get(&format!("border-{side}-width")) {
-            if let Some(px) = parse_px(first(v)) {
-                set_side(&mut st.border, side, px);
-            }
+        if let Some(s) = p.get(&format!("border-{side}-style")).and_then(|v| BorderStyle::parse(first(v))) {
+            styles[i] = s;
         }
     }
+    // Something drawn was asked for, and nothing says how.
+    let off = |k: &str| p.get(k).is_some_and(|v| matches!(v.trim(), "none" | "0" | "0px" | "hidden"));
+    let asked = ["border", "border-width", "border-color", "border-top", "border-right", "border-bottom", "border-left"]
+        .iter()
+        .any(|k| p.contains_key(*k) && !off(k))
+        || SIDES.iter().any(|s| p.contains_key(&format!("border-{s}-width")));
+    if asked && styles.iter().all(|s| *s == BorderStyle::None) {
+        // Quoting the declaration, since this is said from the build, which
+        // has no line to point at.
+        let named = ["border", "border-top", "border-right", "border-bottom", "border-left", "border-width", "border-color"]
+            .iter()
+            .find_map(|k| p.get(*k).map(|v| format!("`{k}: {v}`")))
+            .unwrap_or_else(|| "A border width".to_string());
+        warn_once(format!(
+            "{named} draws no border: with no style it is `none`, as in CSS. Add `solid` \
+             (`border: 2px solid red`). Rux drew it solid before v0.9."
+        ));
+    }
+    for i in 0..4 {
+        if matches!(styles[i], BorderStyle::None | BorderStyle::Hidden) {
+            widths[i] = 0.0;
+        }
+    }
+    st.border = Sides { top: widths[0], right: widths[1], bottom: widths[2], left: widths[3] };
+    st.border_style = styles;
+}
+
+/// One to four values to the four sides, as `margin` takes them.
+fn four_sides<T: Copy>(v: &[T]) -> Option<[T; 4]> {
+    Some(match *v {
+        [a] => [a; 4],
+        [a, b] => [a, b, a, b],
+        [a, b, c] => [a, b, c, b],
+        [a, b, c, d] => [a, b, c, d],
+        _ => return None,
+    })
 }
 
 fn set_side(sides: &mut Sides, side: &str, value: f32) {
@@ -11408,20 +11443,6 @@ fn set_side(sides: &mut Sides, side: &str, value: f32) {
         "left" => sides.left = value,
         _ => {}
     }
-}
-
-/// Parse a `border` value into `(width, color)`; the line style token is ignored.
-fn parse_border(value: &str) -> (f32, Option<Rgba>) {
-    let mut width = 0.0;
-    let mut color = None;
-    for token in value.split_whitespace() {
-        if let Some(px) = parse_px(token) {
-            width = px;
-        } else if let Some(c) = parse_color(token) {
-            color = Some(c);
-        }
-    }
-    (width, color)
 }
 
 /// Parse `font-weight`: keywords or a numeric 100–900.
@@ -11992,6 +12013,8 @@ mod tests {
         p.insert("gap".to_string(), "1rem".to_string());
         p.insert("border-radius".to_string(), "0.5rem".to_string());
         p.insert("border-width".to_string(), "0.125rem".to_string());
+        // A width draws only with a style, as in CSS.
+        p.insert("border-style".to_string(), "solid".to_string());
         p.insert("width".to_string(), "10rem".to_string());
 
         let st = interpret(&p);
@@ -14654,5 +14677,44 @@ mod text_shadow_tests {
         let root = super::build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         assert!(root.children[0].text.as_ref().unwrap().shadows.is_some(), "inherited");
         assert!(root.children[1].text.as_ref().unwrap().shadows.is_none(), "and taken back");
+    }
+}
+
+#[cfg(test)]
+mod border_style_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::BorderStyle::{self, *};
+
+    fn border(pairs: &[(&str, &str)]) -> ([f32; 4], [BorderStyle; 4]) {
+        let p: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let st = super::interpret(&p);
+        ([st.border.top, st.border.right, st.border.bottom, st.border.left], st.border_style)
+    }
+
+    #[test]
+    fn a_border_needs_a_style_as_in_css() {
+        let _ = super::take_warnings();
+        assert_eq!(border(&[("border", "2px #ff0000")]), ([0.0; 4], [None; 4]));
+        assert!(super::take_warnings().iter().any(|w| w.message.contains("`border: 2px #ff0000` draws no border")));
+        // A style with no width is `medium`, 3px.
+        assert_eq!(border(&[("border", "dashed")]), ([3.0; 4], [Dashed; 4]));
+        assert_eq!(border(&[("border", "thin solid red")]).0, [1.0; 4]);
+        // `border: none` says nothing.
+        let _ = super::take_warnings();
+        assert_eq!(border(&[("border", "none")]).0, [0.0; 4]);
+        assert!(super::take_warnings().is_empty());
+    }
+
+    #[test]
+    fn each_side_has_its_own_style() {
+        let (w, s) = border(&[("border-bottom", "1px dotted")]);
+        assert_eq!((w, s), ([0.0, 0.0, 1.0, 0.0], [None, None, Dotted, None]));
+        let (w, s) = border(&[("border-width", "2px"), ("border-style", "solid double")]);
+        assert_eq!((w, s), ([2.0; 4], [Solid, Double, Solid, Double]));
+        let (_, s) = border(&[("border", "4px groove red"), ("border-left-style", "inset")]);
+        assert_eq!(s, [Groove, Groove, Groove, Inset]);
+        // `hidden` is no border, as `none` is.
+        assert_eq!(border(&[("border", "2px solid red"), ("border-top-style", "hidden")]).0[0], 0.0);
     }
 }
