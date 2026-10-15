@@ -38,8 +38,8 @@ use rux_layout::{
 use rux_text::{Align, TextEngine, TextStyle, Wrap};
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, RoundedRect, RoundedRectRadii, Stroke, Vec2};
 use vello::peniko::{
-    Blob, Color, ColorStop, Fill, Gradient as PenikoGradient, ImageAlphaType, ImageBrush, ImageData,
-    ImageFormat, Mix,
+    BlendMode, Blob, Color, ColorStop, Compose, Fill, Gradient as PenikoGradient, ImageAlphaType, ImageBrush,
+    ImageData, ImageFormat, Mix,
 };
 use vello::Scene;
 
@@ -415,6 +415,8 @@ pub fn visible_paints(
             Paint::Shadow { x, y, width, height, blur, .. } => {
                 reaches(reach.local, rect_of(*x, *y, *width, *height).inflate(2.0 * *blur as f64 + 1.0, 2.0 * *blur as f64 + 1.0))
             }
+            // Inside its padding box, whatever its blur.
+            Paint::InsetShadow { x, y, width, height, .. } => reaches(reach.local, rect_of(*x, *y, *width, *height)),
             Paint::Tick(t) => {
                 let pad = (t.height * 0.16).max(1.5) as f64 + 1.0;
                 reaches(reach.local, rect_of(t.x, t.y, t.width, t.height).inflate(pad, pad))
@@ -613,6 +615,24 @@ fn build(
                 // CSS blur radius is ~2σ of the gaussian; vello wants σ.
                 let std_dev = (*blur as f64 / 2.0).max(0.0);
                 scene.draw_blurred_rounded_rect(cur, rect, to_color(*color), *radius as f64, std_dev);
+            }
+            // The colour fills the padding box, and a blurred hole is cut
+            // out of it: a layer clipped to the box, then the hole drawn
+            // into it with `DestOut`, which keeps what is there only where
+            // the hole is not.
+            Paint::InsetShadow { x, y, width, height, radius, hole, hole_radius, blur, color } => {
+                let shape = rounded_rect(*x, *y, *width, *height, *radius, 0.0);
+                scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, cur, &shape);
+                scene.fill(Fill::NonZero, cur, to_color(*color), None, &shape);
+                let (hx, hy, hw, hh) = *hole;
+                if hw > 0.0 && hh > 0.0 {
+                    scene.push_layer(Fill::NonZero, BlendMode::new(Mix::Normal, Compose::DestOut), 1.0, cur, &shape);
+                    let rect = Rect::new(hx as f64, hy as f64, (hx + hw) as f64, (hy + hh) as f64);
+                    let std_dev = (*blur as f64 / 2.0).max(0.0);
+                    scene.draw_blurred_rounded_rect(cur, rect, Color::BLACK, *hole_radius as f64, std_dev);
+                    scene.pop_layer();
+                }
+                scene.pop_layer();
             }
             Paint::Text(t) => {
                 // The selection highlight goes behind the glyphs: the author's

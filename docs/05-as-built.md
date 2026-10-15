@@ -636,7 +636,9 @@ border-top, border-right, border-bottom, border-left
 border-top-width, border-right-width, border-bottom-width, border-left-width
 background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
-box-shadow (single, outer; inset parsed but not drawn)
+box-shadow (a comma list, the first on top; `inset` drawn inside the border, over
+                       the background; no colour is currentColor; one corner
+                       radius, the largest, for an outer shadow's blur)
 outline, outline-width, outline-style, outline-color, outline-offset
   (none | solid | auto; drawn outside the border box, over the content, following
    border-radius; the colour defaults to the element's color; see below)

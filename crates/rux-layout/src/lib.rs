@@ -849,7 +849,7 @@ pub enum GradientKind {
     Radial,
 }
 
-/// A single (outer) `box-shadow`. Offsets, blur and spread are logical px.
+/// One `box-shadow`. Offsets, blur and spread are logical px.
 #[derive(Clone, Copy, Debug)]
 pub struct BoxShadow {
     pub dx: f32,
@@ -857,8 +857,74 @@ pub struct BoxShadow {
     pub blur: f32,
     pub spread: f32,
     pub color: Rgba,
-    /// `inset` shadows are parsed but not yet drawn.
+    /// Drawn inside the padding box, over the background, rather than
+    /// outside the border box under it.
     pub inset: bool,
+}
+
+/// A box's `box-shadow` list, first written first, which is the one on top.
+pub type Shadows = Option<std::sync::Arc<[BoxShadow]>>;
+
+/// The paint for a box's shadows on one side of its background: the outer
+/// ones, which go under it, or the inset ones, which go over it and under
+/// the content. Each list is drawn last first, so the first written is on
+/// top, as in CSS.
+pub(crate) fn shadow_paints(
+    shadows: &[BoxShadow],
+    (x, y, w, h): (f32, f32, f32, f32),
+    radius: &Corners,
+    border: &Sides,
+    inset: bool,
+    out: &mut Vec<Paint>,
+) {
+    for sh in shadows.iter().rev().filter(|s| s.inset == inset) {
+        if !inset {
+            out.push(Paint::Shadow {
+                x: x + sh.dx - sh.spread,
+                y: y + sh.dy - sh.spread,
+                width: w + 2.0 * sh.spread,
+                height: h + 2.0 * sh.spread,
+                // vello's blurred rect takes one radius; use the largest
+                // corner as a stand-in (per-corner blur isn't supported).
+                radius: radius.iter().copied().fold(0.0, f32::max),
+                blur: sh.blur,
+                color: sh.color,
+            });
+            continue;
+        }
+        // Inside the border: the padding box, its corners rounded by what
+        // the border leaves of the outer ones.
+        let (px, py) = (x + border.left, y + border.top);
+        let (pw, ph) = (w - border.left - border.right, h - border.top - border.bottom);
+        if pw <= 0.0 || ph <= 0.0 {
+            continue;
+        }
+        let inner: Corners = [
+            (radius[0] - border.top.max(border.left)).max(0.0),
+            (radius[1] - border.top.max(border.right)).max(0.0),
+            (radius[2] - border.bottom.max(border.right)).max(0.0),
+            (radius[3] - border.bottom.max(border.left)).max(0.0),
+        ];
+        // The shadow is everywhere in there but a hole: the padding box
+        // moved by the offset and shrunk by the spread.
+        let hole = (
+            px + sh.dx + sh.spread,
+            py + sh.dy + sh.spread,
+            (pw - 2.0 * sh.spread).max(0.0),
+            (ph - 2.0 * sh.spread).max(0.0),
+        );
+        out.push(Paint::InsetShadow {
+            x: px,
+            y: py,
+            width: pw,
+            height: ph,
+            radius: inner,
+            hole,
+            hole_radius: (inner.iter().copied().fold(0.0, f32::max) - sh.spread).max(0.0),
+            blur: sh.blur,
+            color: sh.color,
+        });
+    }
 }
 
 /// `outline`: a line drawn outside the border box, over the element's own
@@ -985,8 +1051,9 @@ pub struct Style {
     /// an oblong CSS would give an ellipse, which this cannot represent, and
     /// half the shorter side is the pill an author reaching for `50%` wants.
     pub radius_pct: [Option<f32>; 4],
-    /// `box-shadow` (single, outer). Drawn behind the box's own background.
-    pub box_shadow: Option<BoxShadow>,
+    /// `box-shadow`: the outer ones drawn behind the box's own background,
+    /// the inset ones over it.
+    pub box_shadow: Shadows,
     /// `outline`. `None` for `outline-style: none`, the initial value, and for
     /// a width of zero.
     pub outline: Option<Outline>,
@@ -2141,6 +2208,20 @@ pub enum Paint {
         blur: f32,
         color: Rgba,
     },
+    /// An `inset` `box-shadow`: `color` over the padding box (`x`, `y`,
+    /// `width`, `height`, rounded by `radius`), except for a blurred hole,
+    /// `hole` as `(x, y, width, height)` rounded by `hole_radius`.
+    InsetShadow {
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        radius: Corners,
+        hole: (f32, f32, f32, f32),
+        hole_radius: f32,
+        blur: f32,
+        color: Rgba,
+    },
     /// Begin clipping subsequent items to this rounded rect (overflow: clip).
     PushClip {
         x: f32,
@@ -2695,7 +2776,7 @@ enum PaintKind {
         border: Sides,
         border_color: Option<Rgba>,
         clip: bool,
-        shadow: Option<BoxShadow>,
+        shadow: Shadows,
     },
     Text(TextContent),
     Image(ImageContent),
@@ -3712,7 +3793,7 @@ fn build(
                 border: node.style.border,
                 border_color: node.style.border_color,
                 clip: clips(&node.style, skip.is_some()),
-                shadow: node.style.box_shadow,
+                shadow: node.style.box_shadow.clone(),
             },
         ));
         paint.push((id, PaintKind::Text(tc.clone())));
@@ -3731,7 +3812,7 @@ fn build(
                 border: node.style.border,
                 border_color: node.style.border_color,
                 clip: clips(&node.style, skip.is_some()),
-                shadow: node.style.box_shadow,
+                shadow: node.style.box_shadow.clone(),
             },
         ));
         paint.push((id, PaintKind::Image(ic.clone())));
@@ -3745,7 +3826,7 @@ fn build(
                 border: node.style.border,
                 border_color: node.style.border_color,
                 clip: clips(&node.style, skip.is_some()),
-                shadow: node.style.box_shadow,
+                shadow: node.style.box_shadow.clone(),
             },
         ));
         paint.push((
@@ -3773,7 +3854,7 @@ fn build(
                 border: node.style.border,
                 border_color: node.style.border_color,
                 clip: clips(&node.style, skip.is_some()),
-                shadow: node.style.box_shadow,
+                shadow: node.style.box_shadow.clone(),
             },
         ));
     }
@@ -4777,21 +4858,11 @@ fn collect(
                     let radius =
                         &resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
                     clip_radius = *radius;
-                    // The shadow goes down first, so the box's own fill sits on top.
-                    // Outer shadows only for now; inset is parsed but not drawn.
-                    if let Some(sh) = shadow.filter(|s| !s.inset) {
-                        out.paints.push(Paint::Shadow {
-                            x: x + sh.dx - sh.spread,
-                            y: y + sh.dy - sh.spread,
-                            width: layout.size.width + 2.0 * sh.spread,
-                            height: layout.size.height + 2.0 * sh.spread,
-                            // vello's blurred rect takes one radius; use the largest
-                            // corner as a stand-in (per-corner blur isn't supported).
-                            radius: radius.iter().copied().fold(0.0, f32::max),
-                            blur: sh.blur,
-                            color: sh.color,
-                        });
-                    }
+                    // The outer shadows go down first, so the box's own fill
+                    // sits on top of them; the inset ones go over it.
+                    let rect = (x, y, layout.size.width, layout.size.height);
+                    let shadows = shadow.as_deref().unwrap_or_default();
+                    shadow_paints(shadows, rect, radius, border, false, &mut out.paints);
                     let widest = border.top.max(border.right).max(border.bottom).max(border.left);
                     let has_border = widest > 0.0 && border_color.is_some();
                     if bg.is_some() || has_border {
@@ -4806,6 +4877,7 @@ fn collect(
                             border_color: *border_color,
                         }));
                     }
+                    shadow_paints(shadows, rect, radius, border, true, &mut out.paints);
                 }
                 // Glyphs go in the *content* box, inside this node's own padding and
                 // border. Painting them at the border box put a padded label flush

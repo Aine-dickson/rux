@@ -4658,8 +4658,31 @@ fn resolve_colors(props: &mut HashMap<String, String>, inherited: Rgba, inherite
                 *value = out;
             }
         }
+        if property == "box-shadow" {
+            if let Some(out) = shadow_colors(value, own) {
+                *value = out;
+            }
+        }
     }
     scheme
+}
+
+/// A `box-shadow` list with `color` written into each shadow that has no
+/// colour of its own, which CSS draws in `currentColor`. `None` when every
+/// shadow has one.
+fn shadow_colors(value: &str, color: Rgba) -> Option<String> {
+    if value.trim() == "none" {
+        return None;
+    }
+    let shadows = split_top_level_commas(value);
+    let bare = |s: &str| !split_top_level(s).into_iter().any(|t| parse_color(t).is_some());
+    if !shadows.iter().any(|s| bare(s)) {
+        return None;
+    }
+    let hex = color::hex(color);
+    let written: Vec<String> =
+        shadows.iter().map(|s| if bare(s) { format!("{s} {hex}") } else { s.to_string() }).collect();
+    Some(written.join(", "))
 }
 
 thread_local! {
@@ -9533,18 +9556,27 @@ fn parse_angle(s: &str) -> Option<f32> {
     s.parse::<f32>().ok().map(f32::to_radians)
 }
 
-/// `box-shadow: <dx> <dy> <blur>? <spread>? <color>?`, optionally `inset`.
-/// A single shadow only; multiple comma-separated shadows take the first.
-/// `none` yields no shadow.
-fn parse_box_shadow(value: &str) -> Option<BoxShadow> {
-    let first = value.split(',').next().unwrap_or(value).trim();
+/// `box-shadow`: a comma-separated list of `<dx> <dy> <blur>? <spread>?
+/// <color>?`, each optionally `inset`. `none` is no shadow, and so is a list
+/// none of whose entries parse.
+///
+/// A shadow with no colour is `currentColor` in CSS, which is only known in
+/// the cascade: [`resolve_colors`] writes it in before this runs, and black
+/// here is for a value that never went through one.
+fn parse_box_shadow(value: &str) -> rux_layout::Shadows {
+    let list: Vec<BoxShadow> = split_top_level_commas(value).into_iter().filter_map(parse_one_shadow).collect();
+    (!list.is_empty()).then(|| list.into())
+}
+
+fn parse_one_shadow(first: &str) -> Option<BoxShadow> {
+    let first = first.trim();
     if first.is_empty() || first == "none" {
         return None;
     }
     let mut lengths = Vec::new();
     let mut color_parts = Vec::new();
     let mut inset = false;
-    for tok in first.split_whitespace() {
+    for tok in split_top_level(first) {
         if tok == "inset" {
             inset = true;
         } else if let Some(px) = parse_px(tok) {
@@ -13810,6 +13842,23 @@ mod color_tests {
         );
         assert_eq!(bytes(root.children[0].style.border_color), [255, 0, 0, 255]);
         assert_eq!(bytes(root.children[1].style.border_color), [0, 0, 255, 128]);
+    }
+
+    /// Every shadow in the list is kept, and one with no colour is drawn in
+    /// `currentColor`, not black.
+    #[test]
+    fn a_shadow_list_keeps_every_shadow() {
+        let root = built_in(
+            r#"<template><screen><view class="v"></view></screen></template>
+               <style>.v { color: #ff0000; box-shadow: 0 2px 4px, inset 1px 1px 0 3px oklch(45.2% .313 264.05); }</style>"#,
+            ColorScheme::Light,
+        );
+        let shadows = root.children[0].style.box_shadow.clone().expect("shadows");
+        assert_eq!(shadows.len(), 2);
+        assert_eq!(bytes(Some(shadows[0].color)), [255, 0, 0, 255]);
+        assert!(!shadows[0].inset && shadows[0].dy == 2.0 && shadows[0].blur == 4.0);
+        assert_eq!(bytes(Some(shadows[1].color)), [0, 0, 255, 255]);
+        assert!(shadows[1].inset && shadows[1].spread == 3.0);
     }
 
     /// `light-dark()` follows `color-scheme`, which inherits, and with none

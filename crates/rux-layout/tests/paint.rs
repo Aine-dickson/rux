@@ -327,3 +327,48 @@ fn a_display_none_subtree_paints_nothing() {
         "{paints:?}"
     );
 }
+
+/// A shadow list: the outer ones under the box, last written first so the
+/// first is on top, and the inset ones over the background, inside the
+/// border, around a hole moved by the offset and shrunk by the spread.
+#[test]
+fn shadows_go_under_and_inset_ones_over_the_background() {
+    let shadow = |dx: f32, spread: f32, inset: bool| BoxShadow {
+        dx,
+        dy: 0.0,
+        blur: 4.0,
+        spread,
+        color: Rgba::new(0.0, 0.0, 0.0, 1.0),
+        inset,
+    };
+    let node = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(50.0)),
+        background: Some(Background::Color(Rgba::new(1.0, 1.0, 1.0, 1.0))),
+        border: Sides { top: 2.0, right: 2.0, bottom: 2.0, left: 2.0 },
+        border_color: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+        radius: [10.0; 4],
+        box_shadow: Some(vec![shadow(1.0, 0.0, false), shadow(5.0, 0.0, true), shadow(2.0, 3.0, false)].into()),
+        ..Default::default()
+    });
+    let items = paints(node);
+    let kinds: Vec<&str> = items
+        .iter()
+        .map(|p| match p {
+            Paint::Shadow { .. } => "shadow",
+            Paint::InsetShadow { .. } => "inset",
+            Paint::Rect(_) => "rect",
+            _ => "other",
+        })
+        .collect();
+    assert_eq!(kinds, ["shadow", "shadow", "rect", "inset"]);
+    // The last written first: its spread grows it by 3 on each side.
+    let Paint::Shadow { x, width, .. } = items[0] else { unreachable!() };
+    assert_eq!((x, width), (2.0 - 3.0, 106.0));
+    let Paint::Shadow { x, .. } = items[1] else { unreachable!() };
+    assert_eq!(x, 1.0);
+    let Paint::InsetShadow { x, y, width, height, radius, hole, .. } = items[3] else { unreachable!() };
+    assert_eq!((x, y, width, height), (2.0, 2.0, 96.0, 46.0));
+    assert_eq!(radius, [8.0; 4]);
+    assert_eq!(hole, (7.0, 2.0, 96.0, 46.0));
+}

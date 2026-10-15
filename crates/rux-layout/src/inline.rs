@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::rich::{InlineItem, RichText, RunStyle, TextRun};
 use crate::white_space::collapse_runs_into;
 use crate::{
-    Access, AccessRole, Background, BoxShadow, Corners, Cursor, Display, Gesture, ImageContent, Len, Node,
+    Access, AccessRole, Background, Corners, Cursor, Display, Gesture, ImageContent, Len, Node, Shadows,
     PathContent, PathPaint, Rgba, Sides, TextContent, TouchAction, WhiteSpace,
 };
 
@@ -61,7 +61,7 @@ pub(crate) struct ItemLook {
     pub radius: Corners,
     pub border: Sides,
     pub border_color: Option<Rgba>,
-    pub shadow: Option<BoxShadow>,
+    pub shadow: Shadows,
     pub content: ItemContent,
 }
 
@@ -244,7 +244,7 @@ fn look(node: &Node, content: ItemContent) -> ItemLook {
         radius: node.style.radius,
         border: node.style.border,
         border_color: node.style.border_color,
-        shadow: node.style.box_shadow,
+        shadow: node.style.box_shadow.clone(),
         content,
     }
 }
@@ -281,17 +281,8 @@ pub(crate) fn place_part(
         PartWhat::Item { index, width, height, look } => {
             let (ix, iy) = geo.and_then(|g| g.items.get(*index)).copied().unwrap_or((0.0, 0.0));
             let (x, y, w, h) = (ox + ix, oy + iy, *width, *height);
-            if let Some(sh) = look.shadow.filter(|s| !s.inset) {
-                paints.push(Paint::Shadow {
-                    x: x + sh.dx - sh.spread,
-                    y: y + sh.dy - sh.spread,
-                    width: w + 2.0 * sh.spread,
-                    height: h + 2.0 * sh.spread,
-                    radius: look.radius.iter().copied().fold(0.0, f32::max),
-                    blur: sh.blur,
-                    color: sh.color,
-                });
-            }
+            let shadows = look.shadow.as_deref().unwrap_or_default();
+            crate::shadow_paints(shadows, (x, y, w, h), &look.radius, &look.border, false, paints);
             let widest = look.border.top.max(look.border.right).max(look.border.bottom).max(look.border.left);
             if look.bg.is_some() || (widest > 0.0 && look.border_color.is_some()) {
                 paints.push(Paint::Rect(PaintRect {
@@ -305,6 +296,7 @@ pub(crate) fn place_part(
                     border_color: look.border_color,
                 }));
             }
+            crate::shadow_paints(shadows, (x, y, w, h), &look.radius, &look.border, true, paints);
             match &look.content {
                 ItemContent::Image(ic) => {
                     paints.push(Paint::Image(PaintImage { x, y, width: w, height: h, content: ic.clone() }))
