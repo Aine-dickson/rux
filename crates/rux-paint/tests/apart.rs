@@ -27,9 +27,9 @@ fn parts_drawn_apart_come_innermost_first() {
     let ops: std::sync::Arc<[FilterOp]> = vec![FilterOp::Blur(2.0)].into();
     let items = vec![
         rect(0.1),
-        Paint::PushFilter { ops: ops.clone() },
+        Paint::PushFilter { ops: ops.clone(), bounds: None },
         rect(0.2),
-        Paint::PushFilter { ops: vec![FilterOp::Matrix(FilterOp::invert(1.0))].into() },
+        Paint::PushFilter { ops: vec![FilterOp::Matrix(FilterOp::invert(1.0))].into(), bounds: None },
         rect(0.3),
         Paint::PopFilter,
         Paint::PopFilter,

@@ -326,7 +326,8 @@ impl GpuFilters {
         for job in jobs {
             let (w, h) = (job.image.width, job.image.height);
             let mut scaled = Scene::new();
-            scaled.append(&job.scene, Some(Affine::scale(scale)));
+            let corner = Affine::translate((-job.origin.0 as f64, -job.origin.1 as f64));
+            scaled.append(&job.scene, Some(Affine::scale(scale) * corner));
             let drawn = self.take(device, w, h);
             let view = drawn.create_view(&wgpu::TextureViewDescriptor::default());
             let base = if job.backdrop { background } else { Color::TRANSPARENT };

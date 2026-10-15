@@ -58,6 +58,9 @@ margin-inline, margin-inline-start, margin-inline-end,
 margin-block, margin-block-start, margin-block-end,
 padding-inline, padding-inline-start, padding-inline-end,
 padding-block, padding-block-start, padding-block-end   (logical)
+text-shadow (a comma list of `x y blur? colour?`, the first on top; inherited;
+                       no colour is the text's own; a blur is a real Gaussian,
+                       drawn apart around the text, as filter: blur() is)
 text-decoration, text-decoration-line (underline / line-through; the longhand
                        wins where both are set)  (color: any CSS colour, see below)
 mix-blend-mode (every CSS mode: multiply, screen, overlay, darken, lighten,

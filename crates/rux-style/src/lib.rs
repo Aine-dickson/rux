@@ -12,6 +12,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
+use std::sync::Arc;
 
 use lightningcss::rules::CssRule;
 use lightningcss::stylesheet::{ParserOptions, PrinterOptions, StyleSheet};
@@ -1387,6 +1388,8 @@ struct Inherited {
     direction: rux_layout::Direction,
     /// The rest of the inheriting text properties. See [`TextInherit`].
     text: TextInherit,
+    /// `text-shadow`, which inherits; not in `TextInherit`, which is `Copy`.
+    shadows: Option<Arc<Vec<rux_layout::TextShadow>>>,
 }
 
 /// The inheriting text properties beyond `color`, `font-size` and
@@ -2220,6 +2223,7 @@ pub fn build_styled_tree_stateful(
             run: None,
             direction: rux_layout::Direction::Ltr,
             text: TextInherit::default(),
+            shadows: None,
         },
         engine,
         &locals,
@@ -2433,6 +2437,7 @@ fn build_run(
             caret: None,
             selection: None,
             preedit: None,
+            shadows: None,
             selection_style: Default::default(),
             rich: None,
             white_space: up.white_space,
@@ -3771,7 +3776,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "filter", "backdrop-filter", "cursor", "touch-action", "box-shadow", "transform",
+    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "filter", "backdrop-filter", "text-shadow", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
@@ -4040,7 +4045,6 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 /// moving it to [`HONORED_PROPERTIES`] is the second.
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
-    "text-shadow",
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
     "place-items", "place-content", "place-self", "resize",
@@ -4903,6 +4907,7 @@ fn build_text(
     own_text: TextInherit,
     // Whether this element sets a direction of its own, not one it inherits.
     dir_own: bool,
+    shadows: Option<Arc<Vec<rux_layout::TextShadow>>>,
 ) -> LayoutNode {
     // Inside a sentence, the sentence's decorations are drawn under this run's
     // words too. See `RunInherit`.
@@ -4955,6 +4960,7 @@ fn build_text(
             caret: None,
             selection: None,
             preedit: None,
+            shadows: shadows.clone(),
             selection_style: Default::default(),
             rich: None,
             white_space,
@@ -4988,6 +4994,7 @@ fn build_text(
             run: Some(run),
             direction,
             text: own_text,
+            shadows: shadows.clone(),
         };
         let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
         ancestors.push(AncNode { desc, prev: siblings.into(), form: None });
@@ -5512,6 +5519,11 @@ fn build_node_inner(
     };
     style.invisible = own_text.invisible;
     let TextInherit { weight, italic, letter_spacing, word_spacing, white_space, align, .. } = own_text;
+    // `text-shadow`: its own, else its parent's.
+    let shadows = match props.get("text-shadow") {
+        Some(v) => parse_text_shadows(v),
+        None => inherited.shadows.clone(),
+    };
     let line_height = own_text.line_height.map(|l| l.px(font_size));
     // `text-decoration[-line]`: underline / line-through (space-separated list).
     let decoration = props.get("text-decoration-line").or_else(|| props.get("text-decoration"));
@@ -5519,7 +5531,7 @@ fn build_node_inner(
     let strikethrough = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "line-through"));
 
     if el.tag == "text" {
-        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own);
+        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own, shadows);
     }
 
     // <image src=…>: a leaf that paints its pixels. The `src` here is still the
@@ -5964,6 +5976,7 @@ fn build_node_inner(
                 caret: None,
                 selection: None,
                 preedit: None,
+                shadows: shadows.clone(),
                 selection_style: SelectionStyle {
                     handle: props.get("accent-color").and_then(|v| parse_color(v)),
                     ..selection
@@ -6044,6 +6057,7 @@ fn build_node_inner(
         run: None,
         direction,
         text: own_text,
+        shadows: shadows.clone(),
     };
     let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
     let (children, structural_deps) = build_children(
@@ -8438,7 +8452,7 @@ fn frag_has_other_place(frag: &BindingRegistry, own: Option<&str>) -> bool {
 /// Destructured so that a field added to either struct fails to compile here
 /// rather than being silently left out of the comparison.
 fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
-    let Inherited { color, selection, font_size, font_family, vars, run, direction, text: text_style } = a;
+    let Inherited { color, selection, font_size, font_family, vars, run, direction, text: text_style, shadows } = a;
     let SelectionStyle { background, color: text, handle } = selection;
     let rgba = |x: &Rgba, y: &Rgba| x.r == y.r && x.g == y.g && x.b == y.b && x.a == y.a;
     let opt = |x: &Option<Rgba>, y: &Option<Rgba>| match (x, y) {
@@ -8456,6 +8470,11 @@ fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
         && *run == b.run
         && *direction == b.direction
         && *text_style == b.text
+        && match (shadows, &b.shadows) {
+            (Some(x), Some(y)) => Arc::ptr_eq(x, y),
+            (None, None) => true,
+            _ => false,
+        }
 }
 
 /// Put a kept row into this build at `path`: its node, and its registry
@@ -11047,6 +11066,35 @@ fn drop_shadow_colors(value: &str, color: Rgba) -> Option<String> {
         })
         .collect();
     changed.then(|| words.join(" "))
+}
+
+/// `text-shadow`: a comma list of `<dx> <dy> <blur>? <color>?`. `none` is
+/// none, and so is a list none of whose entries parse. A shadow with no
+/// colour is `currentColor`, the colour of the text it is under, which is
+/// only known where it is drawn.
+fn parse_text_shadows(value: &str) -> Option<Arc<Vec<rux_layout::TextShadow>>> {
+    if value.trim() == "none" {
+        return None;
+    }
+    let list: Vec<rux_layout::TextShadow> = split_top_level_commas(value)
+        .into_iter()
+        .filter_map(|one| {
+            let mut lengths = Vec::new();
+            let mut color = None;
+            for t in split_top_level(one) {
+                match parse_px(t) {
+                    Some(px) => lengths.push(px),
+                    None => color = Some(parse_color(t)?),
+                }
+            }
+            match lengths[..] {
+                [dx, dy] => Some(rux_layout::TextShadow { dx, dy, blur: 0.0, color }),
+                [dx, dy, blur] => Some(rux_layout::TextShadow { dx, dy, blur: blur.max(0.0), color }),
+                _ => None,
+            }
+        })
+        .collect();
+    (!list.is_empty()).then(|| Arc::new(list))
 }
 
 /// `clip-path`: a basic shape and the box it is of, either alone, or `none`.
@@ -14580,5 +14628,31 @@ mod filter_tests {
         let out = super::drop_shadow_colors("blur(1px) drop-shadow(2px 2px)", Rgba::new(1.0, 0.0, 0.0, 1.0)).unwrap();
         assert_eq!(out, "blur(1px) drop-shadow(2px 2px #ff0000ff)");
         assert!(super::drop_shadow_colors("drop-shadow(2px 2px red)", Rgba::new(1.0, 0.0, 0.0, 1.0)).is_none());
+    }
+}
+
+#[cfg(test)]
+mod text_shadow_tests {
+    use std::collections::HashMap;
+
+    use rux_script::Builder;
+
+    #[test]
+    fn a_text_shadow_list_parses_and_inherits() {
+        let list = super::parse_text_shadows("1px 2px 3px red, 0 0 4px").unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!((list[0].dx, list[0].dy, list[0].blur), (1.0, 2.0, 3.0));
+        assert!(list[0].color.is_some() && list[1].color.is_none(), "no colour is currentColor");
+        assert!(super::parse_text_shadows("none").is_none());
+
+        let sfc = rux_parser::parse_sfc(
+            r#"<template><screen class="s"><text>a</text><text class="plain">b</text></screen></template>
+               <style>.s { text-shadow: 2px 2px #000; } .plain { text-shadow: none; }</style>"#,
+        )
+        .unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = super::build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
+        assert!(root.children[0].text.as_ref().unwrap().shadows.is_some(), "inherited");
+        assert!(root.children[1].text.as_ref().unwrap().shadows.is_none(), "and taken back");
     }
 }

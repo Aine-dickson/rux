@@ -543,7 +543,7 @@ pub fn visible_paints(
                     reaches(reach.local, bounds.inflate(pad, pad))
                 }
             }
-            Paint::Text(t) => text_reaches(reach.local, t, &mut measure),
+            Paint::Text(t) | Paint::Ink(t, _) => text_reaches(reach.local, t, &mut measure),
         };
         shown.push(keep);
     }
@@ -572,6 +572,9 @@ pub fn build_scene(
 /// `image` (vello's `Renderer::override_image`) before it draws the frame.
 pub struct Offscreen {
     pub scene: Scene,
+    /// Where the image's top left corner is, in logical pixels: the window's
+    /// corner, or for a part drawn in bounds, the corner of those.
+    pub origin: (f32, f32),
     pub ops: std::sync::Arc<[FilterOp]>,
     pub image: ImageData,
     /// A backdrop, drawn over the window's background colour; a filtered
@@ -603,23 +606,25 @@ struct Apart {
 }
 
 impl Apart {
-    /// A window-sized image for a part drawn apart, which nothing has drawn
-    /// yet: its pixels come from the renderer. An empty blob, so each one is
-    /// a new identity to bind.
-    fn placeholder(&self) -> ImageData {
+    /// An image for a part drawn apart, `size` logical pixels, which
+    /// nothing has drawn yet: its pixels come from the renderer. An empty
+    /// blob, so each one is a new identity to bind.
+    fn placeholder(&self, size: (f32, f32)) -> ImageData {
         let device = |v: f32| ((v * self.scale).ceil() as u32).max(1);
         ImageData {
             data: Blob::new(std::sync::Arc::new(Vec::<u8>::new())),
             format: ImageFormat::Rgba8,
             alpha_type: ImageAlphaType::Alpha,
-            width: device(self.view.0),
-            height: device(self.view.1),
+            width: device(size.0),
+            height: device(size.1),
         }
     }
 
-    /// The placeholder drawn into a logical scene: device pixels, scaled back.
-    fn draw(&self, scene: &mut Scene, image: &ImageData) {
-        scene.draw_image(&ImageBrush::new(image.clone()), Affine::scale(1.0 / self.scale as f64));
+    /// The placeholder drawn into a logical scene at `origin`: device
+    /// pixels, scaled back.
+    fn draw(&self, scene: &mut Scene, image: &ImageData, origin: (f32, f32)) {
+        let at = Affine::scale(1.0 / self.scale as f64).then_translate(Vec2::new(origin.0 as f64, origin.1 as f64));
+        scene.draw_image(&ImageBrush::new(image.clone()), at);
     }
 }
 
@@ -647,7 +652,7 @@ fn build(
     let mut scene = Scene::new();
     // Each `filter` group being drawn apart: the scene it interrupted, the
     // layers open in that scene when it did, and the steps it will get.
-    let mut levels: Vec<(Scene, usize, std::sync::Arc<[FilterOp]>)> = Vec::new();
+    let mut levels: Vec<(Scene, usize, std::sync::Arc<[FilterOp]>, Option<(f32, f32, f32, f32)>)> = Vec::new();
     // Layers open in `scene`, which a backdrop's copy of it has to close.
     let mut depth = 0usize;
     // Active `transform` stack. Every draw uses the accumulated transform so a
@@ -667,19 +672,24 @@ fn build(
         match item {
             // Drawn apart only for a renderer that can filter; otherwise the
             // subtree is drawn as it is, unfiltered.
-            Paint::PushFilter { ops } => {
+            Paint::PushFilter { ops, bounds } => {
                 if apart.is_some() {
-                    levels.push((std::mem::take(&mut scene), depth, ops.clone()));
+                    levels.push((std::mem::take(&mut scene), depth, ops.clone(), *bounds));
                     depth = 0;
                 }
             }
             Paint::PopFilter => {
-                if let (Some(a), Some((parent, open, ops))) = (apart.as_deref_mut(), levels.pop()) {
+                if let (Some(a), Some((parent, open, ops, bounds))) = (apart.as_deref_mut(), levels.pop()) {
                     let part = std::mem::replace(&mut scene, parent);
                     depth = open;
-                    let image = a.placeholder();
-                    a.draw(&mut scene, &image);
-                    a.jobs.push(Offscreen { scene: part, ops, image, backdrop: false });
+                    // Under a transform the bounds are not where it lands, so
+                    // only an untransformed part is drawn in them.
+                    let (x, y, w, h) = bounds
+                        .filter(|_| cur == Affine::IDENTITY)
+                        .unwrap_or((0.0, 0.0, a.view.0, a.view.1));
+                    let image = a.placeholder((w, h));
+                    a.draw(&mut scene, &image, (x, y));
+                    a.jobs.push(Offscreen { scene: part, origin: (x, y), ops, image, backdrop: false });
                 }
             }
             // Everything drawn so far, each level of it with its open layers
@@ -692,16 +702,17 @@ fn build(
                         (0..open).for_each(|_| s.pop_layer());
                         s
                     };
-                    for (s, open, _) in &levels {
+                    for (s, open, _, _) in &levels {
                         behind.append(&closed(s, *open), None);
                     }
                     behind.append(&closed(&scene, depth), None);
-                    let image = a.placeholder();
+                    let image = a.placeholder(a.view);
                     let shape = rounded_rect(*x, *y, *width, *height, *radius, 0.0);
                     scene.push_clip_layer(Fill::NonZero, cur, &shape);
-                    a.draw(&mut scene, &image);
+                    a.draw(&mut scene, &image, (0.0, 0.0));
                     scene.pop_layer();
-                    a.jobs.push(Offscreen { scene: behind, ops: ops.clone(), image, backdrop: true });
+                    let job = Offscreen { scene: behind, origin: (0.0, 0.0), ops: ops.clone(), image, backdrop: true };
+                    a.jobs.push(job);
                 }
             }
             Paint::Rect(r) => {
@@ -806,6 +817,19 @@ fn build(
                     scene.pop_layer();
                 }
                 scene.pop_layer();
+            }
+            Paint::Ink(t, color) => {
+                text.draw_ink(
+                    &mut scene,
+                    t.x,
+                    t.y,
+                    &t.content.text,
+                    &text_style(&t.content),
+                    to_color(*color),
+                    to_align(t.content.align),
+                    Some(t.width),
+                    cur,
+                );
             }
             Paint::Text(t) => {
                 // The selection highlight goes behind the glyphs: the author's

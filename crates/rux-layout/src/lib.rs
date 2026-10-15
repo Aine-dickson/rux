@@ -1408,6 +1408,17 @@ pub fn read_image_bytes(src: &str) -> Option<Vec<u8>> {
     reader(src)
 }
 
+/// One `text-shadow`: the glyphs again, moved, softened, in one colour.
+#[derive(Clone, Copy, Debug)]
+pub struct TextShadow {
+    pub dx: f32,
+    pub dy: f32,
+    /// A blur radius, as `box-shadow`'s is: twice the Gaussian's deviation.
+    pub blur: f32,
+    /// `None` is `currentColor`: the colour of the text it shadows.
+    pub color: Option<Rgba>,
+}
+
 /// Text carried by a leaf node.
 #[derive(Clone, Debug)]
 pub struct TextContent {
@@ -1453,6 +1464,8 @@ pub struct TextContent {
     /// leaves that half to the platform, which is what CSS does when no rule
     /// names it.
     pub selection_style: SelectionStyle,
+    /// `text-shadow`, first written on top. Inherited in the cascade.
+    pub shadows: Option<std::sync::Arc<Vec<TextShadow>>>,
     /// The runs and inline boxes of a `<text>` with more than one run, `None`
     /// for plain text, which is nearly all of it. Shared, because a text is
     /// cloned into the frame's paint list every frame.
@@ -2260,6 +2273,9 @@ pub struct PaintImage {
 pub enum Paint {
     Rect(PaintRect),
     Text(PaintText),
+    /// A text's glyphs in one colour, whatever its runs' colours: a
+    /// `text-shadow`.
+    Ink(PaintText, Rgba),
     Image(PaintImage),
     Path(PaintPath),
     Tick(PaintTick),
@@ -2319,7 +2335,13 @@ pub enum Paint {
     /// Draw everything up to the matching [`Paint::PopFilter`] apart, then
     /// put it through these steps (`filter`) and draw the result in its
     /// place. A renderer that cannot draw apart draws it unfiltered.
-    PushFilter { ops: std::sync::Arc<[filter::FilterOp]> },
+    PushFilter {
+        ops: std::sync::Arc<[filter::FilterOp]>,
+        /// Where everything inside is drawn, `(x, y, width, height)`, when
+        /// that is known to be less than the window: a blurred
+        /// `text-shadow` is drawn apart in its own small corner.
+        bounds: Option<(f32, f32, f32, f32)>,
+    },
     PopFilter,
     /// `backdrop-filter`: what is drawn so far, put through these steps, in
     /// this box with its corners rounded, under the box's own paint.
@@ -5045,7 +5067,7 @@ fn collect(
         });
     }
     if let Some(f) = filters.filter(|_| filtered) {
-        out.paints.push(Paint::PushFilter { ops: f.filter.clone().into() });
+        out.paints.push(Paint::PushFilter { ops: f.filter.clone().into(), bounds: None });
     }
 
     let mut clip = false;
@@ -5128,6 +5150,25 @@ fn collect(
                             height: layout.size.height,
                             radius: clip_radius,
                         });
+                    }
+                    // Shadows go under the glyphs, the last written lowest.
+                    for sh in tc.shadows.iter().flat_map(|s| s.iter().rev()) {
+                        let mut ghost = tc.clone();
+                        (ghost.caret, ghost.selection, ghost.preedit, ghost.shadows) = (None, None, None, None);
+                        let (gx, gy) = (x + cx + sh.dx, y + cy + sh.dy);
+                        let color = sh.color.unwrap_or(tc.color);
+                        let ink = Paint::Ink(PaintText { x: gx, y: gy, width: cw, height: ch, content: ghost }, color);
+                        if sh.blur > 0.0 {
+                            // Drawn apart only as far as the blur reaches.
+                            let reach = 1.5 * sh.blur + 2.0;
+                            let bounds = Some((gx - reach, gy - reach, cw + 2.0 * reach, ch + 2.0 * reach));
+                            let ops = vec![filter::FilterOp::Blur(sh.blur / 2.0)].into();
+                            out.paints.push(Paint::PushFilter { ops, bounds });
+                            out.paints.push(ink);
+                            out.paints.push(Paint::PopFilter);
+                        } else {
+                            out.paints.push(ink);
+                        }
                     }
                     out.paints.push(Paint::Text(PaintText {
                         x: x + cx,

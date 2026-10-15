@@ -117,6 +117,7 @@ fn hidden_is_always_skipped_and_contents_are_never_measured() {
             caret: None,
             selection: None,
             preedit: None,
+            shadows: None,
             selection_style: Default::default(),
             rich: None,
             white_space: Default::default(),

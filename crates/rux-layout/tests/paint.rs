@@ -35,6 +35,7 @@ fn label(text: &str) -> TextContent {
         caret: None,
         selection: None,
         preedit: None,
+        shadows: None,
         selection_style: Default::default(),
         rich: None,
         white_space: Default::default(),
@@ -71,6 +72,7 @@ fn text_node_paints_its_background_then_its_glyphs() {
             caret: None,
         selection: None,
         preedit: None,
+        shadows: None,
         selection_style: Default::default(),
         rich: None,
         white_space: Default::default(),
@@ -451,4 +453,37 @@ fn a_mask_closes_its_layer_after_the_subtree() {
     assert!(matches!(items[n - 3], Paint::Rect(_)), "the child");
     assert!(matches!(items[n - 2], Paint::MaskWith { width, .. } if width == 100.0));
     assert!(matches!(items[n - 1], Paint::PopOpacity));
+}
+
+/// A text's shadows go under its glyphs in one colour, the last written
+/// lowest; a blurred one is drawn apart, in bounds around the text.
+#[test]
+fn text_shadows_go_under_the_glyphs() {
+    let mut content = label("hi");
+    content.shadows = Some(std::sync::Arc::new(vec![
+        TextShadow { dx: 1.0, dy: 1.0, blur: 0.0, color: None },
+        TextShadow { dx: 2.0, dy: 2.0, blur: 4.0, color: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)) },
+    ]));
+    let mut node = Node::new(Style::default());
+    node.text = Some(content);
+    let items = paints(node);
+    let kinds: Vec<&str> = items
+        .iter()
+        .map(|p| match p {
+            Paint::PushFilter { .. } => "push",
+            Paint::PopFilter => "pop",
+            Paint::Ink(..) => "ink",
+            Paint::Text(_) => "text",
+            _ => "other",
+        })
+        .filter(|k| *k != "other")
+        .collect();
+    assert_eq!(kinds, ["push", "ink", "pop", "ink", "text"]);
+    let Some(Paint::PushFilter { bounds: Some((bx, _, bw, _)), .. }) = items.iter().find(|p| matches!(p, Paint::PushFilter { .. })) else {
+        panic!("no bounds")
+    };
+    assert!(*bx < 2.0 && *bw > 50.0, "{bx} {bw}");
+    // No colour of its own is the text's.
+    let inks: Vec<Rgba> = items.iter().filter_map(|p| if let Paint::Ink(_, c) = p { Some(*c) } else { None }).collect();
+    assert_eq!((inks[0].r, inks[1].g), (1.0, 1.0));
 }

@@ -56,6 +56,7 @@ fn text(s: &str) -> TextContent {
         caret: None,
         selection: None,
         preedit: None,
+        shadows: None,
         selection_style: Default::default(),
         rich: None,
         white_space: Default::default(),
