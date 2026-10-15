@@ -11,9 +11,10 @@ display (block|flex|grid|inline|none)
 flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
-grid-template-columns, grid-template-rows
+grid-template-columns, grid-template-rows   (repeat(), [names], minmax(), fit-content())
+grid-template-areas, grid-template, grid-area
 grid-column, grid-column-start, grid-column-end
-grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1; no named lines)
+grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1, a line or area name)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
 position (static|relative|sticky|absolute|fixed), top, right, bottom, left

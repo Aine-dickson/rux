@@ -95,6 +95,9 @@ pub enum Len {
     Pct(f32),
     Vw(f32),
     Vh(f32),
+    /// `vmin` and `vmax`: of the window's shorter and longer side.
+    Vmin(f32),
+    Vmax(f32),
 }
 
 /// The edge of an anchor an `anchor()` measures to (CSS anchor positioning).
@@ -224,11 +227,17 @@ pub struct IntrinsicSize {
 }
 
 /// A grid track size (`grid-template-columns`/`-rows`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Track {
     Px(f32),
+    /// A fraction of the grid's own size on that axis.
+    Pct(f32),
     Fr(f32),
     Auto,
+    MinContent,
+    MaxContent,
+    /// `fit-content(<length>)`: as wide as its content, up to this.
+    FitContent(f32),
     /// `minmax(min, max)`. Its whole point over a bare `1fr` is a `0` (or `px`)
     /// minimum, which lets the track shrink *below* its content's min-content,
     /// so a grid of fixed-size cards squeezes to fit instead of overflowing.
@@ -238,11 +247,81 @@ pub enum Track {
 /// One side of a `minmax()`, never itself a `minmax`. A `Fr` is only valid on
 /// the max side (a flex minimum is meaningless), and degrades to `auto` if used
 /// as a minimum.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TrackSide {
     Px(f32),
+    Pct(f32),
     Fr(f32),
     Auto,
+    MinContent,
+    MaxContent,
+}
+
+/// One entry of a grid template: a track, or `repeat()` of some.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GridTrack {
+    One(Track),
+    /// `repeat(count, tracks)`, with the names of the lines inside one
+    /// repetition (one set per line, both edges included, or none at all).
+    Repeat(Repeat, Vec<Track>, Vec<Vec<GridName>>),
+}
+
+/// How many times a `repeat()` repeats.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Repeat {
+    Count(u16),
+    /// `auto-fill`: as many as fit, empty ones kept.
+    AutoFill,
+    /// `auto-fit`: as many as fit, empty ones collapsed.
+    AutoFit,
+}
+
+/// A grid line or area name, interned so a placement stays small and `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct GridName(u32);
+
+impl GridName {
+    pub fn new(name: &str) -> GridName {
+        let mut t = grid_names().lock().expect("grid names");
+        if let Some(&id) = t.1.get(name) {
+            return GridName(id);
+        }
+        let id = t.0.len() as u32;
+        t.0.push(name.to_string());
+        t.1.insert(name.to_string(), id);
+        GridName(id)
+    }
+
+    pub fn as_string(self) -> String {
+        grid_names().lock().expect("grid names").0[self.0 as usize].clone()
+    }
+}
+
+/// Every grid name met, by id, and the id of each. Never shrinks: there are
+/// as many as a stylesheet writes.
+fn grid_names() -> &'static std::sync::Mutex<(Vec<String>, HashMap<String, u32>)> {
+    use std::sync::{Mutex, OnceLock};
+    static NAMES: OnceLock<Mutex<(Vec<String>, HashMap<String, u32>)>> = OnceLock::new();
+    NAMES.get_or_init(Default::default)
+}
+
+/// The names in a grid template: of its lines, between the entries of
+/// `grid-template-columns` and `-rows` (one set more than entries, or none),
+/// and `grid-template-areas`. Boxed in `Style`, as `anchor` is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GridNames {
+    pub columns: Vec<Vec<GridName>>,
+    pub rows: Vec<Vec<GridName>>,
+    pub areas: Option<GridAreas>,
+}
+
+/// `grid-template-areas`: each named area's rows and columns, as lines from
+/// 1 (end exclusive), and the template's size.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GridAreas {
+    pub areas: Vec<(GridName, u16, u16, u16, u16)>,
+    pub rows: u16,
+    pub columns: u16,
 }
 
 /// How a node lays out its children. Defaults to `Row` to match CSS's
@@ -696,6 +775,11 @@ pub enum GridPlace {
     Line(i16),
     /// Span this many tracks from the other endpoint.
     Span(u16),
+    /// A named line, the `n`th of that name (0 for the first), or an area's
+    /// name, which means its `-start` or `-end` line.
+    Named(GridName, i16),
+    /// `span <name>`: to the `n`th line of that name (0 for the first).
+    NamedSpan(GridName, u16),
 }
 
 /// A box background: a flat colour, a gradient, or an image.
@@ -775,8 +859,11 @@ pub struct Style {
     pub max_width: Option<Len>,
     pub min_height: Option<Len>,
     pub max_height: Option<Len>,
-    pub grid_columns: Vec<Track>,
-    pub grid_rows: Vec<Track>,
+    pub grid_columns: Vec<GridTrack>,
+    pub grid_rows: Vec<GridTrack>,
+    /// The line names and areas of a grid template, `None` for almost every
+    /// box.
+    pub grid_names: Option<Box<GridNames>>,
     /// `grid-column` / `grid-row` placement for a grid item: `(start, end)`.
     pub grid_column: (GridPlace, GridPlace),
     pub grid_row: (GridPlace, GridPlace),
@@ -967,6 +1054,7 @@ impl Default for Style {
             max_height: None,
             grid_columns: Vec::new(),
             grid_rows: Vec::new(),
+            grid_names: None,
             grid_column: (GridPlace::Auto, GridPlace::Auto),
             grid_row: (GridPlace::Auto, GridPlace::Auto),
             grid_auto_flow: GridFlow::Row,
@@ -2603,6 +2691,8 @@ fn to_dim<T: FromLength + FromPercent>(l: Len, vp: (f32, f32)) -> T {
         Len::Pct(p) => percent(p),
         Len::Vw(v) => length(vp.0 * v / 100.0),
         Len::Vh(v) => length(vp.1 * v / 100.0),
+        Len::Vmin(v) => length(vp.0.min(vp.1) * v / 100.0),
+        Len::Vmax(v) => length(vp.0.max(vp.1) * v / 100.0),
     }
 }
 
@@ -2611,27 +2701,58 @@ fn to_placement(p: GridPlace) -> GridPlacement {
         GridPlace::Auto => auto(),
         GridPlace::Line(i) => line(i),
         GridPlace::Span(n) => span(n),
+        GridPlace::Named(name, n) => GridPlacement::NamedLine(name.as_string(), n),
+        GridPlace::NamedSpan(name, n) => GridPlacement::NamedSpan(name.as_string(), n),
     }
 }
 
 fn to_track(t: Track) -> TrackSizingFunction {
+    let min = |s: TrackSide| match s {
+        TrackSide::Px(v) => MinTrackSizingFunction::length(v),
+        TrackSide::Pct(p) => MinTrackSizingFunction::percent(p),
+        // A flex minimum is invalid; fall back to `auto` (min-content).
+        TrackSide::Fr(_) | TrackSide::Auto => MinTrackSizingFunction::auto(),
+        TrackSide::MinContent => MinTrackSizingFunction::min_content(),
+        TrackSide::MaxContent => MinTrackSizingFunction::max_content(),
+    };
+    let max = |s: TrackSide| match s {
+        TrackSide::Px(v) => MaxTrackSizingFunction::length(v),
+        TrackSide::Pct(p) => MaxTrackSizingFunction::percent(p),
+        TrackSide::Fr(f) => MaxTrackSizingFunction::fr(f),
+        TrackSide::Auto => MaxTrackSizingFunction::auto(),
+        TrackSide::MinContent => MaxTrackSizingFunction::min_content(),
+        TrackSide::MaxContent => MaxTrackSizingFunction::max_content(),
+    };
     match t {
         Track::Px(v) => length(v),
+        Track::Pct(p) => percent(p),
         Track::Fr(f) => fr(f),
         Track::Auto => auto(),
-        Track::MinMax(lo, hi) => minmax(
-            // A flex minimum is invalid; fall back to `auto` (min-content).
-            match lo {
-                TrackSide::Px(v) => length(v),
-                TrackSide::Fr(_) | TrackSide::Auto => auto(),
-            },
-            match hi {
-                TrackSide::Px(v) => length(v),
-                TrackSide::Fr(f) => fr(f),
-                TrackSide::Auto => auto(),
-            },
-        ),
+        Track::MinContent => min_content(),
+        Track::MaxContent => max_content(),
+        Track::FitContent(px) => fit_content(LengthPercentage::length(px)),
+        Track::MinMax(lo, hi) => minmax(min(lo), max(hi)),
     }
+}
+
+fn to_component(t: &GridTrack) -> taffy::GridTemplateComponent<String> {
+    match t {
+        GridTrack::One(t) => to_track(*t).into(),
+        GridTrack::Repeat(count, tracks, names) => taffy::GridTemplateComponent::Repeat(taffy::GridTemplateRepetition {
+            count: match count {
+                Repeat::Count(n) => taffy::RepetitionCount::Count(*n),
+                Repeat::AutoFill => taffy::RepetitionCount::AutoFill,
+                Repeat::AutoFit => taffy::RepetitionCount::AutoFit,
+            },
+            tracks: tracks.iter().copied().map(to_track).collect(),
+            line_names: names.iter().map(|set| set.iter().map(|n| n.as_string()).collect()).collect(),
+        }),
+    }
+}
+
+/// Line names as taffy takes them: owned strings.
+fn to_names(names: &[Vec<GridName>]) -> Vec<Vec<String>> {
+    names.iter().map(|set| set.iter().map(|n| n.as_string()).collect()).collect()
 }
 
 /// Like [`to_track`] but for `grid-auto-rows`/`-columns`, whose tracks can't hold
@@ -2651,8 +2772,25 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             Display::Grid => taffy::Display::Grid,
             Display::None => taffy::Display::None,
         },
-        grid_template_columns: style.grid_columns.iter().copied().map(|t| to_track(t).into()).collect(),
-        grid_template_rows: style.grid_rows.iter().copied().map(|t| to_track(t).into()).collect(),
+        grid_template_columns: style.grid_columns.iter().map(to_component).collect(),
+        grid_template_rows: style.grid_rows.iter().map(to_component).collect(),
+        grid_template_column_names: style.grid_names.as_ref().map(|n| to_names(&n.columns)).unwrap_or_default(),
+        grid_template_row_names: style.grid_names.as_ref().map(|n| to_names(&n.rows)).unwrap_or_default(),
+        grid_template_areas: style.grid_names.as_ref().and_then(|n| n.areas.as_ref()).map(|a| taffy::GridTemplateAreas {
+            areas: a
+                .areas
+                .iter()
+                .map(|&(name, row_start, row_end, column_start, column_end)| taffy::GridTemplateArea {
+                    name: name.as_string(),
+                    row_start,
+                    row_end,
+                    column_start,
+                    column_end,
+                })
+                .collect(),
+            row_count: a.rows,
+            column_count: a.columns,
+        }),
         grid_column: Line {
             start: to_placement(style.grid_column.0),
             end: to_placement(style.grid_column.1),
@@ -2950,6 +3088,8 @@ fn to_inset(l: Option<Len>, vp: (f32, f32)) -> LengthPercentageAuto {
         Some(Len::Pct(p)) => percent(p),
         Some(Len::Vw(v)) => length(vp.0 * v / 100.0),
         Some(Len::Vh(v)) => length(vp.1 * v / 100.0),
+        Some(Len::Vmin(v)) => length(vp.0.min(vp.1) * v / 100.0),
+        Some(Len::Vmax(v)) => length(vp.0.max(vp.1) * v / 100.0),
     }
 }
 
@@ -3145,6 +3285,8 @@ fn width_cap(style: &Style, parent: Option<f32>, vp: (f32, f32)) -> Option<f32> 
         Len::Pct(p) => parent.map(|b| b * p),
         Len::Vw(v) => Some(vp.0 * v / 100.0),
         Len::Vh(v) => Some(vp.1 * v / 100.0),
+        Len::Vmin(v) => Some(vp.0.min(vp.1) * v / 100.0),
+        Len::Vmax(v) => Some(vp.0.max(vp.1) * v / 100.0),
     };
     let capped = match (style.width.and_then(resolve), style.max_width.and_then(resolve)) {
         (Some(w), Some(m)) => Some(w.min(m)),
@@ -3665,9 +3807,13 @@ fn build(
         let px = |l: Option<Len>| match l {
             None => None,
             Some(Len::Px(v)) => Some(v),
-            Some(Len::Pct(p)) => Some(vp.1 * p / 100.0),
+            // A fraction already: `10%` is 0.1. Divided by a hundred again
+            // until 2026-10-15, so a sticky `top: 10%` stuck at a thousandth.
+            Some(Len::Pct(p)) => Some(vp.1 * p),
             Some(Len::Vw(v)) => Some(vp.0 * v / 100.0),
             Some(Len::Vh(v)) => Some(vp.1 * v / 100.0),
+            Some(Len::Vmin(v)) => Some(vp.0.min(vp.1) * v / 100.0),
+            Some(Len::Vmax(v)) => Some(vp.0.max(vp.1) * v / 100.0),
         };
         stickies.push((
             id,
@@ -3964,6 +4110,8 @@ fn len_px(l: Len, of: f32, vp: (f32, f32)) -> f32 {
         Len::Pct(f) => f * of,
         Len::Vw(v) => vp.0 * v / 100.0,
         Len::Vh(v) => vp.1 * v / 100.0,
+        Len::Vmin(v) => vp.0.min(vp.1) * v / 100.0,
+        Len::Vmax(v) => vp.0.max(vp.1) * v / 100.0,
     }
 }
 

@@ -489,6 +489,8 @@ fn lerp_len(a: Len, b: Len, t: f32) -> Option<Len> {
         (Len::Pct(x), Len::Pct(y)) => Len::Pct(f(x, y)),
         (Len::Vw(x), Len::Vw(y)) => Len::Vw(f(x, y)),
         (Len::Vh(x), Len::Vh(y)) => Len::Vh(f(x, y)),
+        (Len::Vmin(x), Len::Vmin(y)) => Len::Vmin(f(x, y)),
+        (Len::Vmax(x), Len::Vmax(y)) => Len::Vmax(f(x, y)),
         _ => return None,
     })
 }
@@ -556,7 +558,9 @@ fn close_len(a: Len, b: Len) -> bool {
         (Len::Px(x), Len::Px(y))
         | (Len::Pct(x), Len::Pct(y))
         | (Len::Vw(x), Len::Vw(y))
-        | (Len::Vh(x), Len::Vh(y)) => (x - y).abs() < EPS,
+        | (Len::Vh(x), Len::Vh(y))
+        | (Len::Vmin(x), Len::Vmin(y))
+        | (Len::Vmax(x), Len::Vmax(y)) => (x - y).abs() < EPS,
         _ => false,
     }
 }

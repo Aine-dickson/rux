@@ -544,7 +544,13 @@ Driven in `examples/chart.rux` and `examples/morph.rux`.
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
-- `display: grid` works (`grid-template-columns` / `-rows`: `1fr`, `px`, `auto`).
+- `display: grid` works. `grid-template-columns` and `-rows` take lengths,
+  percentages, `fr`, `auto`, `min-content`, `max-content`, `fit-content()`,
+  `minmax()`, `repeat()` (a count, `auto-fill` or `auto-fit`) and `[line names]`;
+  `grid-template-areas` names areas, and `grid-template` is the shorthand for
+  all three. An item is placed by line, `span`, line name (`full-start`,
+  `col 2`, `span col`) or area (`grid-area: main`). Until v0.9 `repeat()` and
+  every name were silently not grids at all: the track list was misread.
 - Two `<text>` siblings **stack**, as two paragraphs do. A `<text>` *inside* a
   `<text>` shares its line: see [Elements](#elements).
 - **Lengths are logical pixels.** Layout and taps run in logical space and the
@@ -607,9 +613,10 @@ display (block|flex|grid|inline|none)
 flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
-grid-template-columns, grid-template-rows
+grid-template-columns, grid-template-rows   (repeat(), [names], minmax(), fit-content())
+grid-template-areas, grid-template, grid-area
 grid-column, grid-column-start, grid-column-end
-grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1; no named lines)
+grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1, a line or area name)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
 position (static|relative|sticky|absolute|fixed), top, right, bottom, left
@@ -1172,7 +1179,21 @@ almost every app animating at someone who asked it not to.
 `flex: 1` means `1 1 0%` (CSS's shorthand defaults), not `1 1 auto`.
 `opacity` fades the node **and its subtree** as one layer.
 `background`/`border` work on `<text>` nodes, not just containers.
-**Units:** `px`, `%`, `rem` (=16px), `em`, `vw`, `vh`/`dvh`.
+**Units:** `px`, `%`, `rem` (=16px), `em`, the viewport units `vw`, `vh`,
+`vmin`, `vmax`, `vi` and `vb` (with their `sv*`, `lv*` and `dv*` forms, which
+are all one here: no browser chrome comes and goes over a Rux window), the
+absolute `pt`, `pc`, `in`, `cm`, `mm` and `Q`, and the font units `ch`, `ex`,
+`cap`, `ic`, `lh` and `rlh`. Rux cannot ask a font for the width of its `0` or
+the height of its `x` at cascade time, so `ch` and `ex` are half an em, `cap`
+0.7 em and `lh` 1.2 em, which is CSS's own answer when the font cannot be
+asked.
+
+A viewport unit in a size or an inset (`width`, `height`, their `min`/`max`,
+`top`, `right`, `bottom`, `left`, `flex-basis`) is resolved by the layout
+against the window every frame. Anywhere else (`padding: 2vw`,
+`font-size: 4vmin`, `gap`, a `translate()`) it is put in pixels during the
+cascade, and a document that does so is cascaded again when the window is
+resized, as it is when a breakpoint is crossed.
 
 `em` is relative to the element's own resolved `font-size`, and on `font-size`
 itself it is relative to the inherited one, which is what it means in CSS. It is

@@ -20,7 +20,13 @@ weight = 3
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
-- `display: grid` works (`grid-template-columns` / `-rows`: `1fr`, `px`, `auto`).
+- `display: grid` works. `grid-template-columns` and `-rows` take lengths,
+  percentages, `fr`, `auto`, `min-content`, `max-content`, `fit-content()`,
+  `minmax()`, `repeat()` (a count, `auto-fill` or `auto-fit`) and `[line names]`;
+  `grid-template-areas` names areas, and `grid-template` is the shorthand for
+  all three. An item is placed by line, `span`, line name (`full-start`,
+  `col 2`, `span col`) or area (`grid-area: main`). Until v0.9 `repeat()` and
+  every name were silently not grids at all: the track list was misread.
 - Two `<text>` siblings **stack**, as two paragraphs do. A `<text>` *inside* a
   `<text>` shares its line: see [Elements](#elements).
 - **Lengths are logical pixels.** Layout and taps run in logical space and the

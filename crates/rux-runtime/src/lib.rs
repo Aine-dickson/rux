@@ -3075,8 +3075,11 @@ impl Document {
         // rotation that moves a notch from one edge to another has to
         // re-cascade even though every query still answers the same way.
         let insets_moved = environment.safe_area != self.environment.safe_area;
+        // And a viewport unit the cascade put in pixels (`padding: 2vw`) is
+        // stale at the new size. Layout resolves the ones it reads itself.
+        let viewport_read = rux_style::reads_viewport() && environment.viewport != self.environment.viewport;
         self.environment = environment;
-        if before == after && !insets_moved {
+        if before == after && !insets_moved && !viewport_read {
             return false;
         }
         // A breakpoint was crossed: re-cascade everything. Focus is re-applied by

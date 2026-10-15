@@ -25,6 +25,7 @@ use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_layout::{ContentVisibility, IntrinsicSize};
+use rux_layout::{GridAreas, GridName, GridNames, GridTrack, Repeat};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
 /// Re-exported so the runtime and the shell can name a warning without
@@ -3771,8 +3772,8 @@ const HONORED_PROPERTIES: &[&str] = &[
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
     "justify-content", "align-items", "align-self", "justify-self", "justify-items",
     "align-content", "row-gap", "column-gap",
-    "grid-template-columns", "grid-template-rows",
-    "grid-column", "grid-row",
+    "grid-template-columns", "grid-template-rows", "grid-template-areas", "grid-template",
+    "grid-area", "grid-column", "grid-row",
     "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
     "grid-auto-flow", "grid-auto-rows", "grid-auto-columns",
     // Positioning
@@ -4581,6 +4582,32 @@ fn build_node(
     node
 }
 
+/// Puts every relative unit in `props` into pixels and returns the element's own
+/// font size. A viewport unit in a [`LAYOUT_LENGTHS`] property is left for the
+/// layout, which resolves it against the window every frame.
+///
+/// Its own function for the reason [`build_text`] is: [`build_node_inner`]
+/// recurses once per element, and with this inline a fresh project's
+/// `rux check` overflowed again (watchlist #41).
+#[inline(never)]
+fn resolve_lengths(props: &mut HashMap<String, String>, inherited_font_size: f32) -> f32 {
+    let viewport = BUILD_ENV.with(|e| {
+        let v = e.get().viewport;
+        (v.width, v.height)
+    });
+    let own_font_size = props
+        .get("font-size")
+        .and_then(|v| parse_px_len(first(&resolve_units(v, inherited_font_size, Some(viewport))), inherited_font_size))
+        .unwrap_or(inherited_font_size);
+    for (property, value) in props.iter_mut() {
+        if has_units(value) {
+            let viewport = (!LAYOUT_LENGTHS.contains(&property.as_str())).then_some(viewport);
+            *value = resolve_units(value, own_font_size, viewport);
+        }
+    }
+    own_font_size
+}
+
 /// A `<text>`: plain words, a sentence of pieces, or a run inside one.
 ///
 /// Its own function, not a branch of [`build_node_inner`], because that one
@@ -5101,15 +5128,7 @@ fn build_node_inner(
     // `font-size` resolves first and against the *inherited* size, because that
     // is what `em` means on the property that defines it: `font-size: 1.5em` is
     // one and a half times the parent's, not its own.
-    let own_font_size = props
-        .get("font-size")
-        .and_then(|v| parse_px_len(first(v), inherited.font_size))
-        .unwrap_or(inherited.font_size);
-    for value in props.values_mut() {
-        if value.contains("em") {
-            *value = resolve_em(value, own_font_size);
-        }
-    }
+    let own_font_size = resolve_lengths(&mut props, inherited.font_size);
     // After `var()` and `em` are resolved, so a variable holding a bad length is
     // reported as the length it turned out to be rather than as `var(--x)`.
     warn_unparseable_lengths(&props);
@@ -8603,11 +8622,11 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("max-height") {
         st.max_height = parse_len(first(v));
     }
-    if let Some(v) = p.get("grid-template-columns") {
-        st.grid_columns = parse_tracks(v);
-    }
-    if let Some(v) = p.get("grid-template-rows") {
-        st.grid_rows = parse_tracks(v);
+    interpret_grid_template(p, &mut st);
+    if let Some(v) = p.get("grid-area") {
+        let [rs, cs, re, ce] = parse_grid_area(v);
+        st.grid_row = (rs, re);
+        st.grid_column = (cs, ce);
     }
     // Grid item placement: `grid-column: 1 / 3`, `grid-row: span 2`, and the
     // -start/-end longhands.
@@ -9765,16 +9784,63 @@ fn first(s: &str) -> &str {
     s.split_whitespace().next().unwrap_or(s)
 }
 
-/// Rewrite every `<number>em` in a declaration value into its pixel equivalent.
+/// What a unit is worth, for [`resolve_units`].
+enum Unit {
+    /// So many pixels per unit.
+    Px(f32),
+    /// A viewport unit: `w` and `h` are how much of the width and the
+    /// height it is, `min` and `max` pick the smaller or larger of the two.
+    Viewport { name: &'static str, w: f32, h: f32, min: bool, max: bool },
+}
+
+/// The units [`resolve_units`] rewrites, against an element whose
+/// `font-size` is `font_size`. `rem` is not one: every parser reads it.
+fn unit_of(unit: &str, font_size: f32) -> Option<Unit> {
+    let vp = |name, w, h, min, max| Unit::Viewport { name, w, h, min, max };
+    Some(match unit {
+        "em" => Unit::Px(font_size),
+        // CSS's own fallback for a font Rux cannot ask: half an em for the
+        // width of `0` and the height of `x`, and 1.2 em for a `normal`
+        // line.
+        "ch" | "ex" => Unit::Px(font_size * 0.5),
+        "cap" => Unit::Px(font_size * 0.7),
+        "ic" => Unit::Px(font_size),
+        "lh" => Unit::Px(font_size * 1.2),
+        "rlh" => Unit::Px(REM_PX * 1.2),
+        "pt" => Unit::Px(96.0 / 72.0),
+        "pc" => Unit::Px(16.0),
+        "in" => Unit::Px(96.0),
+        "cm" => Unit::Px(96.0 / 2.54),
+        "mm" => Unit::Px(96.0 / 25.4),
+        "q" => Unit::Px(96.0 / 101.6),
+        // The small, large and dynamic viewports are one here: no browser
+        // chrome comes and goes over a Rux window. `vi` and `vb` are `vw` and
+        // `vh` in horizontal text.
+        "vw" | "svw" | "lvw" | "dvw" | "vi" | "svi" | "lvi" | "dvi" => vp("vw", 1.0, 0.0, false, false),
+        "vh" | "svh" | "lvh" | "dvh" | "vb" | "svb" | "lvb" | "dvb" => vp("vh", 0.0, 1.0, false, false),
+        "vmin" | "svmin" | "lvmin" | "dvmin" => vp("vmin", 0.0, 0.0, true, false),
+        "vmax" | "svmax" | "lvmax" | "dvmax" => vp("vmax", 0.0, 0.0, false, true),
+        _ => return None,
+    })
+}
+
+/// Rewrite the lengths in a declaration value that only the element can
+/// resolve: `em` and the other font units against `font_size`, and the
+/// absolute ones (`pt`, `in`, `cm`, …) into pixels.
 ///
 /// Done as a pass over the value rather than inside each length parser, the
 /// same way `var()` is, because `em` needs the element's font size and the
 /// parsers are reached without one.
 ///
-/// `rem` is deliberately left alone: it is absolute against the root size, the
-/// parsers already understand it, and rewriting it here would mean matching the
-/// `em` inside `rem` and getting the wrong number.
-fn resolve_em(value: &str, font_size: f32) -> String {
+/// **Viewport units** are put in pixels against `viewport` when it is given:
+/// for a property resolved here, during the cascade, which has a window size
+/// to hand and is cascaded again when it changes (see [`reads_viewport`]).
+/// Without one they are left as `vw`, `vh`, `vmin` or `vmax` for the layout,
+/// which resolves `width: 50vw` against the window each frame.
+///
+/// `rem` is deliberately left alone: it is absolute against the root size,
+/// and the parsers already understand it.
+fn resolve_units(value: &str, font_size: f32, viewport: Option<(f32, f32)>) -> String {
     let bytes = value.as_bytes();
     let mut out = String::with_capacity(value.len());
     let mut i = 0;
@@ -9783,25 +9849,45 @@ fn resolve_em(value: &str, font_size: f32) -> String {
         // when the previous character cannot make it part of a longer word.
         let starts_number = bytes[i].is_ascii_digit()
             || (bytes[i] == b'.' && bytes.get(i + 1).is_some_and(u8::is_ascii_digit));
-        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'.');
+        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'.' || bytes[i - 1] == b'#');
         if !(starts_number && boundary) {
-            out.push(value[i..].chars().next().unwrap());
-            i += value[i..].chars().next().unwrap().len_utf8();
+            let c = value[i..].chars().next().unwrap();
+            out.push(c);
+            i += c.len_utf8();
             continue;
         }
-
         let mut j = i;
         while j < value.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') {
             j += 1;
         }
-        // `2em` yes, `2rem` no (the `r` belongs to the number's unit, not to a
-        // preceding token), and `2ems` no.
-        let is_em = value[j..].starts_with("em")
-            && !bytes.get(j + 2).is_some_and(|c| c.is_ascii_alphanumeric());
-        match value[i..j].parse::<f32>() {
-            Ok(n) if is_em => {
-                out.push_str(&format!("{}px", n * font_size));
-                i = j + 2;
+        let mut k = j;
+        while k < value.len() && bytes[k].is_ascii_alphabetic() {
+            k += 1;
+        }
+        // `2em` yes; `2ems` and `2em5` no: the unit is the whole word.
+        let whole = !bytes.get(k).is_some_and(|c| c.is_ascii_digit());
+        let unit = whole.then(|| unit_of(&value[j..k].to_ascii_lowercase(), font_size)).flatten();
+        match (value[i..j].parse::<f32>(), unit) {
+            (Ok(n), Some(Unit::Px(px))) => {
+                out.push_str(&format!("{}px", n * px));
+                i = k;
+            }
+            (Ok(n), Some(Unit::Viewport { name, w, h, min, max })) => {
+                match viewport {
+                    Some((vw, vh)) => {
+                        READS_VIEWPORT.with(|r| r.set(true));
+                        let per = if min {
+                            vw.min(vh)
+                        } else if max {
+                            vw.max(vh)
+                        } else {
+                            vw * w + vh * h
+                        };
+                        out.push_str(&format!("{}px", n * per / 100.0));
+                    }
+                    None => out.push_str(&format!("{n}{name}")),
+                }
+                i = k;
             }
             _ => {
                 out.push_str(&value[i..j]);
@@ -9810,6 +9896,57 @@ fn resolve_em(value: &str, font_size: f32) -> String {
         }
     }
     out
+}
+
+thread_local! {
+    /// Whether a build on this thread has put a viewport unit in pixels
+    /// during the cascade, so a resize has to cascade again. See
+    /// [`resolve_units`] and [`reads_viewport`].
+    static READS_VIEWPORT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether a build has resolved a viewport unit (`padding: 2vw`) during the
+/// cascade, so its pixels go stale when the window is resized. Never
+/// cleared: a document that has once asked costs a re-cascade per resize,
+/// as a breakpoint does, rather than a stale padding.
+pub fn reads_viewport() -> bool {
+    READS_VIEWPORT.with(std::cell::Cell::get)
+}
+
+/// The properties whose lengths the layout resolves, which keep their
+/// viewport units for it: everything else is in pixels by the end of the
+/// cascade.
+const LAYOUT_LENGTHS: &[&str] = &[
+    "width", "height", "min-width", "max-width", "min-height", "max-height",
+    "top", "right", "bottom", "left", "flex-basis", "flex",
+];
+
+/// Whether [`resolve_units`] has anything to do in `value`: a number
+/// followed by a unit it rewrites. Most values have none (`12px`, `#fff`,
+/// `flex`), and the pass would copy them for nothing.
+#[cfg(test)]
+fn resolve_units_em(value: &str, font_size: f32) -> String {
+    resolve_units(value, font_size, None)
+}
+
+fn has_units(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() && bytes.get(i + 1).is_some_and(u8::is_ascii_alphabetic) {
+            let mut k = i + 1;
+            while k < bytes.len() && bytes[k].is_ascii_alphabetic() {
+                k += 1;
+            }
+            if unit_of(&value[i + 1..k].to_ascii_lowercase(), 16.0).is_some() {
+                return true;
+            }
+            i = k;
+        } else {
+            i += 1;
+        }
+    }
+    false
 }
 
 /// A length that resolves to absolute pixels: `px`, `rem`, `em`, or a bare
@@ -9857,6 +9994,12 @@ fn parse_len(s: &str) -> Option<Len> {
     if let Some(pct) = s.strip_suffix('%') {
         return pct.trim().parse::<f32>().ok().map(|v| Len::Pct(v / 100.0));
     }
+    if let Some(n) = s.strip_suffix("vmin") {
+        return n.trim().parse::<f32>().ok().map(Len::Vmin);
+    }
+    if let Some(n) = s.strip_suffix("vmax") {
+        return n.trim().parse::<f32>().ok().map(Len::Vmax);
+    }
     if let Some(n) = s.strip_suffix("dvh").or_else(|| s.strip_suffix("vh")) {
         return n.trim().parse::<f32>().ok().map(Len::Vh);
     }
@@ -9870,63 +10013,297 @@ fn parse_len(s: &str) -> Option<Len> {
     n.parse::<f32>().ok().map(Len::Px)
 }
 
-/// Parse a `grid-template-columns`/`-rows` value into tracks: `1fr`, `100px`,
-/// `auto`, and `minmax(min, max)` (e.g. `minmax(0, 1fr)`, which lets a track
-/// shrink below its content instead of overflowing the grid).
 /// `grid-column` / `grid-row` shorthand: `<start> [/ <end>]`. A missing end is
-/// `auto` (span 1). Each side is a line index, `span <n>`, or `auto`.
+/// `auto` (span 1), or for a name, that name again (CSS's rule, so
+/// `grid-column: sidebar` covers the `sidebar` area).
 fn parse_grid_shorthand(value: &str) -> (GridPlace, GridPlace) {
     let mut parts = value.splitn(2, '/');
     let start = parts.next().map(parse_grid_place).unwrap_or_default();
-    let end = parts.next().map(parse_grid_place).unwrap_or_default();
+    let end = match parts.next() {
+        Some(e) => parse_grid_place(e),
+        None => match start {
+            GridPlace::Named(name, 0) => GridPlace::Named(name, 0),
+            _ => GridPlace::Auto,
+        },
+    };
     (start, end)
 }
 
-/// One placement endpoint: `auto`, a (possibly negative) line index, or
-/// `span <n>`. Named lines aren't supported.
+/// One placement endpoint: `auto`, a (possibly negative) line, `span <n>`,
+/// a line or area name with an optional count (`header`, `col 2`), or
+/// `span <name>` (`span col`, `span 2 col`).
 fn parse_grid_place(side: &str) -> GridPlace {
-    let s = side.trim();
-    if let Some(rest) = s.strip_prefix("span") {
-        return rest.trim().parse::<u16>().ok().map_or(GridPlace::Auto, GridPlace::Span);
-    }
-    match s.parse::<i16>() {
-        Ok(i) if i != 0 => GridPlace::Line(i),
+    let words: Vec<&str> = side.split_whitespace().collect();
+    let span = words.first() == Some(&"span");
+    let rest = if span { &words[1..] } else { &words[..] };
+    let number = rest.iter().find_map(|w| w.parse::<i16>().ok());
+    let name = rest.iter().find(|w| w.parse::<i16>().is_err() && **w != "auto").map(|w| GridName::new(w));
+    match (span, name, number) {
+        (_, None, None) => GridPlace::Auto,
+        (true, None, Some(n)) if n > 0 => GridPlace::Span(n as u16),
+        (true, Some(name), n) => GridPlace::NamedSpan(name, n.filter(|n| *n > 0).unwrap_or(1) as u16),
+        (false, None, Some(i)) if i != 0 => GridPlace::Line(i),
+        (false, Some(name), n) => GridPlace::Named(name, n.unwrap_or(0)),
         _ => GridPlace::Auto,
     }
 }
 
-fn parse_tracks(value: &str) -> Vec<Track> {
-    split_top_level(value)
-        .into_iter()
-        .map(|tok| {
-            if let Some(args) = tok
-                .strip_prefix("minmax(")
-                .and_then(|s| s.strip_suffix(')'))
-            {
-                let mut parts = args.split(',');
-                let lo = parts.next().map(parse_track_side).unwrap_or(TrackSide::Auto);
-                let hi = parts.next().map(parse_track_side).unwrap_or(TrackSide::Auto);
-                Track::MinMax(lo, hi)
-            } else {
-                match parse_track_side(tok) {
-                    TrackSide::Px(v) => Track::Px(v),
-                    TrackSide::Fr(f) => Track::Fr(f),
-                    TrackSide::Auto => Track::Auto,
-                }
-            }
-        })
-        .collect()
+/// `grid-area`: an area name for all four sides, or up to four placements,
+/// row-start / column-start / row-end / column-end. A side left out is the
+/// name of the side opposite it when that is a name, and `auto` otherwise.
+fn parse_grid_area(value: &str) -> [GridPlace; 4] {
+    let parts: Vec<GridPlace> = value.split('/').map(parse_grid_place).collect();
+    let get = |i: usize| parts.get(i).copied();
+    let named = |p: GridPlace| match p {
+        GridPlace::Named(n, 0) => GridPlace::Named(n, 0),
+        _ => GridPlace::Auto,
+    };
+    let row_start = get(0).unwrap_or_default();
+    let col_start = get(1).unwrap_or_else(|| named(row_start));
+    let row_end = get(2).unwrap_or_else(|| named(row_start));
+    let col_end = get(3).unwrap_or_else(|| named(col_start));
+    [row_start, col_start, row_end, col_end]
 }
 
-/// A single track value: `Nfr`, `auto`, or a length (default `auto`).
+/// Split a grid template on whitespace outside brackets, so `[a b]`,
+/// `minmax( … )` and `repeat( … )` stay whole.
+fn split_template(value: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut start: Option<usize> = None;
+    for (i, c) in value.char_indices() {
+        // A `[` starts a token of its own even with no space before it, which
+        // is how lightningcss prints `repeat(…)[end]`.
+        if c == '[' && depth == 0 {
+            if let Some(s) = start.take() {
+                out.push(value[s..i].trim());
+            }
+        }
+        match c {
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            _ => {}
+        }
+        if c.is_whitespace() && depth == 0 {
+            if let Some(s) = start.take() {
+                out.push(value[s..i].trim());
+            }
+        } else if start.is_none() {
+            start = Some(i);
+        }
+        // And a `]` ends one.
+        if c == ']' && depth == 0 {
+            if let Some(s) = start.take() {
+                out.push(value[s..=i].trim());
+            }
+        }
+    }
+    if let Some(s) = start {
+        out.push(value[s..].trim());
+    }
+    out.into_iter().filter(|t| !t.is_empty()).collect()
+}
+
+/// A track list with its line names: each track, and the names of the lines
+/// around them, one set more than tracks, or none when nothing is named.
+fn parse_named_tracks(value: &str, allow_repeat: bool) -> (Vec<GridTrack>, Vec<Vec<GridName>>) {
+    let mut tracks = Vec::new();
+    let mut names: Vec<Vec<GridName>> = vec![Vec::new()];
+    let mut any_name = false;
+    for tok in split_template(value) {
+        if let Some(inner) = tok.strip_prefix('[').and_then(|t| t.strip_suffix(']')) {
+            any_name = true;
+            names.last_mut().expect("a set").extend(inner.split_whitespace().map(GridName::new));
+            continue;
+        }
+        if let Some(args) = tok.strip_prefix("repeat(").and_then(|t| t.strip_suffix(')')) {
+            let Some((count, rest)) = args.split_once(',') else {
+                warn(format!(
+                    "`{tok}` is not a `repeat()` Rux understands; write `repeat(3, 1fr)` or `repeat(auto-fill, minmax(120px, 1fr))`"
+                ));
+                continue;
+            };
+            let count = match count.trim() {
+                "auto-fill" => Repeat::AutoFill,
+                "auto-fit" => Repeat::AutoFit,
+                n => match n.parse::<u16>() {
+                    Ok(n) if n > 0 => Repeat::Count(n),
+                    _ => {
+                        warn(format!(
+                            "`{tok}` repeats `{n}` times; write a whole number above 0, `auto-fill` or `auto-fit`"
+                        ));
+                        continue;
+                    }
+                },
+            };
+            if !allow_repeat {
+                warn(format!("`{tok}` cannot be inside another `repeat()`"));
+                continue;
+            }
+            let (inner, inner_names) = parse_named_tracks(rest, false);
+            let inner: Vec<Track> = inner
+                .into_iter()
+                .filter_map(|t| match t {
+                    GridTrack::One(t) => Some(t),
+                    GridTrack::Repeat(..) => None,
+                })
+                .collect();
+            tracks.push(GridTrack::Repeat(count, inner, inner_names));
+            names.push(Vec::new());
+            continue;
+        }
+        tracks.push(GridTrack::One(parse_track(tok)));
+        names.push(Vec::new());
+    }
+    if !any_name {
+        names.clear();
+    }
+    (tracks, names)
+}
+
+/// One track: a length or percentage, `Nfr`, `auto`, `min-content`,
+/// `max-content`, `fit-content(<length>)` or `minmax(min, max)`.
+fn parse_track(tok: &str) -> Track {
+    if let Some(args) = tok.strip_prefix("minmax(").and_then(|s| s.strip_suffix(')')) {
+        let mut parts = args.split(',');
+        let lo = parts.next().map(parse_track_side).unwrap_or(TrackSide::Auto);
+        let hi = parts.next().map(parse_track_side).unwrap_or(TrackSide::Auto);
+        return Track::MinMax(lo, hi);
+    }
+    if let Some(arg) = tok.strip_prefix("fit-content(").and_then(|s| s.strip_suffix(')')) {
+        if let Some(px) = parse_px(arg.trim()) {
+            return Track::FitContent(px);
+        }
+    }
+    match parse_track_side(tok) {
+        TrackSide::Px(v) => Track::Px(v),
+        TrackSide::Pct(p) => Track::Pct(p),
+        TrackSide::Fr(f) => Track::Fr(f),
+        TrackSide::Auto => Track::Auto,
+        TrackSide::MinContent => Track::MinContent,
+        TrackSide::MaxContent => Track::MaxContent,
+    }
+}
+
+/// The tracks of `grid-auto-rows` / `-columns`, which take no names or
+/// `repeat()`.
+fn parse_tracks(value: &str) -> Vec<Track> {
+    split_template(value).into_iter().map(parse_track).collect()
+}
+
+/// A single track value: `Nfr`, `auto`, `min-content`, `max-content`, a
+/// percentage or a length (default `auto`).
 fn parse_track_side(tok: &str) -> TrackSide {
     let tok = tok.trim();
     if let Some(fr) = tok.strip_suffix("fr") {
         TrackSide::Fr(fr.trim().parse().unwrap_or(1.0))
-    } else if tok == "auto" {
-        TrackSide::Auto
+    } else if let Some(pct) = tok.strip_suffix('%') {
+        pct.trim().parse::<f32>().map(|p| TrackSide::Pct(p / 100.0)).unwrap_or(TrackSide::Auto)
     } else {
-        parse_px(tok).map(TrackSide::Px).unwrap_or(TrackSide::Auto)
+        match tok {
+            "auto" => TrackSide::Auto,
+            "min-content" => TrackSide::MinContent,
+            "max-content" => TrackSide::MaxContent,
+            _ => parse_px(tok).map(TrackSide::Px).unwrap_or(TrackSide::Auto),
+        }
+    }
+}
+
+/// `grid-template-areas`: one quoted string per row, one name per cell, `.`
+/// for a cell no area takes. Each name must make a rectangle, or the whole
+/// value is invalid, as in CSS.
+fn parse_grid_areas(value: &str) -> Option<GridAreas> {
+    let rows: Vec<Vec<&str>> = value
+        .split('"')
+        .enumerate()
+        .filter(|(i, _)| i % 2 == 1)
+        .map(|(_, row)| row.split_whitespace().collect())
+        .collect();
+    let columns = rows.first()?.len();
+    if columns == 0 || rows.iter().any(|r| r.len() != columns) {
+        warn(format!("`grid-template-areas: {value}` needs the same number of cells in every row"));
+        return None;
+    }
+    // Each name's first and last row and column.
+    let mut seen: Vec<(&str, usize, usize, usize, usize)> = Vec::new();
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            if cell.chars().all(|ch| ch == '.') {
+                continue;
+            }
+            match seen.iter_mut().find(|a| a.0 == *cell) {
+                Some(a) => {
+                    a.1 = a.1.min(r);
+                    a.2 = a.2.max(r);
+                    a.3 = a.3.min(c);
+                    a.4 = a.4.max(c);
+                }
+                None => seen.push((cell, r, r, c, c)),
+            }
+        }
+    }
+    for &(name, r0, r1, c0, c1) in &seen {
+        let filled = (r0..=r1).all(|r| (c0..=c1).all(|c| rows[r][c] == name));
+        let count = rows.iter().flatten().filter(|c| **c == name).count();
+        if !filled || count != (r1 - r0 + 1) * (c1 - c0 + 1) {
+            warn(format!(
+                "`grid-template-areas`: the cells named `{name}` do not make a rectangle, so the value is ignored"
+            ));
+            return None;
+        }
+    }
+    Some(GridAreas {
+        areas: seen
+            .into_iter()
+            .map(|(name, r0, r1, c0, c1)| (GridName::new(name), r0 as u16 + 1, r1 as u16 + 2, c0 as u16 + 1, c1 as u16 + 2))
+            .collect(),
+        rows: rows.len() as u16,
+        columns: columns as u16,
+    })
+}
+
+/// The grid template properties onto `st`: the `grid-template` shorthand,
+/// as `<rows> / <columns>` or with areas (`"a a" 40px "b c" / 1fr 2fr`),
+/// then `grid-template-columns`, `-rows` and `-areas` over it.
+fn interpret_grid_template(p: &HashMap<String, String>, st: &mut Style) {
+    let mut names = GridNames::default();
+    if let Some(v) = p.get("grid-template") {
+        let v = v.trim();
+        if v != "none" {
+            let (rows, columns) = v.split_once('/').unwrap_or((v, ""));
+            if rows.contains('"') {
+                // Each row's string, then its size if one follows it.
+                let mut areas = String::new();
+                let mut sizes = String::new();
+                let mut rest = rows;
+                while let Some(open) = rest.find('"') {
+                    let after = &rest[open + 1..];
+                    let Some(close) = after.find('"') else { break };
+                    areas.push_str(&format!("\"{}\" ", &after[..close]));
+                    rest = &after[close + 1..];
+                    let size = rest[..rest.find('"').unwrap_or(rest.len())].trim();
+                    sizes.push_str(if size.is_empty() { "auto" } else { size });
+                    sizes.push(' ');
+                }
+                names.areas = parse_grid_areas(&areas);
+                (st.grid_rows, names.rows) = parse_named_tracks(&sizes, true);
+            } else {
+                (st.grid_rows, names.rows) = parse_named_tracks(rows, true);
+            }
+            (st.grid_columns, names.columns) = parse_named_tracks(columns, true);
+        }
+    }
+    if let Some(v) = p.get("grid-template-columns") {
+        (st.grid_columns, names.columns) = parse_named_tracks(v, true);
+    }
+    if let Some(v) = p.get("grid-template-rows") {
+        (st.grid_rows, names.rows) = parse_named_tracks(v, true);
+    }
+    if let Some(v) = p.get("grid-template-areas") {
+        names.areas = if v.trim() == "none" { None } else { parse_grid_areas(v) };
+    }
+    if names != GridNames::default() {
+        st.grid_names = Some(Box::new(names));
     }
 }
 
@@ -10903,21 +11280,21 @@ mod tests {
     /// through `interpret` directly.
     #[test]
     fn em_resolves_against_the_font_size_and_leaves_rem_alone() {
-        use super::resolve_em;
-        assert_eq!(resolve_em("1em", 20.0), "20px");
-        assert_eq!(resolve_em("1em 2em", 10.0), "10px 20px");
-        assert_eq!(resolve_em("0.5em", 32.0), "16px");
+        use super::resolve_units_em;
+        assert_eq!(resolve_units_em("1em", 20.0), "20px");
+        assert_eq!(resolve_units_em("1em 2em", 10.0), "10px 20px");
+        assert_eq!(resolve_units_em("0.5em", 32.0), "16px");
 
         // The trap: `strip_suffix("em")` also matches the tail of `rem`, so a
         // careless pass turns `1rem` into `1r` + em and either fails or, worse,
         // resolves it against the font size.
-        assert_eq!(resolve_em("1rem", 20.0), "1rem", "rem must survive untouched");
-        assert_eq!(resolve_em("1rem 2em", 10.0), "1rem 20px");
+        assert_eq!(resolve_units_em("1rem", 20.0), "1rem", "rem must survive untouched");
+        assert_eq!(resolve_units_em("1rem 2em", 10.0), "1rem 20px");
 
         // Words that merely contain the letters are not lengths.
-        assert_eq!(resolve_em("system-ui", 16.0), "system-ui");
-        assert_eq!(resolve_em("2emu", 16.0), "2emu");
-        assert_eq!(resolve_em("#12em34", 16.0), "#12em34", "not at a token boundary");
+        assert_eq!(resolve_units_em("system-ui", 16.0), "system-ui");
+        assert_eq!(resolve_units_em("2emu", 16.0), "2emu");
+        assert_eq!(resolve_units_em("#12em34", 16.0), "#12em34", "not at a token boundary");
     }
 
     /// `font-size` in `em` means "times the inherited size", not its own, so it
@@ -11255,6 +11632,40 @@ mod tests {
         let _ = super::take_warnings();
         assert_eq!(z("1.5"), None, "not a whole number");
         assert!(super::take_warnings().iter().any(|w| w.message.contains("z-index: 1.5")));
+    }
+
+    #[test]
+    fn maps_grid_templates_through_the_stylesheet() {
+        use rux_layout::{GridName, GridPlace, GridTrack, Repeat, Track};
+        let css = r#".g { grid-template-columns: [full-start] 1fr repeat(auto-fill, minmax(100px, 1fr)) [full-end];
+                         grid-template-areas: "head head" "side main"; }
+                    .t { grid-template: "a a" 40px "b c" 1fr / 100px 1fr; }
+                    .i { grid-area: main; grid-column: full-start / span 2; }
+                    .j { grid-area: 2 / 1 / 3 / 3; }"#;
+        let rules = parse_rules(css, Environment::sane());
+        let style = |i: usize| {
+            let p: HashMap<String, String> = rules[i].decls.iter().cloned().collect();
+            interpret(&p)
+        };
+        let g = style(0);
+        assert_eq!(g.grid_columns.len(), 2);
+        assert!(matches!(&g.grid_columns[1], GridTrack::Repeat(Repeat::AutoFill, t, _) if t.len() == 1));
+        let names = g.grid_names.as_deref().expect("named");
+        assert_eq!(names.columns, vec![vec![GridName::new("full-start")], vec![], vec![GridName::new("full-end")]]);
+        let areas = names.areas.as_ref().expect("areas");
+        assert_eq!((areas.rows, areas.columns), (2, 2));
+        assert!(areas.areas.contains(&(GridName::new("main"), 2, 3, 2, 3)));
+
+        let t = style(1);
+        assert_eq!(t.grid_rows, vec![GridTrack::One(Track::Px(40.0)), GridTrack::One(Track::Fr(1.0))]);
+        assert_eq!(t.grid_columns.len(), 2);
+        assert_eq!(t.grid_names.as_deref().and_then(|n| n.areas.as_ref()).map(|a| a.areas.len()), Some(3));
+
+        let i = style(2);
+        assert_eq!(i.grid_row, (GridPlace::Named(GridName::new("main"), 0), GridPlace::Named(GridName::new("main"), 0)));
+        assert_eq!(i.grid_column, (GridPlace::Named(GridName::new("full-start"), 0), GridPlace::Span(2)));
+        let j = style(3);
+        assert_eq!((j.grid_row, j.grid_column), ((GridPlace::Line(2), GridPlace::Line(3)), (GridPlace::Line(1), GridPlace::Line(3))));
     }
 
     #[test]
@@ -11719,6 +12130,56 @@ mod tests {
         root.0.children[0].style.background.clone()
     }
 
+
+    // ── units ───────────────────────────────────────────────────────────────
+
+    #[test]
+    fn absolute_and_font_units_become_pixels() {
+        use super::resolve_units;
+        assert_eq!(resolve_units("12pt", 16.0, None), "16px");
+        assert_eq!(resolve_units("1in 1pc", 16.0, None), "96px 16px");
+        assert_eq!(resolve_units("2.54cm", 16.0, None), "96px");
+        assert_eq!(resolve_units("25.4mm", 16.0, None), "96px");
+        assert_eq!(resolve_units("4ch 2ex", 20.0, None), "40px 20px");
+        assert_eq!(resolve_units("1lh", 10.0, None), "12px");
+        assert_eq!(resolve_units("2EM", 10.0, None), "20px", "units are not case-sensitive");
+        assert_eq!(resolve_units("1rem 3s 45deg 2fr", 10.0, None), "1rem 3s 45deg 2fr", "left alone");
+        assert_eq!(resolve_units("#12in34 url(a2in.png)", 10.0, None), "#12in34 url(a2in.png)");
+    }
+
+    #[test]
+    fn viewport_units_are_pixels_in_the_cascade_and_kept_for_the_layout() {
+        use super::resolve_units;
+        let vp = Some((800.0, 600.0));
+        assert_eq!(resolve_units("10vw 10vh", 16.0, vp), "80px 60px");
+        assert_eq!(resolve_units("10vmin 10vmax", 16.0, vp), "60px 80px");
+        assert_eq!(resolve_units("10svh 10dvw 10lvmin", 16.0, vp), "60px 80px 60px");
+        assert_eq!(resolve_units("10svh 10vi 5dvmax", 16.0, None), "10vh 10vw 5vmax");
+        assert_eq!(super::parse_len("50vmin"), Some(Len::Vmin(50.0)));
+        assert_eq!(super::parse_len("20vmax"), Some(Len::Vmax(20.0)));
+
+        // Through a build: `padding` is the cascade's, `width` the layout's.
+        let src = "<template><screen><view class=\"a\"></view></screen></template>
+<style>.a { padding: 2vw; width: 50vmin; font-size: 12pt; }</style>";
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        let root = super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut instances,
+            &mut crate::Swaps::new(),
+            &InteractionState::default(),
+            Environment::from_viewport(Viewport { width: 1000.0, height: 500.0 }),
+        )
+        .unwrap();
+        let st = &root.0.children[0].style;
+        assert_eq!(st.padding.left, 20.0);
+        assert_eq!(st.width, Some(Len::Vmin(50.0)));
+        assert!(super::reads_viewport());
+    }
 
     // ── env(safe-area-inset-*) ──────────────────────────────────────────────
 
