@@ -391,9 +391,10 @@ const CSS_VALUES: &[(&str, &[&str])] = &[
     ("stroke-linejoin", &["miter", "round", "bevel"]),
 ];
 
-/// The easing keywords a `transition` may name. `cubic-bezier(a, b, c, d)` is
-/// accepted as well and is not a keyword, so it is not offered as one.
-const EASINGS: &[&str] = &["linear", "ease", "ease-in", "ease-out", "ease-in-out"];
+/// The easing keywords a `transition` may name. `cubic-bezier(a, b, c, d)` and
+/// `steps(n, <position>)` are accepted as well and are not keywords, so they
+/// are not offered as ones.
+const EASINGS: &[&str] = &["linear", "ease", "ease-in", "ease-out", "ease-in-out", "step-start", "step-end"];
 
 /// What `query()` hands back. Properties are reads of the frame already laid
 /// out; the actions record an intent and are applied after the handler returns.

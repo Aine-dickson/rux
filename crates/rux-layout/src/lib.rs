@@ -684,6 +684,23 @@ pub enum Easing {
     Linear,
     /// `cubic-bezier(x1, y1, x2, y2)`; the keywords resolve to these.
     Bezier(f32, f32, f32, f32),
+    /// `steps(n, <position>)`, and `step-start` and `step-end`, which are
+    /// one step jumping at the start and at the end.
+    Steps(u32, StepPosition),
+}
+
+/// Where a `steps()` easing jumps: at the start of each interval, at its
+/// end, at both ends of the whole, or at neither.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepPosition {
+    /// `jump-start`, or `start`.
+    Start,
+    /// `jump-end`, or `end`, the default.
+    End,
+    /// `jump-both`.
+    Both,
+    /// `jump-none`.
+    None,
 }
 
 impl Easing {
@@ -701,6 +718,7 @@ impl Easing {
         let (x1, y1, x2, y2) = match self {
             Easing::Linear => return t,
             Easing::Bezier(x1, y1, x2, y2) => (x1, y1, x2, y2),
+            Easing::Steps(n, at) => return steps(t, n, at),
         };
         if t <= 0.0 || t >= 1.0 {
             return t;
@@ -708,6 +726,28 @@ impl Easing {
         let s = solve_bezier_x(t, x1, x2);
         bezier(s, y1, y2)
     }
+}
+
+/// CSS Easing's step function: which of the `n` steps progress `t` is on,
+/// as a fraction of the jumps the position makes.
+fn steps(t: f32, n: u32, at: StepPosition) -> f32 {
+    let n = n.max(1) as f32;
+    let mut step = (t * n).floor();
+    if matches!(at, StepPosition::Start | StepPosition::Both) {
+        step += 1.0;
+    }
+    let jumps = match at {
+        StepPosition::Start | StepPosition::End => n,
+        StepPosition::Both => n + 1.0,
+        StepPosition::None => (n - 1.0).max(1.0),
+    };
+    if t >= 0.0 && step < 0.0 {
+        step = 0.0;
+    }
+    if t <= 1.0 && step > jumps {
+        step = jumps;
+    }
+    step / jumps
 }
 
 /// A unit cubic Bézier's coordinate at parameter `s`, with the endpoints pinned

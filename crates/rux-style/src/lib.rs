@@ -21,7 +21,7 @@ use rux_layout::{
     Len, Node as LayoutNode, Overflow, Position, Rgba, SelectionStyle, Sides, Style, TextAlign, TextContent,
     TextWrap, TouchAction, Track, TrackSide,
 };
-use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, Transform, Transition};
+use rux_layout::{AnimProp, Easing, GradientKind, GridFlow, StepPosition, Transform, Transition};
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_layout::{ContentVisibility, IntrinsicSize};
@@ -9309,6 +9309,12 @@ fn parse_transitions(value: &str) -> Vec<Transition> {
                 times.push(ms);
             } else if let Some(e) = parse_easing(token) {
                 easing = Some(e);
+            } else if token.contains('(') {
+                // An easing function Rux does not draw, or one written wrong.
+                // Said rather than left to fall back to `ease` unexplained.
+                warn_once(format!(
+                    "`{token}` is not a timing function Rux knows, so the transition eases with `ease`.                      Use linear, ease, ease-in, ease-out, ease-in-out, cubic-bezier(), steps(),                      step-start or step-end."
+                ));
             } else if property.is_none() && unknown.is_none() {
                 match parse_anim_prop(token) {
                     Some(p) => property = Some(p),
@@ -9348,7 +9354,7 @@ fn parse_time(s: &str) -> Option<f32> {
     (s == "0").then_some(0.0)
 }
 
-/// A timing-function keyword or `cubic-bezier(…)`. `step-*` is not supported.
+/// A timing-function keyword, `cubic-bezier(…)` or `steps(…)`.
 fn parse_easing(s: &str) -> Option<Easing> {
     let s = s.trim().to_ascii_lowercase();
     match s.as_str() {
@@ -9357,7 +9363,24 @@ fn parse_easing(s: &str) -> Option<Easing> {
         "ease-in" => return Some(Easing::EASE_IN),
         "ease-out" => return Some(Easing::EASE_OUT),
         "ease-in-out" => return Some(Easing::EASE_IN_OUT),
+        "step-start" => return Some(Easing::Steps(1, StepPosition::Start)),
+        "step-end" => return Some(Easing::Steps(1, StepPosition::End)),
         _ => {}
+    }
+    if let Some(args) = s.strip_prefix("steps(").and_then(|a| a.strip_suffix(')')) {
+        let mut parts = args.split(',').map(str::trim);
+        let n: u32 = parts.next()?.parse().ok()?;
+        let at = match parts.next() {
+            None | Some("end" | "jump-end") => StepPosition::End,
+            Some("start" | "jump-start") => StepPosition::Start,
+            Some("jump-both") => StepPosition::Both,
+            Some("jump-none") => StepPosition::None,
+            Some(_) => return None,
+        };
+        // CSS refuses no steps at all, and `jump-none` with one: it would be
+        // a single step that never jumps.
+        let least = if at == StepPosition::None { 2 } else { 1 };
+        return (n >= least && parts.next().is_none()).then_some(Easing::Steps(n, at));
     }
     let args = s.strip_prefix("cubic-bezier(")?.strip_suffix(')')?;
     let n: Vec<f32> = args.split(',').filter_map(|a| a.trim().parse::<f32>().ok()).collect();
@@ -11558,6 +11581,35 @@ mod tests {
         // ease-out is ahead of linear in the first half: that is what "out" means.
         assert!(Easing::EASE_OUT.eval(0.25) > 0.25);
         assert!(Easing::EASE_IN.eval(0.25) < 0.25);
+    }
+
+    /// `steps()` holds each value for its interval and jumps where its
+    /// position says, as CSS Easing's own examples do.
+    #[test]
+    fn steps_jump_where_their_position_says() {
+        use super::{parse_easing as p, Easing, StepPosition};
+        let at = |e: &str, t: f32| p(e).unwrap_or_else(|| panic!("{e} did not parse")).eval(t);
+        assert_eq!(p("steps(4)"), Some(Easing::Steps(4, StepPosition::End)));
+        assert_eq!(p("step-start"), Some(Easing::Steps(1, StepPosition::Start)));
+        // jump-end: 0, .25, .5, .75 and 1 only at the very end.
+        assert_eq!([at("steps(4, end)", 0.0), at("steps(4, end)", 0.3), at("steps(4, end)", 0.99), at("steps(4, end)", 1.0)], [0.0, 0.25, 0.75, 1.0]);
+        // jump-start: already .25 at the start.
+        assert_eq!([at("steps(4, jump-start)", 0.0), at("steps(4, start)", 0.5)], [0.25, 0.75]);
+        // jump-both: five levels for four steps; jump-none: neither end jumps.
+        assert_eq!([at("steps(4, jump-both)", 0.0), at("steps(4, jump-both)", 1.0)], [0.2, 1.0]);
+        assert_eq!([at("steps(5, jump-none)", 0.0), at("steps(5, jump-none)", 0.5), at("steps(5, jump-none)", 1.0)], [0.0, 0.5, 1.0]);
+        assert_eq!([at("step-end", 0.5), at("step-start", 0.5)], [0.0, 1.0]);
+        // CSS refuses these, so Rux does.
+        for bad in ["steps(0)", "steps(1, jump-none)", "steps(2, sideways)", "steps(1.5)"] {
+            assert_eq!(p(bad), None, "{bad}");
+        }
+        // And a transition says so instead of easing quietly.
+        let t = super::parse_transitions("opacity 1s steps(3, jump-start)");
+        assert_eq!(t[0].easing, Easing::Steps(3, StepPosition::Start));
+        let _ = super::take_warnings();
+        let t = super::parse_transitions("opacity 1s linear(0, 0.5, 1)");
+        assert_eq!(t[0].easing, Easing::EASE);
+        assert!(super::take_warnings().iter().any(|w| w.message.contains("linear(0, 0.5, 1)")));
     }
 
     #[test]

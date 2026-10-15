@@ -448,6 +448,7 @@
     "z-index", "d"
   ],
   "easings": [
-    "linear", "ease", "ease-in", "ease-out", "ease-in-out"
+    "linear", "ease", "ease-in", "ease-out", "ease-in-out", "step-start",
+    "step-end"
   ]
 }

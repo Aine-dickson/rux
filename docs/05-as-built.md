@@ -769,8 +769,10 @@ Each entry is a property, a duration, an easing and a delay, in any order after
 the property. As in CSS the **first** time is the duration and the second is the
 delay, `all` stands for every animatable property, and a bare `transition: 200ms`
 means `all 200ms`. Easings: `linear`, `ease` (the default), `ease-in`,
-`ease-out`, `ease-in-out`, `cubic-bezier(x1, y1, x2, y2)`. `steps()` is not
-supported.
+`ease-out`, `ease-in-out`, `cubic-bezier(x1, y1, x2, y2)`, `steps(n)` with
+`jump-start` (or `start`), `jump-end` (or `end`, the default), `jump-both` or
+`jump-none`, and `step-start` and `step-end`. `linear()` with stops is not
+drawn yet: the transition eases with `ease` and says so.
 
 **Animatable:** `opacity`, `background-color`, `color`, `border-color`,
 `border-width`, `border-radius`, `width`, `height`, `padding`, `margin`, `gap`,
