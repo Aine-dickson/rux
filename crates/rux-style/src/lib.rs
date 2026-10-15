@@ -11333,8 +11333,15 @@ fn named_color(name: &str) -> Option<&'static str> {
 fn parse_hex(hex: &str) -> Option<Rgba> {
     let expand = |c: char| -> u8 { u8::from_str_radix(&format!("{c}{c}"), 16).unwrap_or(0) };
     let bytes: Vec<char> = hex.chars().collect();
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
     let (r, g, b, a) = match bytes.len() {
         3 => (expand(bytes[0]), expand(bytes[1]), expand(bytes[2]), 255),
+        // `#rgba`, which is how lightningcss writes `transparent` (`#0000`)
+        // and every short colour with an alpha. Refused until v0.9, so a
+        // gradient to `transparent` was no gradient at all.
+        4 => (expand(bytes[0]), expand(bytes[1]), expand(bytes[2]), expand(bytes[3])),
         6 => (
             u8::from_str_radix(&hex[0..2], 16).ok()?,
             u8::from_str_radix(&hex[2..4], 16).ok()?,
@@ -12023,6 +12030,11 @@ mod tests {
         assert_eq!(parse_color("red").map(|c| (c.r, c.g, c.b)), Some((1.0, 0.0, 0.0)));
         assert!(parse_color("REBECCApurple").is_some()); // case-insensitive
         assert_eq!(parse_color("#000000").map(|c| c.r), Some(0.0));
+        // `#rgba`, lightningcss's spelling of `transparent`, and a gradient to it.
+        assert_eq!(parse_color("#0000").map(|c| c.a), Some(0.0));
+        assert_eq!(parse_color("#f008").map(|c| (c.r, c.a)), Some((1.0, 136.0 / 255.0)));
+        assert!(parse_color("#ggg").is_none());
+        assert!(super::parse_background("linear-gradient(#000, #0000)").is_some());
         assert_eq!(parse_color("transparent").map(|c| c.a), Some(0.0));
         assert!(parse_color("notacolor").is_none());
     }
