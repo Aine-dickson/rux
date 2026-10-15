@@ -3890,10 +3890,30 @@ fn warn_unparseable_lengths(props: &HashMap<String, String>) {
         if value.contains("anchor(") || value.contains("anchor-size(") {
             continue;
         }
-        for token in value.split_whitespace() {
+        for token in split_top_level(value) {
             // Keywords (`auto`, `none`, `inherit`, `fit-content`) are legitimate
             // here and are not lengths.
             if token.chars().all(|c| c.is_ascii_alphabetic() || c == '-') {
+                continue;
+            }
+            // Maths the cascade could not finish: it needs a box to take a
+            // percentage of, or it does not parse.
+            let head = token.as_bytes();
+            let maths = rux_layout::calc::FUNCTIONS.iter().any(|f| {
+                head.len() > f.len() && head[..f.len()].eq_ignore_ascii_case(f.as_bytes()) && head[f.len()] == b'('
+            });
+            if maths {
+                let why = match rux_layout::calc::parse(token) {
+                    Some(c) if c.needs().basis => {
+                        "it has a percentage, and Rux works out `calc()`, `min()`, `max()` and \
+                         `clamp()` only when they need no box to be a percentage of"
+                    }
+                    _ => {
+                        "it is not maths Rux can read: the units are px, rem, em, %, the viewport \
+                         and font units, and plain numbers"
+                    }
+                };
+                warn_stylesheet(format!("`{property}: {token}` is ignored: {why}."));
                 continue;
             }
             let px_only = PX_ONLY_PROPERTIES.contains(&property.as_str());
@@ -4604,17 +4624,72 @@ fn resolve_lengths(props: &mut HashMap<String, String>, inherited_font_size: f32
         let v = e.get().viewport;
         (v.width, v.height)
     });
+    // A percentage in `font-size`, `calc()`'s included, is of the inherited size.
     let own_font_size = props
         .get("font-size")
-        .and_then(|v| parse_px_len(first(&resolve_units(v, inherited_font_size, Some(viewport))), inherited_font_size))
+        .and_then(|v| {
+            let v = resolve_units(v, inherited_font_size, Some(viewport));
+            let v = fold_math(&v, Some(inherited_font_size)).unwrap_or(v);
+            parse_px_len(first(&v), inherited_font_size)
+        })
         .unwrap_or(inherited_font_size);
     for (property, value) in props.iter_mut() {
         if has_units(value) {
-            let viewport = (!LAYOUT_LENGTHS.contains(&property.as_str())).then_some(viewport);
+            // The layout reads a viewport unit itself, but not one inside
+            // maths (`width: clamp(100px, 20vw, 300px)`), which is worked out
+            // here and so has to be in pixels by now.
+            let maths = value.contains('(')
+                && rux_layout::calc::FUNCTIONS.iter().any(|f| contains_ignore_case(value, &format!("{f}(")));
+            let viewport = (maths || !LAYOUT_LENGTHS.contains(&property.as_str())).then_some(viewport);
             *value = resolve_units(value, own_font_size, viewport);
+        }
+        if value.contains('(') {
+            if let Some(folded) = fold_math(value, None) {
+                *value = folded;
+            }
         }
     }
     own_font_size
+}
+
+/// `value` with each maths function (`calc()`, `min()`, `clamp()`, …) that
+/// can be worked out now put in pixels, or as a plain number when it holds
+/// no length. One that needs a percentage's basis is left for the layout,
+/// unless `basis` is given; a viewport unit has been put in pixels already
+/// wherever the cascade is the one to resolve it. `None` when nothing
+/// changed.
+fn fold_math(value: &str, basis: Option<f32>) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut out = String::with_capacity(value.len());
+    let mut i = 0;
+    let mut changed = false;
+    while i < value.len() {
+        let boundary = i == 0 || !(bytes[i - 1].is_ascii_alphanumeric() || bytes[i - 1] == b'-');
+        let head = &bytes[i..];
+        let called = boundary
+            .then(|| {
+                rux_layout::calc::FUNCTIONS.iter().find(|f| {
+                    head.len() > f.len() && head[..f.len()].eq_ignore_ascii_case(f.as_bytes()) && head[f.len()] == b'('
+                })
+            })
+            .flatten();
+        if let Some(name) = called {
+            let rest = &value[i..];
+            if let Some(close) = closing_paren(&rest[name.len() + 1..]).map(|c| name.len() + 1 + c) {
+                let worked = rux_layout::calc::parse(&rest[..=close]).and_then(|c| Some((c.eval(basis, None)?, c.needs())));
+                if let Some((v, needs)) = worked.filter(|(v, _)| v.is_finite()) {
+                    out.push_str(&if needs.length { format!("{v}px") } else { format!("{v}") });
+                    i += close + 1;
+                    changed = true;
+                    continue;
+                }
+            }
+        }
+        let c = value[i..].chars().next().unwrap();
+        out.push(c);
+        i += c.len_utf8();
+    }
+    changed.then_some(out)
 }
 
 /// Puts the colours that need the element into `props`: `currentColor`
@@ -13891,5 +13966,77 @@ mod color_tests {
             ColorScheme::Light,
         );
         assert_eq!(bytes(only_dark.children[0].style.border_color), [0, 0, 0, 255]);
+    }
+}
+
+#[cfg(test)]
+mod math_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::Node;
+    use rux_script::Builder;
+
+    use super::{Environment, InteractionState, Instances, Swaps, Viewport};
+
+    fn built(src: &str) -> Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let env = Environment { viewport: Viewport { width: 1000.0, height: 600.0 }, ..Environment::sane() };
+        super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut Instances::new(),
+            &mut Swaps::new(),
+            &InteractionState::default(),
+            env,
+        )
+        .unwrap()
+        .0
+    }
+
+    /// Maths with nothing left to know is worked out in the cascade, in any
+    /// property, through a variable or not.
+    #[test]
+    fn maths_the_cascade_can_finish_is_finished_there() {
+        let root = built(
+            r#"<template><screen class="s"><view class="v"><text class="t">a</text></view></screen></template>
+               <style>
+                 .s { font-size: 20px; }
+                 .v { --o: 1; padding: calc(1rem + 2px) min(4vw, 20px); gap: calc(4px * 2);
+                      opacity: calc(var(--o) / 2); font-size: calc(50% + 2px); }
+                 .t { font-size: clamp(1rem, 2.5vw, 2rem); }
+               </style>"#,
+        );
+        let v = &root.children[0];
+        assert_eq!((v.style.padding.top, v.style.padding.right), (18.0, 20.0));
+        assert_eq!(v.style.gap, 8.0);
+        assert_eq!(v.style.opacity, 0.5);
+        // 2.5vw of a 1000px window, between 16px and 32px.
+        assert_eq!(v.children[0].text.as_ref().unwrap().font_size, 25.0);
+    }
+
+    /// A percentage in `font-size`, maths or not, is of the inherited size.
+    #[test]
+    fn a_percentage_in_font_size_maths_is_of_the_parents() {
+        let root = built(
+            r#"<template><screen class="s"><text class="t">a</text></screen></template>
+               <style>.s { font-size: 20px; } .t { font-size: calc(50% + 2px); }</style>"#,
+        );
+        assert_eq!(root.children[0].text.as_ref().unwrap().font_size, 12.0);
+    }
+
+    /// Viewport units in a size's maths are worked out in the cascade, which
+    /// then cascades again on a resize; a percentage is left, and said.
+    #[test]
+    fn a_size_with_viewport_maths_is_finished_too() {
+        let root = built(
+            r#"<template><screen><view class="v"></view></screen></template>
+               <style>.v { width: clamp(100px, 20vw, 300px); height: calc(10vh + 4px); }</style>"#,
+        );
+        let st = &root.children[0].style;
+        assert_eq!((st.width, st.height), (Some(rux_layout::Len::Px(200.0)), Some(rux_layout::Len::Px(64.0))));
+        assert!(super::reads_viewport());
     }
 }

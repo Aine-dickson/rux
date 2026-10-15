@@ -31,6 +31,9 @@
 pub mod path;
 pub use path::{PathCmd, PathContent};
 
+/// `calc()`, `min()`, `max()`, `clamp()` and the other maths functions.
+pub mod calc;
+
 mod inline;
 pub mod rich;
 pub mod white_space;

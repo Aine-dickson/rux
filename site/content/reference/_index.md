@@ -445,6 +445,18 @@ against the window every frame. Anywhere else (`padding: 2vw`,
 cascade, and a document that does so is cascaded again when the window is
 resized, as it is when a breakpoint is crossed.
 
+**Maths:** `calc()`, `min()`, `max()`, `clamp()`, `round()` (with `nearest`,
+`up`, `down` or `to-zero`), `mod()`, `rem()`, `abs()` and `sign()`, nested in
+one another as deep as needed, in any property that takes a length or a
+number, written out or arriving through `var()`. They are worked out in the
+cascade: `padding: calc(1rem + 2px)`, `gap: calc(4px * 2)`,
+`opacity: calc(var(--o) / 2)`, `font-size: clamp(1rem, 2.5vw, 2rem)` (a
+percentage in `font-size` is of the inherited size, as in CSS), and
+`width: clamp(100px, 20vw, 300px)`, whose viewport units are put in pixels and
+cascaded again on a resize. **Not yet:** maths with a percentage of the box it
+sits in, such as `width: calc(100% - 20px)`. That needs the box's size, which
+only the layout knows; the declaration is ignored and the warning says so.
+
 `em` is relative to the element's own resolved `font-size`, and on `font-size`
 itself it is relative to the inherited one, which is what it means in CSS. It is
 resolved in a pass before the properties are interpreted, the same way `var()`
