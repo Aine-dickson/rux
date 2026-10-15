@@ -186,6 +186,23 @@ fn to_gradient(g: &Gradient, x: f32, y: f32, w: f32, h: f32) -> PenikoGradient {
     grad.with_stops(stops.as_slice())
 }
 
+/// A path from Rux's commands, moved by `(ox, oy)`.
+fn bez_path(commands: &[PathCmd], ox: f64, oy: f64) -> BezPath {
+    let mut path = BezPath::new();
+    for c in commands {
+        match *c {
+            PathCmd::Move { x, y } => path.move_to((ox + x as f64, oy + y as f64)),
+            PathCmd::Curve { x1, y1, x2, y2, x, y } => path.curve_to(
+                (ox + x1 as f64, oy + y1 as f64),
+                (ox + x2 as f64, oy + y2 as f64),
+                (ox + x as f64, oy + y as f64),
+            ),
+            PathCmd::Close => path.close_path(),
+        }
+    }
+    path
+}
+
 /// vello's name for a CSS blend mode.
 fn mix_of(blend: BlendMode) -> Mix {
     match blend {
@@ -419,7 +436,9 @@ pub fn visible_paints(
                 reach.local = local_reach(reach.window, reach.cur);
                 true
             }
-            Paint::PushOpacity { .. } => {
+            // A shape is inside its box, so it narrows nothing a culled
+            // subtree would miss; kept as a layer like opacity.
+            Paint::PushOpacity { .. } | Paint::PushShapeClip { .. } => {
                 saved.push((reach, true));
                 true
             }
@@ -773,26 +792,7 @@ fn build(
             // paints in and it is the one that looks right: a stroke is a
             // border on the shape and belongs over its own fill, not under it.
             Paint::Path(p) => {
-                let mut path = BezPath::new();
-                let (ox, oy) = (p.x as f64, p.y as f64);
-                for c in &p.content.commands {
-                    match *c {
-                        PathCmd::Move { x, y } => path.move_to((ox + x as f64, oy + y as f64)),
-                        PathCmd::Curve {
-                            x1,
-                            y1,
-                            x2,
-                            y2,
-                            x,
-                            y,
-                        } => path.curve_to(
-                            (ox + x1 as f64, oy + y1 as f64),
-                            (ox + x2 as f64, oy + y2 as f64),
-                            (ox + x as f64, oy + y as f64),
-                        ),
-                        PathCmd::Close => path.close_path(),
-                    }
-                }
+                let path = bez_path(&p.content.commands, p.x as f64, p.y as f64);
                 if path.is_empty() {
                     continue;
                 }
@@ -843,6 +843,10 @@ fn build(
             } => {
                 let shape = rounded_rect(*x, *y, *width, *height, *radius, 0.0);
                 scene.push_clip_layer(Fill::NonZero, cur, &shape);
+            }
+            Paint::PushShapeClip { commands, evenodd } => {
+                let rule = if *evenodd { Fill::EvenOdd } else { Fill::NonZero };
+                scene.push_clip_layer(rule, cur, &bez_path(commands, 0.0, 0.0));
             }
             Paint::PopClip => scene.pop_layer(),
             Paint::PushTransform(m) => {

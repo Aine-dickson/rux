@@ -64,6 +64,13 @@ mix-blend-mode (every CSS mode: multiply, screen, overlay, darken, lighten,
                        color-dodge, color-burn, hard-light, soft-light, difference,
                        exclusion, hue, saturation, color, luminosity; the box and
                        its subtree blend as one layer, a stacking context, as in CSS)
+clip-path (inset() with `round`, xywh(), rect(), circle() and ellipse() with
+                       `at` and closest-side/farthest-side, polygon() and path()
+                       with evenodd, and a box: margin-box, border-box (the
+                       default), padding-box, content-box; the box, its shadow,
+                       outline and subtree are all cut. Not yet: taps are not
+                       cut, so a tap in a clipped-away corner still lands, and
+                       url() to an SVG clipPath, which Rux does not have)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)

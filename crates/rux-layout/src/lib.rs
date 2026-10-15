@@ -34,6 +34,9 @@ pub use path::{PathCmd, PathContent};
 /// `calc()`, `min()`, `max()`, `clamp()` and the other maths functions.
 pub mod calc;
 
+/// `clip-path`: the shapes and the box they are of.
+pub mod clip;
+
 mod inline;
 pub mod rich;
 pub mod white_space;
@@ -1100,6 +1103,8 @@ pub struct Style {
     /// `mix-blend-mode`: how the box and its subtree, drawn as one layer,
     /// combine with what is under them.
     pub blend: BlendMode,
+    /// `clip-path`, boxed: few boxes have one (watchlist #41).
+    pub clip_path: Option<Box<clip::ClipPath>>,
     /// Anchor positioning, `None` for almost every box.
     ///
     /// **Boxed on purpose.** Laid out flat it made every `Style` some 300
@@ -1240,6 +1245,7 @@ impl Default for Style {
             z_index: None,
             isolate: false,
             blend: BlendMode::Normal,
+            clip_path: None,
             anchor: None,
             content_visibility: ContentVisibility::Visible,
             invisible: false,
@@ -2261,6 +2267,12 @@ pub enum Paint {
         height: f32,
         radius: Corners,
     },
+    /// Begin clipping subsequent items to this outline (`clip-path`), in
+    /// absolute coordinates. Ended by [`Paint::PopClip`] like any clip.
+    PushShapeClip {
+        commands: std::sync::Arc<[PathCmd]>,
+        evenodd: bool,
+    },
     /// End the most recent clip.
     PopClip,
     /// Begin an affine `transform` on the subtree. The matrix already has the
@@ -2836,6 +2848,8 @@ enum PaintKind {
     Text(TextContent),
     Image(ImageContent),
     Tick(Rgba),
+    /// `clip-path`, read by the walk around the box rather than drawn.
+    ClipPath(std::sync::Arc<clip::ClipPath>),
     /// Vector geometry with the paint properties its style resolved to.
     ///
     /// The paint travels with the geometry rather than being looked up later
@@ -3934,6 +3948,9 @@ fn build(
     }
     // Last of the node's own paint, and read after its children: see
     // `PaintKind::Outline` in `collect`.
+    if let Some(c) = &node.style.clip_path {
+        paint.push((id, PaintKind::ClipPath(std::sync::Arc::new((**c).clone()))));
+    }
     if let Some(outline) = node.style.outline {
         paint.push((id, PaintKind::Outline(outline)));
     }
@@ -4892,6 +4909,28 @@ fn collect(
         });
     }
     let child_dim = dim * alpha;
+    // `clip-path` cuts the box and everything in it, its shadow and outline
+    // included, to a shape over one of its boxes.
+    let shape_clip = b.paints(id).iter().find_map(|(_, k)| match k {
+        PaintKind::ClipPath(c) => Some(c),
+        _ => None,
+    });
+    if let Some(c) = shape_clip {
+        let (bd, pd, m) = (layout.border, layout.padding, layout.margin);
+        let (w, h) = (layout.size.width, layout.size.height);
+        let reference = match c.reference {
+            clip::RefBox::Border => (x, y, w, h),
+            clip::RefBox::Padding => (x + bd.left, y + bd.top, w - bd.left - bd.right, h - bd.top - bd.bottom),
+            clip::RefBox::Content => (
+                x + bd.left + pd.left,
+                y + bd.top + pd.top,
+                w - bd.left - bd.right - pd.left - pd.right,
+                h - bd.top - bd.bottom - pd.top - pd.bottom,
+            ),
+            clip::RefBox::Margin => (x - m.left, y - m.top, w + m.left + m.right, h + m.top + m.bottom),
+        };
+        out.paints.push(Paint::PushShapeClip { commands: c.commands(reference, vp).into(), evenodd: c.evenodd() });
+    }
 
     let mut clip = false;
     let mut clip_radius = [0.0; 4];
@@ -5000,7 +5039,7 @@ fn collect(
                     content: ic.clone(),
                 })),
                 // Drawn after the children, below.
-                PaintKind::Outline(_) => {}
+                PaintKind::Outline(_) | PaintKind::ClipPath(_) => {}
                 // Each box of a sentence where its glyphs left room for it, and
                 // each part's rectangles kept for its regions, made below
                 // after the sentence's own so the part is found first.
@@ -5391,6 +5430,9 @@ fn collect(
         if let PaintKind::Outline(o) = kind {
             out.paints.push(outline_paint(o, x, y, layout.size.width, layout.size.height, clip_radius));
         }
+    }
+    if shape_clip.is_some() {
+        out.paints.push(Paint::PopClip);
     }
     if transform.is_some() {
         out.paints.push(Paint::PopTransform);

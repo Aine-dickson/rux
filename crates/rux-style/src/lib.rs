@@ -3771,7 +3771,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
-    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "cursor", "touch-action", "box-shadow", "transform",
+    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "cursor", "touch-action", "box-shadow", "transform",
     "transition",
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
@@ -4041,7 +4041,7 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
     "filter", "backdrop-filter",
-    "clip-path", "mask", "text-shadow",
+    "mask", "text-shadow",
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
     "place-items", "place-content", "place-self", "resize",
@@ -9082,6 +9082,9 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             },
         };
     }
+    if let Some(v) = p.get("clip-path") {
+        st.clip_path = parse_clip_path(v).map(Box::new);
+    }
     if let Some(v) = p.get("mix-blend-mode") {
         st.blend = match v.trim() {
             "normal" => BlendMode::Normal,
@@ -10899,6 +10902,196 @@ fn interpret_path_paint(p: &HashMap<String, String>, st: &mut Style) {
             _ => FillRule::NonZero,
         };
     }
+}
+
+/// `clip-path`: a basic shape and the box it is of, either alone, or `none`.
+/// A shape that does not parse is said once, and clips nothing.
+fn parse_clip_path(value: &str) -> Option<rux_layout::clip::ClipPath> {
+    use rux_layout::clip::{ClipPath, RefBox};
+    let value = value.trim();
+    if value == "none" {
+        return None;
+    }
+    let mut shape = None;
+    let mut reference = None;
+    for token in split_top_level(value) {
+        let boxed = match token {
+            "border-box" => Some(RefBox::Border),
+            "padding-box" => Some(RefBox::Padding),
+            "content-box" => Some(RefBox::Content),
+            "margin-box" => Some(RefBox::Margin),
+            // SVG's boxes, for a box that is not SVG, are the CSS ones.
+            "fill-box" => Some(RefBox::Content),
+            "stroke-box" | "view-box" => Some(RefBox::Border),
+            _ => None,
+        };
+        if boxed.is_some() {
+            reference = boxed;
+            continue;
+        }
+        match parse_clip_shape(token) {
+            Some(s) => shape = Some(s),
+            None => {
+                let why = if token.starts_with("url(") {
+                    "Rux has no SVG `<clipPath>` to point at; use a shape such as \
+                     `circle()`, `polygon()` or `path()`"
+                } else {
+                    "it is not a shape Rux reads: `inset()`, `circle()`, `ellipse()`, `polygon()`, \
+                     `path()`, `xywh()` or `rect()`, and a box"
+                };
+                warn_once(format!("`clip-path: {value}` clips nothing: {why}."));
+                return None;
+            }
+        }
+    }
+    Some(ClipPath { shape, reference: reference.unwrap_or_default() })
+}
+
+/// One basic shape: `inset()`, `xywh()`, `rect()`, `circle()`, `ellipse()`,
+/// `polygon()` or `path()`.
+fn parse_clip_shape(token: &str) -> Option<rux_layout::clip::ClipShape> {
+    use rux_layout::clip::{ClipShape, Radius};
+    let (name, rest) = token.split_once('(')?;
+    let name = name.trim();
+    let args = rest.strip_suffix(')')?.trim();
+    let half = Len::Pct(0.5);
+    // A `<radius>`: a keyword, or a length.
+    let radius = |t: Option<&str>| -> Option<Radius> {
+        Some(match t {
+            None | Some("closest-side") => Radius::ClosestSide,
+            Some("farthest-side") => Radius::FarthestSide,
+            Some(t) => Radius::Len(parse_len(t)?),
+        })
+    };
+    // One word of a position, as an x, a y, or neither (`center`).
+    let word = |w: &str| -> Option<(Option<Len>, Option<Len>)> {
+        Some(match w {
+            "left" => (Some(Len::Pct(0.0)), None),
+            "right" => (Some(Len::Pct(1.0)), None),
+            "top" => (None, Some(Len::Pct(0.0))),
+            "bottom" => (None, Some(Len::Pct(1.0))),
+            "center" => (None, None),
+            l => (Some(parse_len(l)?), None),
+        })
+    };
+    // `at <position>`, centred unless said otherwise.
+    let at = |words: &[&str]| -> Option<(Len, Len)> {
+        Some(match words {
+            [] => (half, half),
+            [one] => {
+                let (x, y) = word(one)?;
+                (x.unwrap_or(half), y.unwrap_or(half))
+            }
+            [a, b] => {
+                // `top left` is `left top`: a vertical word first is swapped.
+                let swap = matches!(*a, "top" | "bottom") || matches!(*b, "left" | "right");
+                let (a, b) = if swap { (*b, *a) } else { (*a, *b) };
+                let x = word(a)?.0.unwrap_or(half);
+                let y = match b {
+                    "top" => Len::Pct(0.0),
+                    "bottom" => Len::Pct(1.0),
+                    "center" => half,
+                    l => parse_len(l)?,
+                };
+                (x, y)
+            }
+            _ => return None,
+        })
+    };
+    // The words before `at`, and the ones after it.
+    let split_at = |args: &str| -> (Vec<String>, Vec<String>) {
+        let words: Vec<String> = split_top_level(args).into_iter().map(str::to_string).collect();
+        match words.iter().position(|w| w == "at") {
+            Some(i) => (words[..i].to_vec(), words[i + 1..].to_vec()),
+            None => (words, Vec::new()),
+        }
+    };
+    // Up to four lengths after `round`, as `border-radius` takes them.
+    let corners = |words: &[&str]| -> Option<[Len; 4]> {
+        let l: Vec<Len> = words.iter().take_while(|w| **w != "/").map(|w| parse_len(w)).collect::<Option<_>>()?;
+        Some(match l[..] {
+            [] => [Len::Px(0.0); 4],
+            [a] => [a; 4],
+            [a, b] => [a, b, a, b],
+            [a, b, c] => [a, b, c, b],
+            [a, b, c, d] => [a, b, c, d],
+            _ => return None,
+        })
+    };
+    // `calc(100% - a - b)`: a far edge given by where the near ones are.
+    let from_far = |parts: &[&str]| -> Option<Len> {
+        let text = format!("calc(100% - {})", parts.join(" - "));
+        rux_layout::calc::intern(&text).map(Len::Calc)
+    };
+    // An optional fill rule ahead of the rest, as `polygon()` and `path()` take one.
+    let rule = |args: &str| -> (bool, String) {
+        let parts = split_top_level_commas(args);
+        match parts.first().copied() {
+            Some("evenodd") => (true, parts[1..].join(",")),
+            Some("nonzero") => (false, parts[1..].join(",")),
+            _ => (false, args.to_string()),
+        }
+    };
+    Some(match name {
+        "inset" | "xywh" | "rect" => {
+            let words = split_top_level(args);
+            let round = words.iter().position(|w| *w == "round");
+            let v = &words[..round.unwrap_or(words.len())];
+            let sides = match (name, v) {
+                ("inset", _) => {
+                    let l: Vec<Len> = v.iter().map(|w| parse_len(w)).collect::<Option<_>>()?;
+                    match l[..] {
+                        [a] => [a; 4],
+                        [a, b] => [a, b, a, b],
+                        [a, b, c] => [a, b, c, b],
+                        [a, b, c, d] => [a, b, c, d],
+                        _ => return None,
+                    }
+                }
+                // x y width height: the far edges are what is left over.
+                ("xywh", [x, y, w, h]) => [parse_len(y)?, from_far(&[x, w])?, from_far(&[y, h])?, parse_len(x)?],
+                // top right bottom left, each from the top or left edge.
+                ("rect", [t, r, b, l]) => [parse_len(t)?, from_far(&[r])?, from_far(&[b])?, parse_len(l)?],
+                _ => return None,
+            };
+            let round = corners(round.map_or(&[][..], |i| &words[i + 1..]))?;
+            ClipShape::Inset { sides, round }
+        }
+        "circle" => {
+            let (r, pos) = split_at(args);
+            let pos: Vec<&str> = pos.iter().map(String::as_str).collect();
+            ClipShape::Circle { r: radius(r.first().map(String::as_str))?, at: at(&pos)? }
+        }
+        "ellipse" => {
+            let (r, pos) = split_at(args);
+            let pos: Vec<&str> = pos.iter().map(String::as_str).collect();
+            ClipShape::Ellipse {
+                rx: radius(r.first().map(String::as_str))?,
+                ry: radius(r.get(1).map(String::as_str))?,
+                at: at(&pos)?,
+            }
+        }
+        "polygon" => {
+            let (evenodd, rest) = rule(args);
+            let points = split_top_level_commas(&rest)
+                .into_iter()
+                .map(|pair| match split_top_level(pair)[..] {
+                    [x, y] => Some((parse_len(x)?, parse_len(y)?)),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>()?;
+            (points.len() >= 3).then_some(())?;
+            ClipShape::Polygon { evenodd, points }
+        }
+        "path" => {
+            let (evenodd, rest) = rule(args);
+            let d = rest.trim().trim_matches(|c| c == '"' || c == '\'');
+            let commands = rux_layout::path::parse_path(d);
+            (!commands.is_empty()).then_some(())?;
+            ClipShape::Path { evenodd, commands }
+        }
+        _ => return None,
+    })
 }
 
 /// `outline` and its longhands, as CSS reads them: the shorthand resets all
@@ -14112,5 +14305,60 @@ mod math_tests {
         let st = &root.children[0].style;
         assert_eq!((st.width, st.height), (Some(rux_layout::Len::Px(200.0)), Some(rux_layout::Len::Px(64.0))));
         assert!(super::reads_viewport());
+    }
+}
+
+#[cfg(test)]
+mod clip_tests {
+    use rux_layout::clip::{ClipShape, Radius, RefBox};
+    use rux_layout::Len;
+
+    use super::parse_clip_path as p;
+
+    #[test]
+    fn every_shape_parses_as_lightningcss_prints_it() {
+        let c = p("circle(40px at 0 0) padding-box").unwrap();
+        assert_eq!(c.reference, RefBox::Padding);
+        assert_eq!(c.shape, Some(ClipShape::Circle { r: Radius::Len(Len::Px(40.0)), at: (Len::Px(0.0), Len::Px(0.0)) }));
+        let c = p("circle()").unwrap();
+        assert_eq!(c.shape, Some(ClipShape::Circle { r: Radius::ClosestSide, at: (Len::Pct(0.5), Len::Pct(0.5)) }));
+        let c = p("ellipse(50% 30% at right top)").unwrap();
+        assert_eq!(
+            c.shape,
+            Some(ClipShape::Ellipse {
+                rx: Radius::Len(Len::Pct(0.5)),
+                ry: Radius::Len(Len::Pct(0.3)),
+                at: (Len::Pct(1.0), Len::Pct(0.0))
+            })
+        );
+        let c = p("inset(10px 20px round 8px)").unwrap();
+        assert_eq!(
+            c.shape,
+            Some(ClipShape::Inset { sides: [Len::Px(10.0), Len::Px(20.0), Len::Px(10.0), Len::Px(20.0)], round: [Len::Px(8.0); 4] })
+        );
+        let Some(ClipShape::Polygon { evenodd, points }) = p("polygon(evenodd, 0 0, 10px 0, 10px 10px)").unwrap().shape
+        else {
+            panic!("not a polygon")
+        };
+        assert!(evenodd && points.len() == 3);
+        let Some(ClipShape::Path { evenodd, commands }) = p(r#"path(evenodd, "M0 0 h10 v10 Z")"#).unwrap().shape else {
+            panic!("not a path")
+        };
+        assert!(evenodd && !commands.is_empty());
+        assert_eq!(p("content-box").unwrap().shape, None);
+        assert!(p("none").is_none());
+        // xywh() and rect() are insets whose far edges are what is left.
+        let Some(ClipShape::Inset { sides, .. }) = p("xywh(10px 20px 50% 30px)").unwrap().shape else {
+            panic!("not an inset")
+        };
+        assert_eq!((sides[0], sides[3]), (Len::Px(20.0), Len::Px(10.0)));
+        assert_eq!(sides[1].px(200.0, (0.0, 0.0)), 200.0 - 10.0 - 100.0);
+    }
+
+    #[test]
+    fn what_rux_cannot_clip_to_is_said() {
+        let _ = super::take_warnings();
+        assert!(p(r##"url("#x")"##).is_none());
+        assert!(super::take_warnings().iter().any(|w| w.message.contains("SVG `<clipPath>`")));
     }
 }
