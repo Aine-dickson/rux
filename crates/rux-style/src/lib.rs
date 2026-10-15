@@ -4516,7 +4516,8 @@ fn matched_selection(
                     }
                 }
                 other => warn_once(format!(
-                    "`{other}` does nothing in `::selection`; a highlight honours `color` and                      `background-color` only"
+                    "`{other}` does nothing in `::selection`; a highlight honours `color` and \
+                     `background-color` only"
                 )),
             }
         }
@@ -9336,7 +9337,9 @@ fn parse_transitions(value: &str) -> Vec<Transition> {
                 // An easing function Rux does not draw, or one written wrong.
                 // Said rather than left to fall back to `ease` unexplained.
                 warn_once(format!(
-                    "`{token}` is not a timing function Rux knows, so the transition eases with `ease`.                      Use linear, ease, ease-in, ease-out, ease-in-out, cubic-bezier(), steps(),                      step-start or step-end."
+                    "`{token}` is not a timing function Rux knows, so the transition eases with `ease`. \
+                     Use linear, ease, ease-in, ease-out, ease-in-out, cubic-bezier(), steps(), \
+                     step-start or step-end."
                 ));
             } else if property.is_none() && unknown.is_none() {
                 match parse_anim_prop(token) {
