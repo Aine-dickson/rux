@@ -372,3 +372,41 @@ fn shadows_go_under_and_inset_ones_over_the_background() {
     assert_eq!(radius, [8.0; 4]);
     assert_eq!(hole, (7.0, 2.0, 96.0, 46.0));
 }
+
+/// `visibility: hidden` takes a box's own paint and its tap away and keeps
+/// its place; a child that is `visible` again still draws and answers.
+#[test]
+fn a_hidden_box_draws_nothing_but_a_visible_child_does() {
+    let red = Rgba::new(1.0, 0.0, 0.0, 1.0);
+    let blue = Rgba::new(0.0, 0.0, 1.0, 1.0);
+    let mut parent = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(50.0)),
+        background: Some(Background::Color(red)),
+        invisible: true,
+        ..Default::default()
+    });
+    parent.on_tap = Some("a()".into());
+    let mut child = Node::new(Style {
+        width: Some(Len::Px(20.0)),
+        height: Some(Len::Px(20.0)),
+        background: Some(Background::Color(blue)),
+        ..Default::default()
+    });
+    child.on_tap = Some("b()".into());
+    parent.children.push(child);
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (50.0, 20.0);
+    let out = layout(&on_screen(parent), 1000.0, 800.0, &mut measure);
+    let fills: Vec<f32> = out
+        .paints
+        .iter()
+        .filter_map(|p| match p {
+            Paint::Rect(PaintRect { background: Some(Background::Color(c)), .. }) => Some(c.b),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(fills, [1.0], "only the visible child draws");
+    let taps: Vec<&str> = out.hits.iter().filter_map(|h| h.on_tap.as_deref()).collect();
+    assert_eq!(taps, ["b()"]);
+    assert!(out.metrics.iter().any(|m| m.path == [0] && m.width == 100.0), "still measured");
+}

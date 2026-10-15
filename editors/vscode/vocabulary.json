@@ -248,8 +248,8 @@
     "background-color", "background-image", "color", "font-size", "font-weight", "font-family",
     "font-style", "text-align", "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line", "overflow-wrap", "word-wrap", "word-break", "vertical-align",
-    "direction", "color-scheme", "fill", "fill-rule", "stroke", "stroke-width",
-    "stroke-linecap", "stroke-linejoin"
+    "direction", "color-scheme", "visibility", "fill", "fill-rule", "stroke",
+    "stroke-width", "stroke-linecap", "stroke-linejoin"
   ],
   "cssPropertyDocs": [
     { "name": "display", "detail": "how this box lays its children out", "doc": "`block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`.", "usage": ".row { display: flex; }" },
@@ -366,6 +366,7 @@
     { "name": "word-spacing", "detail": "extra space between words", "doc": "A length, positive or negative.", "usage": ".lead { word-spacing: 1px; }" },
     { "name": "line-height", "detail": "the height of one line of text", "doc": "A number (a multiple of the font size) or a length. The usual way to give body text room to breathe.", "usage": ".body { line-height: 20px; }" },
     { "name": "direction", "detail": "which way text and rows run", "doc": "`ltr` (the default) or `rtl`, inherited; the `dir` attribute sets it too, and a rule wins over the attribute. Under `rtl` a flex row starts from the right, grid columns count from the right, `text-align: start` is the right edge, and the logical properties (`margin-inline-start` and the rest) take the right side as their start.", "usage": ".page { direction: rtl; }" },
+    { "name": "visibility", "detail": "hide a box but keep its place", "doc": "`hidden` draws nothing and takes no tap or focus, but the box keeps its space, unlike `display: none`. Inherited: a child can be `visible` inside a hidden box. `collapse` is `hidden`.", "usage": ".spinner { visibility: hidden; }" },
     { "name": "color-scheme", "detail": "which side of light-dark() colours take", "doc": "`light dark` follows the system's light or dark setting, `dark` is always dark, and `normal` (the default) is light whatever the system says, as in CSS. Inherited, so setting it on the screen sets it for the page.", "usage": "screen { color-scheme: light dark; }" },
     { "name": "margin-inline", "detail": "the margins at the start and end of the line", "doc": "One value for both, or the start's then the end's. Start is left under `ltr` and right under `rtl`.", "usage": ".chip { margin-inline: 4px 12px; }" },
     { "name": "margin-inline-start", "detail": "the margin where a line starts", "doc": "Left under `ltr`, right under `rtl`.", "usage": ".label { margin-inline-start: 8px; }" },
@@ -429,6 +430,7 @@
     "vertical-align": ["baseline", "middle", "text-top", "text-bottom"],
     "direction": ["ltr", "rtl"],
     "color-scheme": ["normal", "light", "dark", "light dark"],
+    "visibility": ["visible", "hidden", "collapse"],
     "text-decoration": ["none", "underline", "line-through"],
     "text-decoration-line": ["none", "underline", "line-through"],
     "overflow-wrap": ["normal", "break-word", "anywhere"],

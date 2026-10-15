@@ -1107,6 +1107,11 @@ pub struct Style {
     /// `content-visibility`: whether this box's contents are laid out and
     /// drawn while it is off screen. See [`ContentVisibility`].
     pub content_visibility: ContentVisibility,
+    /// `visibility: hidden` (or `collapse`): the box keeps its place and
+    /// draws nothing, a tap passes through it, and it is not focusable.
+    /// Inherited in the cascade, so its children are hidden too unless one
+    /// says `visible`.
+    pub invisible: bool,
     /// `contain-intrinsic-size`, width then height: the size a box whose
     /// contents are skipped takes in their place. Boxed, as `anchor` is.
     pub contain_intrinsic: Option<Box<[IntrinsicSize; 2]>>,
@@ -1233,6 +1238,7 @@ impl Default for Style {
             isolate: false,
             anchor: None,
             content_visibility: ContentVisibility::Visible,
+            invisible: false,
             contain_intrinsic: None,
             aspect_ratio: None,
             transitions: Vec::new(),
@@ -3318,6 +3324,9 @@ struct At {
     opacity: Option<u32>,
     transform: Option<u32>,
     hidden: bool,
+    /// `visibility: hidden`: this box draws nothing and answers nothing, but
+    /// its children are walked, since one may be `visible` again.
+    invisible: bool,
     scroll: bool,
     /// A scroller whose content starts at its right: see `ScrollRegion::rtl`.
     scroll_rtl: bool,
@@ -3372,7 +3381,7 @@ fn index(
     handlers: &[Handler],
     models: &[Bound],
     focus_labels: &[(NodeId, String, Option<String>)],
-    hidden: &[NodeId],
+    hidden: &[(NodeId, bool)],
     opacities: &[(NodeId, f32)],
     scrolls: &[ScrollFacts],
     transforms: &[(NodeId, Transform)],
@@ -3409,8 +3418,13 @@ fn index(
     first(&mut at, stickies.iter().map(|s| s.0), |a| &mut a.sticky);
     first(&mut at, opacities.iter().map(|o| o.0), |a| &mut a.opacity);
     first(&mut at, transforms.iter().map(|t| t.0), |a| &mut a.transform);
-    for id in hidden {
-        at.entry(*id).or_default().hidden = true;
+    for &(id, whole) in hidden {
+        let a = at.entry(id).or_default();
+        if whole {
+            a.hidden = true;
+        } else {
+            a.invisible = true;
+        }
     }
     for f in scrolls {
         let a = at.entry(f.id).or_default();
@@ -3578,7 +3592,9 @@ fn build(
     handlers: &mut Vec<Handler>,
     models: &mut Vec<Bound>,
     focus_labels: &mut Vec<(NodeId, String, Option<String>)>,
-    hidden: &mut Vec<NodeId>,
+    // `r-show="false"` and `display: none` as `(id, true)`, the whole subtree
+    // gone; `visibility: hidden` as `(id, false)`, the box alone.
+    hidden: &mut Vec<(NodeId, bool)>,
     opacities: &mut Vec<(NodeId, f32)>,
     scrolls: &mut Vec<ScrollFacts>,
     transforms: &mut Vec<(NodeId, Transform)>,
@@ -3931,7 +3947,9 @@ fn build(
     // exactly what both mean. The one difference between them, whether a slot
     // is reserved, is already settled in the layout above.
     if node.hidden || node.style.display == Display::None {
-        hidden.push(id);
+        hidden.push((id, true));
+    } else if node.style.invisible {
+        hidden.push((id, false));
     }
     if node.style.opacity < 1.0 {
         opacities.push((id, node.style.opacity.max(0.0)));
@@ -4846,6 +4864,9 @@ fn collect(
     let mut placed: Vec<(inline::InlinePart, Vec<Rect4>)> = Vec::new();
     // A node can emit more than one paint (a text node paints its box, then its
     // glyphs), so walk every entry it owns, in order.
+    // Where this box's own paint starts, for `visibility: hidden` to take
+    // back once its clip is known.
+    let own_paint = out.paints.len();
     // The walk that only finds where anchors are drawn (see `Anchoring`) needs
     // a box's clip and nothing it paints or answers taps with.
     if walk.dry {
@@ -4971,7 +4992,22 @@ fn collect(
         }
     }
 
-    if !walk.dry {
+    // `visibility: hidden` draws none of this box and answers nothing with it,
+    // but it is still where it is: `query()` measures it, as a browser does.
+    if at.invisible {
+        out.paints.truncate(own_paint);
+        placed.clear();
+        if let (false, Some((_, path))) = (walk.dry, at.path.map(|i| &b.paths[i as usize])) {
+            out.metrics.push(NodeMetrics {
+                path: path.clone(),
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+            });
+        }
+    }
+    if !walk.dry && !at.invisible {
         // A `for=` label targeting a text input: a focus region at the label's box,
         // carrying the *target's* model, so tapping the label focuses that input.
         if let Some((_, model, row)) = at.focus_label.map(|i| &b.focus_labels[i as usize]) {
@@ -5316,7 +5352,7 @@ fn collect(
     // clip, so it slides, fades and scrolls out of view with the element: the
     // focus ring used to be drawn by the shell as a separate layer and had to
     // be taught each of those one at a time.
-    for (_, kind) in b.paints(id) {
+    for (_, kind) in b.paints(id).iter().filter(|_| !at.invisible) {
         if let PaintKind::Outline(o) = kind {
             out.paints.push(outline_paint(o, x, y, layout.size.width, layout.size.height, clip_radius));
         }

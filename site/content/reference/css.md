@@ -51,6 +51,9 @@ vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a 
 direction (ltr|rtl; inherited, and set by the `dir` attribute too)
 color-scheme (normal | light | dark | light dark; inherited; which side of
                        `light-dark()` a colour takes)
+visibility (visible | hidden | collapse; inherited; a hidden box keeps its place,
+                       draws nothing and takes no tap or focus, and a child can
+                       be `visible` inside it; `collapse` is `hidden`)
 margin-inline, margin-inline-start, margin-inline-end,
 margin-block, margin-block-start, margin-block-end,
 padding-inline, padding-inline-start, padding-inline-end,

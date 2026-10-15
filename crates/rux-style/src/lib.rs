@@ -1404,6 +1404,8 @@ struct TextInherit {
     align: TextAlign,
     /// The used `color-scheme`, which `light-dark()` picks a side by.
     scheme: ColorScheme,
+    /// `visibility: hidden` or `collapse`.
+    invisible: bool,
 }
 
 impl Default for TextInherit {
@@ -1417,6 +1419,7 @@ impl Default for TextInherit {
             line_height: None,
             align: TextAlign::Start,
             scheme: ColorScheme::Light,
+            invisible: false,
         }
     }
 }
@@ -3804,6 +3807,9 @@ const HONORED_PROPERTIES: &[&str] = &[
     "overflow-wrap", "word-wrap", "word-break", "vertical-align", "direction",
     // Which side of `light-dark()` a colour takes.
     "color-scheme",
+    // Inherited, so a hidden box's children are hidden unless one says
+    // `visible`.
+    "visibility",
     // <path>. Paint is CSS rather than attributes because that is where the
     // rest of an element's appearance is written, and it is what gives a path
     // `:hover`, `:class` and `transition` on the day it lands.
@@ -4035,7 +4041,7 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
     "filter", "backdrop-filter", "mix-blend-mode",
-    "visibility", "clip-path", "mask", "text-shadow",
+    "clip-path", "mask", "text-shadow",
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
     "place-items", "place-content", "place-self", "resize",
@@ -5494,7 +5500,13 @@ fn build_node_inner(
         },
         align: props.get("text-align").map(|v| parse_text_align(v)).unwrap_or(up.align),
         scheme,
+        invisible: match props.get("visibility").map(|v| v.trim()) {
+            Some("hidden" | "collapse") => true,
+            Some("visible") => false,
+            _ => up.invisible,
+        },
     };
+    style.invisible = own_text.invisible;
     let TextInherit { weight, italic, letter_spacing, word_spacing, white_space, align, .. } = own_text;
     let line_height = own_text.line_height.map(|l| l.px(font_size));
     // `text-decoration[-line]`: underline / line-through (space-separated list).
@@ -13739,6 +13751,19 @@ mod inheritance_tests {
         assert_eq!((t.weight, t.italic, t.letter_spacing, t.word_spacing), (700, true, Some(1.0), Some(3.0)));
         assert_eq!(t.align, TextAlign::Center);
         assert_eq!(t.white_space, super::WhiteSpace::PreLine);
+    }
+
+    /// `visibility` inherits, and a child can be `visible` inside a hidden box.
+    #[test]
+    fn visibility_inherits_and_a_child_can_undo_it() {
+        let root = built(
+            r#"<template><screen><view class="p"><view></view><view class="c"></view></view></screen></template>
+               <style>.p { visibility: hidden; } .c { visibility: visible; }</style>"#,
+        );
+        let p = &root.children[0];
+        assert!(p.style.invisible && p.children[0].style.invisible);
+        assert!(!p.children[1].style.invisible);
+        assert!(!root.style.invisible);
     }
 
     /// A text's own rule wins, and `normal` takes it back.

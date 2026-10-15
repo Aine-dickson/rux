@@ -506,10 +506,10 @@ yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
 Real CSS Rux has not built includes `box-sizing`,
-`transform-origin`, `visibility`, `filter`, `text-transform`, `background-size`,
+`transform-origin`, `filter`, `text-transform`, `background-size`,
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
-gradients, `transform`, CSS variables, all five `position` values, `z-index` and
-`isolation` used to be on that list and are honored now.
+gradients, `transform`, CSS variables, all five `position` values, `z-index`,
+`isolation` and `visibility` used to be on that list and are honored now.
 
 Colours accept `#hex` (3/6/8-digit), the full CSS named-colour list (`red`,
 `rebeccapurple`, …), `transparent`, `currentColor`, and every CSS colour

@@ -653,6 +653,9 @@ vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a 
 direction (ltr|rtl; inherited, and set by the `dir` attribute too)
 color-scheme (normal | light | dark | light dark; inherited; which side of
                        `light-dark()` a colour takes)
+visibility (visible | hidden | collapse; inherited; a hidden box keeps its place,
+                       draws nothing and takes no tap or focus, and a child can
+                       be `visible` inside it; `collapse` is `hidden`)
 margin-inline, margin-inline-start, margin-inline-end,
 margin-block, margin-block-start, margin-block-end,
 padding-inline, padding-inline-start, padding-inline-end,
@@ -1262,10 +1265,10 @@ yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
 Real CSS Rux has not built includes `box-sizing`,
-`transform-origin`, `visibility`, `filter`, `text-transform`, `background-size`,
+`transform-origin`, `filter`, `text-transform`, `background-size`,
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
-gradients, `transform`, CSS variables, all five `position` values, `z-index` and
-`isolation` used to be on that list and are honored now.
+gradients, `transform`, CSS variables, all five `position` values, `z-index`,
+`isolation` and `visibility` used to be on that list and are honored now.
 
 Colours accept `#hex` (3/6/8-digit), the full CSS named-colour list (`red`,
 `rebeccapurple`, …), `transparent`, `currentColor`, and every CSS colour
