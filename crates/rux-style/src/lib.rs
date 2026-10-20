@@ -9395,16 +9395,34 @@ fn parse_stops(parts: &[&str]) -> Option<Vec<(Rgba, f32)>> {
         let part = part.trim();
         let mut toks = part.split_whitespace();
         let color = parse_color(toks.next()?)?;
-        let pos = toks
-            .next()
-            .and_then(|p| p.strip_suffix('%'))
-            .and_then(|p| p.trim().parse::<f32>().ok())
-            .map(|p| (p / 100.0).clamp(0.0, 1.0));
-        colors.push(color);
-        positions.push(pos);
+        // A bare `0` is a position too: it is how lightningcss writes the
+        // second half of a hard stop, `red 50%, blue 0`.
+        let at = |p: &str| {
+            let pct = if p == "0" { Some(0.0) } else { p.strip_suffix('%').and_then(|n| n.trim().parse::<f32>().ok()) };
+            if pct.is_none() {
+                warn(format!(
+                    "a gradient stop at `{p}` is placed as if it had no position; Rux places stops by percentage"
+                ));
+            }
+            pct.map(|p| (p / 100.0).clamp(0.0, 1.0))
+        };
+        // `lime 25% 75%` is two stops of one colour, which lightningcss
+        // writes for `lime 25%, lime 75%`.
+        let pos: Vec<Option<f32>> = toks.map(at).collect();
+        for p in if pos.is_empty() { vec![None] } else { pos } {
+            colors.push(color);
+            positions.push(p);
+        }
     }
     if colors.len() < 2 {
         return None;
+    }
+    // A stop placed before the one ahead of it is moved up to it, as CSS
+    // does, which is what makes `blue 0` after `red 50%` a hard stop at 50%.
+    let mut furthest = 0.0f32;
+    for p in positions.iter_mut().flatten() {
+        furthest = furthest.max(*p);
+        *p = furthest;
     }
     // Fill missing positions: ends anchor to 0 and 1, interior gaps interpolate.
     let n = positions.len();
@@ -12361,6 +12379,18 @@ mod tests {
         assert!(matches!(g.kind, GradientKind::Linear { angle } if (angle - FRAC_PI_2).abs() < 1e-4));
         assert!((g.stops[0].1 - 0.1).abs() < 1e-4);
         assert!((g.stops[1].1 - 0.8).abs() < 1e-4);
+
+        // A hard stop, in both spellings: a stop behind the one before it is
+        // moved up to it, and `0` is how lightningcss writes the second half.
+        for css in ["linear-gradient(to right, red 50%, blue 50%)", "linear-gradient(90deg, red 50%, blue 0)"] {
+            let g = grad(css);
+            assert_eq!([g.stops[0].1, g.stops[1].1], [0.5, 0.5], "{css}");
+        }
+        // A stop with two positions is two stops of one colour.
+        let g = grad("linear-gradient(to right, red 25%, #0f0 25% 75%, #00f 75%)");
+        let at: Vec<f32> = g.stops.iter().map(|s| s.1).collect();
+        assert_eq!(at, [0.25, 0.25, 0.75, 0.75]);
+        assert_eq!(g.stops[2].0.g, 1.0);
 
         // Radial: the shape prelude is ignored; stops still parse.
         let g = grad("radial-gradient(circle, red, blue)");

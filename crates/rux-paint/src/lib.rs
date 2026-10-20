@@ -162,11 +162,18 @@ fn to_color(c: Rgba) -> Color {
 /// endpoints follow the CSS gradient-line formula for its angle; a radial one is
 /// a centred circle to the nearest edge.
 fn to_gradient(g: &Gradient, x: f32, y: f32, w: f32, h: f32) -> PenikoGradient {
-    let stops: Vec<ColorStop> = g
+    let mut stops: Vec<ColorStop> = g
         .stops
         .iter()
         .map(|(rgba, off)| ColorStop { offset: *off, color: to_color(*rgba).into() })
         .collect();
+    // vello's ramp starts its first stop at 0 whatever its offset says, so
+    // `red 50%, blue 50%` faded from the left edge instead of turning at the
+    // middle. CSS holds the first colour up to the first stop: say so with a
+    // stop of that colour at 0.
+    if let Some(first) = stops.first().copied().filter(|s| s.offset > 0.0) {
+        stops.insert(0, ColorStop { offset: 0.0, ..first });
+    }
     let (cx, cy) = ((x + w / 2.0) as f64, (y + h / 2.0) as f64);
     let grad = match g.kind {
         GradientKind::Linear { angle } => {
