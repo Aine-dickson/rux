@@ -187,9 +187,11 @@ fn to_gradient(g: &Gradient, x: f32, y: f32, w: f32, h: f32) -> PenikoGradient {
 ///
 /// vello's ramp starts its first stop at 0 whatever its offset says (found in
 /// vello 0.9, still so in 0.11: `make_ramp` in vello_encoding's
-/// `ramp_cache.rs`), so `red 50%, blue 50%` faded from the left edge instead
-/// of turning at the middle. CSS holds the first colour up to the first stop:
-/// say so with a stop of that colour at 0. Harmless once vello is fixed.
+/// `ramp_cache.rs`; linebender/vello#2002 and #2013), so `red 50%, blue 50%`
+/// faded from the left edge instead of turning at the middle. CSS holds the
+/// first colour up to the first stop: say so with a stop of that colour at 0.
+/// #2002 reports the last stop short of 1 drawn wrong too, so it is held to 1
+/// the same way. Harmless once vello is fixed.
 fn ramp_stops(g: &Gradient) -> Vec<ColorStop> {
     let mut stops: Vec<ColorStop> = g
         .stops
@@ -198,6 +200,9 @@ fn ramp_stops(g: &Gradient) -> Vec<ColorStop> {
         .collect();
     if let Some(first) = stops.first().copied().filter(|s| s.offset > 0.0) {
         stops.insert(0, ColorStop { offset: 0.0, ..first });
+    }
+    if let Some(last) = stops.last().copied().filter(|s| s.offset < 1.0) {
+        stops.push(ColorStop { offset: 1.0, ..last });
     }
     stops
 }
@@ -1474,8 +1479,9 @@ mod tests {
         let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.5), (blue, 0.5)] };
         let stops = super::ramp_stops(&g);
         let at: Vec<f32> = stops.iter().map(|s| s.offset).collect();
-        assert_eq!(at, [0.0, 0.5, 0.5]);
+        assert_eq!(at, [0.0, 0.5, 0.5, 1.0]);
         assert_eq!(stops[0].color, stops[1].color, "the added stop is the first colour");
+        assert_eq!(stops[3].color, stops[2].color, "and the last");
         // A gradient that starts at 0 is handed over as written.
         let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.0), (blue, 1.0)] };
         assert_eq!(super::ramp_stops(&g).len(), 2);
