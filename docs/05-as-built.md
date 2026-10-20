@@ -726,6 +726,18 @@ filter, backdrop-filter (blur(), brightness(), contrast(), drop-shadow(),
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)
+scroll-behavior (auto | smooth: a scroll a script's `scrollIntoView()` or Tab
+                       moving focus asks for glides there over 300ms; a wheel,
+                       a finger and a fling never do, and one of them stops a
+                       glide on the same scroller, as in CSS)
+pointer-events (auto | none; inherited: a pointer goes through the box to what
+                       is under it, `:hover` and `:active` do not take it, and a
+                       `for=` label does not focus from it; the keyboard still
+                       reaches it. Not yet: a text field under `none` still
+                       takes a tap)
+object-fit, object-position (on `<image>`: fill, contain, cover, none,
+                       scale-down; the picture is drawn in the content box,
+                       inside the image's padding, and cut to it)
 scrollbar-width (auto | thin | none), scrollbar-color (thumb track | auto)
 content-visibility (visible | auto | hidden), contain-intrinsic-size (and -width,
                        -height, -inline-size, -block-size; `auto <length>`)
@@ -1341,7 +1353,9 @@ yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
 Real CSS Rux has not built includes `box-sizing`,
-`transform-origin`, `writing-mode`, `user-select`,
+`transform-origin`, `writing-mode`, `user-select`, `columns` (a multi-column
+layout of its own), the table properties (Rux has no tables), `content` (Rux
+has no `::before` or `::after`),
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.

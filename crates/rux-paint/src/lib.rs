@@ -1418,9 +1418,20 @@ fn build(
                 if iw <= 0.0 || ih <= 0.0 {
                     continue;
                 }
-                let transform = Affine::scale_non_uniform(img.width as f64 / iw, img.height as f64 / ih)
-                    .then_translate(Vec2::new(img.x as f64, img.y as f64));
+                // `object-fit` and `object-position`; what falls outside the
+                // content box is cut, as CSS cuts replaced content.
+                let (x, y, w, h) = img.content.placed((img.x, img.y, img.width, img.height), (iw as f32, ih as f32));
+                let transform = Affine::scale_non_uniform(w as f64 / iw, h as f64 / ih)
+                    .then_translate(Vec2::new(x as f64, y as f64));
+                let spills = x < img.x || y < img.y || x + w > img.x + img.width || y + h > img.y + img.height;
+                if spills {
+                    let bounds = Rect::new(img.x as f64, img.y as f64, (img.x + img.width) as f64, (img.y + img.height) as f64);
+                    scene.push_clip_layer(Fill::NonZero, cur, &bounds);
+                }
                 scene.draw_image(decoded, cur * transform);
+                if spills {
+                    scene.pop_layer();
+                }
             }
             Paint::PushClip {
                 x,

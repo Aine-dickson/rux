@@ -124,6 +124,12 @@ Found by a user asking a question rather than hitting a bug: *would the keyboard
 | **`items.for_each(|x| total += x)` added up the indexes** | Found probing closures, 2026-09-24. rhai's own `for_each` binds each item to `this` and passes the *index* as the argument, so `x` is 0, 1, 2 and the sum of `[1, 2, 3]` comes out 3. Rux's `forEach` passes the item, as JavaScript's does. Both names resolve, both run, neither warns, and the one that reads like Rust is the one that is wrong for a Rust reader too, since Rust's `for_each` hands over the item. The engine is right by rhai's documentation and the author is right by every other language | `/reference/script/` beside `forEach` (written); whether `for_each` should warn or be reshaped is open | documented, open |
 | **A textarea's Enter did nothing on a phone** | `type="textarea"` is documented as multi-line with Enter inserting a newline, and that was true on a desktop only. Android's `EditorInfo` was a constant declaring every field one line deep, so Gboard showed a Done tick and sent an editor action. The engine was right about what a textarea is and wrong about what it told the platform. Worth generalising: **a claim in the spec is a claim per platform**, and the phone is the one where nobody had checked | `/reference/inputs/`, beside the textarea description | **fixed 2026-09-21** |
 
+### From the first CSS pass (2026-10-21)
+
+| Trap | What actually happens, and why it is right | Destination | Status |
+|---|---|---|---|
+| **A box with no `@tap` over a button does not stop the tap** | A tap is matched against the boxes that answer one, and a box with no handler answers nothing, so a backdrop or overlay with no `@tap` of its own lets a tap through to the button under it. In a browser the overlay is the target and the button never hears it. Found driving `pointer-events: none`, whose control case did not hold: the overlay without `none` let the tap through as well. Until a plain box blocks, a backdrop that must swallow taps needs an `@tap` of its own, even an empty one | `/reference/css/` beside `pointer-events` | open |
+
 ---
 
 ## The pattern worth noticing

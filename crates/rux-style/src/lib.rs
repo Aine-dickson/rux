@@ -26,7 +26,7 @@ use rux_layout::{AnimProp, BlendMode, BorderStyle, Easing, GradientKind, GridFlo
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_layout::{ContentVisibility, IntrinsicSize};
-use rux_layout::{DecorationStyle, TextLook, TextTransform};
+use rux_layout::{DecorationStyle, ObjectFit, TextLook, TextTransform};
 use rux_layout::{BgAttachment, BgBox, BgLayer, BgLayers, BgLen, BgPos, BgRepeat, BgSize};
 use rux_layout::{GridAreas, GridName, GridNames, GridTrack, Repeat};
 use rux_parser::{Element, Node as TplNode, Sfc};
@@ -1413,6 +1413,8 @@ struct TextInherit {
     scheme: ColorScheme,
     /// `visibility: hidden` or `collapse`.
     invisible: bool,
+    /// `pointer-events: none`.
+    no_pointer: bool,
 }
 
 impl Default for TextInherit {
@@ -1427,6 +1429,7 @@ impl Default for TextInherit {
             align: TextAlign::Start,
             scheme: ColorScheme::Light,
             invisible: false,
+            no_pointer: false,
         }
     }
 }
@@ -3787,6 +3790,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "transition",
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
+    "object-fit", "object-position", "pointer-events", "scroll-behavior",
     "scrollbar-width", "scrollbar-color",
     "outline", "outline-color", "outline-offset", "outline-style", "outline-width",
     // Flex / grid
@@ -4073,7 +4077,6 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     "animation-timing-function", "animation-iteration-count", "animation-direction",
     "animation-fill-mode", "animation-play-state",
     // Other layout models
-    "object-fit", "object-position", "pointer-events", "scroll-behavior",
     "columns", "column-count", "column-width", "table-layout",
     "border-collapse", "border-spacing", "content",
 ];
@@ -5554,8 +5557,24 @@ fn build_node_inner(
             Some("visible") => false,
             _ => up.invisible,
         },
+        // `pointer-events`: `none`, or `auto` back again. CSS's SVG values
+        // name parts of a shape; on a box they come to `auto`.
+        no_pointer: match props.get("pointer-events").map(|v| v.trim()) {
+            Some("none") => true,
+            Some(_) => false,
+            None => up.no_pointer,
+        },
     };
     style.invisible = own_text.invisible;
+    style.no_pointer = own_text.no_pointer;
+    style.scroll_smooth = match props.get("scroll-behavior").map(|v| v.trim()) {
+        Some("smooth") => true,
+        Some("auto") | None => false,
+        Some(other) => {
+            warn(format!("`scroll-behavior: {other}` is not a value Rux knows; use `auto` or `smooth`"));
+            false
+        }
+    };
     let TextInherit { weight, italic, letter_spacing, word_spacing, white_space, align, .. } = own_text;
     // `text-shadow`: its own, else its parent's.
     let shadows = match props.get("text-shadow") {
@@ -5593,13 +5612,28 @@ fn build_node_inner(
             })
             .or_else(|| el.attr("src").map(str::to_string))
             .unwrap_or_default();
-        let mut node = LayoutNode::image(
-            style,
-            ImageContent {
-                src,
-                intrinsic: (0.0, 0.0),
-            },
-        );
+        let mut image = ImageContent::new(src);
+        if let Some(v) = props.get("object-fit") {
+            image.fit = match v.trim() {
+                "fill" => ObjectFit::Fill,
+                "contain" => ObjectFit::Contain,
+                "cover" => ObjectFit::Cover,
+                "none" => ObjectFit::None,
+                "scale-down" => ObjectFit::ScaleDown,
+                other => {
+                    warn(format!("`object-fit: {other}` is not a fit Rux knows; use `fill`, `contain`, `cover`, `none` or `scale-down`"));
+                    ObjectFit::Fill
+                }
+            };
+        }
+        if let Some(v) = props.get("object-position") {
+            let toks: Vec<String> = split_top_level(v).into_iter().map(str::to_string).collect();
+            match parse_bg_position(&toks) {
+                Some(p) => image.position = p,
+                None => warn(format!("`object-position: {v}` is not a position Rux knows")),
+            }
+        }
+        let mut node = LayoutNode::image(style, image);
         node.on_tap = on_tap;
         node.gestures = gestures;
         // As for text above: a tap or gesture here belongs to the instance.

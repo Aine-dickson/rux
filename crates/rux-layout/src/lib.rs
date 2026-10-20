@@ -459,6 +459,7 @@ struct ScrollFacts {
     axes: (bool, bool),
     contain: (bool, bool),
     bar: Scrollbar,
+    smooth: bool,
 }
 
 impl Style {
@@ -1241,6 +1242,12 @@ pub struct Style {
     /// Inherited in the cascade, so its children are hidden too unless one
     /// says `visible`.
     pub invisible: bool,
+    /// `pointer-events: none`: a pointer goes through the box to whatever is
+    /// under it, and `:hover` and `:active` do not take it. A keyboard still
+    /// reaches it. Inherited in the cascade.
+    pub no_pointer: bool,
+    /// `scroll-behavior: smooth`, on a scroller. See [`ScrollRegion::smooth`].
+    pub scroll_smooth: bool,
     /// `contain-intrinsic-size`, width then height: the size a box whose
     /// contents are skipped takes in their place. Boxed, as `anchor` is.
     pub contain_intrinsic: Option<Box<[IntrinsicSize; 2]>>,
@@ -1373,6 +1380,8 @@ impl Default for Style {
             anchor: None,
             content_visibility: ContentVisibility::Visible,
             invisible: false,
+            no_pointer: false,
+            scroll_smooth: false,
             contain_intrinsic: None,
             aspect_ratio: None,
             transitions: Vec::new(),
@@ -1394,6 +1403,59 @@ impl Default for Style {
 pub struct ImageContent {
     pub src: String,
     pub intrinsic: (f32, f32),
+    /// `object-fit`: how the picture fills the content box.
+    pub fit: ObjectFit,
+    /// `object-position`, across then down: where it sits in the room the
+    /// fit leaves. The centre unless set.
+    pub position: [BgPos; 2],
+}
+
+impl ImageContent {
+    /// An image as CSS has it with nothing said: stretched to its box.
+    pub fn new(src: String) -> Self {
+        let centre = BgPos { pct: 50.0, px: 0.0 };
+        ImageContent { src, intrinsic: (0.0, 0.0), fit: ObjectFit::Fill, position: [centre; 2] }
+    }
+
+    /// Where the picture goes, `(x, y, width, height)`, in a content box at
+    /// `(x, y)` `w` by `h`, for a picture `natural` pixels: sized by the fit
+    /// and placed by the position. It may be larger than the box (`cover`,
+    /// `none`), which then cuts it.
+    pub fn placed(&self, (x, y, w, h): (f32, f32, f32, f32), natural: (f32, f32)) -> (f32, f32, f32, f32) {
+        let (iw, ih) = natural;
+        if iw <= 0.0 || ih <= 0.0 {
+            return (x, y, w, h);
+        }
+        let (sx, sy) = (w / iw, h / ih);
+        let (dw, dh) = match self.fit {
+            ObjectFit::Fill => (w, h),
+            ObjectFit::Contain => (iw * sx.min(sy), ih * sx.min(sy)),
+            ObjectFit::Cover => (iw * sx.max(sy), ih * sx.max(sy)),
+            ObjectFit::None => (iw, ih),
+            ObjectFit::ScaleDown => {
+                let s = sx.min(sy).min(1.0);
+                (iw * s, ih * s)
+            }
+        };
+        let at = |p: BgPos, room: f32| p.pct / 100.0 * room + p.px;
+        (x + at(self.position[0], w - dw), y + at(self.position[1], h - dh), dw, dh)
+    }
+}
+
+/// `object-fit`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ObjectFit {
+    /// Stretched to the box, its proportions lost: CSS's default.
+    #[default]
+    Fill,
+    /// As large as fits whole, its proportions kept.
+    Contain,
+    /// As small as covers the box, its proportions kept; the rest is cut.
+    Cover,
+    /// Its own size.
+    None,
+    /// `none` or `contain`, whichever is smaller.
+    ScaleDown,
 }
 
 /// How the painter gets an image's bytes.
@@ -2831,6 +2893,10 @@ pub struct ScrollRegion {
     pub contain: (bool, bool),
     /// How its scrollbars are drawn: `scrollbar-width` and `scrollbar-color`.
     pub bar: Scrollbar,
+    /// `scroll-behavior: smooth`: a scroll a script or the keyboard's focus
+    /// asks for glides there rather than jumps. A wheel or a finger is
+    /// never smoothed, as in CSS.
+    pub smooth: bool,
 }
 
 /// `scrollbar-width` and `scrollbar-color` for one scroller.
@@ -3766,6 +3832,9 @@ type Handler = (
     TouchAction,
     Option<String>,
     Option<Vec<usize>>,
+    // Whether a pointer can reach it: false under `pointer-events: none`,
+    // which keeps the keyboard's way in.
+    bool,
 );
 
 struct Bound {
@@ -3835,6 +3904,7 @@ struct At {
     scroll_axes: (bool, bool),
     scroll_contain: (bool, bool),
     scroll_bar: Scrollbar,
+    scroll_smooth: bool,
     stack: Stack,
     /// Into `Anchoring::names`, when this box is an anchor.
     anchor_name: Option<u32>,
@@ -3934,6 +4004,7 @@ fn index(
         a.scroll_axes = f.axes;
         a.scroll_contain = f.contain;
         a.scroll_bar = f.bar;
+        a.scroll_smooth = f.smooth;
     }
     for (id, stack) in stacks {
         at.entry(*id).or_default().stack = *stack;
@@ -4436,6 +4507,7 @@ fn build(
             node.style.touch_action,
             node.instance.clone(),
             node.focus_path.clone(),
+            !node.style.no_pointer,
         ));
     }
     // A disabled field is not a field as far as focus is concerned: no region
@@ -4453,7 +4525,7 @@ fn build(
             focus_path: node.focus_path.clone(),
         });
     }
-    if let Some(fm) = &node.focus_model {
+    if let Some(fm) = node.focus_model.as_ref().filter(|_| !node.style.no_pointer) {
         focus_labels.push((id, fm.clone(), row.map(str::to_string)));
     }
     // `display: none` reached taffy, which gave the box no size and no slot,
@@ -4489,6 +4561,7 @@ fn build(
                 width: node.style.scrollbar_width,
                 color: node.style.scrollbar_color.as_deref().copied(),
             },
+            smooth: node.style.scroll_smooth,
         });
     }
     if node.style.position.is_sticky() {
@@ -4503,7 +4576,7 @@ fn build(
             [px(node.style.inset[0]), px(node.style.inset[1]), px(node.style.inset[2]), px(node.style.inset[3])],
         ));
     }
-    if let Some(path) = &node.state_path {
+    if let Some(path) = node.state_path.as_ref().filter(|_| !node.style.no_pointer) {
         states.push((id, path.clone()));
     }
     paths.push((id, path.to_vec()));
@@ -5603,13 +5676,18 @@ fn collect(
                     height: layout.size.height,
                     color: *color,
                 })),
-                PaintKind::Image(ic) => out.paints.push(Paint::Image(PaintImage {
-                    x,
-                    y,
-                    width: layout.size.width,
-                    height: layout.size.height,
-                    content: ic.clone(),
-                })),
+                // The picture goes in the content box, inside the image's
+                // own padding and border, as CSS puts replaced content.
+                PaintKind::Image(ic) => {
+                    let (cx, cy, cw, ch) = content_box(layout);
+                    out.paints.push(Paint::Image(PaintImage {
+                        x: x + cx,
+                        y: y + cy,
+                        width: cw,
+                        height: ch,
+                        content: ic.clone(),
+                    }))
+                }
                 // Drawn after the children, below.
                 PaintKind::Outline(_) | PaintKind::ClipPath(_) | PaintKind::Mask(_) | PaintKind::Filters(_) => {}
                 // Each box of a sentence where its glyphs left room for it, and
@@ -5722,8 +5800,8 @@ fn collect(
             });
         }
 
-        if let Some((_, handler, gestures, cursor, touch_action, instance, _)) =
-            at.handler.map(|i| &b.handlers[i as usize])
+        if let Some((_, handler, gestures, cursor, touch_action, instance, _, _)) =
+            at.handler.map(|i| &b.handlers[i as usize]).filter(|h| h.7)
         {
             out.hits.push(HitRegion {
                 transform: child_xform,
@@ -5825,7 +5903,7 @@ fn collect(
                     scroll: inside_scroll,
                 });
             }
-        } else if let Some((_, Some(handler), _, _, _, instance, focus_path)) =
+        } else if let Some((_, Some(handler), _, _, _, instance, focus_path, _)) =
             at.handler.map(|i| &b.handlers[i as usize])
         {
             // A button / checkbox / radio (anything with a `@tap` handler) is
@@ -5903,6 +5981,7 @@ fn collect(
             rtl: at.scroll_rtl,
             contain: at.scroll_contain,
             bar: at.scroll_bar,
+            smooth: at.scroll_smooth,
         });
     }
 
@@ -6630,6 +6709,7 @@ mod reveal_tests {
             rtl: false,
             contain: (false, false),
             bar: Scrollbar::default(),
+            smooth: false,
         }]
     }
 
@@ -6698,6 +6778,7 @@ mod reveal_tests {
             rtl: false,
             contain: (false, false),
             bar: Scrollbar::default(),
+            smooth: false,
         });
         let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
         assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));

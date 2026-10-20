@@ -2670,6 +2670,24 @@ window on two probes of 18px text, Windows' own fonts.
 | `caret-color` | | | not driven: no injected input reaches the window |
 | Web, Android | the same pages | the same | not driven |
 
+## Images, pointers and smooth scrolling, 2026-10-21
+
+First CSS pass, step 3h (owner's order, 2026-10-15). Under test in
+`rux-layout` (`tests/paint.rs`: where each fit puts a 200 x 100 picture in a
+square, an image drawn inside its padding, `pointer-events: none` leaving no
+hit region and its focus). Driven in a desktop window on one probe, the
+`pointer-events` taps made by `tap()` from `mounted` and the scrolls by a
+one-second `setInterval` calling `scrollIntoView()`, captured in bursts of
+twenty frames 50ms apart.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| `object-fit` | a 619 x 925 picture in six 80 x 60 boxes with 4px padding | fill stretched; contain whole; cover cut; none its own size, centred; scale-down as contain; `object-position: left` at the left | desktop: pass |
+| `pointer-events: none` over a button | `tap()` the button | the button takes it | desktop: pass |
+| The same without `none` | `tap()` the button | the overlay takes it | desktop: pass, **once the overlay had an `@tap`**: a box with none lets a tap through (author note) |
+| `scroll-behavior: smooth` beside `auto` | both scrolled between their ends each second | smooth caught on its way in several frames; auto only ever at an end | desktop: pass |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

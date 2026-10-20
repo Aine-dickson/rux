@@ -124,6 +124,18 @@ filter, backdrop-filter (blur(), brightness(), contrast(), drop-shadow(),
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       each axis on its own; `overflow: x y`)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)
+scroll-behavior (auto | smooth: a scroll a script's `scrollIntoView()` or Tab
+                       moving focus asks for glides there over 300ms; a wheel,
+                       a finger and a fling never do, and one of them stops a
+                       glide on the same scroller, as in CSS)
+pointer-events (auto | none; inherited: a pointer goes through the box to what
+                       is under it, `:hover` and `:active` do not take it, and a
+                       `for=` label does not focus from it; the keyboard still
+                       reaches it. Not yet: a text field under `none` still
+                       takes a tap)
+object-fit, object-position (on `<image>`: fill, contain, cover, none,
+                       scale-down; the picture is drawn in the content box,
+                       inside the image's padding, and cut to it)
 scrollbar-width (auto | thin | none), scrollbar-color (thumb track | auto)
 content-visibility (visible | auto | hidden), contain-intrinsic-size (and -width,
                        -height, -inline-size, -block-size; `auto <length>`)

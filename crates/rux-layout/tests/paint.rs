@@ -153,10 +153,7 @@ fn a_border_insets_the_glyphs_too() {
 fn image_sizes_from_intrinsic_then_css() {
     let intrinsic = Node::image(
         Style::default(),
-        ImageContent {
-            src: "logo.png".into(),
-            intrinsic: (160.0, 90.0),
-        },
+        ImageContent { intrinsic: (160.0, 90.0), ..ImageContent::new("logo.png".into()) },
     );
     let sized = Node::image(
         Style {
@@ -164,10 +161,7 @@ fn image_sizes_from_intrinsic_then_css() {
             height: Some(Len::Px(64.0)),
             ..Default::default()
         },
-        ImageContent {
-            src: "logo.png".into(),
-            intrinsic: (160.0, 90.0),
-        },
+        ImageContent { intrinsic: (160.0, 90.0), ..ImageContent::new("logo.png".into()) },
     );
 
     let boxes: Vec<(f32, f32)> = paints(intrinsic)
@@ -521,4 +515,56 @@ fn image_layers_paint_apart_with_the_boxes_they_are_placed_in() {
         Paint::Rect(r) => assert!(r.background.is_none() && r.border_color.is_some()),
         other => panic!("expected the border after the background, got {other:?}"),
     }
+}
+
+/// `object-fit` sizes a picture in its box and `object-position` places it:
+/// a 200 x 100 picture in a 100 x 100 box.
+#[test]
+fn object_fit_and_position_place_the_picture() {
+    let at = |fit: ObjectFit, position: [BgPos; 2]| {
+        let image = ImageContent { fit, position, ..ImageContent::new("a.png".into()) };
+        image.placed((0.0, 0.0, 100.0, 100.0), (200.0, 100.0))
+    };
+    let centre = [BgPos { pct: 50.0, px: 0.0 }; 2];
+    assert_eq!(at(ObjectFit::Fill, centre), (0.0, 0.0, 100.0, 100.0));
+    assert_eq!(at(ObjectFit::Contain, centre), (0.0, 25.0, 100.0, 50.0));
+    assert_eq!(at(ObjectFit::Cover, centre), (-50.0, 0.0, 200.0, 100.0));
+    assert_eq!(at(ObjectFit::None, centre), (-50.0, 0.0, 200.0, 100.0));
+    assert_eq!(at(ObjectFit::ScaleDown, centre), (0.0, 25.0, 100.0, 50.0));
+    let left_top = [BgPos::default(); 2];
+    assert_eq!(at(ObjectFit::Contain, left_top), (0.0, 0.0, 100.0, 50.0));
+}
+
+/// The picture goes in the content box, inside the image's padding.
+#[test]
+fn an_image_is_drawn_inside_its_padding() {
+    let node = Node::image(
+        Style {
+            width: Some(Len::Px(100.0)),
+            height: Some(Len::Px(100.0)),
+            padding: Sides::uniform(10.0),
+            ..Default::default()
+        },
+        ImageContent { intrinsic: (50.0, 50.0), ..ImageContent::new("a.png".into()) },
+    );
+    let out = paints(node);
+    let img = out.iter().find_map(|p| if let Paint::Image(i) = p { Some(i) } else { None }).expect("image");
+    assert_eq!((img.width, img.height), (80.0, 80.0));
+}
+
+/// `pointer-events: none` takes a box out of hit testing, so a tap goes to
+/// what is under it, but the keyboard still reaches it: Tab lands on it and
+/// Enter runs its `@tap`.
+#[test]
+fn pointer_events_none_is_not_hit_but_is_still_focusable() {
+    let mut measure = |_: &TextContent, _: Option<f32>| (50.0, 20.0);
+    let button = |no_pointer: bool| {
+        let mut n = Node::new(Style { width: Some(Len::Px(80.0)), height: Some(Len::Px(30.0)), no_pointer, ..Default::default() });
+        n.on_tap = Some("go()".into());
+        n
+    };
+    let shown = layout(&on_screen(button(false)), 400.0, 300.0, &mut measure);
+    assert_eq!((shown.hits.len(), shown.focusables.len()), (1, 1));
+    let passed = layout(&on_screen(button(true)), 400.0, 300.0, &mut measure);
+    assert_eq!((passed.hits.len(), passed.focusables.len()), (0, 1));
 }

@@ -272,6 +272,31 @@ fn fling_step(v: f32, dt_ms: f32) -> (f32, f32) {
     (v * FLING_TAU * (1.0 - decay), v * decay)
 }
 
+/// How long a `scroll-behavior: smooth` scroll takes. CSS leaves it to the
+/// browser; this is about what they take for a short distance.
+const GLIDE_MS: f32 = 300.0;
+
+/// A scroll a script or a keyboard focus asked for, gliding to where it was
+/// asked to go because its scroller says `scroll-behavior: smooth`.
+#[derive(Clone, Copy, Debug)]
+struct Glide {
+    id: usize,
+    from: Offset,
+    to: Offset,
+    start: Instant,
+}
+
+impl Glide {
+    /// Where it is `now`, and whether it has arrived. Eased out, so it sets
+    /// off quickly and settles.
+    fn at(&self, now: Instant) -> (Offset, bool) {
+        let t = (now.duration_since(self.start).as_secs_f32() * 1000.0 / GLIDE_MS).min(1.0);
+        let e = 1.0 - (1.0 - t).powi(3);
+        let lerp = |a: f32, b: f32| a + (b - a) * e;
+        (Offset { x: lerp(self.from.x, self.to.x), y: lerp(self.from.y, self.to.y) }, t >= 1.0)
+    }
+}
+
 /// A scroller still moving after the finger left it.
 #[derive(Clone, Copy, Debug)]
 struct Fling {
@@ -1749,6 +1774,8 @@ struct App {
     scroll_target: Option<usize>,
     /// A scroller coasting after the finger left. `None` when nothing is.
     fling: Option<Fling>,
+    /// Smooth scrolls under way, one per scroller at most.
+    glides: Vec<Glide>,
     /// The pointer handlers of whatever is being pressed, and what has happened
     /// to that press so far. `None` when nothing is held, or when the press
     /// landed on something with no pointer handlers at all.
@@ -2019,6 +2046,7 @@ impl App {
             touch_track: Vec::new(),
             scroll_target: None,
             fling: None,
+            glides: Vec::new(),
             focused: None,
             focused_row: None,
             focused_instance: None,
@@ -2316,6 +2344,12 @@ impl App {
 
     /// Move scroller `id` to `next`, repainting only if it actually moved.
     fn scroll_to(&mut self, id: usize, next: Offset) {
+        // Any other scroll of it, a wheel or a finger, ends a glide there.
+        self.glides.retain(|g| g.id != id);
+        self.set_offset(id, next);
+    }
+
+    fn set_offset(&mut self, id: usize, next: Offset) {
         if self.offsets.get(id) != Some(&next) {
             if let Some(slot) = self.offsets.get_mut(id) {
                 *slot = next;
@@ -2668,8 +2702,43 @@ impl App {
             } else if item.x + item.width > r.x + r.width {
                 next.x = here.x + (item.x + item.width - (r.x + r.width));
             }
-            self.scroll_to(r.id, next.clamp_to(r.max));
+            let next = next.clamp_to(r.max);
+            if r.smooth {
+                self.glide_to(r.id, here, next);
+            } else {
+                self.scroll_to(r.id, next);
+            }
         }
+    }
+
+    /// Start a smooth scroll of scroller `id` from `from` to `to`, replacing
+    /// any it already had. A finger or a wheel on it stops it: see
+    /// `scroll_to`.
+    fn glide_to(&mut self, id: usize, from: Offset, to: Offset) {
+        Self::glide(&mut self.glides, id, from, to);
+        self.request_redraw();
+    }
+
+    fn glide(glides: &mut Vec<Glide>, id: usize, from: Offset, to: Offset) {
+        // Gliding already: start from where it is now, not where it began.
+        let from = glides.iter().find(|g| g.id == id).map_or(from, |g| g.at(Instant::now()).0);
+        glides.retain(|g| g.id != id);
+        if from != to {
+            glides.push(Glide { id, from, to, start: Instant::now() });
+        }
+    }
+
+    /// One frame of every smooth scroll. Whether any is still moving.
+    fn step_glides(&mut self) -> bool {
+        let now = Instant::now();
+        for g in std::mem::take(&mut self.glides) {
+            let (at, done) = g.at(now);
+            self.set_offset(g.id, at);
+            if !done {
+                self.glides.push(g);
+            }
+        }
+        !self.glides.is_empty()
     }
 
     /// The byte index in `region`'s text nearest a point, in logical px. An empty
@@ -6652,6 +6721,7 @@ impl App {
             document,
             text,
             images,
+            glides,
             hits,
             focuses,
             selects,
@@ -6772,12 +6842,19 @@ impl App {
             // The rect is already shifted by the current offset, so the
             // correction is the overhang, not an absolute position.
             let off = &mut offsets[region.id];
+            let before = *off;
             if m.y < region.y {
                 off.y -= region.y - m.y;
             } else if m.y + m.height > region.y + region.height {
                 off.y += (m.y + m.height) - (region.y + region.height);
             }
             *off = off.clamp_to(region.max);
+            // `scroll-behavior: smooth`: it stays where it is and glides.
+            if region.smooth {
+                let to = *off;
+                *off = before;
+                App::glide(glides, region.id, before, to);
+            }
             revealed = true;
         }
         // The window changed size under a focused field, which is what a
@@ -8166,6 +8243,10 @@ impl ApplicationHandler<RuxEvent> for App {
         // moves is a scroll offset and not a style, and the animator works on
         // the tree.
         if self.fling.is_some() && self.step_fling() {
+            self.request_redraw();
+        }
+        // The sixth: a smooth scroll on its way.
+        if !self.glides.is_empty() && self.step_glides() {
             self.request_redraw();
         }
 
@@ -12221,6 +12302,7 @@ mod tests {
             rtl: false,
             contain: (false, false),
             bar: Default::default(),
+            smooth: false,
         }
     }
 
@@ -12560,6 +12642,7 @@ mod bar_tests {
             rtl: false,
             contain: (false, false),
             bar,
+            smooth: false,
         }
     }
 

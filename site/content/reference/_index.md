@@ -506,7 +506,9 @@ yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
 Real CSS Rux has not built includes `box-sizing`,
-`transform-origin`, `writing-mode`, `user-select`,
+`transform-origin`, `writing-mode`, `user-select`, `columns` (a multi-column
+layout of its own), the table properties (Rux has no tables), `content` (Rux
+has no `::before` or `::after`),
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.
