@@ -253,6 +253,8 @@ likely to make Rux feel like a toy, so it gets real scope.
   so it fills up to the cap for any overflowing content, i.e. the wrap case).
   Guarded by `crates/rux-layout/tests/wrap.rs`. A version bump does **not** fix
   it, so don't reach for one.
+  **Update 2026-10-12:** Taffy had fixed it by 0.15, and the exception was
+  removed with that upgrade; the same test guards it.
 
 **First, two things that are bugs, not gaps**: both now **fixed** (2026-07-15):
 
