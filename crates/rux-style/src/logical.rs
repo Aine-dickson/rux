@@ -65,9 +65,7 @@ pub(crate) fn cascade_in_order(rules: Vec<&Rule>, inline: &[(String, String)], d
                     props.insert(pk, pv);
                 }
             }
-            None => {
-                props.insert(k.clone(), v.clone());
-            }
+            None => crate::declare(&mut props, k, v),
         }
     }
     props

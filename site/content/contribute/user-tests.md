@@ -2627,6 +2627,34 @@ match looked up its box by scanning every box, and each element's selector
 context was rebuilt by scanning every element for each ancestor and copying
 every sibling before it. Now 7.7 ms (`.row + .row .name`: 374 ms, now 30 ms).
 
+## Backgrounds: size, position, repeat, clip, origin, attachment, 2026-10-20
+
+First CSS pass, step 3f (owner's order, 2026-10-15). Under test in
+`rux-style` (`background_tests`: the shorthand's every part, lists repeated
+to the number of images, a shorthand after a longhand resetting it,
+positions of one to four values, `-x` and `-y`). Driven in a desktop window
+on two probes: twelve 140 x 120 boxes with a 6px dashed border and 12px
+corners, and two 300px scrollers scrolled to their ends by `mounted`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A url() with nothing else | open it | the 160px image at its own size from the padding box's corner, tiled under the border | desktop: pass |
+| `center / cover`, `center / contain no-repeat` | open it | covers the box; fits inside it, the colour around it | desktop: pass |
+| `background-size: 40px`, `round` at 50px | open it | 40px tiles; tiles stretched to a whole number | desktop: pass |
+| `no-repeat right 8px bottom 8px / 40px` | open it | one tile 8px in from the padding box's bottom right | desktop: pass |
+| `repeat-x`, `space` | open it | one row through the middle; whole tiles with even gaps, the end ones touching the edges | desktop: pass |
+| A 20px gradient tile | open it | stripes across the box, under the border too | desktop: pass |
+| `content-box` | 14px padding | the gradient inside the padding only, the colour cut with it | desktop: pass |
+| Two layers | an image over a gradient | the image on top | desktop: pass |
+| `fixed` | a red to blue gradient | the box shows the window's gradient at its place: purple | desktop: pass |
+| `local` beside `scroll` | both scrolled to the end | `local` shows the gradient's blue end; `scroll` the whole gradient | desktop: pass |
+| `examples/background-image.rux` | now written `center / cover` | as before | desktop: pass, **after a fix**: the slash in `url(assets/logo.png)` was read as the shorthand's |
+| Web, Android | the same pages | the same | not driven |
+
+**Behaviour change:** a url() background used to be drawn cover-sized. It
+is now its natural size and tiled, as in CSS (owner's choice, 2026-10-20);
+`background-size: cover` is the old look.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

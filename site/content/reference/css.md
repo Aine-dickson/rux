@@ -37,7 +37,20 @@ border-top, border-right, border-bottom, border-left
 border-top-width, border-right-width, border-bottom-width, border-left-width
 border-top-style, border-right-style, border-bottom-style, border-left-style
 background, background-color, background-image, opacity
-  (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
+  (colour, linear-/radial-gradient, or url(…) image; a comma list of layers, the
+   first on top, the colour under them all; clipped to the corners)
+background-size, background-position, background-position-x,
+background-position-y, background-repeat,
+background-clip, background-origin, background-attachment
+                      (as CSS: cover, contain, lengths, % and auto; one to four
+                       position values, `right 10px bottom 20px` included;
+                       repeat, no-repeat, repeat-x/-y, space, round; border-,
+                       padding- and content-box; scroll, fixed, local. A url()
+                       image is its natural size, tiled from the padding box's
+                       top left, as in CSS: before v0.9 it was drawn cover-sized,
+                       which is now `background-size: cover`. Not yet:
+                       `background-clip: text`, and gradient stop positions in
+                       px, which are placed as if they had none)
 box-shadow (a comma list, the first on top; `inset` drawn inside the border, over
                        the background; no colour is currentColor; one corner
                        radius, the largest, for an outer shadow's blur)

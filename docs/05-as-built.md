@@ -639,7 +639,20 @@ border-top, border-right, border-bottom, border-left
 border-top-width, border-right-width, border-bottom-width, border-left-width
 border-top-style, border-right-style, border-bottom-style, border-left-style
 background, background-color, background-image, opacity
-  (colour, linear-/radial-gradient, or url(…) image, cover-sized, clipped to corners)
+  (colour, linear-/radial-gradient, or url(…) image; a comma list of layers, the
+   first on top, the colour under them all; clipped to the corners)
+background-size, background-position, background-position-x,
+background-position-y, background-repeat,
+background-clip, background-origin, background-attachment
+                      (as CSS: cover, contain, lengths, % and auto; one to four
+                       position values, `right 10px bottom 20px` included;
+                       repeat, no-repeat, repeat-x/-y, space, round; border-,
+                       padding- and content-box; scroll, fixed, local. A url()
+                       image is its natural size, tiled from the padding box's
+                       top left, as in CSS: before v0.9 it was drawn cover-sized,
+                       which is now `background-size: cover`. Not yet:
+                       `background-clip: text`, and gradient stop positions in
+                       px, which are placed as if they had none)
 box-shadow (a comma list, the first on top; `inset` drawn inside the border, over
                        the background; no colour is currentColor; one corner
                        radius, the largest, for an outer shadow's blur)
@@ -1310,7 +1323,7 @@ yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
 Real CSS Rux has not built includes `box-sizing`,
-`transform-origin`, `text-transform`, `background-size`,
+`transform-origin`, `text-transform`,
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.
@@ -1668,7 +1681,6 @@ dialog, by Back or by tapping outside, leaves the value alone. `:options` and
 `r-model` are the same either way, so a document never knows which it got.
 **A phone's browser opens its own picker too**, from a hidden `<select>` laid
 over the field, and a browser with a mouse keeps the drawn dropdown.
-`background-size` is not done.
 
 **Keyboard focus:** **Tab** / **Shift+Tab** move focus through every
 interactive element (text/textarea/select inputs, buttons, checkboxes, radios) in

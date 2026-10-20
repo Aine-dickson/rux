@@ -26,6 +26,7 @@ use rux_layout::{AnimProp, BlendMode, BorderStyle, Easing, GradientKind, GridFlo
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_layout::{ContentVisibility, IntrinsicSize};
+use rux_layout::{BgAttachment, BgBox, BgLayer, BgLayers, BgLen, BgPos, BgRepeat, BgSize};
 use rux_layout::{GridAreas, GridName, GridNames, GridTrack, Repeat};
 use rux_parser::{Element, Node as TplNode, Sfc};
 use rux_reactive::Value;
@@ -3806,6 +3807,8 @@ const HONORED_PROPERTIES: &[&str] = &[
     "inset-block", "inset-block-start", "inset-block-end",
     // Background
     "background", "background-color", "background-image",
+    "background-size", "background-position", "background-position-x", "background-position-y",
+    "background-repeat", "background-attachment", "background-clip", "background-origin",
     // Text
     "color", "font-size", "font-weight", "font-family", "font-style", "text-align",
     "letter-spacing", "word-spacing", "line-height", "white-space",
@@ -4049,10 +4052,6 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
     "place-items", "place-content", "place-self", "resize",
-    // Backgrounds. `background-image` is honored and always covers its box, so
-    // the properties that would size or place it are the common near miss.
-    "background-size", "background-position", "background-repeat",
-    "background-attachment", "background-clip", "background-origin",
     // Text
     "text-transform", "text-overflow", "text-indent", "text-decoration-color",
     "text-decoration-style", "font-variant", "font-stretch",
@@ -4499,11 +4498,39 @@ fn matched_props(
     let mut props: HashMap<String, String> = HashMap::new();
     for rule in matched {
         for (k, v) in &rule.decls {
-            props.insert(k.clone(), v.clone());
+            declare(&mut props, k, v);
         }
     }
     props
 }
+
+/// Put one declaration into an element's cascaded properties.
+///
+/// The map keeps the last value of each name, which loses the order a
+/// shorthand and its longhands were written in. For `background` that
+/// order matters, because the shorthand sets every longhand: written after
+/// a `background-size`, it puts the size back to `auto`. So a `background`
+/// takes away the longhands declared before it.
+pub(crate) fn declare(props: &mut HashMap<String, String>, k: &str, v: &str) {
+    if k == "background" {
+        props.retain(|name, _| !BACKGROUND_LONGHANDS.contains(&name.as_str()));
+    }
+    props.insert(k.to_string(), v.to_string());
+}
+
+/// Every longhand the `background` shorthand sets.
+const BACKGROUND_LONGHANDS: &[&str] = &[
+    "background-color",
+    "background-image",
+    "background-size",
+    "background-position",
+    "background-position-x",
+    "background-position-y",
+    "background-repeat",
+    "background-clip",
+    "background-origin",
+    "background-attachment",
+];
 
 /// What `::selection` rules say about this element's selected text, over
 /// what its parent's said.
@@ -5331,7 +5358,7 @@ fn build_node_inner(
         }
     }
     for (k, v) in &inline {
-        props.insert(k.clone(), v.clone());
+        declare(&mut props, k, v);
     }
     // `direction`, from the property, else `dir`, else the parent. `dir="auto"`
     // leaves a text to its first letter with a direction, as HTML does.
@@ -9155,14 +9182,8 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("aspect-ratio") {
         st.aspect_ratio = parse_aspect_ratio(v);
     }
-    // `background` (shorthand, may be a gradient) → `background-image` (gradient
-    // or url, url not yet supported) → `background-color` (colour only).
-    if let Some(v) = p
-        .get("background")
-        .or_else(|| p.get("background-image"))
-        .or_else(|| p.get("background-color"))
-    {
-        st.background = parse_background(v);
+    if let Some(bg) = interpret_background(p) {
+        st.background = Some(bg);
     }
     if let Some(v) = p.get("transform") {
         st.transform = parse_transform(v);
@@ -9313,6 +9334,332 @@ fn parse_background(value: &str) -> Option<Background> {
         }
     }
     parse_color(v).map(Background::Color)
+}
+
+/// A box's background from the `background` shorthand and its longhands.
+///
+/// A plain colour stays a [`Background::Color`], which is what a hover
+/// animates. Anything with an image is [`Background::Layers`]: one layer per
+/// image, the other longhands' lists repeated to match, as CSS does, and the
+/// colour under them all. `None` when nothing is said, or `background: none`.
+fn interpret_background(p: &HashMap<String, String>) -> Option<Background> {
+    let mut color = None;
+    let mut images: Vec<Option<Background>> = Vec::new();
+    let mut layers: Vec<BgLayer> = Vec::new();
+    let said = p.contains_key("background") || BACKGROUND_LONGHANDS.iter().any(|k| p.contains_key(*k));
+    if !said {
+        return None;
+    }
+    if let Some(v) = p.get("background") {
+        let parts = split_top_level_commas(v);
+        let last = parts.len().saturating_sub(1);
+        for (i, part) in parts.iter().enumerate() {
+            let (image, layer, c) = background_layer(part, i == last);
+            images.push(image);
+            layers.push(layer);
+            color = color.or(c);
+        }
+    }
+    if let Some(v) = p.get("background-color") {
+        color = parse_color(v.trim());
+    }
+    if let Some(v) = p.get("background-image") {
+        images = split_top_level_commas(v)
+            .iter()
+            .map(|part| match part.trim() {
+                "none" => None,
+                img => {
+                    let parsed = parse_background(img).filter(|b| !matches!(b, Background::Color(_)));
+                    if parsed.is_none() {
+                        warn(format!("`background-image: {img}` is not an image Rux draws; use a gradient or `url(…)`"));
+                    }
+                    parsed
+                }
+            })
+            .collect();
+    }
+    // As many layers as there are images; each other list is repeated (or
+    // cut short) to that many.
+    let n = images.len();
+    layers.resize_with(n, || BgLayer::of(Background::Color(Rgba::new(0.0, 0.0, 0.0, 0.0))));
+    let each = |name: &str| -> Option<Vec<String>> {
+        let v = p.get(name)?;
+        let list: Vec<String> = split_top_level_commas(v).iter().map(|s| s.trim().to_string()).collect();
+        (!list.is_empty()).then_some(list)
+    };
+    let cycle = |list: &[String], i: usize| list[i % list.len()].clone();
+    if let Some(list) = each("background-size") {
+        for (i, l) in layers.iter_mut().enumerate() {
+            if let Some(size) = parse_bg_size(&cycle(&list, i)) {
+                l.size = size;
+            }
+        }
+    }
+    if let Some(list) = each("background-position") {
+        for (i, l) in layers.iter_mut().enumerate() {
+            let toks = split_top_level(&cycle(&list, i)).into_iter().map(str::to_string).collect::<Vec<_>>();
+            if let Some(pos) = parse_bg_position(&toks) {
+                l.position = pos;
+            }
+        }
+    }
+    for (axis, name) in [(0, "background-position-x"), (1, "background-position-y")] {
+        if let Some(list) = each(name) {
+            for (i, l) in layers.iter_mut().enumerate() {
+                let toks = split_top_level(&cycle(&list, i)).into_iter().map(str::to_string).collect::<Vec<_>>();
+                if let Some(pos) = parse_bg_axis(&toks, axis) {
+                    l.position[axis] = pos;
+                }
+            }
+        }
+    }
+    if let Some(list) = each("background-repeat") {
+        for (i, l) in layers.iter_mut().enumerate() {
+            let toks = cycle(&list, i);
+            if let Some(r) = parse_bg_repeat(&toks.split_whitespace().collect::<Vec<_>>()) {
+                l.repeat = r;
+            }
+        }
+    }
+    for (name, origin) in [("background-clip", false), ("background-origin", true)] {
+        if let Some(list) = each(name) {
+            for (i, l) in layers.iter_mut().enumerate() {
+                let v = cycle(&list, i);
+                match parse_bg_box(&v) {
+                    Some(b) if origin => l.origin = b,
+                    Some(b) => l.clip = b,
+                    None => warn(format!("`{name}: {v}` is not a box Rux knows; use `border-box`, `padding-box` or `content-box`")),
+                }
+            }
+        }
+    }
+    if let Some(list) = each("background-attachment") {
+        for (i, l) in layers.iter_mut().enumerate() {
+            let v = cycle(&list, i);
+            match parse_bg_attachment(&v) {
+                Some(a) => l.attachment = a,
+                None => warn(format!("`background-attachment: {v}` is not a value Rux knows; use `scroll`, `fixed` or `local`")),
+            }
+        }
+    }
+    // A `none` image still took its place in the lists; it draws nothing.
+    let layers: Vec<BgLayer> = images
+        .into_iter()
+        .zip(layers)
+        .filter_map(|(image, layer)| Some(BgLayer { image: image?, ..layer }))
+        .collect();
+    if layers.is_empty() {
+        return color.map(Background::Color);
+    }
+    // The colour is cut to the bottom layer's clip, whatever its image.
+    Some(Background::Layers(std::sync::Arc::new(BgLayers { color, layers })))
+}
+
+/// One layer of the `background` shorthand: its image, the rest of its
+/// longhands, and its colour, which only the last layer may have.
+fn background_layer(part: &str, last: bool) -> (Option<Background>, BgLayer, Option<Rgba>) {
+    let mut image = None;
+    let mut color = None;
+    let mut layer = BgLayer::of(Background::Color(Rgba::new(0.0, 0.0, 0.0, 0.0)));
+    let mut boxes = Vec::new();
+    let mut position: Vec<String> = Vec::new();
+    let mut size: Vec<String> = Vec::new();
+    let mut repeat: Vec<&str> = Vec::new();
+    let mut after_slash = false;
+    // lightningcss may write `center/cover` without spaces. Only a slash
+    // outside brackets: the one in `url(assets/logo.png)` is the path's.
+    let mut depth = 0;
+    let spaced: String = part
+        .chars()
+        .flat_map(|c| {
+            match c {
+                '(' => depth += 1,
+                ')' => depth -= 1,
+                _ => {}
+            }
+            match (c, depth) {
+                ('/', 0) => vec![' ', '/', ' '],
+                _ => vec![c],
+            }
+        })
+        .collect();
+    for tok in split_top_level(&spaced) {
+        let is_position = matches!(tok, "left" | "right" | "top" | "bottom" | "center")
+            || tok.ends_with('%')
+            || parse_px(tok).is_some();
+        match tok {
+            "/" => after_slash = true,
+            "none" => {}
+            "repeat" | "no-repeat" | "repeat-x" | "repeat-y" | "space" | "round" => repeat.push(tok),
+            "scroll" | "fixed" | "local" => layer.attachment = parse_bg_attachment(tok).expect("matched"),
+            "border-box" | "padding-box" | "content-box" | "text" => boxes.push(tok),
+            "cover" | "contain" | "auto" if after_slash => size.push(tok.to_string()),
+            _ if after_slash && is_position => size.push(tok.to_string()),
+            _ if is_position => position.push(tok.to_string()),
+            _ if tok.contains('(') && !tok.starts_with("rgb") && !tok.starts_with("hsl") => {
+                image = parse_background(tok).filter(|b| !matches!(b, Background::Color(_)));
+                if image.is_none() {
+                    warn(format!("`{tok}` is not an image Rux draws in a background; use a gradient or `url(…)`"));
+                }
+            }
+            _ => match parse_color(tok) {
+                Some(c) if last => color = Some(c),
+                Some(_) => warn(format!(
+                    "`background: {part}` gives a colour to a layer that is not the last; CSS only takes one there"
+                )),
+                None => warn(format!("`{tok}` in `background` is not something Rux knows")),
+            },
+        }
+    }
+    if let Some(pos) = parse_bg_position(&position) {
+        layer.position = pos;
+    }
+    if let Some(s) = parse_bg_size(&size.join(" ")) {
+        layer.size = s;
+    }
+    if let Some(r) = parse_bg_repeat(&repeat) {
+        layer.repeat = r;
+    }
+    // One box is the origin and the clip; two are the origin, then the clip.
+    match boxes.as_slice() {
+        [one] => {
+            layer.origin = parse_bg_box(one).unwrap_or(BgBox::Padding);
+            layer.clip = parse_bg_box(one).unwrap_or(BgBox::Border);
+        }
+        [origin, clip, ..] => {
+            layer.origin = parse_bg_box(origin).unwrap_or(BgBox::Padding);
+            layer.clip = parse_bg_box(clip).unwrap_or(BgBox::Border);
+        }
+        [] => {}
+    }
+    (image, layer, color)
+}
+
+/// `background-size`: `cover`, `contain`, or one or two of a length, a
+/// percentage and `auto`. One value is the width, the height `auto`.
+fn parse_bg_size(v: &str) -> Option<BgSize> {
+    let toks: Vec<&str> = v.split_whitespace().collect();
+    let len = |t: &str| -> Option<BgLen> {
+        if t == "auto" {
+            return Some(BgLen::Auto);
+        }
+        if let Some(n) = t.strip_suffix('%') {
+            return n.trim().parse().ok().map(BgLen::Pct);
+        }
+        parse_px(t).map(BgLen::Px)
+    };
+    let size = match toks.as_slice() {
+        [] => return None,
+        ["cover"] => Some(BgSize::Cover),
+        ["contain"] => Some(BgSize::Contain),
+        [w] => len(w).map(|w| BgSize::Sized([w, BgLen::Auto])),
+        [w, h] => len(w).zip(len(h)).map(|(w, h)| BgSize::Sized([w, h])),
+        _ => None,
+    };
+    if size.is_none() {
+        warn(format!("`background-size: {v}` is not a size Rux knows"));
+    }
+    size
+}
+
+/// A `background-position` of one to four values, as two axes.
+fn parse_bg_position(toks: &[String]) -> Option<[BgPos; 2]> {
+    let kw = |t: &str| matches!(t, "left" | "right" | "top" | "bottom" | "center");
+    let vertical = |t: &str| matches!(t, "top" | "bottom");
+    let horizontal = |t: &str| matches!(t, "left" | "right");
+    let at = |t: &str| -> Option<BgPos> {
+        Some(match t {
+            "left" | "top" => BgPos { pct: 0.0, px: 0.0 },
+            "center" => BgPos { pct: 50.0, px: 0.0 },
+            "right" | "bottom" => BgPos { pct: 100.0, px: 0.0 },
+            _ => match t.strip_suffix('%') {
+                Some(n) => BgPos { pct: n.trim().parse().ok()?, px: 0.0 },
+                None => BgPos { pct: 0.0, px: parse_px(t)? },
+            },
+        })
+    };
+    let toks: Vec<&str> = toks.iter().map(String::as_str).collect();
+    let out = match toks.as_slice() {
+        [] => return None,
+        [a] if vertical(a) => [at("center")?, at(a)?],
+        [a] => [at(a)?, at("center")?],
+        [a, b] if vertical(a) || horizontal(b) => [at(b)?, at(a)?],
+        [a, b] => [at(a)?, at(b)?],
+        // Three or four: each keyword may take an offset from its edge.
+        _ => {
+            let mut axes = [None, None];
+            let mut i = 0;
+            while i < toks.len() {
+                let k = toks[i];
+                if !kw(k) {
+                    warn(format!("`background-position: {}` is not a position Rux knows", toks.join(" ")));
+                    return None;
+                }
+                let offset = toks.get(i + 1).filter(|t| !kw(t)).and_then(|t| at(t));
+                i += if offset.is_some() { 2 } else { 1 };
+                let mut pos = at(k)?;
+                if let Some(o) = offset {
+                    // From the far edge, an offset counts back towards the near one.
+                    let sign = if matches!(k, "right" | "bottom") { -1.0 } else { 1.0 };
+                    pos.pct += sign * o.pct;
+                    pos.px += sign * o.px;
+                }
+                let axis = if vertical(k) { 1 } else if horizontal(k) { 0 } else if axes[0].is_none() { 0 } else { 1 };
+                axes[axis] = Some(pos);
+            }
+            [axes[0].unwrap_or(BgPos { pct: 50.0, px: 0.0 }), axes[1].unwrap_or(BgPos { pct: 50.0, px: 0.0 })]
+        }
+    };
+    Some(out)
+}
+
+/// `background-position-x` or `-y`: a keyword for the axis, an offset, or
+/// both.
+fn parse_bg_axis(toks: &[String], axis: usize) -> Option<BgPos> {
+    // Read as the whole property, the other axis at its centre on its side.
+    let centre = ["center".to_string()];
+    let both = if axis == 0 { [toks, &centre].concat() } else { [&centre[..], toks].concat() };
+    parse_bg_position(&both).map(|p| p[axis])
+}
+
+/// `background-repeat`: one keyword for both axes, or two, across then down.
+fn parse_bg_repeat(toks: &[&str]) -> Option<[BgRepeat; 2]> {
+    let one = |t: &str| match t {
+        "repeat" => Some(BgRepeat::Repeat),
+        "no-repeat" => Some(BgRepeat::NoRepeat),
+        "space" => Some(BgRepeat::Space),
+        "round" => Some(BgRepeat::Round),
+        _ => None,
+    };
+    let r = match toks {
+        [] => return None,
+        ["repeat-x"] => [BgRepeat::Repeat, BgRepeat::NoRepeat],
+        ["repeat-y"] => [BgRepeat::NoRepeat, BgRepeat::Repeat],
+        [a] => [one(a)?; 2],
+        [a, b] => [one(a)?, one(b)?],
+        _ => return None,
+    };
+    Some(r)
+}
+
+/// `border-box`, `padding-box` or `content-box`. `text`, which clips a
+/// background to the glyphs, is not drawn and says so.
+fn parse_bg_box(v: &str) -> Option<BgBox> {
+    match v.trim() {
+        "border-box" => Some(BgBox::Border),
+        "padding-box" => Some(BgBox::Padding),
+        "content-box" => Some(BgBox::Content),
+        _ => None,
+    }
+}
+
+fn parse_bg_attachment(v: &str) -> Option<BgAttachment> {
+    match v.trim() {
+        "scroll" => Some(BgAttachment::Scroll),
+        "fixed" => Some(BgAttachment::Fixed),
+        "local" => Some(BgAttachment::Local),
+        _ => None,
+    }
 }
 
 /// The comma-separated argument text inside `<name>( … )`, if `v` is that call.
@@ -14746,5 +15093,118 @@ mod border_style_tests {
         assert_eq!(s, [Groove, Groove, Groove, Inset]);
         // `hidden` is no border, as `none` is.
         assert_eq!(border(&[("border", "2px solid red"), ("border-top-style", "hidden")]).0[0], 0.0);
+    }
+}
+
+#[cfg(test)]
+mod background_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{Background, BgAttachment, BgBox, BgLayers, BgLen, BgPos, BgRepeat, BgSize};
+
+    fn bg(pairs: &[(&str, &str)]) -> Option<Background> {
+        let mut p = HashMap::new();
+        for (k, v) in pairs {
+            super::declare(&mut p, k, v);
+        }
+        super::interpret_background(&p)
+    }
+
+    fn layers(pairs: &[(&str, &str)]) -> BgLayers {
+        match bg(pairs) {
+            Some(Background::Layers(l)) => (*l).clone(),
+            other => panic!("expected layers, got {other:?}"),
+        }
+    }
+
+    fn pos(pct: f32, px: f32) -> BgPos {
+        BgPos { pct, px }
+    }
+
+    #[test]
+    fn a_colour_alone_stays_a_colour() {
+        assert!(matches!(bg(&[("background", "#123456")]), Some(Background::Color(_))));
+        assert!(matches!(bg(&[("background-color", "red")]), Some(Background::Color(_))));
+        assert!(bg(&[("background", "none")]).is_none());
+        assert!(bg(&[]).is_none());
+    }
+
+    #[test]
+    fn an_image_is_tiled_at_its_own_size_by_default() {
+        let l = layers(&[("background", "url(sky.png)")]);
+        let one = &l.layers[0];
+        assert!(matches!(&one.image, Background::Image(s) if s == "sky.png"));
+        assert_eq!(one.size, BgSize::Sized([BgLen::Auto, BgLen::Auto]));
+        assert_eq!(one.repeat, [BgRepeat::Repeat; 2]);
+        assert_eq!(one.position, [pos(0.0, 0.0); 2]);
+        assert_eq!((one.origin, one.clip, one.attachment), (BgBox::Padding, BgBox::Border, BgAttachment::Scroll));
+        assert!(l.color.is_none());
+    }
+
+    #[test]
+    fn the_shorthand_takes_every_part() {
+        let l = layers(&[("background", "#fff url(a.png) right 10px bottom 20px / 50% auto no-repeat fixed content-box padding-box")]);
+        let one = &l.layers[0];
+        assert!(l.color.is_some());
+        assert_eq!(one.position, [pos(100.0, -10.0), pos(100.0, -20.0)]);
+        assert_eq!(one.size, BgSize::Sized([BgLen::Pct(50.0), BgLen::Auto]));
+        assert_eq!(one.repeat, [BgRepeat::NoRepeat; 2]);
+        assert_eq!(one.attachment, BgAttachment::Fixed);
+        assert_eq!((one.origin, one.clip), (BgBox::Content, BgBox::Padding));
+        // lightningcss writes the slash without spaces.
+        let l = layers(&[("background", "url(assets/a.png) 50%/cover")]);
+        assert_eq!(l.layers[0].size, BgSize::Cover);
+        // ...and the slash in a path is the path's.
+        assert!(matches!(&l.layers[0].image, Background::Image(s) if s == "assets/a.png"));
+        assert_eq!(l.layers[0].position, [pos(50.0, 0.0), pos(50.0, 0.0)]);
+    }
+
+    #[test]
+    fn longhands_repeat_their_lists_to_the_number_of_images() {
+        let l = layers(&[
+            ("background-image", "linear-gradient(red, blue), url(a.png), none"),
+            ("background-size", "10px 20px, contain"),
+            ("background-repeat", "repeat-x"),
+            ("background-color", "red"),
+        ]);
+        // `none` keeps its place in the lists but draws nothing.
+        assert_eq!(l.layers.len(), 2);
+        assert_eq!(l.layers[0].size, BgSize::Sized([BgLen::Px(10.0), BgLen::Px(20.0)]));
+        assert_eq!(l.layers[1].size, BgSize::Contain);
+        assert_eq!(l.layers[1].repeat, [BgRepeat::Repeat, BgRepeat::NoRepeat]);
+        assert_eq!(l.color.map(|c| c.r), Some(1.0));
+    }
+
+    #[test]
+    fn a_shorthand_written_after_a_longhand_resets_it() {
+        let l = layers(&[("background-size", "cover"), ("background", "url(a.png)")]);
+        assert_eq!(l.layers[0].size, BgSize::Sized([BgLen::Auto, BgLen::Auto]));
+        let l = layers(&[("background", "url(a.png)"), ("background-size", "cover")]);
+        assert_eq!(l.layers[0].size, BgSize::Cover);
+        // A colour and an image together, which the shorthand used to keep
+        // apart: `background-image` replaced the colour.
+        let l = layers(&[("background", "red"), ("background-image", "url(a.png)")]);
+        assert!(l.color.is_some());
+    }
+
+    #[test]
+    fn positions_read_as_css_reads_them() {
+        let at = |v: &str| layers(&[("background", "url(a.png)"), ("background-position", v)]).layers[0].position;
+        assert_eq!(at("top"), [pos(50.0, 0.0), pos(0.0, 0.0)]);
+        assert_eq!(at("right"), [pos(100.0, 0.0), pos(50.0, 0.0)]);
+        assert_eq!(at("bottom left"), [pos(0.0, 0.0), pos(100.0, 0.0)]);
+        assert_eq!(at("10px 25%"), [pos(0.0, 10.0), pos(25.0, 0.0)]);
+        assert_eq!(at("left 5px top"), [pos(0.0, 5.0), pos(0.0, 0.0)]);
+        let x = |v: &str| layers(&[("background", "url(a.png)"), ("background-position-x", v)]).layers[0].position;
+        assert_eq!(x("right 8px"), [pos(100.0, -8.0), pos(0.0, 0.0)]);
+        let y = |v: &str| layers(&[("background", "url(a.png)"), ("background-position-y", v)]).layers[0].position;
+        assert_eq!(y("bottom"), [pos(0.0, 0.0), pos(100.0, 0.0)]);
+    }
+
+    #[test]
+    fn repeat_takes_one_or_two_keywords() {
+        let r = |v: &str| layers(&[("background", "url(a.png)"), ("background-repeat", v)]).layers[0].repeat;
+        assert_eq!(r("repeat-y"), [BgRepeat::NoRepeat, BgRepeat::Repeat]);
+        assert_eq!(r("space round"), [BgRepeat::Space, BgRepeat::Round]);
     }
 }

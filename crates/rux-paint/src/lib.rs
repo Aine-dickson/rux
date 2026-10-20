@@ -33,13 +33,13 @@ use std::collections::HashMap;
 
 use rux_layout::filter::FilterOp;
 use rux_layout::{
-    Background, BlendMode, BorderStyle, PaintBorder, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
+    Background, BgAttachment, BgBox, BgLayer, BgLen, BgRepeat, BgSize, BgPos, BlendMode, BorderStyle, PaintBackground, PaintBorder, Sides, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
     TextAlign, TextContent, TextWrap,
 };
 use rux_text::{Align, TextEngine, TextStyle, Wrap};
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke, Vec2};
 use vello::peniko::{
-    BlendMode as PenikoBlend, Blob, Color, ColorStop, Compose, Fill, Gradient as PenikoGradient, ImageAlphaType, ImageBrush,
+    BlendMode as PenikoBlend, Blob, Color, ColorStop, Compose, Fill, Extend, Gradient as PenikoGradient, ImageAlphaType, ImageBrush,
     ImageData, ImageFormat, Mix,
 };
 use vello::Scene;
@@ -213,6 +213,24 @@ fn fill_background(
             let brush = to_gradient(g, x, y, width, height);
             scene.fill(Fill::NonZero, cur, &brush, None, &shape);
         }
+        // Layers on a bare rect, which has no border or padding to place them
+        // by: only something built by hand, since layout gives them a paint
+        // of their own.
+        Background::Layers(layers) => {
+            let b = PaintBackground {
+                x,
+                y,
+                width,
+                height,
+                radius,
+                border: Sides::default(),
+                padding: Sides::default(),
+                view: (x, y, width, height),
+                local: (x, y, width, height),
+                layers: layers.clone(),
+            };
+            draw_background(scene, cur, &b, images);
+        }
         Background::Image(src) => {
             if let Some(brush) = images.get(src) {
                 let (iw, ih) = (brush.image.width as f64, brush.image.height as f64);
@@ -228,6 +246,216 @@ fn fill_background(
                     scene.draw_image(brush, cur * tf);
                     scene.pop_layer();
                 }
+            }
+        }
+    }
+}
+
+/// One of a box's three boxes, `(x, y, width, height)`, and its corners: the
+/// border box's corners, less the border and padding inside them.
+fn box_of(b: &PaintBackground, which: BgBox) -> ((f32, f32, f32, f32), Corners) {
+    let s = |a: Sides, c: Sides| Sides { top: a.top + c.top, right: a.right + c.right, bottom: a.bottom + c.bottom, left: a.left + c.left };
+    let i = match which {
+        BgBox::Border => Sides::default(),
+        BgBox::Padding => b.border,
+        BgBox::Content => s(b.border, b.padding),
+    };
+    let rect = (b.x + i.left, b.y + i.top, (b.width - i.left - i.right).max(0.0), (b.height - i.top - i.bottom).max(0.0));
+    // Each corner loses the thicker of the two sides that meet at it.
+    let r = b.radius;
+    let radius = [
+        (r[0] - i.top.max(i.left)).max(0.0),
+        (r[1] - i.top.max(i.right)).max(0.0),
+        (r[2] - i.bottom.max(i.right)).max(0.0),
+        (r[3] - i.bottom.max(i.left)).max(0.0),
+    ];
+    (rect, radius)
+}
+
+/// The most tiles one layer draws one at a time. A gradient pattern a few
+/// pixels across over a large box is the case that reaches it; an image
+/// that repeats on both axes is one fill whatever its count.
+const MAX_TILES: usize = 4096;
+
+/// A background with image layers: the colour first, cut to the bottom
+/// layer's clip, then the layers from the bottom up.
+fn draw_background(scene: &mut Scene, cur: Affine, b: &PaintBackground, images: &mut ImageCache) {
+    if let Some(c) = b.layers.color {
+        let ((x, y, w, h), radius) = box_of(b, b.layers.color_clip());
+        scene.fill(Fill::NonZero, cur, to_color(c), None, &rounded_rect(x, y, w, h, radius, 0.0));
+    }
+    for layer in b.layers.layers.iter().rev() {
+        draw_layer(scene, cur, b, layer, images);
+    }
+}
+
+fn draw_layer(scene: &mut Scene, cur: Affine, b: &PaintBackground, layer: &BgLayer, images: &mut ImageCache) {
+    // The positioning area: the origin box, or for a `fixed` layer the
+    // window, or for a `local` one the origin box of the scrolled content.
+    let area = match layer.attachment {
+        BgAttachment::Fixed => b.view,
+        BgAttachment::Scroll => box_of(b, layer.origin).0,
+        BgAttachment::Local => {
+            let (x, y, w, h) = b.local;
+            let (bd, pd) = (b.border, b.padding);
+            match layer.origin {
+                BgBox::Border => (x - bd.left, y - bd.top, w + bd.left + bd.right, h + bd.top + bd.bottom),
+                BgBox::Padding => (x, y, w, h),
+                BgBox::Content => (x + pd.left, y + pd.top, (w - pd.left - pd.right).max(0.0), (h - pd.top - pd.bottom).max(0.0)),
+            }
+        }
+    };
+    let (ax, ay, aw, ah) = area;
+    let natural = match &layer.image {
+        Background::Image(src) => match images.get(src) {
+            Some(brush) if brush.image.width > 0 && brush.image.height > 0 => {
+                Some((brush.image.width as f32, brush.image.height as f32))
+            }
+            // Not drawn, as a browser draws nothing for an image it cannot load.
+            _ => return,
+        },
+        Background::Gradient(_) => None,
+        _ => return,
+    };
+    let (mut tw, mut th) = tile_size(layer.size, natural, (aw, ah));
+    // `round`: as many whole tiles as come nearest, stretched to fit. A side
+    // left `auto` keeps the image's proportions.
+    let auto = match layer.size {
+        BgSize::Sized([w, h]) => [w == BgLen::Auto, h == BgLen::Auto],
+        _ => [false, false],
+    };
+    let (rx, ry) = (layer.repeat[0] == BgRepeat::Round, layer.repeat[1] == BgRepeat::Round);
+    if rx && tw > 0.0 {
+        let n = (aw / tw).round().max(1.0);
+        let was = tw;
+        tw = aw / n;
+        if !ry && auto[1] {
+            th *= tw / was;
+        }
+    }
+    if ry && th > 0.0 {
+        let n = (ah / th).round().max(1.0);
+        let was = th;
+        th = ah / n;
+        if !rx && auto[0] {
+            tw *= th / was;
+        }
+    }
+    if tw <= 0.0 || th <= 0.0 {
+        return;
+    }
+    let ((cx, cy, cw, ch), clip_radius) = box_of(b, layer.clip);
+    if cw <= 0.0 || ch <= 0.0 {
+        return;
+    }
+    // Where the tiles start and how far apart they are, per axis.
+    let axis = |repeat: BgRepeat, pos: BgPos, start: f32, len: f32, tile: f32, cmin: f32, cmax: f32| -> Vec<f32> {
+        let placed = start + pos.pct / 100.0 * (len - tile) + pos.px;
+        let (first, step) = match repeat {
+            BgRepeat::NoRepeat => return vec![placed],
+            BgRepeat::Repeat | BgRepeat::Round => (placed, tile),
+            BgRepeat::Space => {
+                let n = (len / tile).floor();
+                if n < 2.0 {
+                    return vec![placed];
+                }
+                // The first tile and the last touch the area's edges.
+                (start, tile + (len - n * tile) / (n - 1.0))
+            }
+        };
+        let back = ((first - cmin) / step).ceil();
+        let mut at = first - back * step;
+        let mut out = Vec::new();
+        while at < cmax && out.len() <= MAX_TILES {
+            if at + tile > cmin {
+                out.push(at);
+            }
+            at += step;
+        }
+        out
+    };
+    let shape = rounded_rect(cx, cy, cw, ch, clip_radius, 0.0);
+    scene.push_clip_layer(Fill::NonZero, cur, &shape);
+    match &layer.image {
+        // An image repeated on both axes is one fill with a repeating brush,
+        // however many tiles that is.
+        Background::Image(src)
+            if matches!(layer.repeat[0], BgRepeat::Repeat | BgRepeat::Round)
+                && matches!(layer.repeat[1], BgRepeat::Repeat | BgRepeat::Round) =>
+        {
+            let brush = images.get(src).expect("loaded above").clone().with_extend(Extend::Repeat);
+            let (iw, ih) = natural.expect("an image has a size");
+            let ox = ax + layer.position[0].pct / 100.0 * (aw - tw) + layer.position[0].px;
+            let oy = ay + layer.position[1].pct / 100.0 * (ah - th) + layer.position[1].px;
+            let tf = Affine::scale_non_uniform((tw / iw) as f64, (th / ih) as f64).then_translate(Vec2::new(ox as f64, oy as f64));
+            let rect = Rect::new(cx as f64, cy as f64, (cx + cw) as f64, (cy + ch) as f64);
+            scene.fill(Fill::NonZero, cur, &brush, Some(tf), &rect);
+        }
+        image => {
+            let xs = axis(layer.repeat[0], layer.position[0], ax, aw, tw, cx, cx + cw);
+            let ys = axis(layer.repeat[1], layer.position[1], ay, ah, th, cy, cy + ch);
+            if xs.len() * ys.len() > MAX_TILES {
+                warn_tiles();
+                scene.pop_layer();
+                return;
+            }
+            for &ty in ys.iter() {
+                for &tx in xs.iter() {
+                    match image {
+                        Background::Gradient(g) => {
+                            let brush = to_gradient(g, tx, ty, tw, th);
+                            let rect = Rect::new(tx as f64, ty as f64, (tx + tw) as f64, (ty + th) as f64);
+                            scene.fill(Fill::NonZero, cur, &brush, None, &rect);
+                        }
+                        Background::Image(src) => {
+                            let brush = images.get(src).expect("loaded above");
+                            let (iw, ih) = natural.expect("an image has a size");
+                            let tf = Affine::scale_non_uniform((tw / iw) as f64, (th / ih) as f64)
+                                .then_translate(Vec2::new(tx as f64, ty as f64));
+                            scene.draw_image(brush, cur * tf);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    }
+    scene.pop_layer();
+}
+
+/// Said once: a pattern too fine for its box is left undrawn rather than
+/// drawn at a cost that stalls the frame.
+fn warn_tiles() {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    SAID.call_once(|| {
+        eprintln!("rux: a background repeats more than {MAX_TILES} times in its box and is not drawn; make its tiles larger")
+    });
+}
+
+/// A layer's tile, from its `background-size`, the image's natural size (a
+/// gradient has none) and the positioning area, as CSS sizes it.
+fn tile_size(size: BgSize, natural: Option<(f32, f32)>, (aw, ah): (f32, f32)) -> (f32, f32) {
+    match (size, natural) {
+        (BgSize::Cover | BgSize::Contain, None) => (aw, ah),
+        (BgSize::Cover | BgSize::Contain, Some((iw, ih))) => {
+            let (sx, sy) = (aw / iw, ah / ih);
+            let s = if size == BgSize::Cover { sx.max(sy) } else { sx.min(sy) };
+            (iw * s, ih * s)
+        }
+        (BgSize::Sized([w, h]), _) => {
+            let len = |l: BgLen, of: f32| match l {
+                BgLen::Auto => None,
+                BgLen::Px(v) => Some(v.max(0.0)),
+                BgLen::Pct(p) => Some((p / 100.0 * of).max(0.0)),
+            };
+            match (len(w, aw), len(h, ah), natural) {
+                (Some(w), Some(h), _) => (w, h),
+                (None, None, Some(n)) => n,
+                (None, None, None) => (aw, ah),
+                (Some(w), None, Some((iw, ih))) => (w, w * ih / iw),
+                (None, Some(h), Some((iw, ih))) => (h * iw / ih, h),
+                (Some(w), None, None) => (w, ah),
+                (None, Some(h), None) => (aw, h),
             }
         }
     }
@@ -670,6 +898,7 @@ pub fn visible_paints(
                 None => true,
             },
             Paint::Rect(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
+            Paint::Background(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
             Paint::Border(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
             Paint::Image(i) => reaches(reach.local, rect_of(i.x, i.y, i.width, i.height)),
             // vello's blur reaches about three standard deviations, and the
@@ -992,6 +1221,7 @@ fn build(
                 }
                 scene.pop_layer();
             }
+            Paint::Background(b) => draw_background(&mut scene, cur, b, images),
             Paint::Border(b) => draw_border(&mut scene, cur, b),
             Paint::Ink(t, color) => {
                 text.draw_ink(

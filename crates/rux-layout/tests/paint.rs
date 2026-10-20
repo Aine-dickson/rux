@@ -487,3 +487,36 @@ fn text_shadows_go_under_the_glyphs() {
     let inks: Vec<Rgba> = items.iter().filter_map(|p| if let Paint::Ink(_, c) = p { Some(*c) } else { None }).collect();
     assert_eq!((inks[0].r, inks[1].g), (1.0, 1.0));
 }
+
+/// Image layers are drawn on their own, under the border, with the box's
+/// border and padding to place them by; the rect after them keeps only the
+/// border.
+#[test]
+fn image_layers_paint_apart_with_the_boxes_they_are_placed_in() {
+    let layers = std::sync::Arc::new(BgLayers {
+        color: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)),
+        layers: vec![BgLayer::of(Background::Image("a.png".into()))],
+    });
+    let node = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(50.0)),
+        border: Sides::uniform(2.0),
+        border_color: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
+        border_style: [BorderStyle::Solid; 4],
+        padding: Sides::uniform(3.0),
+        background: Some(Background::Layers(layers)),
+        ..Default::default()
+    });
+    let out = paints(node);
+    let at = out.iter().position(|p| matches!(p, Paint::Background(_))).expect("a background paint");
+    let Paint::Background(b) = &out[at] else { unreachable!() };
+    assert_eq!((b.width, b.height), (100.0, 50.0));
+    assert_eq!((b.border.left, b.padding.top), (2.0, 3.0));
+    assert_eq!(b.view, (0.0, 0.0, 1000.0, 800.0));
+    // Not scrolled, `local` is the padding box.
+    assert_eq!(b.local, (b.x + 2.0, b.y + 2.0, 96.0, 46.0));
+    match &out[at + 1] {
+        Paint::Rect(r) => assert!(r.background.is_none() && r.border_color.is_some()),
+        other => panic!("expected the border after the background, got {other:?}"),
+    }
+}

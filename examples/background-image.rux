@@ -30,8 +30,8 @@
     overflow: hidden;
   }
 
-  .logo { background-image: url(assets/logo.png); }
-  .counter { background-image: url(assets/counter.png); }
+  .logo { background: url(assets/logo.png) center / cover; }
+  .counter { background: url(assets/counter.png) center / cover; }
 
   .cap {
     padding: 4px 8px;

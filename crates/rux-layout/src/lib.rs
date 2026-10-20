@@ -854,9 +854,117 @@ pub enum GridPlace {
 pub enum Background {
     Color(Rgba),
     Gradient(Gradient),
-    /// `background-image: url(…)`. The runtime resolves this to an absolute path
-    /// (like `<image src>`); the painter decodes it and draws it `cover`-sized.
+    /// `url(…)`. The runtime resolves this to an absolute path (like
+    /// `<image src>`). As a `mask-image` it is drawn `cover`-sized; as a
+    /// background it is always one of [`Background::Layers`].
     Image(String),
+    /// Image layers over an optional colour, each sized, placed, repeated
+    /// and cut as the `background-*` properties say. Any background with an
+    /// image is one of these: a box's border and padding decide where its
+    /// layers go, so the painter is handed them in a [`PaintBackground`].
+    Layers(std::sync::Arc<BgLayers>),
+}
+
+/// A box's background layers. The first is on top, and the colour is under
+/// them all, cut to the last layer's `background-clip`, as in CSS.
+#[derive(Clone, Debug, Default)]
+pub struct BgLayers {
+    pub color: Option<Rgba>,
+    pub layers: Vec<BgLayer>,
+}
+
+impl BgLayers {
+    /// The box the colour is cut to: the bottom layer's clip.
+    pub fn color_clip(&self) -> BgBox {
+        self.layers.last().map_or(BgBox::Border, |l| l.clip)
+    }
+}
+
+/// One background layer.
+#[derive(Clone, Debug)]
+pub struct BgLayer {
+    /// A [`Background::Gradient`] or [`Background::Image`].
+    pub image: Background,
+    pub size: BgSize,
+    /// `background-position`, across then down.
+    pub position: [BgPos; 2],
+    /// `background-repeat`, across then down.
+    pub repeat: [BgRepeat; 2],
+    pub clip: BgBox,
+    pub origin: BgBox,
+    pub attachment: BgAttachment,
+}
+
+impl BgLayer {
+    /// A layer as CSS has it with nothing but the image written.
+    pub fn of(image: Background) -> Self {
+        BgLayer {
+            image,
+            size: BgSize::Sized([BgLen::Auto, BgLen::Auto]),
+            position: [BgPos::default(); 2],
+            repeat: [BgRepeat::Repeat; 2],
+            clip: BgBox::Border,
+            origin: BgBox::Padding,
+            attachment: BgAttachment::Scroll,
+        }
+    }
+}
+
+/// `background-size`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BgSize {
+    Cover,
+    Contain,
+    /// Width then height.
+    Sized([BgLen; 2]),
+}
+
+/// One side of a `background-size`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum BgLen {
+    Auto,
+    Px(f32),
+    /// Of the positioning area.
+    Pct(f32),
+}
+
+/// One axis of a `background-position`: `pct` of the room left over (the
+/// area less the tile) plus `px`. `right 10px` is `{ pct: 100, px: -10 }`,
+/// which is how CSS resolves it too.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct BgPos {
+    pub pct: f32,
+    pub px: f32,
+}
+
+/// `background-repeat`, for one axis.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BgRepeat {
+    Repeat,
+    NoRepeat,
+    /// As many whole tiles as fit, the room left shared out between them.
+    Space,
+    /// Tiles stretched or squeezed until a whole number fit.
+    Round,
+}
+
+/// `background-clip` and `background-origin`: which of a box's boxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BgBox {
+    Border,
+    Padding,
+    Content,
+}
+
+/// `background-attachment`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BgAttachment {
+    /// With the box: the default.
+    Scroll,
+    /// Placed against the window, and not moved by any scrolling.
+    Fixed,
+    /// With the box's own scrolled content.
+    Local,
 }
 
 /// A CSS gradient reduced to what the painter needs: a shape and colour stops.
@@ -2279,6 +2387,8 @@ pub struct PaintImage {
 #[derive(Clone, Debug)]
 pub enum Paint {
     Rect(PaintRect),
+    /// A background with image layers. See [`PaintBackground`].
+    Background(PaintBackground),
     /// A dashed, dotted, double or 3D border. See [`PaintBorder`].
     Border(PaintBorder),
     Text(PaintText),
@@ -2430,6 +2540,25 @@ impl BorderStyle {
     pub fn is_solid(self) -> bool {
         matches!(self, BorderStyle::None | BorderStyle::Hidden | BorderStyle::Solid)
     }
+}
+
+/// A background with image layers, drawn under the box's border. The box is
+/// its border box; `border` and `padding` find its other two inside it.
+#[derive(Clone, Debug)]
+pub struct PaintBackground {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub radius: Corners,
+    pub border: Sides,
+    pub padding: Sides,
+    /// Where a `fixed` layer is placed: the window.
+    pub view: (f32, f32, f32, f32),
+    /// Where a `local` layer is placed: the box's scrolled content, its
+    /// padding box moved by the scroll and as large as what it scrolls.
+    pub local: (f32, f32, f32, f32),
+    pub layers: std::sync::Arc<BgLayers>,
 }
 
 /// A border that is not plain solid on every side, drawn over the box's
@@ -2901,6 +3030,32 @@ fn scroll_extent(layout: &taffy::Layout, rtl: bool) -> (f32, f32) {
     // where the content it scrolls to lies, so it counts as far as it goes.
     let left = if rtl { rect.left.min(0.0) } else { 0.0 };
     (border.left + rect.right - left + border.right, border.top + rect.bottom + border.bottom)
+}
+
+/// How far a scroller can travel on each axis. An axis that only clips has
+/// nowhere to travel, so nothing (wheel, finger, scrollbar) moves it.
+fn scroll_max(layout: &taffy::Layout, at: &At) -> Offset {
+    let (content_width, content_height) = scroll_extent(layout, at.scroll_rtl);
+    let (sx, sy) = at.scroll_axes;
+    Offset {
+        x: if sx { (content_width - layout.size.width).max(0.0) } else { 0.0 },
+        y: if sy { (content_height - layout.size.height).max(0.0) } else { 0.0 },
+    }
+}
+
+/// Where a `background-attachment: local` layer is placed: the padding box,
+/// and for a scroller, the padding box of all it scrolls, moved by the
+/// scroll, so the layer goes with the content.
+fn local_area(layout: &taffy::Layout, at: &At, x: f32, y: f32, shift: Offset) -> (f32, f32, f32, f32) {
+    let bd = layout.border;
+    let (w, h) = if at.scroll {
+        let (cw, ch) = scroll_extent(layout, at.scroll_rtl);
+        (cw.max(layout.size.width), ch.max(layout.size.height))
+    } else {
+        (layout.size.width, layout.size.height)
+    };
+    let sx = if at.scroll_rtl { -shift.x } else { shift.x };
+    (x + bd.left - sx, y + bd.top - shift.y, (w - bd.left - bd.right).max(0.0), (h - bd.top - bd.bottom).max(0.0))
 }
 
 fn content_box(layout: &taffy::Layout) -> (f32, f32, f32, f32) {
@@ -5185,6 +5340,36 @@ fn collect(
                     // A border that is not solid all round is drawn on its
                     // own, over the background.
                     let styled = has_border && !border_style.iter().all(|s| s.is_solid());
+                    // Image layers go down on their own, where the box's own
+                    // boxes and its scroll are known, and the rect keeps only
+                    // the border.
+                    let bg = match bg {
+                        Some(Background::Layers(layers)) => {
+                            let shift = match at.scroll {
+                                true => offsets
+                                    .get(b.scroll_ids[&id])
+                                    .copied()
+                                    .unwrap_or_default()
+                                    .clamp_to(scroll_max(layout, &at)),
+                                false => Offset::default(),
+                            };
+                            let side = |r: taffy::Rect<f32>| Sides { top: r.top, right: r.right, bottom: r.bottom, left: r.left };
+                            out.paints.push(Paint::Background(PaintBackground {
+                                x,
+                                y,
+                                width: layout.size.width,
+                                height: layout.size.height,
+                                radius: *radius,
+                                border: side(layout.border),
+                                padding: side(layout.padding),
+                                view: (0.0, 0.0, vp.0, vp.1),
+                                local: local_area(layout, &at, x, y, shift),
+                                layers: layers.clone(),
+                            }));
+                            &None
+                        }
+                        other => other,
+                    };
                     if bg.is_some() || has_border {
                         out.paints.push(Paint::Rect(PaintRect {
                             x,
@@ -5553,13 +5738,7 @@ fn collect(
         // for block alone). Its rectangle starts at the padding box, so the
         // border goes on both ends here: see `scroll_extent`.
         let (content_width, content_height) = scroll_extent(layout, at.scroll_rtl);
-        // An axis that only clips has nowhere to travel, so nothing (wheel,
-        // finger, scrollbar) moves it.
-        let (sx, sy) = at.scroll_axes;
-        let max = Offset {
-            x: if sx { (content_width - layout.size.width).max(0.0) } else { 0.0 },
-            y: if sy { (content_height - layout.size.height).max(0.0) } else { 0.0 },
-        };
+        let max = scroll_max(layout, &at);
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
         walk.scrolls[sid] = Some(ScrollRegion {
             transform: child_xform,

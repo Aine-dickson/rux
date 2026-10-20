@@ -348,8 +348,10 @@ fn read(node: &Node, prop: AnimProp) -> Option<AnimValue> {
     Some(match prop {
         AnimProp::All => return None, // expanded away by `specs_of`
         AnimProp::Opacity => AnimValue::Num(st.opacity),
-        AnimProp::BackgroundColor => match st.background {
-            Some(Background::Color(c)) => AnimValue::Color(c),
+        AnimProp::BackgroundColor => match &st.background {
+            Some(Background::Color(c)) => AnimValue::Color(*c),
+            // The colour under image layers animates as a plain one does.
+            Some(Background::Layers(l)) => AnimValue::Color(l.color?),
             _ => return None,
         },
         AnimProp::Color => AnimValue::Color(node.text.as_ref()?.color),
@@ -383,7 +385,10 @@ fn write(node: &mut Node, prop: AnimProp, value: AnimValue) {
     let st = &mut node.style;
     match (prop, value) {
         (AnimProp::Opacity, AnimValue::Num(v)) => st.opacity = v.clamp(0.0, 1.0),
-        (AnimProp::BackgroundColor, AnimValue::Color(c)) => st.background = Some(Background::Color(c)),
+        (AnimProp::BackgroundColor, AnimValue::Color(c)) => match &mut st.background {
+            Some(Background::Layers(l)) => std::sync::Arc::make_mut(l).color = Some(c),
+            other => *other = Some(Background::Color(c)),
+        },
         (AnimProp::Color, AnimValue::Color(c)) => {
             if let Some(text) = node.text.as_mut() {
                 text.color = c;

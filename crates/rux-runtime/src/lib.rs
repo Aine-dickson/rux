@@ -1992,10 +1992,17 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
         }
     }
     // `background-image: url(…)` resolves against the .rux file too. The painter
-    // sizes it to the box, so no intrinsic size is needed here.
-    if let Some(rux_layout::Background::Image(src)) = &mut node.style.background {
-        if !src.is_empty() {
-            *src = base.join(&*src).to_string_lossy().into_owned();
+    // reads its natural size when it decodes it.
+    if let Some(rux_layout::Background::Layers(layers)) = &mut node.style.background {
+        let urls = |l: &rux_layout::BgLayer| matches!(&l.image, rux_layout::Background::Image(s) if !s.is_empty());
+        if layers.layers.iter().any(urls) {
+            for layer in &mut std::sync::Arc::make_mut(layers).layers {
+                if let rux_layout::Background::Image(src) = &mut layer.image {
+                    if !src.is_empty() {
+                        *src = base.join(&*src).to_string_lossy().into_owned();
+                    }
+                }
+            }
         }
     }
     // So does a `mask-image: url(…)`.
