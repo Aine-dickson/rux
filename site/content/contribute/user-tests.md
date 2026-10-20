@@ -2655,6 +2655,28 @@ corners, and two 300px scrollers scrolled to their ends by `mounted`.
 is now its natural size and tiled, as in CSS (owner's choice, 2026-10-20);
 `background-size: cover` is the old look.
 
+## Text: decoration, transform, indent, ellipsis, font features, 2026-10-20
+
+First CSS pass, step 3g (owner's order, 2026-10-15). Under test in
+`rux-style` (`text_look_tests`: the decoration shorthand, indents, ellipsis
+needing a box that clips, variants as features, what inherits),
+`rux-layout` (`transform_tests`), and `rux-text` (`tests/look.rs`: an indent
+and a transform reach the shaping; `ellipsis_tests`). Driven in a desktop
+window on two probes of 18px text, Windows' own fonts.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| `text-transform` | uppercase, capitalize | capitals, with `ß` left as written, `The Quick-Brown Fox's Den` | desktop: pass |
+| `text-indent: 40px`, `40px hanging` | 360px wide paragraphs | the first line in; every line but the first in | desktop: pass |
+| `text-overflow: ellipsis` | 260px, nowrap, `overflow: hidden` | `text-overflow: ellipsis on a line…` | desktop: pass |
+| The same without `overflow` | | spills out whole, and a warning says why | desktop: pass |
+| Decorations | wavy red, dotted, dashed, double; 3px green over and under 6px down; blue line-through | each as named | desktop: pass |
+| A sentence | a caps run and a wavy run inside it | each run its own | desktop: pass |
+| `font-variant: small-caps`, `font-feature-settings: "smcp"` | Calibri | small letters as small capitals | desktop: pass for the feature, **but see watchlist #45**: Calibri draws without its capitals or most digits, with or without features |
+| `font-stretch` | Bahnschrift, `condensed` and `125%` | narrower; the widest the font has | desktop: pass |
+| `caret-color` | | | not driven: no injected input reaches the window |
+| Web, Android | the same pages | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

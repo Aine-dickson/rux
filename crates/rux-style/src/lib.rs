@@ -26,6 +26,7 @@ use rux_layout::{AnimProp, BlendMode, BorderStyle, Easing, GradientKind, GridFlo
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_layout::{ContentVisibility, IntrinsicSize};
+use rux_layout::{DecorationStyle, TextLook, TextTransform};
 use rux_layout::{BgAttachment, BgBox, BgLayer, BgLayers, BgLen, BgPos, BgRepeat, BgSize};
 use rux_layout::{GridAreas, GridName, GridNames, GridTrack, Repeat};
 use rux_parser::{Element, Node as TplNode, Sfc};
@@ -1391,6 +1392,8 @@ struct Inherited {
     text: TextInherit,
     /// `text-shadow`, which inherits; not in `TextInherit`, which is `Copy`.
     shadows: Option<Arc<Vec<rux_layout::TextShadow>>>,
+    /// The parent's rarely set text properties, see [`text_look`].
+    look: Option<Arc<TextLook>>,
 }
 
 /// The inheriting text properties beyond `color`, `font-size` and
@@ -2225,6 +2228,7 @@ pub fn build_styled_tree_stateful(
             direction: rux_layout::Direction::Ltr,
             text: TextInherit::default(),
             shadows: None,
+            look: None,
         },
         engine,
         &locals,
@@ -2440,6 +2444,7 @@ fn build_run(
             preedit: None,
             shadows: None,
             selection_style: Default::default(),
+            look: inherited.look.clone(),
             rich: None,
             white_space: up.white_space,
             direction: None,
@@ -3813,6 +3818,11 @@ const HONORED_PROPERTIES: &[&str] = &[
     "color", "font-size", "font-weight", "font-family", "font-style", "text-align",
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
+    "text-decoration-color", "text-decoration-style", "text-decoration-thickness",
+    "text-underline-offset", "text-transform", "text-indent", "text-overflow",
+    "font-variant", "font-variant-caps", "font-variant-numeric", "font-variant-ligatures",
+    "font-variant-position", "font-variant-east-asian", "font-feature-settings",
+    "font-variation-settings", "font-stretch", "font-width", "caret-color",
     "overflow-wrap", "word-wrap", "word-break", "vertical-align", "direction",
     // Which side of `light-dark()` a colour takes.
     "color-scheme",
@@ -4052,10 +4062,9 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Boxes
     "box-sizing", "float", "clear", "order", "inset",
     "place-items", "place-content", "place-self", "resize",
-    // Text
-    "text-transform", "text-overflow", "text-indent", "text-decoration-color",
-    "text-decoration-style", "font-variant", "font-stretch",
-    "writing-mode", "user-select", "caret-color",
+    // Text. Static text cannot be selected yet, so `user-select` has
+    // nothing to turn off; vertical writing is a layout of its own.
+    "writing-mode", "user-select",
     "appearance", "list-style", "list-style-type", "list-style-position",
     // Motion. `transition` is honored; keyframe animation and the origin a
     // transform turns about are not.
@@ -4934,6 +4943,7 @@ fn build_text(
     // Whether this element sets a direction of its own, not one it inherits.
     dir_own: bool,
     shadows: Option<Arc<Vec<rux_layout::TextShadow>>>,
+    look: Option<Arc<TextLook>>,
 ) -> LayoutNode {
     // Inside a sentence, the sentence's decorations are drawn under this run's
     // words too. See `RunInherit`.
@@ -4988,6 +4998,7 @@ fn build_text(
             preedit: None,
             shadows: shadows.clone(),
             selection_style: Default::default(),
+            look: look.clone(),
             rich: None,
             white_space,
             direction: (!dir_auto).then_some(direction),
@@ -5021,6 +5032,7 @@ fn build_text(
             direction,
             text: own_text,
             shadows: shadows.clone(),
+            look: look.clone(),
         };
         let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
         ancestors.push(AncNode { desc, prev: siblings.into(), form: None });
@@ -5551,13 +5563,14 @@ fn build_node_inner(
         None => inherited.shadows.clone(),
     };
     let line_height = own_text.line_height.map(|l| l.px(font_size));
+    let look = text_look(&props, inherited.look.as_ref(), inherited.run.is_some());
     // `text-decoration[-line]`: underline / line-through (space-separated list).
     let decoration = props.get("text-decoration-line").or_else(|| props.get("text-decoration"));
     let underline = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "underline"));
     let strikethrough = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "line-through"));
 
     if el.tag == "text" {
-        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own, shadows);
+        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own, shadows, look.clone());
     }
 
     // <image src=…>: a leaf that paints its pixels. The `src` here is still the
@@ -6003,6 +6016,7 @@ fn build_node_inner(
                 selection: None,
                 preedit: None,
                 shadows: shadows.clone(),
+                look: look.clone(),
                 selection_style: SelectionStyle {
                     handle: props.get("accent-color").and_then(|v| parse_color(v)),
                     ..selection
@@ -6084,6 +6098,7 @@ fn build_node_inner(
         direction,
         text: own_text,
         shadows: shadows.clone(),
+        look: look.clone(),
     };
     let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
     let (children, structural_deps) = build_children(
@@ -8478,7 +8493,7 @@ fn frag_has_other_place(frag: &BindingRegistry, own: Option<&str>) -> bool {
 /// Destructured so that a field added to either struct fails to compile here
 /// rather than being silently left out of the comparison.
 fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
-    let Inherited { color, selection, font_size, font_family, vars, run, direction, text: text_style, shadows } = a;
+    let Inherited { color, selection, font_size, font_family, vars, run, direction, text: text_style, shadows, look } = a;
     let SelectionStyle { background, color: text, handle } = selection;
     let rgba = |x: &Rgba, y: &Rgba| x.r == y.r && x.g == y.g && x.b == y.b && x.a == y.a;
     let opt = |x: &Option<Rgba>, y: &Option<Rgba>| match (x, y) {
@@ -8496,6 +8511,7 @@ fn same_inherited(a: &Inherited, b: &Inherited) -> bool {
         && *run == b.run
         && *direction == b.direction
         && *text_style == b.text
+        && *look == b.look
         && match (shadows, &b.shadows) {
             (Some(x), Some(y)) => Arc::ptr_eq(x, y),
             (None, None) => true,
@@ -11399,6 +11415,238 @@ fn drop_shadow_colors(value: &str, color: Rgba) -> Option<String> {
         })
         .collect();
     changed.then(|| words.join(" "))
+}
+
+/// An element's rarely set text properties (see [`TextLook`]): the
+/// inheriting ones its own or its parent's, the rest its own. Inside a
+/// sentence a run takes the sentence's decoration too, as it takes its
+/// underline (see [`RunInherit`]). `None` when nothing is set.
+fn text_look(props: &HashMap<String, String>, parent: Option<&Arc<TextLook>>, in_sentence: bool) -> Option<Arc<TextLook>> {
+    let up = parent.map(|p| (**p).clone()).unwrap_or_default();
+    let mut look = TextLook {
+        transform: up.transform,
+        indent: up.indent,
+        indent_pct: up.indent_pct,
+        indent_each_line: up.indent_each_line,
+        indent_hanging: up.indent_hanging,
+        variant: up.variant.clone(),
+        feature_settings: up.feature_settings.clone(),
+        variation_settings: up.variation_settings.clone(),
+        stretch: up.stretch,
+        caret_color: up.caret_color,
+        ..Default::default()
+    };
+    if in_sentence {
+        look.decoration_color = up.decoration_color;
+        look.decoration_style = up.decoration_style;
+        look.decoration_thickness = up.decoration_thickness;
+        look.underline_offset = up.underline_offset;
+        look.overline = up.overline;
+    }
+    // `text-decoration`: its lines, style, colour and thickness in any
+    // order; the longhands after it.
+    if let Some(v) = props.get("text-decoration") {
+        for tok in split_top_level(v) {
+            if let Some(s) = decoration_style(tok) {
+                look.decoration_style = s;
+            } else if tok == "overline" {
+                look.overline = true;
+            } else if matches!(tok, "underline" | "line-through" | "none" | "auto" | "from-font") {
+            } else if let Some(px) = parse_px(tok) {
+                look.decoration_thickness = Some(px);
+            } else if let Some(c) = parse_color(tok) {
+                look.decoration_color = Some(c);
+            } else {
+                warn(format!("`{tok}` in `text-decoration` is not something Rux knows"));
+            }
+        }
+    }
+    if let Some(v) = props.get("text-decoration-line") {
+        look.overline = v.split_whitespace().any(|t| t == "overline");
+    }
+    if let Some(v) = props.get("text-decoration-style") {
+        match decoration_style(v.trim()) {
+            Some(s) => look.decoration_style = s,
+            None => warn(format!("`text-decoration-style: {v}` is not a style Rux knows")),
+        }
+    }
+    if let Some(v) = props.get("text-decoration-color") {
+        look.decoration_color = parse_color(v.trim());
+    }
+    if let Some(v) = props.get("text-decoration-thickness") {
+        look.decoration_thickness = match v.trim() {
+            "auto" | "from-font" => None,
+            t => parse_px(t),
+        };
+    }
+    if let Some(v) = props.get("text-underline-offset") {
+        look.underline_offset = match v.trim() {
+            "auto" => None,
+            t => parse_px(t),
+        };
+    }
+    if let Some(v) = props.get("text-transform") {
+        look.transform = match v.trim() {
+            "none" => TextTransform::None,
+            "uppercase" => TextTransform::Uppercase,
+            "lowercase" => TextTransform::Lowercase,
+            "capitalize" => TextTransform::Capitalize,
+            other => {
+                warn(format!(
+                    "`text-transform: {other}` is not drawn; Rux has `uppercase`, `lowercase` and `capitalize`"
+                ));
+                TextTransform::None
+            }
+        };
+    }
+    if let Some(v) = props.get("text-indent") {
+        // A length and, in any order, `hanging` and `each-line`.
+        let toks: Vec<&str> = v.split_whitespace().collect();
+        look.indent_hanging = toks.contains(&"hanging");
+        look.indent_each_line = toks.contains(&"each-line");
+        let len = toks.iter().find(|t| !matches!(**t, "hanging" | "each-line")).copied().unwrap_or("0");
+        match len.strip_suffix('%').and_then(|n| n.parse::<f32>().ok()) {
+            Some(pct) => (look.indent, look.indent_pct) = (0.0, Some(pct)),
+            None => (look.indent, look.indent_pct) = (parse_px(len).unwrap_or(0.0), None),
+        }
+    }
+    if let Some(v) = props.get("text-overflow") {
+        look.ellipsis = match v.trim() {
+            "ellipsis" => true,
+            "clip" => false,
+            other => {
+                warn(format!("`text-overflow: {other}` is not drawn; Rux has `clip` and `ellipsis`"));
+                false
+            }
+        };
+        // As in CSS, only a box that clips cuts its text short: one that
+        // lets it spill shows all of it.
+        let clips = ["overflow-x", "overflow"]
+            .iter()
+            .find_map(|k| props.get(*k))
+            .is_some_and(|v| first(v) != "visible");
+        if look.ellipsis && !clips {
+            warn("`text-overflow: ellipsis` cuts only a box that clips; add `overflow: hidden`".to_string());
+            look.ellipsis = false;
+        }
+    }
+    let variant_props = [
+        "font-variant",
+        "font-variant-caps",
+        "font-variant-numeric",
+        "font-variant-ligatures",
+        "font-variant-position",
+        "font-variant-east-asian",
+    ];
+    if variant_props.iter().any(|k| props.contains_key(*k)) {
+        let mut features: Vec<&str> = Vec::new();
+        for k in variant_props {
+            if let Some(v) = props.get(k) {
+                for tok in v.split_whitespace() {
+                    match variant_features(tok) {
+                        Some(f) => features.extend(f),
+                        None => warn(format!("`{tok}` in `{k}` is not a variant Rux knows")),
+                    }
+                }
+            }
+        }
+        look.variant = (!features.is_empty()).then(|| features.join(", "));
+    }
+    if let Some(v) = props.get("font-feature-settings") {
+        look.feature_settings = (v.trim() != "normal").then(|| v.trim().to_string());
+    }
+    if let Some(v) = props.get("font-variation-settings") {
+        look.variation_settings = (v.trim() != "normal").then(|| v.trim().to_string());
+    }
+    if let Some(v) = props.get("font-stretch").or_else(|| props.get("font-width")) {
+        look.stretch = match font_stretch(v.trim()) {
+            Some(pct) if pct == 100.0 => None,
+            Some(pct) => Some(pct),
+            None => {
+                warn(format!("`font-stretch: {v}` is not a width Rux knows"));
+                None
+            }
+        };
+    }
+    if let Some(v) = props.get("caret-color") {
+        look.caret_color = match v.trim() {
+            "auto" => None,
+            c => parse_color(c),
+        };
+    }
+    (look != TextLook::default()).then(|| Arc::new(look))
+}
+
+fn decoration_style(v: &str) -> Option<DecorationStyle> {
+    Some(match v {
+        "solid" => DecorationStyle::Solid,
+        "double" => DecorationStyle::Double,
+        "dotted" => DecorationStyle::Dotted,
+        "dashed" => DecorationStyle::Dashed,
+        "wavy" => DecorationStyle::Wavy,
+        _ => return None,
+    })
+}
+
+/// The OpenType features a `font-variant` keyword turns on or off, as CSS
+/// Fonts 4 lists them. `normal` asks for none. A font without the feature
+/// draws the text as it is: Rux does not make small capitals up, as a
+/// browser does.
+fn variant_features(v: &str) -> Option<&'static [&'static str]> {
+    Some(match v {
+        "normal" => &[],
+        "none" => &["\"liga\" 0", "\"clig\" 0", "\"dlig\" 0", "\"hlig\" 0", "\"calt\" 0"],
+        "small-caps" => &["\"smcp\""],
+        "all-small-caps" => &["\"smcp\"", "\"c2sc\""],
+        "petite-caps" => &["\"pcap\""],
+        "all-petite-caps" => &["\"pcap\"", "\"c2pc\""],
+        "unicase" => &["\"unic\""],
+        "titling-caps" => &["\"titl\""],
+        "lining-nums" => &["\"lnum\""],
+        "oldstyle-nums" => &["\"onum\""],
+        "proportional-nums" => &["\"pnum\""],
+        "tabular-nums" => &["\"tnum\""],
+        "diagonal-fractions" => &["\"frac\""],
+        "stacked-fractions" => &["\"afrc\""],
+        "ordinal" => &["\"ordn\""],
+        "slashed-zero" => &["\"zero\""],
+        "common-ligatures" => &["\"liga\"", "\"clig\""],
+        "no-common-ligatures" => &["\"liga\" 0", "\"clig\" 0"],
+        "discretionary-ligatures" => &["\"dlig\""],
+        "no-discretionary-ligatures" => &["\"dlig\" 0"],
+        "historical-ligatures" => &["\"hlig\""],
+        "no-historical-ligatures" => &["\"hlig\" 0"],
+        "contextual" => &["\"calt\""],
+        "no-contextual" => &["\"calt\" 0"],
+        "sub" => &["\"subs\""],
+        "super" => &["\"sups\""],
+        "jis78" => &["\"jp78\""],
+        "jis83" => &["\"jp83\""],
+        "jis90" => &["\"jp90\""],
+        "jis04" => &["\"jp04\""],
+        "simplified" => &["\"smpl\""],
+        "traditional" => &["\"trad\""],
+        "full-width" => &["\"fwid\""],
+        "proportional-width" => &["\"pwid\""],
+        "ruby" => &["\"ruby\""],
+        _ => return None,
+    })
+}
+
+/// `font-stretch` as a percentage: the keyword's, or the one written.
+fn font_stretch(v: &str) -> Option<f32> {
+    Some(match v {
+        "ultra-condensed" => 50.0,
+        "extra-condensed" => 62.5,
+        "condensed" => 75.0,
+        "semi-condensed" => 87.5,
+        "normal" => 100.0,
+        "semi-expanded" => 112.5,
+        "expanded" => 125.0,
+        "extra-expanded" => 150.0,
+        "ultra-expanded" => 200.0,
+        _ => v.strip_suffix('%')?.trim().parse().ok()?,
+    })
 }
 
 /// `text-shadow`: a comma list of `<dx> <dy> <blur>? <color>?`. `none` is
@@ -15206,5 +15454,77 @@ mod background_tests {
         let r = |v: &str| layers(&[("background", "url(a.png)"), ("background-repeat", v)]).layers[0].repeat;
         assert_eq!(r("repeat-y"), [BgRepeat::NoRepeat, BgRepeat::Repeat]);
         assert_eq!(r("space round"), [BgRepeat::Space, BgRepeat::Round]);
+    }
+}
+
+#[cfg(test)]
+mod text_look_tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+
+    use rux_layout::{DecorationStyle, TextLook, TextTransform};
+
+    fn look(pairs: &[(&str, &str)], parent: Option<&Arc<TextLook>>, in_sentence: bool) -> Option<Arc<TextLook>> {
+        let p: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        super::text_look(&p, parent, in_sentence)
+    }
+
+    #[test]
+    fn nothing_set_is_no_look() {
+        assert!(look(&[("color", "red")], None, false).is_none());
+    }
+
+    #[test]
+    fn the_decoration_shorthand_takes_style_colour_and_thickness() {
+        let l = look(&[("text-decoration", "underline overline wavy #f00 3px")], None, false).unwrap();
+        assert_eq!(l.decoration_style, DecorationStyle::Wavy);
+        assert!(l.overline);
+        assert_eq!(l.decoration_thickness, Some(3.0));
+        assert_eq!(l.decoration_color.map(|c| c.r), Some(1.0));
+        let l = look(&[("text-underline-offset", "4px"), ("text-decoration-style", "double")], None, false).unwrap();
+        assert_eq!((l.underline_offset, l.decoration_style), (Some(4.0), DecorationStyle::Double));
+    }
+
+    #[test]
+    fn an_indent_takes_a_length_or_a_percentage_and_its_keywords() {
+        let l = look(&[("text-indent", "2em hanging each-line")], None, false).unwrap();
+        assert_eq!((l.indent_hanging, l.indent_each_line), (true, true));
+        assert!(l.indent > 0.0);
+        let l = look(&[("text-indent", "10%")], None, false).unwrap();
+        assert_eq!((l.indent, l.indent_pct), (0.0, Some(10.0)));
+    }
+
+    #[test]
+    fn an_ellipsis_needs_a_box_that_clips() {
+        let cut = |pairs: &[(&str, &str)]| look(pairs, None, false).is_some_and(|l| l.ellipsis);
+        assert!(cut(&[("text-overflow", "ellipsis"), ("overflow", "hidden")]));
+        assert!(cut(&[("text-overflow", "ellipsis"), ("overflow-x", "clip")]));
+        assert!(!cut(&[("text-overflow", "ellipsis")]));
+    }
+
+    #[test]
+    fn variants_become_font_features() {
+        let l = look(&[("font-variant", "small-caps tabular-nums"), ("font-feature-settings", "\"zero\"")], None, false).unwrap();
+        assert_eq!(l.features().as_deref(), Some("\"smcp\", \"tnum\", \"zero\""));
+        let l = look(&[("font-stretch", "condensed")], None, false).unwrap();
+        assert_eq!(l.stretch, Some(75.0));
+        assert!(look(&[("font-stretch", "100%")], None, false).is_none());
+    }
+
+    /// `text-transform`, `text-indent`, the font settings and `caret-color`
+    /// inherit; decoration does not, except into a run of a sentence.
+    #[test]
+    fn what_inherits_and_what_does_not() {
+        let parent = look(
+            &[("text-transform", "uppercase"), ("text-decoration-color", "red"), ("caret-color", "blue")],
+            None,
+            false,
+        );
+        let child = look(&[], parent.as_ref(), false).unwrap();
+        assert_eq!(child.transform, TextTransform::Uppercase);
+        assert!(child.caret_color.is_some());
+        assert!(child.decoration_color.is_none());
+        let run = look(&[], parent.as_ref(), true).unwrap();
+        assert!(run.decoration_color.is_some());
     }
 }

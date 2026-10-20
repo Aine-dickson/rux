@@ -108,7 +108,7 @@ pub(crate) fn join(node: &Node, path: &[usize]) -> (TextContent, Vec<InlinePart>
     }
     base.text = text;
     base.rich = Some(Arc::new(rich));
-    (base, parts)
+    (*base, parts)
 }
 
 enum Piece {
@@ -213,6 +213,7 @@ fn run_style(tc: &TextContent, node: &Node) -> RunStyle {
         underline: tc.underline,
         strikethrough: tc.strikethrough,
         color: tc.color,
+        look: tc.look.clone(),
         background: match &node.style.background {
             Some(Background::Color(c)) => Some(*c),
             _ => None,

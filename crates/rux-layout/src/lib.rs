@@ -1523,6 +1523,146 @@ pub fn read_image_bytes(src: &str) -> Option<Vec<u8>> {
     reader(src)
 }
 
+/// The text properties set rarely, kept together and shared, so a text that
+/// sets none of them carries one empty pointer (watchlist #41).
+#[derive(Clone, Debug, Default)]
+pub struct TextLook {
+    /// `text-decoration-color`; `None` is `currentColor`.
+    pub decoration_color: Option<Rgba>,
+    pub decoration_style: DecorationStyle,
+    /// `text-decoration-thickness` in px; `None` is the font's own.
+    pub decoration_thickness: Option<f32>,
+    /// `text-underline-offset` in px below the baseline; `None` is the font's.
+    pub underline_offset: Option<f32>,
+    /// `text-decoration-line: overline`.
+    pub overline: bool,
+    /// `text-transform`. Inherits.
+    pub transform: TextTransform,
+    /// `text-indent` of the first line, in px, or as a percentage of the
+    /// text's width. Inherits.
+    pub indent: f32,
+    pub indent_pct: Option<f32>,
+    /// `text-indent: … each-line`: after every hard break too.
+    pub indent_each_line: bool,
+    /// `text-indent: … hanging`: every line but the first.
+    pub indent_hanging: bool,
+    /// `text-overflow: ellipsis`: a line cut by the box ends in `…`.
+    pub ellipsis: bool,
+    /// The OpenType features `font-variant` and its longhands ask for, in
+    /// `font-feature-settings` form. Inherits.
+    pub variant: Option<String>,
+    /// `font-feature-settings` as written, after the variant's, so it wins
+    /// where they meet, as in CSS. Inherits on its own.
+    pub feature_settings: Option<String>,
+    /// `font-variation-settings` as written. Inherits.
+    pub variation_settings: Option<String>,
+    /// `font-stretch` as a percentage; `None` is 100%. Inherits.
+    pub stretch: Option<f32>,
+    /// `caret-color`; `None` is the text's colour. Inherits.
+    pub caret_color: Option<Rgba>,
+}
+
+impl TextLook {
+    /// Every field, floats by their bits, for equality and hashing.
+    #[allow(clippy::type_complexity)]
+    fn key(&self) -> impl PartialEq + std::hash::Hash + '_ {
+        let f = |v: Option<f32>| v.map(f32::to_bits);
+        let c = |v: Option<Rgba>| v.map(|c| [c.r, c.g, c.b, c.a].map(f32::to_bits));
+        (
+            (c(self.decoration_color), self.decoration_style, f(self.decoration_thickness), f(self.underline_offset)),
+            (self.overline, self.transform, self.indent.to_bits(), f(self.indent_pct), self.indent_each_line, self.indent_hanging),
+            self.ellipsis,
+            (&self.variant, &self.feature_settings, &self.variation_settings, f(self.stretch), c(self.caret_color)),
+        )
+    }
+}
+
+impl TextLook {
+    /// Every OpenType feature asked for, in `font-feature-settings` form.
+    pub fn features(&self) -> Option<String> {
+        match (&self.variant, &self.feature_settings) {
+            (Some(v), Some(s)) => Some(format!("{v}, {s}")),
+            (v, s) => v.clone().or_else(|| s.clone()),
+        }
+    }
+}
+
+impl PartialEq for TextLook {
+    fn eq(&self, o: &Self) -> bool {
+        self.key() == o.key()
+    }
+}
+
+impl Eq for TextLook {}
+
+impl std::hash::Hash for TextLook {
+    fn hash<H: std::hash::Hasher>(&self, h: &mut H) {
+        self.key().hash(h);
+    }
+}
+
+/// `text-decoration-style`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum DecorationStyle {
+    #[default]
+    Solid,
+    Double,
+    Dotted,
+    Dashed,
+    Wavy,
+}
+
+/// `text-transform`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum TextTransform {
+    #[default]
+    None,
+    Uppercase,
+    Lowercase,
+    Capitalize,
+}
+
+impl TextTransform {
+    /// `text` in this case, letter for letter, with every byte where it was:
+    /// a letter whose other case is not one letter of the same size (`ß`,
+    /// whose capital is `SS`) stays as written, so carets, selections and
+    /// runs keep their places. CSS would write `SS`.
+    pub fn apply(self, text: &str) -> std::borrow::Cow<'_, str> {
+        if self == TextTransform::None {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let mut out = String::with_capacity(text.len());
+        let mut start = true;
+        for c in text.chars() {
+            let up = match self {
+                TextTransform::Uppercase => true,
+                TextTransform::Lowercase => false,
+                TextTransform::Capitalize => start,
+                TextTransform::None => unreachable!(),
+            };
+            let changed: String = if up && (self != TextTransform::Capitalize || start) {
+                c.to_uppercase().collect()
+            } else if self == TextTransform::Lowercase {
+                c.to_lowercase().collect()
+            } else {
+                c.to_string()
+            };
+            // One letter for one letter of the same size, or the letter as
+            // written: `ß` would be the two letters `SS` in the same two
+            // bytes, and a caret placed between them would be in the middle
+            // of a letter of the real text.
+            if changed.chars().count() == 1 && changed.len() == c.len_utf8() {
+                out.push_str(&changed);
+            } else {
+                out.push(c);
+            }
+            // A word starts after anything that is not a letter or a digit.
+            start = !c.is_alphanumeric() && c != '\'' && c != '\u{2019}';
+        }
+        std::borrow::Cow::Owned(out)
+    }
+}
+
 /// One `text-shadow`: the glyphs again, moved, softened, in one colour.
 #[derive(Clone, Copy, Debug)]
 pub struct TextShadow {
@@ -1585,6 +1725,10 @@ pub struct TextContent {
     /// for plain text, which is nearly all of it. Shared, because a text is
     /// cloned into the frame's paint list every frame.
     pub rich: Option<std::sync::Arc<RichText>>,
+    /// The text properties set rarely: decoration colour and style,
+    /// `text-transform`, `text-indent`, `text-overflow`, font features and
+    /// width, `caret-color`. `None` when none is set, which is nearly always.
+    pub look: Option<std::sync::Arc<TextLook>>,
     /// `white-space`. A plain text arrives collapsed already; a run of a
     /// sentence arrives as written, and is collapsed with the runs beside it
     /// when the layout joins them.
@@ -2112,7 +2256,9 @@ pub struct Checks {
 #[derive(Clone, Debug)]
 pub struct Node {
     pub style: Style,
-    pub text: Option<TextContent>,
+    /// Boxed: a `TextContent` is some 300 bytes and most nodes have none,
+    /// and a `Node` is held at every level of a build (watchlist #41).
+    pub text: Option<Box<TextContent>>,
     /// `<image src=…>`.
     pub image: Option<ImageContent>,
     /// `<path d=…>`: vector geometry in the element's own box, drawn with the
@@ -2231,7 +2377,7 @@ impl Node {
     pub fn text(style: Style, text: TextContent) -> Self {
         Self {
             style,
-            text: Some(text),
+            text: Some(Box::new(text)),
             image: None,
             path: None,
             tick: None,
@@ -4163,7 +4309,7 @@ fn build(
     }
     // A `<text>` of pieces is laid out as the one sentence they make.
     let joined = (skip.is_none() && inline::is_sentence(node)).then(|| inline::join(node, path));
-    let text = if skip.is_some() { None } else { joined.as_ref().map(|(tc, _)| tc).or(node.text.as_ref()) };
+    let text = if skip.is_some() { None } else { joined.as_ref().map(|(tc, _)| tc).or(node.text.as_deref()) };
     let id = node_for(tree, old_id, ts, text, &child_ids);
     if old_id.is_some() && (text_cap != old_cap || skip != old_intrinsic) {
         tree.mark_dirty(id).expect("taffy dirty");
@@ -6675,5 +6821,22 @@ mod size_budget_tests {
         let node = std::mem::size_of::<crate::Node>();
         assert!(style <= 744, "Style is {style} bytes: box the new field (watchlist #41)");
         assert!(node <= 1536, "Node is {node} bytes: box the new field (watchlist #41)");
+    }
+}
+
+#[cfg(test)]
+mod transform_tests {
+    use crate::TextTransform::*;
+
+    #[test]
+    fn a_transform_changes_letters_and_never_where_they_are() {
+        assert_eq!(Uppercase.apply("abc déf"), "ABC DÉF");
+        assert_eq!(Lowercase.apply("ABC DÉF"), "abc déf");
+        assert_eq!(Capitalize.apply("the quick-brown fox's den"), "The Quick-Brown Fox's Den");
+        // `ß` has no capital of one letter, so it stays; every byte is kept.
+        let s = "straße";
+        assert_eq!(Uppercase.apply(s), "STRAßE");
+        assert_eq!(Uppercase.apply(s).len(), s.len());
+        assert!(matches!(None.apply(s), std::borrow::Cow::Borrowed(_)));
     }
 }

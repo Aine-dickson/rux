@@ -28,10 +28,10 @@ use std::sync::Arc;
 use parley::{
     Affinity, Alignment, BreakReason, AlignmentOptions, Cursor, FontContext, FontWeight, InlineBox, InlineBoxKind,
     Layout, LayoutContext, Line, LineHeight, OverflowWrap, PositionedLayoutItem, Selection, StyleProperty,
-    TextWrapMode,
+    TextWrapMode, IndentOptions,
 };
-use parley::style::{FontFamily, FontStyle};
-use rux_layout::{Direction, InlineGeometry, RichText, RunStyle};
+use parley::style::{FontFamily, FontFeatures, FontStyle, FontVariations, FontWidth};
+use rux_layout::{DecorationStyle, Direction, InlineGeometry, RichText, RunStyle, TextLook, TextTransform};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
@@ -119,6 +119,9 @@ pub struct TextStyle<'a> {
     /// The paragraph's base direction; `None` takes it from its first letter
     /// with a direction (`dir="auto"`).
     pub direction: Option<Direction>,
+    /// The rarely set text properties: transform, indent, font features and
+    /// width, and what decorations look like.
+    pub look: Option<&'a TextLook>,
 }
 
 impl<'a> TextStyle<'a> {
@@ -138,6 +141,7 @@ impl<'a> TextStyle<'a> {
             nowrap: false,
             rich: None,
             direction: None,
+            look: None,
         }
     }
 }
@@ -146,6 +150,29 @@ impl<'a> TextStyle<'a> {
 /// spaces and punctuation alone. Right-to-left is the Hebrew, Arabic, Syriac,
 /// Thaana, N'Ko and later right-to-left scripts' blocks, less the Arabic
 /// digits and number signs, which have no direction of their own.
+/// The text as it is shaped: `text-transform` applied, the paragraph's, or
+/// in a paragraph with runs, each run's own over its range. Borrowed when
+/// nothing changes it.
+fn transformed<'t>(text: &'t str, style: &TextStyle) -> Cow<'t, str> {
+    let own = style.look.map_or(TextTransform::None, |l| l.transform);
+    let Some(rich) = style.rich.filter(|r| r.runs.iter().any(|run| run.style.look.is_some())) else {
+        return own.apply(text);
+    };
+    let mut out = String::with_capacity(text.len());
+    let mut at = 0;
+    for run in &rich.runs {
+        let (start, end) = (run.range.start.min(text.len()), run.range.end.min(text.len()));
+        if start > at {
+            out.push_str(&own.apply(&text[at..start]));
+        }
+        let t = run.style.look.as_deref().map_or(own, |l| l.transform);
+        out.push_str(&t.apply(&text[start..end]));
+        at = at.max(end);
+    }
+    out.push_str(&own.apply(&text[at..]));
+    Cow::Owned(out)
+}
+
 fn first_strong(text: &str) -> Option<Direction> {
     // What an isolate holds does not count (UAX #9, P2): a sentence opening
     // with a set-apart Hebrew name is still the sentence it is.
@@ -268,7 +295,7 @@ const SHAPED_CAP: usize = 2048;
 /// lookup used to copy the text into a new `String` first, 6 600 times a
 /// frame in a 300-row list (docs/11-next.md, track (g)).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct Key<S, R> {
+struct Key<S, R, L> {
     text: S,
     font_size: u32,
     weight: u16,
@@ -285,10 +312,12 @@ struct Key<S, R> {
     /// same runs are the same paragraph.
     rich: Option<R>,
     direction: Option<Direction>,
+    /// The rarely set text properties, compared by value like the runs.
+    look: Option<L>,
 }
 
-type MeasureKey = Key<String, RichText>;
-type KeyRef<'a> = Key<&'a str, &'a RichText>;
+type MeasureKey = Key<String, RichText, TextLook>;
+type KeyRef<'a> = Key<&'a str, &'a RichText, &'a TextLook>;
 
 impl<'a> KeyRef<'a> {
     fn new(text: &'a str, style: &TextStyle<'a>, max_width: Option<f32>, align: u8) -> Self {
@@ -307,6 +336,7 @@ impl<'a> KeyRef<'a> {
             align,
             rich: style.rich,
             direction: style.direction,
+            look: style.look,
         }
     }
 
@@ -326,6 +356,7 @@ impl<'a> KeyRef<'a> {
             align: self.align,
             rich: self.rich.cloned(),
             direction: self.direction,
+            look: self.look.cloned(),
         }
     }
 }
@@ -354,6 +385,7 @@ impl AsKey for MeasureKey {
             align: self.align,
             rich: self.rich.as_ref(),
             direction: self.direction,
+            look: self.look.as_ref(),
         }
     }
 }
@@ -441,6 +473,10 @@ impl TextEngine {
     }
 
     fn build(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Layout<RunId> {
+        // `text-transform` changes letters, never where they are, so every
+        // index into the text still holds for what is shaped.
+        let shown = transformed(text, style);
+        let text = &*shown;
         let marked: Cow<str> = match mark(text, style.direction) {
             Some(m) => Cow::Owned(format!("{m}{text}")),
             None => Cow::Borrowed(text),
@@ -471,6 +507,9 @@ impl TextEngine {
         if style.nowrap {
             builder.push_default(StyleProperty::TextWrapMode(TextWrapMode::NoWrap));
         }
+        if let Some(look) = style.look {
+            Self::push_look(&mut builder, look, None);
+        }
         if let Some(rich) = style.rich {
             for (i, run) in rich.runs.iter().enumerate() {
                 let range = run.range.start + off..run.range.end + off;
@@ -490,8 +529,34 @@ impl TextEngine {
             }
         }
         let mut layout: Layout<RunId> = builder.build(text);
+        // `text-indent`: a percentage is of the width the text is set in.
+        if let Some(look) = style.look {
+            let amount = look.indent + look.indent_pct.map_or(0.0, |p| p / 100.0 * max_width.unwrap_or(0.0));
+            if amount != 0.0 {
+                let options = IndentOptions { each_line: look.indent_each_line, hanging: look.indent_hanging };
+                layout.set_text_indent(amount, options);
+            }
+        }
         layout.break_all_lines(max_width);
         layout
+    }
+
+    /// What a look changes in shaping: font features, variations and width.
+    /// Over the whole paragraph, or one run's range.
+    fn push_look(builder: &mut parley::RangedBuilder<'_, RunId>, look: &TextLook, range: Option<std::ops::Range<usize>>) {
+        let mut put = |p: StyleProperty<'static, RunId>| match &range {
+            Some(r) => builder.push(p, r.clone()),
+            None => builder.push_default(p),
+        };
+        if let Some(features) = look.features() {
+            put(StyleProperty::FontFeatures(FontFeatures::Source(Cow::Owned(features))));
+        }
+        if let Some(v) = &look.variation_settings {
+            put(StyleProperty::FontVariations(FontVariations::Source(Cow::Owned(v.clone()))));
+        }
+        if let Some(pct) = look.stretch {
+            put(StyleProperty::FontWidth(FontWidth::from_percentage(pct)));
+        }
     }
 
     /// One run's style over its range, every property of it: a run carries
@@ -517,7 +582,10 @@ impl TextEngine {
             }
         }
         builder.push(StyleProperty::LetterSpacing(run.letter_spacing.unwrap_or(0.0)), range.clone());
-        builder.push(StyleProperty::WordSpacing(run.word_spacing.unwrap_or(0.0)), range);
+        builder.push(StyleProperty::WordSpacing(run.word_spacing.unwrap_or(0.0)), range.clone());
+        if let Some(look) = run.look.as_deref() {
+            Self::push_look(builder, look, Some(range));
+        }
     }
 
     /// Measure the text block with leading trimmed: `(width, height)` where
@@ -956,6 +1024,40 @@ impl TextEngine {
         self.draw_inked(scene, x, y, text, style, color, false, align, max_width, transform);
     }
 
+    /// For `text-overflow: ellipsis`, when the text is one line too wide for
+    /// `max_width`: the longest start of it that fits with `…` after it, and
+    /// the look to draw that with (no ellipsis, so it is not cut again).
+    /// `None` when nothing is cut, which is always for text that wraps, has
+    /// runs, or has lines of its own.
+    fn ellipsized(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Option<(String, TextLook)> {
+        let look = style.look.filter(|l| l.ellipsis)?;
+        let max = max_width?;
+        if !style.nowrap || style.rich.is_some() || text.contains('\n') {
+            return None;
+        }
+        let whole = TextStyle { look: None, ..*style };
+        if self.measure(text, &whole, None).0 <= max.ceil() {
+            return None;
+        }
+        // The most characters that fit, found by halving.
+        let ends: Vec<usize> = text.char_indices().map(|(i, _)| i).chain(std::iter::once(text.len())).collect();
+        let fits = |engine: &mut Self, n: usize| {
+            let cut = format!("{}\u{2026}", text[..ends[n]].trim_end());
+            engine.measure(&cut, &whole, None).0 <= max.ceil()
+        };
+        let (mut lo, mut hi) = (0, ends.len() - 1);
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if fits(self, mid) {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        let cut = format!("{}\u{2026}", text[..ends[lo]].trim_end());
+        Some((cut, TextLook { ellipsis: false, ..look.clone() }))
+    }
+
     /// [`draw`](Self::draw) with every glyph and decoration in `color`, runs
     /// included, and no run highlights: the second pass `::selection { color }`
     /// paints over the selected part.
@@ -989,20 +1091,27 @@ impl TextEngine {
         max_width: Option<f32>,
         transform: Affine,
     ) {
+        // `text-overflow: ellipsis`: a line too long for its box is drawn cut
+        // short, ending in `…`. Only drawing changes; it is measured, hit and
+        // edited as the whole text.
+        if let Some((cut, look)) = self.ellipsized(text, style, max_width) {
+            let style = TextStyle { look: Some(&look), ..*style };
+            return self.draw_inked(scene, x, y, &cut, &style, color, ink, align, max_width, transform);
+        }
         let key = KeyRef::new(text, style, max_width, align as u8);
         self.ensure_shaped(key, text, style, max_width, align);
         let layout = &self.shaped[&key as &dyn AsKey];
         let strut = Self::strut(layout, style);
 
         // A run's own colour and decorations, or the paragraph's.
-        let look = |id: RunId| -> (Color, bool, bool) {
+        let look = |id: RunId| -> (Color, bool, bool, Option<&TextLook>) {
             match style.rich.and_then(|r| r.runs.get((id as usize).wrapping_sub(1))) {
                 Some(run) if id > 0 => {
                     let c = run.style.color;
                     let fill = if ink { color } else { Color::new([c.r, c.g, c.b, c.a]) };
-                    (fill, run.style.underline, run.style.strikethrough)
+                    (fill, run.style.underline, run.style.strikethrough, run.style.look.as_deref())
                 }
-                _ => (color, style.underline, style.strikethrough),
+                _ => (color, style.underline, style.strikethrough, style.look),
             }
         };
 
@@ -1053,7 +1162,7 @@ impl TextEngine {
                 let run_x0 = x + glyph_run.offset();
                 let mut pen_x = run_x0;
                 let run = glyph_run.run();
-                let (color, underline, strikethrough) = look(glyph_run.style().brush);
+                let (color, underline, strikethrough, run_look) = look(glyph_run.style().brush);
 
                 scene
                     .draw_glyphs(run.font())
@@ -1079,18 +1188,129 @@ impl TextEngine {
                 // doesn't draw them, but its `RunMetrics` give us the placement
                 // (offset is the top of the line, from the baseline, in px).
                 let rm = run.metrics();
+                // `text-decoration-color`, `-style` and `-thickness`, and
+                // where `text-underline-offset` puts the underline: that far
+                // below the baseline.
+                let deco = run_look.cloned().unwrap_or_default();
+                let ink_color = match (ink, deco.decoration_color) {
+                    (false, Some(c)) => Color::new([c.r, c.g, c.b, c.a]),
+                    _ => color,
+                };
+                let size = |font: f32| deco.decoration_thickness.unwrap_or(font).max(0.5);
+                let span = (run_x0, pen_x);
                 if underline {
-                    let top = baseline - rm.underline_offset;
-                    let rect = Rect::new(run_x0 as f64, top as f64, pen_x as f64, (top + rm.underline_size) as f64);
-                    scene.fill(Fill::NonZero, transform, color, None, &rect);
+                    let top = match deco.underline_offset {
+                        Some(o) => baseline + o,
+                        None => baseline - rm.underline_offset,
+                    };
+                    decoration(scene, transform, ink_color, deco.decoration_style, span, top, size(rm.underline_size), true);
+                }
+                if deco.overline {
+                    let s = size(rm.underline_size);
+                    decoration(scene, transform, ink_color, deco.decoration_style, span, baseline - rm.ascent, s, false);
                 }
                 if strikethrough {
+                    let s = size(rm.strikethrough_size);
                     let top = baseline - rm.strikethrough_offset;
-                    let rect = Rect::new(run_x0 as f64, top as f64, pen_x as f64, (top + rm.strikethrough_size) as f64);
-                    scene.fill(Fill::NonZero, transform, color, None, &rect);
+                    decoration(scene, transform, ink_color, deco.decoration_style, span, top, s, false);
                 }
             }
             line_top += lb.height;
         }
+    }
+}
+
+/// One text decoration line, `size` thick with its top at `top`, across
+/// `span`, in a `text-decoration-style`. A wavy line swings `size` either
+/// side of the middle of where a straight one would be, so it keeps clear of
+/// the glyphs above an underline (`below`) as much as it can.
+#[allow(clippy::too_many_arguments)]
+fn decoration(
+    scene: &mut Scene,
+    transform: Affine,
+    color: Color,
+    style: DecorationStyle,
+    (x0, x1): (f32, f32),
+    top: f32,
+    size: f32,
+    below: bool,
+) {
+    use vello::kurbo::{BezPath, Cap, Stroke};
+    let (x0, x1, top, size) = (x0 as f64, x1 as f64, top as f64, size as f64);
+    if x1 <= x0 {
+        return;
+    }
+    let mid = top + size / 2.0;
+    let line = |y: f64| {
+        let mut p = BezPath::new();
+        p.move_to((x0, y));
+        p.line_to((x1, y));
+        p
+    };
+    match style {
+        DecorationStyle::Solid => {
+            scene.fill(Fill::NonZero, transform, color, None, &Rect::new(x0, top, x1, top + size));
+        }
+        DecorationStyle::Double => {
+            // Two lines a line apart; an underline's second goes down, away
+            // from the glyphs.
+            let second = if below { top + size * 2.0 } else { top - size * 2.0 };
+            for t in [top, second] {
+                scene.fill(Fill::NonZero, transform, color, None, &Rect::new(x0, t, x1, t + size));
+            }
+        }
+        DecorationStyle::Dashed => {
+            let stroke = Stroke::new(size).with_dashes(0.0, [size * 3.0, size * 2.0]);
+            scene.stroke(&stroke, transform, color, None, &line(mid));
+        }
+        DecorationStyle::Dotted => {
+            // Round dots a dot apart, as `border-style: dotted` draws them.
+            let stroke = Stroke::new(size).with_caps(Cap::Round).with_dashes(0.0, [size * 0.01, size * 2.0 - size * 0.01]);
+            scene.stroke(&stroke, transform, color, None, &line(mid));
+        }
+        DecorationStyle::Wavy => {
+            let amp = size.max(1.0);
+            let half = amp * 2.0;
+            let mid = if below { mid + amp } else { mid };
+            let mut p = BezPath::new();
+            p.move_to((x0, mid));
+            let mut x = x0;
+            let mut up = true;
+            while x < x1 {
+                let nx = x + half;
+                let peak = if up { mid - amp } else { mid + amp };
+                p.quad_to((x + half / 2.0, peak), (nx, mid));
+                x = nx;
+                up = !up;
+            }
+            // Cut to the span: the last half wave may run past it.
+            scene.push_clip_layer(Fill::NonZero, transform, &Rect::new(x0, mid - amp * 2.0, x1, mid + amp * 2.0));
+            scene.stroke(&Stroke::new(size), transform, color, None, &p);
+            scene.pop_layer();
+        }
+    }
+}
+
+#[cfg(test)]
+mod ellipsis_tests {
+    use super::{TextEngine, TextStyle, Wrap};
+    use rux_layout::TextLook;
+
+    /// A line too wide for its box is drawn as the most of it that fits with
+    /// `…` after it; one that fits, or text that wraps, is drawn whole.
+    #[test]
+    fn a_line_too_wide_ends_in_an_ellipsis() {
+        let mut te = TextEngine::new();
+        let look = TextLook { ellipsis: true, ..Default::default() };
+        let style = TextStyle { look: Some(&look), nowrap: true, ..TextStyle::new(16.0, 400, Wrap::Normal) };
+        let text = "a line much too long for a narrow box";
+        let (cut, drawn) = te.ellipsized(text, &style, Some(120.0)).expect("cut");
+        assert!(cut.ends_with('\u{2026}') && text.starts_with(cut.trim_end_matches('\u{2026}')), "{cut}");
+        assert!(!drawn.ellipsis, "not cut again");
+        let plain = TextStyle { look: None, ..style };
+        assert!(te.measure(&cut, &plain, None).0 <= 120.0);
+        assert!(te.ellipsized("short", &style, Some(120.0)).is_none());
+        let wraps = TextStyle { nowrap: false, ..style };
+        assert!(te.ellipsized(text, &wraps, Some(120.0)).is_none());
     }
 }

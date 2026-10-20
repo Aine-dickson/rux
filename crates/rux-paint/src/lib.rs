@@ -33,7 +33,7 @@ use std::collections::HashMap;
 
 use rux_layout::filter::FilterOp;
 use rux_layout::{
-    Background, BgAttachment, BgBox, BgLayer, BgLen, BgRepeat, BgSize, BgPos, BlendMode, BorderStyle, PaintBackground, PaintBorder, Sides, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
+    TextLook, Background, BgAttachment, BgBox, BgLayer, BgLen, BgRepeat, BgSize, BgPos, BlendMode, BorderStyle, PaintBackground, PaintBorder, Sides, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
     TextAlign, TextContent, TextWrap,
 };
 use rux_text::{Align, TextEngine, TextStyle, Wrap};
@@ -722,6 +722,7 @@ pub fn text_style(tc: &TextContent) -> TextStyle<'_> {
         nowrap: tc.nowrap,
         rich: tc.rich.as_deref(),
         direction: tc.direction,
+        look: tc.look.as_deref(),
     }
 }
 
@@ -1275,12 +1276,23 @@ fn build(
                         selected.push(rect);
                     }
                 }
+                // A field being edited shows all its text, as a browser's
+                // does: `text-overflow` cuts it only when it is not.
+                let editing = t.content.caret.is_some() || t.content.selection.is_some();
+                let whole = t.content.look.as_deref().filter(|l| editing && l.ellipsis).map(|l| TextLook {
+                    ellipsis: false,
+                    ..l.clone()
+                });
+                let style = match &whole {
+                    Some(look) => TextStyle { look: Some(look), ..text_style(&t.content) },
+                    None => text_style(&t.content),
+                };
                 text.draw(
                     &mut scene,
                     t.x,
                     t.y,
                     &t.content.text,
-                    &text_style(&t.content),
+                    &style,
                     to_color(t.content.color),
                     to_align(t.content.align),
                     Some(t.width),
@@ -1344,7 +1356,9 @@ fn build(
                         (t.x + cx + rux_text::CARET_WIDTH) as f64,
                         (t.y + cy + ch) as f64,
                     );
-                    scene.fill(Fill::NonZero, cur, to_color(t.content.color), None, &caret);
+                    // `caret-color`, else the text's.
+                    let color = t.content.look.as_ref().and_then(|l| l.caret_color).unwrap_or(t.content.color);
+                    scene.fill(Fill::NonZero, cur, to_color(color), None, &caret);
                 }
             }
             // A checkmark: two strokes, round caps and joins, proportioned to the

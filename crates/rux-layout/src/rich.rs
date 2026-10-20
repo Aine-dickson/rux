@@ -48,6 +48,8 @@ pub struct RunStyle {
     pub color: Rgba,
     /// `background` on the run: drawn behind its glyphs, line by line.
     pub background: Option<Rgba>,
+    /// The run's rarely set text properties. See [`crate::TextLook`].
+    pub look: Option<std::sync::Arc<crate::TextLook>>,
 }
 
 /// A box in a line of text, as wide and tall as the element it stands for,
@@ -126,6 +128,7 @@ impl PartialEq for RunStyle {
             && self.strikethrough == o.strikethrough
             && rgba_bits(&self.color) == rgba_bits(&o.color)
             && self.background.as_ref().map(rgba_bits) == o.background.as_ref().map(rgba_bits)
+            && self.look == o.look
     }
 }
 
@@ -143,6 +146,7 @@ impl Hash for RunStyle {
         self.strikethrough.hash(h);
         rgba_bits(&self.color).hash(h);
         self.background.as_ref().map(rgba_bits).hash(h);
+        self.look.hash(h);
     }
 }
 

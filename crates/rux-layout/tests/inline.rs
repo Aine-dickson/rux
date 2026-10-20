@@ -31,6 +31,7 @@ fn words(text: &str, ws: WhiteSpace) -> TextContent {
         preedit: None,
         shadows: None,
         selection_style: Default::default(),
+        look: None,
         rich: None,
         white_space: ws,
         direction: None,

@@ -680,8 +680,26 @@ padding-block, padding-block-start, padding-block-end   (logical)
 text-shadow (a comma list of `x y blur? colour?`, the first on top; inherited;
                        no colour is the text's own; a blur is a real Gaussian,
                        drawn apart around the text, as filter: blur() is)
-text-decoration, text-decoration-line (underline / line-through; the longhand
-                       wins where both are set)  (color: any CSS colour, see below)
+text-decoration, text-decoration-line (underline / overline / line-through; the
+                       longhand wins where both are set)  (color: any CSS colour, see below)
+text-decoration-color, text-decoration-style, text-decoration-thickness,
+text-underline-offset (solid, double, dotted, dashed, wavy; no colour is the
+                       text's; the shorthand takes all four in any order; not
+                       inherited, but a run of a sentence takes its sentence's)
+text-transform (uppercase, lowercase, capitalize; inherited; a letter whose
+                       other case is not one letter, `ß` to `SS`, stays as
+                       written, so carets and selections keep their places)
+text-indent (a length or a %, with `hanging` and `each-line`; inherited)
+text-overflow (clip, ellipsis: a line too long for a box that clips, with
+                       `white-space: nowrap`, ends in `…`; a field being edited
+                       shows all of it; not yet for a sentence with runs)
+font-variant, font-variant-caps, font-variant-numeric, font-variant-ligatures,
+font-variant-position, font-variant-east-asian, font-feature-settings,
+font-variation-settings, font-stretch, font-width
+                      (the font's own OpenType features and width axis, all
+                       inherited; a font without the feature draws the text as
+                       it is: small capitals are not made up, as a browser does)
+caret-color (auto or a colour; inherited)
 mix-blend-mode (every CSS mode: multiply, screen, overlay, darken, lighten,
                        color-dodge, color-burn, hard-light, soft-light, difference,
                        exclusion, hue, saturation, color, luminosity; the box and
@@ -1323,7 +1341,7 @@ yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
 Real CSS Rux has not built includes `box-sizing`,
-`transform-origin`, `text-transform`,
+`transform-origin`, `writing-mode`, `user-select`,
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.

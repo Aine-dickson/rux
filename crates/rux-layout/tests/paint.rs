@@ -37,6 +37,7 @@ fn label(text: &str) -> TextContent {
         preedit: None,
         shadows: None,
         selection_style: Default::default(),
+        look: None,
         rich: None,
         white_space: Default::default(),
         direction: None,
@@ -74,6 +75,7 @@ fn text_node_paints_its_background_then_its_glyphs() {
         preedit: None,
         shadows: None,
         selection_style: Default::default(),
+        look: None,
         rich: None,
         white_space: Default::default(),
         direction: None,
@@ -465,7 +467,7 @@ fn text_shadows_go_under_the_glyphs() {
         TextShadow { dx: 2.0, dy: 2.0, blur: 4.0, color: Some(Rgba::new(1.0, 0.0, 0.0, 1.0)) },
     ]));
     let mut node = Node::new(Style::default());
-    node.text = Some(content);
+    node.text = Some(Box::new(content));
     let items = paints(node);
     let kinds: Vec<&str> = items
         .iter()

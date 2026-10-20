@@ -25,6 +25,7 @@ fn run(range: std::ops::Range<usize>, font_size: f32, weight: u16) -> TextRun {
             strikethrough: false,
             color: Rgba { r: 0.0, g: 0.0, b: 0.0, a: 1.0 },
             background: None,
+            look: None,
         },
     }
 }
