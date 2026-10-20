@@ -162,18 +162,7 @@ fn to_color(c: Rgba) -> Color {
 /// endpoints follow the CSS gradient-line formula for its angle; a radial one is
 /// a centred circle to the nearest edge.
 fn to_gradient(g: &Gradient, x: f32, y: f32, w: f32, h: f32) -> PenikoGradient {
-    let mut stops: Vec<ColorStop> = g
-        .stops
-        .iter()
-        .map(|(rgba, off)| ColorStop { offset: *off, color: to_color(*rgba).into() })
-        .collect();
-    // vello's ramp starts its first stop at 0 whatever its offset says, so
-    // `red 50%, blue 50%` faded from the left edge instead of turning at the
-    // middle. CSS holds the first colour up to the first stop: say so with a
-    // stop of that colour at 0.
-    if let Some(first) = stops.first().copied().filter(|s| s.offset > 0.0) {
-        stops.insert(0, ColorStop { offset: 0.0, ..first });
-    }
+    let stops = ramp_stops(g);
     let (cx, cy) = ((x + w / 2.0) as f64, (y + h / 2.0) as f64);
     let grad = match g.kind {
         GradientKind::Linear { angle } => {
@@ -192,6 +181,25 @@ fn to_gradient(g: &Gradient, x: f32, y: f32, w: f32, h: f32) -> PenikoGradient {
         }
     };
     grad.with_stops(stops.as_slice())
+}
+
+/// A gradient's stops as vello is handed them.
+///
+/// vello's ramp starts its first stop at 0 whatever its offset says (found in
+/// vello 0.9, still so in 0.11: `make_ramp` in vello_encoding's
+/// `ramp_cache.rs`), so `red 50%, blue 50%` faded from the left edge instead
+/// of turning at the middle. CSS holds the first colour up to the first stop:
+/// say so with a stop of that colour at 0. Harmless once vello is fixed.
+fn ramp_stops(g: &Gradient) -> Vec<ColorStop> {
+    let mut stops: Vec<ColorStop> = g
+        .stops
+        .iter()
+        .map(|(rgba, off)| ColorStop { offset: *off, color: to_color(*rgba).into() })
+        .collect();
+    if let Some(first) = stops.first().copied().filter(|s| s.offset > 0.0) {
+        stops.insert(0, ColorStop { offset: 0.0, ..first });
+    }
+    stops
 }
 
 /// A background over a box with its corners rounded: a colour, a gradient
@@ -1456,6 +1464,22 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::decode_bounded;
+
+    /// A gradient whose first stop is past 0 holds its colour up to it, as
+    /// CSS does, rather than vello fading into it from 0.
+    #[test]
+    fn a_gradient_holds_its_first_colour_up_to_its_first_stop() {
+        use rux_layout::{Gradient, GradientKind, Rgba};
+        let (red, blue) = (Rgba::new(1.0, 0.0, 0.0, 1.0), Rgba::new(0.0, 0.0, 1.0, 1.0));
+        let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.5), (blue, 0.5)] };
+        let stops = super::ramp_stops(&g);
+        let at: Vec<f32> = stops.iter().map(|s| s.offset).collect();
+        assert_eq!(at, [0.0, 0.5, 0.5]);
+        assert_eq!(stops[0].color, stops[1].color, "the added stop is the first colour");
+        // A gradient that starts at 0 is handed over as written.
+        let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.0), (blue, 1.0)] };
+        assert_eq!(super::ramp_stops(&g).len(), 2);
+    }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
         let img = image::GrayImage::new(width, height);
