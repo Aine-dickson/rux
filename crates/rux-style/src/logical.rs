@@ -37,9 +37,13 @@ pub(crate) fn expand(name: &str, value: &str, dir: Direction) -> Option<Vec<(Str
         "inline-end" => one(end),
         "block-start" => one("top"),
         "block-end" => one("bottom"),
-        // One value for both sides, or the start's then the end's.
+        // One value for both sides, or the start's then the end's. Split
+        // outside brackets: `calc(var(--spacing) * 2)` is one value, and
+        // split on every space it was three, the sides `calc(var(--spacing)`
+        // and `*` (found under Tailwind's `py-2`).
         "inline" | "block" => {
-            let mut parts = value.split_whitespace();
+            let parts = crate::split_top_level(value);
+            let mut parts = parts.into_iter();
             let a = parts.next()?.to_string();
             let b = parts.next().map_or_else(|| a.clone(), str::to_string);
             let (s, e) = if rest == "inline" { (start, end) } else { ("top", "bottom") };
@@ -102,6 +106,16 @@ mod tests {
         assert_eq!(
             pairs(expand("padding-block", "6px", Direction::Ltr)),
             [("padding-top".into(), "6px".into()), ("padding-bottom".into(), "6px".into())]
+        );
+        // A value with spaces inside its brackets is one value.
+        let calc = "calc(var(--spacing) * 2)";
+        assert_eq!(
+            pairs(expand("padding-block", calc, Direction::Ltr)),
+            [("padding-top".into(), calc.into()), ("padding-bottom".into(), calc.into())]
+        );
+        assert_eq!(
+            pairs(expand("margin-inline", "calc(1px + 2px) auto", Direction::Ltr)),
+            [("margin-left".into(), "calc(1px + 2px)".into()), ("margin-right".into(), "auto".into())]
         );
     }
 
