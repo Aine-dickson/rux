@@ -6,6 +6,12 @@ weight = 4
 
 <!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
+
+The complete list, generated from the runtime so it cannot drift, is
+[/reference/css-properties/](/reference/css-properties/): every property and
+pseudo-class honored, its keywords, whether it animates, and what is known and
+not built yet. What follows is how each behaves, kept by hand.
+
 ```
 display (block|flex|grid|inline|none)
 flex-direction, justify-content, align-items, gap, row-gap, column-gap

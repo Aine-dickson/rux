@@ -4143,6 +4143,14 @@ pub fn animatable_properties() -> Vec<&'static str> {
     std::iter::once(AnimProp::All.name()).chain(AnimProp::EVERY.iter().map(|p| p.name())).collect()
 }
 
+/// The real CSS properties Rux knows of and does not honor yet, for the
+/// generated reference page (`rux vocab --css-reference`). The same list the
+/// warning reads, so the page cannot call a property pending that the
+/// runtime calls unknown, or the other way round.
+pub fn unimplemented_properties() -> &'static [&'static str] {
+    UNIMPLEMENTED_PROPERTIES
+}
+
 /// The inset longhands, in `Style::inset` order (top, right, bottom, left).
 const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 

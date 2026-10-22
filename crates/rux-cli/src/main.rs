@@ -124,6 +124,9 @@ fn main() -> ExitCode {
         Some("check") => ExitCode::from(check(&args[1..]) as u8),
         Some("fmt") => ExitCode::from(format(&args[1..]) as u8),
         Some("new") => ExitCode::from(new::create(&args[1..]) as u8),
+        Some("vocab") if args.get(1).is_some_and(|a| a == "--css-reference") => {
+            ExitCode::from(vocab::css_reference() as u8)
+        }
         Some("vocab") => ExitCode::from(vocab::emit() as u8),
         Some("native") => ExitCode::from(native::print(&args[1..]) as u8),
         Some("doctor") => ExitCode::from(android::doctor() as u8),

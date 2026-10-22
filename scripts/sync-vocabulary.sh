@@ -21,24 +21,28 @@ set -euo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$repo/editors/vscode/vocabulary.json"
+# The honored-CSS reference page, from the same tables (roadmap v0.9 item 6).
+page="$repo/site/content/reference/css-properties.md"
 
 # Built rather than `cargo run`, so the check does not print cargo's progress
 # into the JSON it is about to compare.
 cargo build --quiet --manifest-path "$repo/Cargo.toml" -p ruxlang --bin rux
 
 generated="$(mktemp)"
-trap 'rm -f "$generated"' EXIT
+generated_page="$(mktemp)"
+trap 'rm -f "$generated" "$generated_page"' EXIT
 
 # `target/debug/rux` on Unix, `.exe` on Windows; both are checked so this runs
 # from Git Bash on a developer machine as well as on a Linux runner.
 for candidate in "$repo/target/debug/rux" "$repo/target/debug/rux.exe"; do
   if [[ -x "$candidate" ]]; then
     "$candidate" vocab > "$generated"
+    "$candidate" vocab --css-reference > "$generated_page"
     break
   fi
 done
 
-if [[ ! -s "$generated" ]]; then
+if [[ ! -s "$generated" || ! -s "$generated_page" ]]; then
   echo "sync-vocabulary: could not run the freshly built \`rux\`" >&2
   exit 2
 fi
@@ -56,9 +60,16 @@ if [[ "${1:-}" == "--check" ]]; then
     diff -u "$out" "$generated" >&2 || true
     exit 1
   fi
-  echo "vocabulary.json is current"
+  if ! diff -u <(tr -d '\r' < "$page") <(tr -d '\r' < "$generated_page") > /dev/null 2>&1; then
+    echo "site/content/reference/css-properties.md is out of date." >&2
+    echo "Run ./scripts/sync-vocabulary.sh and commit the result." >&2
+    exit 1
+  fi
+  echo "vocabulary.json and the CSS properties page are current"
   exit 0
 fi
 
 cp "$generated" "$out"
+cp "$generated_page" "$page"
 echo "wrote editors/vscode/vocabulary.json"
+echo "wrote site/content/reference/css-properties.md"

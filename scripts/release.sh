@@ -118,7 +118,7 @@ gate_editor() {
   # a gate at all is that this drift already shipped once: the extension's
   # hand-kept void-tag list missed `<image>` for two releases.
   ./scripts/sync-vocabulary.sh --check >/dev/null \
-    || die "editors/vscode/vocabulary.json is stale; run ./scripts/sync-vocabulary.sh"
+    || die "editors/vscode/vocabulary.json or the CSS properties page is stale; run ./scripts/sync-vocabulary.sh"
   # The TextMate grammar has two consumers: VS Code, and Zola's highlighter on
   # the website, which reads its own copy under `site/`. They are the same file
   # and nothing but a line in a README kept them the same file, so a grammar

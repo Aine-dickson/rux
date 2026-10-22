@@ -2378,7 +2378,13 @@ here.
    positioned box is drawn over all in-flow content of its context rather
    than only over its siblings.
 
-6. **Generate the honored-CSS matrix from `rux-style`.** Moved out of "worth
+6. ~~**Generate the honored-CSS matrix from `rux-style`.**~~ **Done
+   2026-10-22**: `rux vocab --css-reference` writes `/reference/css-properties/`
+   from the runtime's own lists, each property described by the entry the
+   editor shows on hover, and `scripts/sync-vocabulary.sh --check` fails CI when
+   the committed page is stale. The prose under "Honored CSS" in
+   `05-as-built.md` stays hand-written, for how each property behaves; the list
+   of what is honored is no longer something a person keeps. Moved out of "worth
    deciding early" and put *beside* the CSS pass deliberately: landing thirty
    properties against a hand-maintained reference means the documentation rots
    faster than the code lands. On 2026-08-19 a single afternoon found three
@@ -3024,7 +3030,8 @@ deciding early"
   is by definition a breaking change.
 - **No test story for app authors.** Thirty-six test binaries here; nothing for
   someone writing a `.rux` file.
-- **The honored-CSS matrix is hand-maintained.** Now scheduled as v0.9 item 5.
+- ~~**The honored-CSS matrix is hand-maintained.**~~ Generated since
+  2026-10-22 (v0.9 item 6).
 
 #### What the audit changed
 
