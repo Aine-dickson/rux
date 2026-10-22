@@ -1338,6 +1338,14 @@ inherited as its pixels. A text field takes the weight, size and family around
 it and keeps its own alignment. Until v0.9 only `color`, `font-size` and
 `font-family` inherited, and the rest had to be written on every `<text>`.
 
+A font is drawn from its **outlines**, as a browser draws it, even when it also
+carries black-and-white bitmaps for small sizes (`EBLC`/`EBDT`, in Calibri,
+Cambria and the other fonts of the ClearType era). vello takes any font with a
+bitmap strike down its emoji path and dropped every glyph whose bitmap it could
+not read, so until 2026-10-22 Calibri drew three glyphs out of a sentence
+(watchlist #45). Such a font is handed to vello with those two tables hidden.
+Colour bitmaps (emoji) are drawn as they were.
+
 Anything else is **parsed but not honored**, and never *silently*: the runtime
 prints one line per unhonored property, once each. It says which of three things
 happened, because they are not the same problem:

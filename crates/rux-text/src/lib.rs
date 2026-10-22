@@ -276,6 +276,9 @@ pub struct TextEngine {
     /// `shaped`: asked once per sentence per frame, and the same for the same
     /// sentence. Cleared with it.
     placed: HashMap<MeasureKey, Arc<InlineGeometry>>,
+    /// Each font file drawn so far, by its blob's id, and the copy of it
+    /// vello is handed instead, when it needs one. See [`outlines_only`].
+    drawn_fonts: HashMap<(u64, u32), Option<parley::FontData>>,
 }
 
 /// How many measurements the engine keeps before starting over. A key and its
@@ -430,6 +433,7 @@ impl TextEngine {
             measured: HashMap::new(),
             shaped: HashMap::new(),
             placed: HashMap::new(),
+            drawn_fonts: HashMap::new(),
         }
     }
 
@@ -1164,8 +1168,17 @@ impl TextEngine {
                 let run = glyph_run.run();
                 let (color, underline, strikethrough, run_look) = look(glyph_run.style().brush);
 
+                let font = run.font();
+                let font = self
+                    .drawn_fonts
+                    .entry((font.data.id(), font.index))
+                    .or_insert_with(|| outlines_only(font.data.data(), font.index).map(|bytes| {
+                        parley::FontData::new(parley::fontique::Blob::new(Arc::new(bytes)), font.index)
+                    }))
+                    .as_ref()
+                    .unwrap_or(font);
                 scene
-                    .draw_glyphs(run.font())
+                    .draw_glyphs(font)
                     .brush(color)
                     .transform(transform)
                     .font_size(run.font_size())
@@ -1312,5 +1325,93 @@ mod ellipsis_tests {
         assert!(te.ellipsized("short", &style, Some(120.0)).is_none());
         let wraps = TextStyle { nowrap: false, ..style };
         assert!(te.ellipsized(text, &wraps, Some(120.0)).is_none());
+    }
+}
+
+/// A copy of a font with its black-and-white embedded bitmaps hidden, when it
+/// has outlines as well; `None` when the font is fine as it is.
+///
+/// Calibri, Cambria and other fonts of the ClearType era carry `EBLC`/`EBDT`
+/// strikes, small bitmaps meant for GDI at a few pixel sizes. vello 0.9 takes
+/// any font with a bitmap strike down its emoji path, glyph by glyph, and a
+/// glyph whose mask it cannot unpack is skipped, outline and all: Calibri
+/// drew three glyphs out of a sentence (watchlist #45). A browser draws such
+/// a font from its outlines, and so does Rux now. Renaming the two tags in
+/// the face's table directory hides the strikes from vello and leaves every
+/// other table where it was; the new names keep the directory sorted. Colour
+/// bitmaps (`CBLC`, `sbix`) are emoji and are left alone.
+fn outlines_only(data: &[u8], index: u32) -> Option<Vec<u8>> {
+    let u16_at = |at: usize| Some(u16::from_be_bytes(data.get(at..at + 2)?.try_into().ok()?));
+    let u32_at = |at: usize| Some(u32::from_be_bytes(data.get(at..at + 4)?.try_into().ok()?));
+    let dir = if data.get(0..4)? == b"ttcf" {
+        if index >= u32_at(8)? {
+            return None;
+        }
+        u32_at(12 + 4 * index as usize)? as usize
+    } else {
+        0
+    };
+    let tables = u16_at(dir + 4)? as usize;
+    let tag_at = |i: usize| data.get(dir + 12 + 16 * i..dir + 16 + 16 * i);
+    let has = |tag: &[u8]| (0..tables).any(|i| tag_at(i) == Some(tag));
+    let outlined = has(b"glyf") || has(b"CFF ") || has(b"CFF2");
+    if !outlined || !has(b"EBLC") || has(b"CBLC") || has(b"sbix") {
+        return None;
+    }
+    let mut copy = data.to_vec();
+    for i in 0..tables {
+        let at = dir + 12 + 16 * i;
+        let renamed: Option<&[u8; 4]> = match tag_at(i)? {
+            b"EBLC" => Some(b"EBLB"),
+            b"EBDT" => Some(b"EBDS"),
+            _ => None,
+        };
+        if let Some(tag) = renamed {
+            copy[at..at + 4].copy_from_slice(tag);
+        }
+    }
+    Some(copy)
+}
+
+#[cfg(test)]
+mod outline_tests {
+    use super::outlines_only;
+
+    /// A font file's table directory with these tags and nothing in them.
+    fn font(tags: &[&[u8; 4]]) -> Vec<u8> {
+        let mut f = vec![0, 1, 0, 0];
+        f.extend((tags.len() as u16).to_be_bytes());
+        f.extend([0; 6]);
+        for tag in tags {
+            f.extend(*tag);
+            f.extend([0; 12]);
+        }
+        f
+    }
+
+    fn tags(f: &[u8]) -> Vec<&[u8]> {
+        (0..u16::from_be_bytes([f[4], f[5]]) as usize).map(|i| &f[12 + 16 * i..16 + 16 * i]).collect()
+    }
+
+    /// Calibri's shape: outlines and a black-and-white strike. The strike is
+    /// hidden from vello, the rest stays put and in order (watchlist #45).
+    #[test]
+    fn a_bitmap_strike_beside_outlines_is_hidden() {
+        let calibri = font(&[b"EBDT", b"EBLC", b"GDEF", b"glyf"]);
+        let copy = outlines_only(&calibri, 0).expect("a copy");
+        let t = tags(&copy);
+        assert_eq!(t, [&b"EBDS"[..], b"EBLB", b"GDEF", b"glyf"]);
+        assert!(t.windows(2).all(|w| w[0] < w[1]), "still sorted");
+        assert_eq!(copy.len(), calibri.len());
+    }
+
+    /// No strike, colour bitmaps (emoji), or bitmaps with no outline to fall
+    /// back on: left as they are.
+    #[test]
+    fn other_fonts_are_left_alone() {
+        assert!(outlines_only(&font(&[b"GDEF", b"glyf"]), 0).is_none());
+        assert!(outlines_only(&font(&[b"CBDT", b"CBLC", b"EBDT", b"EBLC", b"glyf"]), 0).is_none());
+        assert!(outlines_only(&font(&[b"EBDT", b"EBLC"]), 0).is_none());
+        assert!(outlines_only(b"junk", 0).is_none());
     }
 }

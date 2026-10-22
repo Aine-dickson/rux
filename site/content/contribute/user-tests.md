@@ -2713,6 +2713,21 @@ control.
 | `examples/form.rux` | type in a field, click a checkbox's label, click a radio | each works as before | desktop: pass |
 | Web, Android | the same page | the same | not driven |
 
+## Calibri draws whole, 2026-10-22
+
+Watchlist #45. Under test in `rux-text` (`outline_tests`: a bitmap strike
+beside outlines is hidden and the table directory stays sorted; a font with
+no strike, with colour bitmaps, or with nothing but bitmaps is left alone).
+Driven in a desktop window on one probe.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| `font-family: Calibri` at 20px | `Calibri: ABC xyz 0123456789` | every glyph | desktop: pass (before: only `i`, `i`, `8`) |
+| The same bold | `Calibri bold: ABC xyz 0189` | every glyph, bold | desktop: pass (before: `b`, `b`, `8`) |
+| Calibri at 48px | `ABC 0189 big` | every glyph | desktop: pass |
+| Segoe UI beside it | the same text | unchanged | desktop: pass |
+| Web, Android | the same page | the same | not driven: neither has Calibri unless a page ships it |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
