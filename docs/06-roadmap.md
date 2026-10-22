@@ -939,6 +939,15 @@ self-contained-vs-`source.css` decision).
   published (roles, names, values, checked state, bounds), verified through UI
   Automation. Remaining: action requests aren't dispatched, the tree is flat, and
   there are no live regions.
+- **Left out of the CSS pass (recorded 2026-10-22).** Each needs the owner's
+  decision before it is built:
+  - `columns`: multi-column layout is a project of its own.
+  - Table properties need tables, and `content` needs `::before` / `::after`.
+    Rux has neither.
+  - `user-select` has nothing to act on: static text cannot be selected yet.
+  - `writing-mode`: vertical text is a layout model of its own.
+  - `box-sizing`: Rux sizes are border-box, CSS defaults to content-box. Still
+    open.
 
 ---
 

@@ -129,6 +129,7 @@ Found by a user asking a question rather than hitting a bug: *would the keyboard
 | Trap | What actually happens, and why it is right | Destination | Status |
 |---|---|---|---|
 | **A box with no `@tap` over a button does not stop the tap** | A tap is matched against the boxes that answer one, and a box with no handler answers nothing, so a backdrop or overlay with no `@tap` of its own lets a tap through to the button under it. In a browser the overlay is the target and the button never hears it. Found driving `pointer-events: none`, whose control case did not hold: the overlay without `none` let the tap through as well. Until a plain box blocks, a backdrop that must swallow taps needs an `@tap` of its own, even an empty one | `/reference/css/` beside `pointer-events` | open |
+| **A text field under `pointer-events: none` still takes a tap** | `pointer-events: none` lets taps pass through ordinary boxes, but a text field inside one still answers the tap and takes focus. In a browser the field would not hear it. Left alone for now because changing how a field is hit risked keyboard focus. Until it is fixed, disable the field (or leave it out) rather than relying on `pointer-events: none` to make it inert | `/reference/css/` beside `pointer-events` | open |
 
 ---
 
