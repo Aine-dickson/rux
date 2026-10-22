@@ -564,7 +564,107 @@ fn pointer_events_none_is_not_hit_but_is_still_focusable() {
         n
     };
     let shown = layout(&on_screen(button(false)), 400.0, 300.0, &mut measure);
-    assert_eq!((shown.hits.len(), shown.focusables.len()), (1, 1));
+    let taps = |l: &Layout| l.hits.iter().filter(|h| h.on_tap.is_some() || !h.gestures.is_empty()).count();
+    assert_eq!((taps(&shown), shown.focusables.len()), (1, 1));
     let passed = layout(&on_screen(button(true)), 400.0, 300.0, &mut measure);
-    assert_eq!((passed.hits.len(), passed.focusables.len()), (0, 1));
+    assert_eq!((taps(&passed), passed.focusables.len()), (0, 1));
+}
+
+/// A 200 x 100 screen holding a button at its corner and whatever `over` is,
+/// absolutely placed over the whole screen after it.
+fn under(over: Node) -> Layout {
+    let mut measure = |_: &TextContent, _: Option<f32>| (20.0, 10.0);
+    let mut root = Node::new(Style { width: Some(Len::Px(200.0)), height: Some(Len::Px(100.0)), ..Default::default() });
+    let mut button = Node::new(Style { width: Some(Len::Px(80.0)), height: Some(Len::Px(30.0)), ..Default::default() });
+    button.on_tap = Some("go()".into());
+    button.style.cursor = Cursor::Pointer;
+    root.children.push(button);
+    root.children.push(over);
+    layout(&on_screen(root), 200.0, 100.0, &mut measure)
+}
+
+fn cover() -> Node {
+    Node::new(Style {
+        position: Position::Absolute,
+        inset: [Some(Len::Px(0.0)); 4],
+        ..Default::default()
+    })
+}
+
+/// A backdrop with no `@tap` keeps a tap from the button under it, as in a
+/// browser, where the backdrop is the target and the button never hears it.
+/// Before watchlist #46 the tap went straight through.
+#[test]
+fn a_box_with_no_handler_takes_the_tap() {
+    let out = under(cover());
+    assert!(tap_at(&out.hits, 10.0, 10.0).is_none(), "the backdrop has the tap");
+    assert_eq!(cursor_at(&out.hits, 10.0, 10.0), Cursor::Default);
+}
+
+/// Under `pointer-events: none` the backdrop is passed through again.
+#[test]
+fn a_backdrop_under_pointer_events_none_lets_the_tap_through() {
+    let mut c = cover();
+    c.style.no_pointer = true;
+    let out = under(c);
+    assert_eq!(tap_at(&out.hits, 10.0, 10.0).and_then(|h| h.on_tap.as_deref()), Some("go()"));
+}
+
+/// A tap on something inside a button is the button's, as a click bubbles,
+/// and so is its cursor. Something inside a backdrop is the backdrop's: an
+/// inner box does not reach past it to the button.
+#[test]
+fn a_tap_inside_a_box_goes_to_its_nearest_handler() {
+    let mut measure = |_: &TextContent, _: Option<f32>| (20.0, 10.0);
+    let mut button = Node::new(Style { width: Some(Len::Px(80.0)), height: Some(Len::Px(30.0)), ..Default::default() });
+    button.on_tap = Some("go()".into());
+    button.style.cursor = Cursor::Pointer;
+    let mut dragged = Node::new(Style { width: Some(Len::Px(20.0)), height: Some(Len::Px(20.0)), ..Default::default() });
+    dragged.gestures = vec![(Gesture::Drag, "move()".into())];
+    button.children.push(Node::new(Style { width: Some(Len::Px(20.0)), height: Some(Len::Px(20.0)), ..Default::default() }));
+    button.children.push(dragged);
+    let out = layout(&on_screen(button), 200.0, 100.0, &mut measure);
+    // The children stack: the plain one at the top, the dragged one under it.
+    for y in [5.0, 25.0] {
+        let tap = tap_at(&out.hits, 5.0, y).expect("the button");
+        assert_eq!(tap.on_tap.as_deref(), Some("go()"), "at {y}");
+        assert_eq!(cursor_at(&out.hits, 5.0, y), Cursor::Pointer, "at {y}");
+    }
+    assert!(gesture_at(&out.hits, 5.0, 5.0).is_none(), "the plain child has no drag");
+    assert!(gesture_at(&out.hits, 5.0, 25.0).is_some(), "the dragged one has");
+    assert!(gesture_at(&out.hits, 60.0, 5.0).is_none());
+
+    let mut c = cover();
+    c.children.push(Node::new(Style { width: Some(Len::Px(50.0)), height: Some(Len::Px(50.0)), ..Default::default() }));
+    let out = under(c);
+    assert!(tap_at(&out.hits, 10.0, 10.0).is_none(), "the backdrop's child is the backdrop's");
+}
+
+/// A box over a text field keeps the press from it, and so does
+/// `pointer-events: none` on the field (watchlist #47). A label reaches.
+#[test]
+fn a_covered_field_is_not_reached() {
+    let mut measure = |_: &TextContent, _: Option<f32>| (20.0, 10.0);
+    let screen = |field_none: bool, covered: bool| {
+        let mut root = Node::new(Style { width: Some(Len::Px(200.0)), height: Some(Len::Px(100.0)), ..Default::default() });
+        let mut field = Node::new(Style { width: Some(Len::Px(80.0)), height: Some(Len::Px(30.0)), no_pointer: field_none, ..Default::default() });
+        field.model = Some("name".into());
+        // What it shows, which a press lands on first.
+        field.children.push(Node::new(Style { width: Some(Len::Px(60.0)), height: Some(Len::Px(20.0)), ..Default::default() }));
+        let mut label = Node::new(Style { width: Some(Len::Px(80.0)), height: Some(Len::Px(30.0)), ..Default::default() });
+        label.focus_model = Some("name".into());
+        root.children.push(field);
+        root.children.push(label);
+        if covered {
+            root.children.push(cover());
+        }
+        root
+    };
+    let mut reach = |field_none, covered| {
+        let out = layout(&on_screen(screen(field_none, covered)), 200.0, 100.0, &mut measure);
+        (field_reachable(&out.hits, 10.0, 10.0), field_reachable(&out.hits, 10.0, 40.0))
+    };
+    assert_eq!(reach(false, false), (true, true), "the field and its label");
+    assert_eq!(reach(false, true), (false, false), "both covered");
+    assert_eq!(reach(true, false), (false, true), "the field passes the press on; its label still reaches");
 }

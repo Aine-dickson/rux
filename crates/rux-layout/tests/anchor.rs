@@ -129,7 +129,7 @@ fn a_menu_follows_its_button_when_the_panel_scrolls() {
     // not drawn, rather than floating on with nothing to belong to.
     let gone = lay(&root, &[Offset { x: 0.0, y: 400.0 }]);
     assert_eq!(rect(&gone, 0.2), None);
-    assert!(gone.hits.is_empty());
+    assert!(!gone.hits.iter().any(|h| (h.width, h.height) == (60.0, 30.0)), "nor tapped");
 }
 
 #[test]

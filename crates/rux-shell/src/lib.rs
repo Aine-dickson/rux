@@ -3004,6 +3004,11 @@ impl App {
         if self.toolbar_covers(fx, fy) {
             return false;
         }
+        // A box drawn over the field takes the press, as does whatever is
+        // under a field with `pointer-events: none` (watchlist #47).
+        if !rux_layout::field_reachable(&self.hits, fx, fy) {
+            return false;
+        }
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
@@ -3063,6 +3068,9 @@ impl App {
     /// selecting it. A masked field is one piece, whatever the unit.
     fn unit_at(&mut self, pointer: (f64, f64), unit: TextUnit) -> Option<(FocusRegion, usize, usize)> {
         let (fx, fy) = self.logical(pointer);
+        if !rux_layout::field_reachable(&self.hits, fx, fy) {
+            return None;
+        }
         let region = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned()?;
         let value = self.document.value_in(&region.model, region.row.as_deref(), region.instance.as_deref());
         let (Some(t), false) = (region.text.clone(), value.is_empty()) else {
@@ -3117,7 +3125,13 @@ impl App {
         let repeat = self.last_click.is_some_and(|(at, x, y, _)| {
             at.elapsed() < DOUBLE_CLICK && (pointer.0 - x).hypot(pointer.1 - y) <= TAP_SLOP
         });
-        let region = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned();
+        let region = self
+            .focuses
+            .iter()
+            .rev()
+            .find(|f| f.contains(fx, fy))
+            .filter(|_| rux_layout::field_reachable(&self.hits, fx, fy))
+            .cloned();
         if let Some(region) = region.filter(|r| !repeat && !r.kind.secret() && !self.toolbar_covers(fx, fy)) {
             if self.is_focused(&region) {
                 let (s, e) = self.selection();
@@ -3295,6 +3309,9 @@ impl App {
     /// own box.
     fn press_on_word(&mut self, pointer: (f64, f64)) -> bool {
         let (fx, fy) = self.logical(pointer);
+        if !rux_layout::field_reachable(&self.hits, fx, fy) {
+            return false;
+        }
         let Some(region) = self.focuses.iter().rev().find(|f| f.contains(fx, fy)).cloned() else {
             return false;
         };
@@ -3541,16 +3558,10 @@ impl App {
     fn update_cursor(&mut self) {
         let scale = self.scale();
         let (px, py) = ((self.pointer.0 / scale) as f32, (self.pointer.1 / scale) as f32);
-        let want = self
-            .hits
-            .iter()
-            .rev()
-            .find(|h| h.contains(px, py))
-            .map(|h| match h.cursor {
-                Cursor::Pointer => CursorIcon::Pointer,
-                Cursor::Default => CursorIcon::Default,
-            })
-            .unwrap_or(CursorIcon::Default);
+        let want = match rux_layout::cursor_at(&self.hits, px, py) {
+            Cursor::Pointer => CursorIcon::Pointer,
+            Cursor::Default => CursorIcon::Default,
+        };
         if want != self.cursor {
             self.cursor = want;
             if let Some(state) = &self.state {
@@ -3898,7 +3909,12 @@ impl App {
 
         // A tap also moves keyboard focus, so Tab continues from what you clicked
         // (topmost focusable under the pointer, or nothing on empty space).
-        self.focus_index = self.focusables.iter().rposition(|f| f.contains(fx, fy));
+        // Not through a box drawn over it: that box took the tap.
+        let reached = rux_layout::hit_at(&self.hits, fx, fy)
+            .map_or(self.hits.is_empty(), |h| h.owners.tap.is_some() || h.owners.field);
+        self.focus_index =
+            if reached { self.focusables.iter().rposition(|f| f.contains(fx, fy)) } else { None };
+        let field_here = rux_layout::field_reachable(&self.hits, fx, fy);
 
         // A tap on a date on a phone opens the platform's date picker. On the
         // tap rather than the press (see `press_text`), so a scroll that
@@ -3911,7 +3927,7 @@ impl App {
             .focuses
             .iter()
             .rev()
-            .find(|f| f.kind == InputKind::Date && f.contains(fx, fy) && touch_first())
+            .find(|f| f.kind == InputKind::Date && f.contains(fx, fy) && touch_first() && field_here)
             .cloned()
         {
             if !region.field.readonly {
@@ -3932,7 +3948,7 @@ impl App {
         }
 
         // A tap on a closed select opens its dropdown.
-        if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)) {
+        if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)).filter(|_| field_here) {
             // **On a phone the platform owns this control**, which the spec has
             // asked for since before there was a phone to run it on. A drawn
             // dropdown is a browser emulation: it does not scroll, dismiss,
@@ -3972,15 +3988,12 @@ impl App {
         // Tapping elsewhere drops focus.
         self.set_focus(None);
 
-        // Topmost hit region wins (later in list = drawn on top).
-        let handler = self
-            .hits
-            .iter()
-            .rev()
-            // Only regions that actually have a `@tap`: an element with just
-            // `@drag` is hit-testable but is not a tap target, and letting it
-            // swallow the tap would hide the button underneath it.
-            .find(|h| h.on_tap.is_some() && h.contains(px as f32, py as f32))
+        // The topmost box under the pointer takes the tap, and runs its own
+        // `@tap` or its nearest ancestor's, as a click bubbles in CSS. A box
+        // with none on the way up, a backdrop, keeps the tap from whatever is
+        // drawn under it (watchlist #46). An element with only `@drag` hands
+        // a tap on up the same way.
+        let handler = rux_layout::tap_at(&self.hits, px as f32, py as f32)
             .map(|h| {
                 let rect = ((h.x, h.y), (h.width, h.height));
                 (h.on_tap.clone().unwrap_or_default(), h.instance.clone(), rect)
@@ -4006,11 +4019,7 @@ impl App {
     /// Called from both the mouse and the touchscreen, with the position already
     /// in logical pixels, so the two cannot drift apart in what a gesture means.
     fn begin_gesture(&mut self, fx: f32, fy: f32, from_touch: bool) {
-        let found = self
-            .hits
-            .iter()
-            .rev()
-            .find(|h| !h.gestures.is_empty() && h.contains(fx, fy))
+        let found = rux_layout::gesture_at(&self.hits, fx, fy)
             .map(|h| {
                 let rect = ((h.x, h.y), (h.width, h.height));
                 (h.gestures.clone(), h.instance.clone(), rect, h.touch_action)

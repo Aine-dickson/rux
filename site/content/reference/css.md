@@ -131,8 +131,8 @@ scroll-behavior (auto | smooth: a scroll a script's `scrollIntoView()` or Tab
 pointer-events (auto | none; inherited: a pointer goes through the box to what
                        is under it, `:hover` and `:active` do not take it, and a
                        `for=` label does not focus from it; the keyboard still
-                       reaches it. Not yet: a text field under `none` still
-                       takes a tap)
+                       reaches it, and a text field under `none` is not
+                       focused by a press)
 object-fit, object-position (on `<image>`: fill, contain, cover, none,
                        scale-down; the picture is drawn in the content box,
                        inside the image's padding, and cut to it)

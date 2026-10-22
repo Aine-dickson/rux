@@ -88,7 +88,7 @@ fn a_disabled_button_answers_nothing() {
         "let n = signal(0);",
     );
     let layout = laid_out(&d);
-    assert!(layout.hits.is_empty(), "no tap and no gesture to hit");
+    assert!(!layout.hits.iter().any(|h| h.on_tap.is_some() || !h.gestures.is_empty()), "no tap and no gesture to hit");
     assert!(layout.focusables.is_empty());
 }
 
@@ -100,7 +100,7 @@ fn a_disabled_checkbox_does_not_toggle() {
         r#"<text for="c">Agree</text><input id="c" type="checkbox" r-model="ok" disabled />"#,
         "let ok = signal(false);",
     );
-    assert!(laid_out(&d).hits.is_empty(), "neither the box nor its label taps");
+    assert!(laid_out(&d).hits.iter().all(|h| h.on_tap.is_none()), "neither the box nor its label taps");
 }
 
 /// `:disabled` and `:enabled` match form controls, and the bound form reads a
@@ -164,7 +164,7 @@ fn a_checkbox_change_sees_the_new_value() {
         r#"<input type="checkbox" r-model="ok" @change="seen = event.value" />"#,
         "let ok = signal(false); let seen = signal(\"never\");",
     );
-    let tap = laid_out(&d).hits[0].on_tap.clone().expect("the box taps");
+    let tap = laid_out(&d).hits.iter().find_map(|h| h.on_tap.clone()).expect("the box taps");
     d.apply_handler(&tap);
     assert_eq!(d.value_in("seen", None, None), "true");
 }

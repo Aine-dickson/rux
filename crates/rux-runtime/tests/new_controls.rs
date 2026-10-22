@@ -166,7 +166,7 @@ fn a_switch_toggles_like_a_checkbox() {
 fn an_unstyled_switch_has_a_size() {
     let d = doc(r#"<input type="switch" r-model="on" />"#, "let on = signal(true);");
     let layout = laid_out(&d);
-    let hit = layout.hits.iter().find(|h| h.width > 0.0).expect("something to tap");
+    let hit = layout.hits.iter().find(|h| h.on_tap.is_some() && h.width > 0.0).expect("something to tap");
     assert_eq!((hit.width, hit.height), (44.0, 24.0));
 }
 
@@ -184,7 +184,7 @@ fn input_by_role(doc: &Document) -> &Node {
 /// Where the switch's thumb sits: the painted box that is round and small.
 fn thumb_x(doc: &Document) -> f32 {
     let layout = laid_out(doc);
-    let hit = layout.hits.iter().find(|h| h.width > 0.0).expect("the switch");
+    let hit = layout.hits.iter().find(|h| h.on_tap.is_some() && h.width > 0.0).expect("the switch");
     // The thumb is the second box painted inside the track's bounds.
     layout
         .paints

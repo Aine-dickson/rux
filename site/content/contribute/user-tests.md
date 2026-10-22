@@ -2695,6 +2695,24 @@ twenty frames 50ms apart.
 | `scroll-behavior: smooth` beside `auto` | both scrolled between their ends each second | smooth caught on its way in several frames; auto only ever at an end | desktop: pass |
 | Web, Android | the same page | the same | not driven |
 
+## Boxes with no handler take the tap, 2026-10-22
+
+Watchlist #46 and #47. Under test in `rux-layout` (`tests/paint.rs`: a
+backdrop keeps the tap from the button under it, `pointer-events: none` lets
+it through, a tap inside a button is the button's and so is its cursor, a
+covered or `none` field is not reached and its label is). Driven in a desktop
+window by real mouse clicks on one probe, then on `examples/form.rux` as the
+control.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A backdrop with no `@tap` over a button | click the button | its count stays 0 | desktop: pass |
+| The same over a text field | click the field, type `xy` | nothing typed | desktop: pass |
+| A button's own text | click the text | the button's count goes up | desktop: pass |
+| A field with `pointer-events: none` | click it, type `zz` | not focused, nothing typed | desktop: pass |
+| `examples/form.rux` | type in a field, click a checkbox's label, click a radio | each works as before | desktop: pass |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

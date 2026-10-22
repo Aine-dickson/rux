@@ -947,9 +947,17 @@ Beyond `@tap`, five attributes report what a finger or button is doing:
 `@press`, `@release`, `@longpress`, `@swipe` and `@drag`. `@tap` is deliberately
 not one of them: it is the finished gesture, it is what a keyboard activation
 produces and what `tap()` from script synthesises, and none of those has a
-pointer at all. So an element with only `@drag` is hit-tested but is not a tap
-target and is not keyboard-activatable, and it does not swallow a tap meant for
-what is under it.
+pointer at all. So an element with only `@drag` is not keyboard-activatable,
+and a tap on it goes on to its nearest ancestor with a `@tap`.
+
+**Every box takes the pointer, handler or not**, as in CSS: a tap goes to the
+topmost box under it, then runs that box's `@tap` or its nearest ancestor's,
+as a click bubbles. So a tap on the text inside a button is the button's, and
+a backdrop with no handler drawn over a button keeps the tap from it, as does
+a box drawn over a text field. Until 2026-10-22 only the boxes with a handler
+were hit-tested, and a tap went straight through a backdrop to whatever was
+under it (watchlist #46). `pointer-events: none` is how a box lets taps
+through.
 
 Every handler, `@tap` included, is handed an `event`:
 

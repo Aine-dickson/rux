@@ -320,6 +320,8 @@ pub(crate) fn part_regions(
     rects: &[crate::Rect4],
     transform: Option<crate::Transform>,
     seq: u32,
+    // The sentence's, which a part's own handlers stand in front of.
+    owners: crate::Owners,
     scroll: Option<usize>,
     out: &mut crate::Layout,
     walk: &mut crate::Walk,
@@ -340,6 +342,10 @@ pub(crate) fn part_regions(
                 cursor: part.cursor,
                 touch_action: part.touch_action,
                 instance: part.instance.clone(),
+                // A part answers what it has a handler for itself, and hands
+                // the rest to the sentence's owners.
+                seq: u32::MAX,
+                owners,
             });
         }
     }

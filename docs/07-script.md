@@ -1054,7 +1054,9 @@ text input. It cannot drift from a real press because it is one.
 Two consequences follow from that and are worth stating:
 
 - **It hit-tests.** The topmost element at that point wins, so tapping something
-  covered by an open dropdown taps the dropdown, as a finger would.
+  covered by an open dropdown taps the dropdown, as a finger would. A box with
+  no `@tap` counts too: a tap on a button under a backdrop is the backdrop's,
+  and runs the `@tap` of the backdrop or its nearest ancestor that has one.
 - **An element with no box cannot be tapped**, and says so.
 
 A tap runs a handler that can tap again; the chain is cut off after eight rounds,

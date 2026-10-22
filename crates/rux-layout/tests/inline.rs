@@ -145,7 +145,7 @@ fn a_tappable_run_answers_at_its_words() {
     let text = out.paints.iter().find_map(|p| if let Paint::Text(t) = p { Some(t) } else { None }).unwrap();
     let hit = out.hits.iter().find(|h| h.on_tap.as_deref() == Some("open()")).expect("a region for the run");
     assert_eq!((hit.x, hit.y, hit.width, hit.height), (text.x + 90.0, text.y, 50.0, 20.0));
-    assert_eq!(out.hits.len(), 1, "only the run answers taps");
+    assert_eq!(out.hits.iter().filter(|h| h.on_tap.is_some() || !h.gestures.is_empty()).count(), 1, "only the run answers taps");
     assert!(out.focusables.iter().any(|f| matches!(&f.kind, FocusKind::Activate { on_tap, .. } if on_tap == "open()")));
     let buttons: Vec<_> = out.access.iter().filter(|a| a.access.role == AccessRole::Button).collect();
     assert_eq!(buttons.len(), 1);
@@ -160,7 +160,7 @@ fn a_hidden_run_is_not_in_the_sentence() {
     let (out, _) = lay_out(s);
     let tc = out.paints.iter().find_map(|p| if let Paint::Text(t) = p { Some(&t.content) } else { None }).unwrap();
     assert_eq!(tc.text, "Read the  now");
-    assert!(out.hits.is_empty());
+    assert_eq!(out.hits.iter().filter(|h| h.on_tap.is_some() || !h.gestures.is_empty()).count(), 0);
 }
 
 /// Measured as one text: the size the engine gave the joined sentence.
@@ -181,7 +181,7 @@ fn a_measure_that_cannot_place_leaves_parts_at_the_corner() {
     let text = out.paints.iter().find_map(|p| if let Paint::Text(t) = p { Some(t) } else { None }).unwrap();
     let path = out.paints.iter().find_map(|p| if let Paint::Path(t) = p { Some(t) } else { None }).unwrap();
     assert_eq!((path.x, path.y), (text.x, text.y));
-    assert!(out.hits.is_empty());
+    assert_eq!(out.hits.iter().filter(|h| h.on_tap.is_some() || !h.gestures.is_empty()).count(), 0);
 }
 
 /// A run with a `dir` of its own is wrapped in the isolate controls inside

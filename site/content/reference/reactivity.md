@@ -104,7 +104,8 @@ not a wrapper that calls the handler.
 Two consequences of it being a real press rather than an imitation:
 
 - **It hit-tests.** The topmost element at that point wins, so tapping something
-  covered by an open dropdown taps the dropdown, exactly as a finger would.
+  covered by an open dropdown taps the dropdown, exactly as a finger would,
+  and tapping a button under a backdrop taps the backdrop.
 - **An element with no box cannot be tapped.** Hidden by `r-show="false"`, or
   never laid out, means there is nothing to press, and it says so.
 

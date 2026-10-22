@@ -2996,6 +2996,44 @@ pub struct HitRegion {
     /// what the handler reads and writes, and two instances of one component
     /// carry identical handler text, so the text alone cannot say which.
     pub instance: Option<String>,
+    /// The box's place in the document, which is what [`Owners`] names.
+    /// `u32::MAX` for a part of a sentence, which nothing names.
+    pub seq: u32,
+    /// Where a tap that lands here goes when this box does not answer it.
+    pub owners: Owners,
+}
+
+/// The boxes a pointer event on a box reaches, by its place in the document:
+/// the box itself or its nearest ancestor with a `@tap`, with a gesture, and
+/// whether it is a text field or inside one.
+///
+/// CSS gives an event to the topmost box under the pointer and then to each
+/// of its ancestors, so a box with no handler still *takes* the event: a
+/// backdrop drawn over a button keeps the tap from it. Rux once hit-tested
+/// only the boxes with a handler, and a tap went straight through a backdrop
+/// to whatever was under it (watchlist #46). Every box a pointer can reach
+/// now has a region, and this says where its taps go.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Owners {
+    pub tap: Option<u32>,
+    pub gesture: Option<u32>,
+    /// A text field, a select or a field's label, or something inside one.
+    pub field: bool,
+}
+
+impl Owners {
+    /// What a node's children inherit, given what its parent passed down.
+    fn of(node: &Node, seq: u32, above: Owners) -> Owners {
+        // A field under `pointer-events: none` is not one to the pointer, and
+        // nor is the text drawn inside it, which a press lands on first.
+        let field = ((node.model.is_some() && !node.field().disabled) || node.focus_model.is_some())
+            && !node.style.no_pointer;
+        Owners {
+            tap: if node.on_tap.is_some() { Some(seq) } else { above.tap },
+            gesture: if node.gestures.is_empty() { above.gesture } else { Some(seq) },
+            field: above.field || field,
+        }
+    }
 }
 
 impl HitRegion {
@@ -3013,6 +3051,54 @@ impl HitRegion {
         };
         px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
     }
+}
+
+/// The topmost region at a point: the box a pointer event there goes to
+/// first. Later in the list is drawn on top.
+pub fn hit_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
+    hits.iter().rev().find(|h| h.contains(x, y))
+}
+
+/// The region whose `@tap` a tap at a point runs: the topmost box's own, or
+/// its nearest ancestor's, as a CSS click bubbles. `None` when nothing on the
+/// way up has one, which is a tap on a backdrop with no handler.
+pub fn tap_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
+    let top = hit_at(hits, x, y)?;
+    if top.on_tap.is_some() {
+        return Some(top);
+    }
+    let owner = top.owners.tap?;
+    hits.iter().rev().find(|h| h.seq == owner && h.on_tap.is_some())
+}
+
+/// The region whose gestures a press at a point starts, found as [`tap_at`]
+/// finds a tap's.
+pub fn gesture_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
+    let top = hit_at(hits, x, y)?;
+    if !top.gestures.is_empty() {
+        return Some(top);
+    }
+    let owner = top.owners.gesture?;
+    hits.iter().rev().find(|h| h.seq == owner && !h.gestures.is_empty())
+}
+
+/// The cursor over a point. `cursor` is inherited in CSS, so a box inside a
+/// button shows the button's hand; Rux reads it from the box that would
+/// answer the tap or the gesture, when the box itself does not set one.
+pub fn cursor_at(hits: &[HitRegion], x: f32, y: f32) -> Cursor {
+    let pointer = |h: Option<&HitRegion>| h.is_some_and(|h| h.cursor == Cursor::Pointer);
+    if pointer(hit_at(hits, x, y)) || pointer(tap_at(hits, x, y)) || pointer(gesture_at(hits, x, y)) {
+        Cursor::Pointer
+    } else {
+        Cursor::Default
+    }
+}
+
+/// Whether a press at a point reaches a text field, a select or a field's
+/// label, rather than a box drawn over one or a field under
+/// `pointer-events: none`. A layout with no regions at all blocks nothing.
+pub fn field_reachable(hits: &[HitRegion], x: f32, y: f32) -> bool {
+    hits.is_empty() || hit_at(hits, x, y).is_some_and(|h| h.owners.field)
 }
 
 /// An absolutely-positioned focusable region for an `<input>`, carrying its
@@ -4218,12 +4304,16 @@ fn build(
     // always covers the window, and it takes every out-of-flow box still
     // looking for a containing block.
     root: Option<(f32, f32)>,
+    // Where a tap on this node goes when it has no handler of its own: what
+    // its parent's children inherit. See `Owners`.
+    above: Owners,
     // Taffy nodes nothing matched this frame, removed once the tree is built.
     garbage: &mut Vec<NodeId>,
 ) -> (NodeId, Kept) {
     // Claimed on the way down, so a parent comes before its children.
     let seq = stacks.len() as u32;
     stacks.push((NodeId::from(u64::MAX), Stack::default()));
+    let owners = Owners::of(node, seq, above);
     let own_cap = width_cap(&node.style, cap, vp);
     let child_cap = inner_cap(&node.style, own_cap, cap);
     let row = node.key.as_deref().or(row);
@@ -4316,7 +4406,7 @@ fn build(
             // cache on the parent size, and tests/stretch_text.rs, which
             // fails on 0.7 without that exception, passes on 0.15 without
             // it, so the exception is gone.
-            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, stacks, anchoring, skipping, prev, None, garbage);
+            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, stacks, anchoring, skipping, prev, None, owners, garbage);
             kept_children.push(kept);
             match hoists(&c.style) {
                 Some(fixed) => hoisted.push((cid, fixed)),
@@ -4611,6 +4701,7 @@ fn build(
             // Contained, as `content-visibility` contains paint: whatever is
             // inside is sorted inside, as with `isolation: isolate`.
             isolate: node.style.isolate || node.style.content_visibility != ContentVisibility::Visible,
+            reach: (!node.style.no_pointer).then_some(owners),
         },
     );
     if node.access.role.is_meaningful() {
@@ -4679,6 +4770,10 @@ struct Stack {
     z: Option<i32>,
     position: Position,
     isolate: bool,
+    /// Not painting: where a tap on the box goes, `None` under
+    /// `pointer-events: none`. Kept here because every node has exactly one
+    /// of these and `collect` reads it where it draws the box.
+    reach: Option<Owners>,
 }
 
 /// How a child is painted relative to its stacking context: `None` in flow,
@@ -5800,20 +5895,23 @@ fn collect(
             });
         }
 
-        if let Some((_, handler, gestures, cursor, touch_action, instance, _, _)) =
-            at.handler.map(|i| &b.handlers[i as usize]).filter(|h| h.7)
-        {
+        // Every box a pointer can reach, with a handler or not: one with none
+        // still takes the tap, and hands it to its owner. See `Owners`.
+        if let Some(owners) = at.stack.reach {
+            let own = at.handler.map(|i| &b.handlers[i as usize]);
             out.hits.push(HitRegion {
                 transform: child_xform,
                 x,
                 y,
                 width: layout.size.width,
                 height: layout.size.height,
-                on_tap: handler.clone(),
-                gestures: gestures.clone(),
-                cursor: *cursor,
-                touch_action: *touch_action,
-                instance: instance.clone(),
+                on_tap: own.and_then(|h| h.1.clone()),
+                gestures: own.map(|h| h.2.clone()).unwrap_or_default(),
+                cursor: own.map(|h| h.3).unwrap_or_default(),
+                touch_action: own.map(|h| h.4).unwrap_or_default(),
+                instance: own.and_then(|h| h.5.clone()),
+                seq: at.stack.seq,
+                owners,
             });
         }
 
@@ -5927,7 +6025,8 @@ fn collect(
         // A sentence's parts answer for themselves, after the sentence, so a
         // tappable run inside a tappable sentence is the one a tap finds.
         for (part, rects) in &placed {
-            inline::part_regions(part, rects, child_xform, at.stack.seq, inside_scroll, out, walk);
+            let owners = at.stack.reach.unwrap_or_default();
+            inline::part_regions(part, rects, child_xform, at.stack.seq, owners, inside_scroll, out, walk);
         }
     }
 
@@ -6379,6 +6478,7 @@ impl LayoutState {
             &mut skipping,
             self.kept.take(),
             Some(vp),
+            Owners::default(),
             &mut self.garbage,
         );
         debug_assert!(hoisted.is_empty(), "the root takes every out-of-flow box");
@@ -6657,6 +6757,8 @@ mod hit_transform_tests {
             cursor: Cursor::default(),
             touch_action: TouchAction::default(),
             instance: None,
+            seq: 0,
+            owners: Owners::default(),
         }
     }
 
