@@ -48,6 +48,7 @@ pub mod checks;
 mod color;
 
 /// Logical properties (`margin-inline-start` and the rest), put on a side.
+mod layer;
 mod logical;
 
 /// `white-space`: which spaces in a `<text>` are drawn. It lives in the layout,
@@ -2821,6 +2822,11 @@ struct Rule {
     /// A `::selection` rule: its chain picks the element, and its
     /// declarations style that element's selected text, not the element.
     selection: bool,
+    /// The cascade layer it was written in, empty for none. See [`layer`].
+    layer: Vec<u32>,
+    /// Its declarations were the `!important` ones of what was written. A
+    /// rule with both kinds is collected as two.
+    important: bool,
 }
 
 impl Rule {
@@ -3566,13 +3572,19 @@ pub fn media_matches(css: &str, env: Environment) -> Vec<bool> {
 
 fn collect_media_matches(rules: &[CssRule], env: Environment, out: &mut Vec<bool>) {
     for rule in rules {
-        if let CssRule::Media(media) = rule {
-            let text = media
-                .query
-                .to_css_string(PrinterOptions::default())
-                .unwrap_or_default();
-            out.push(MediaCond::parse(&text).holds(env));
-            collect_media_matches(&media.rules.0, env, out);
+        match rule {
+            CssRule::Media(media) => {
+                let text = media
+                    .query
+                    .to_css_string(PrinterOptions::default())
+                    .unwrap_or_default();
+                out.push(MediaCond::parse(&text).holds(env));
+                collect_media_matches(&media.rules.0, env, out);
+            }
+            // A `@media` inside a layer or a `@supports` is one too.
+            CssRule::LayerBlock(block) => collect_media_matches(&block.rules.0, env, out),
+            CssRule::Supports(sup) => collect_media_matches(&sup.rules.0, env, out),
+            _ => {}
         }
     }
 }
@@ -3584,7 +3596,7 @@ fn collect_media_matches(rules: &[CssRule], env: Environment, out: &mut Vec<bool
 /// own lines. `None` means "do not claim to know": see [`parse_rules_at`].
 #[cfg(test)]
 fn parse_rules(css: &str, env: Environment) -> Vec<Rule> {
-    parse_rules_at(css, env, None, &position_try_rules(css, env))
+    parse_rules_at(css, env, None, &position_try_rules(css, env), &mut layer::Layers::default())
 }
 
 /// Every `@position-try` rule in `css` by name, with its declarations as
@@ -3610,6 +3622,10 @@ fn gather_position_tries(rules: &[CssRule], env: Environment, out: &mut HashMap<
                 if MediaCond::parse(&text).holds(env) {
                     gather_position_tries(&media.rules.0, env, out);
                 }
+            }
+            CssRule::LayerBlock(block) => gather_position_tries(&block.rules.0, env, out),
+            CssRule::Supports(sup) if layer::supports(&sup.condition) => {
+                gather_position_tries(&sup.rules.0, env, out)
             }
             CssRule::Unknown(at) if at.name.eq_ignore_ascii_case("position-try") => {
                 // Printed whole, `@position-try --name { body }`: the token
@@ -3645,16 +3661,19 @@ fn gather_position_tries(rules: &[CssRule], env: Environment, out: &mut HashMap<
 /// place. Same reasoning as a component's `<style>` above.
 fn parse_document_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
     let tries = sheet_position_tries(sfc, env);
+    // One set of layers across the sheets: a layer an include names is the
+    // same layer when the document names it, as it would be pasted in.
+    let mut layers = layer::Layers::default();
     if sfc.style_includes.is_empty() {
         // The overwhelmingly common case, and it keeps the `order` values
         // exactly as they were before includes existed.
-        return parse_rules_at(&sfc.style, env, Some(sfc.style_line), &tries);
+        return parse_rules_at(&sfc.style, env, Some(sfc.style_line), &tries, &mut layers);
     }
     let mut rules = Vec::new();
     for include in &sfc.style_includes {
-        rules.extend(parse_rules_at(&include.css, env, None, &tries));
+        rules.extend(parse_rules_at(&include.css, env, None, &tries, &mut layers));
     }
-    rules.extend(parse_rules_at(&sfc.style, env, Some(sfc.style_line), &tries));
+    rules.extend(parse_rules_at(&sfc.style, env, Some(sfc.style_line), &tries, &mut layers));
     renumber(&mut rules);
     rules
 }
@@ -3687,14 +3706,15 @@ fn rules_print(sfc: &Sfc) -> u64 {
 /// too.
 fn parse_component_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
     let tries = sheet_position_tries(sfc, env);
+    let mut layers = layer::Layers::default();
     if sfc.style_includes.is_empty() {
-        return parse_rules_at(&sfc.style, env, None, &tries);
+        return parse_rules_at(&sfc.style, env, None, &tries, &mut layers);
     }
     let mut rules = Vec::new();
     for include in &sfc.style_includes {
-        rules.extend(parse_rules_at(&include.css, env, None, &tries));
+        rules.extend(parse_rules_at(&include.css, env, None, &tries, &mut layers));
     }
-    rules.extend(parse_rules_at(&sfc.style, env, None, &tries));
+    rules.extend(parse_rules_at(&sfc.style, env, None, &tries, &mut layers));
     renumber(&mut rules);
     rules
 }
@@ -3711,7 +3731,13 @@ fn renumber(rules: &mut [Rule]) {
     }
 }
 
-fn parse_rules_at(css: &str, env: Environment, base: Option<usize>, tries: &HashMap<String, String>) -> Vec<Rule> {
+fn parse_rules_at(
+    css: &str,
+    env: Environment,
+    base: Option<usize>,
+    tries: &HashMap<String, String>,
+    layers: &mut layer::Layers,
+) -> Vec<Rule> {
     let sheet = match StyleSheet::parse(css, ParserOptions::default()) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
@@ -3719,8 +3745,30 @@ fn parse_rules_at(css: &str, env: Environment, base: Option<usize>, tries: &Hash
 
     let mut rules = Vec::new();
     let mut order = 0usize;
-    collect_rules(&sheet.rules.0, env, &mut rules, &mut order, base, css, tries);
+    let mut at = Collecting { env, base, css, tries, layers, layer: Vec::new(), key: Vec::new() };
+    collect_rules(&sheet.rules.0, &mut at, &mut rules, &mut order);
     rules
+}
+
+/// What [`collect_rules`] carries down the sheet: where it is, and which
+/// cascade layer the rules it is reading belong to.
+struct Collecting<'a> {
+    env: Environment,
+    base: Option<usize>,
+    css: &'a str,
+    tries: &'a HashMap<String, String>,
+    layers: &'a mut layer::Layers,
+    /// The layer being read, by name from the outermost, empty for none.
+    layer: Vec<String>,
+    /// Its key in `layers`.
+    key: Vec<u32>,
+}
+
+impl Collecting<'_> {
+    /// `name`, written inside the current layer, as a full path.
+    fn path_of(&self, name: &lightningcss::rules::layer::LayerName) -> Vec<String> {
+        self.layer.iter().cloned().chain(name.0.iter().map(|part| part.to_string())).collect()
+    }
 }
 
 /// Walk the rule list, descending into `@media` blocks whose condition holds at
@@ -3728,15 +3776,11 @@ fn parse_rules_at(css: &str, env: Environment, base: Option<usize>, tries: &Hash
 /// downstream (matching, cascade, specificity) is untouched by media queries.
 /// `order` keeps counting across blocks, which is what makes a later `@media`
 /// rule win over an earlier plain rule of equal specificity, as in CSS.
-fn collect_rules(
-    rules: &[CssRule],
-    env: Environment,
-    out: &mut Vec<Rule>,
-    order: &mut usize,
-    base: Option<usize>,
-    css: &str,
-    tries: &HashMap<String, String>,
-) {
+///
+/// `@layer` and `@supports` are descended the same way. A `@layer` block
+/// puts its rules in a layer; `@layer a, b;` names layers so they stack in
+/// that order before any rule is in them. See [`layer`].
+fn collect_rules(rules: &[CssRule], at: &mut Collecting, out: &mut Vec<Rule>, order: &mut usize) {
     for rule in rules {
         match rule {
             CssRule::Media(media) => {
@@ -3745,17 +3789,83 @@ fn collect_rules(
                     .to_css_string(PrinterOptions::default())
                     .unwrap_or_default();
                 // An unsupported condition is reported against the `@media` line.
-                let holds = located(file_line(base, media.loc.line), || {
+                let env = at.env;
+                let holds = located(file_line(at.base, media.loc.line), || {
                     MediaCond::parse(&text).holds(env)
                 });
                 if holds {
-                    collect_rules(&media.rules.0, env, out, order, base, css, tries);
+                    collect_rules(&media.rules.0, at, out, order);
                 }
             }
-            CssRule::Style(style) => collect_style_rule(style, out, order, base, css, tries),
-            _ => {}
+            CssRule::Style(style) => collect_style_rule(style, at, out, order),
+            CssRule::LayerStatement(statement) => {
+                for name in &statement.names {
+                    let path = at.path_of(name);
+                    at.layers.key(&path);
+                }
+            }
+            CssRule::LayerBlock(block) => {
+                let path = match &block.name {
+                    Some(name) => at.path_of(name),
+                    None => {
+                        let anonymous = at.layers.anonymous();
+                        at.layer.iter().cloned().chain(std::iter::once(anonymous)).collect()
+                    }
+                };
+                let key = at.layers.key(&path);
+                let outer = (std::mem::replace(&mut at.layer, path), std::mem::replace(&mut at.key, key));
+                collect_rules(&block.rules.0, at, out, order);
+                (at.layer, at.key) = outer;
+            }
+            CssRule::Supports(sup) => {
+                if layer::supports(&sup.condition) {
+                    collect_rules(&sup.rules.0, at, out, order);
+                }
+            }
+            // Read by passes of their own: `position_try_rules` and
+            // `registered_properties`.
+            CssRule::Unknown(u) if u.name.eq_ignore_ascii_case("position-try") => {}
+            CssRule::Property(_) => {}
+            // Says nothing about how anything looks.
+            CssRule::Ignored | CssRule::Namespace(_) => {}
+            other => located(file_line(at.base, at_rule_line(other)), || warn_at_rule(other)),
         }
     }
+}
+
+/// The section-relative line an at-rule starts on, for the warning that it
+/// does nothing.
+fn at_rule_line(rule: &CssRule) -> u32 {
+    match rule {
+        CssRule::Keyframes(r) => r.loc.line,
+        CssRule::FontFace(r) => r.loc.line,
+        CssRule::Import(r) => r.loc.line,
+        CssRule::Container(r) => r.loc.line,
+        CssRule::Scope(r) => r.loc.line,
+        CssRule::StartingStyle(r) => r.loc.line,
+        CssRule::Page(r) => r.loc.line,
+        CssRule::CounterStyle(r) => r.loc.line,
+        CssRule::Unknown(r) => r.loc.line,
+        _ => 0,
+    }
+}
+
+/// Say that an at-rule does nothing, once per name. Its rules would
+/// otherwise vanish without a word, which is what `@layer` did until it was
+/// read: every rule Tailwind emits sits in one, and a sheet of them did
+/// nothing at all and said nothing.
+fn warn_at_rule(rule: &CssRule) {
+    let text = rule.to_css_string(PrinterOptions::default()).unwrap_or_default();
+    let name: String = text
+        .trim_start()
+        .trim_start_matches('@')
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '-')
+        .collect();
+    if name.is_empty() {
+        return;
+    }
+    warn_once(format!("`@{name}` is not supported yet, so what is inside it does nothing"));
 }
 
 /// Lift a section-relative line (lightningcss counts from 0) onto the file's
@@ -3812,16 +3922,67 @@ fn decl_line(css: &str, rule_line: u32, property: &str) -> Option<u32> {
 
 fn collect_style_rule(
     style: &lightningcss::rules::style::StyleRule,
+    at: &mut Collecting,
     out: &mut Vec<Rule>,
     order: &mut usize,
+) {
+    let (base, css, tries) = (at.base, at.css, at.tries);
+    located(file_line(base, style.loc.line), || {
+        if !style.rules.0.is_empty() {
+            warn_once(
+                "a rule nested inside another rule is not supported yet, so it does nothing; \
+                 write it out at the top level"
+                    .to_string(),
+            );
+        }
+        // The declarations as written, and the `!important` ones, which the
+        // cascade sorts apart: one Rule each.
+        let normal = rule_decls(&style.declarations.declarations, style, base, css, tries);
+        let important = rule_decls(&style.declarations.important_declarations, style, base, css, tries);
+
+        // One Rule per selector in the list (they share the declarations).
+        for selector in &style.selectors.0 {
+            if let Ok(text) = selector.to_css_string(PrinterOptions::default()) {
+                if let Some((mut chain, combs, specificity)) = parse_selector(&text) {
+                    // The flag moves from the last compound onto the rule, so
+                    // the chain can match the element the highlight belongs to.
+                    let selection =
+                        chain.last_mut().is_some_and(|last| std::mem::take(&mut last.selection));
+                    for (decls, important) in [(&normal, false), (&important, true)] {
+                        if decls.is_empty() && important {
+                            continue;
+                        }
+                        out.push(Rule {
+                            chain: chain.clone(),
+                            combs: combs.clone(),
+                            specificity,
+                            order: *order,
+                            decls: decls.clone(),
+                            selection,
+                            layer: at.key.clone(),
+                            important,
+                        });
+                    }
+                }
+            }
+            *order += 1;
+        }
+    });
+}
+
+/// One rule's declarations as `(property, value)`, warning about any
+/// property that does nothing.
+fn rule_decls(
+    props: &[lightningcss::properties::Property],
+    style: &lightningcss::rules::style::StyleRule,
     base: Option<usize>,
     css: &str,
     tries: &HashMap<String, String>,
-) {
-    located(file_line(base, style.loc.line), || {
+) -> Vec<(String, String)> {
+    {
         // Serialize each declaration to "prop: value" and split it.
         let mut decls = Vec::new();
-        for prop in &style.declarations.declarations {
+        for prop in props {
             if let Ok(text) = prop.to_css_string(false, PrinterOptions::default()) {
                 if let Some((k, v)) = text.split_once(':') {
                     let key = k.trim().to_lowercase();
@@ -3842,28 +4003,8 @@ fn collect_style_rule(
                 }
             }
         }
-
-        // One Rule per selector in the list (they share the declarations).
-        for selector in &style.selectors.0 {
-            if let Ok(text) = selector.to_css_string(PrinterOptions::default()) {
-                if let Some((mut chain, combs, specificity)) = parse_selector(&text) {
-                    // The flag moves from the last compound onto the rule, so
-                    // the chain can match the element the highlight belongs to.
-                    let selection =
-                        chain.last_mut().is_some_and(|last| std::mem::take(&mut last.selection));
-                    out.push(Rule {
-                        chain,
-                        combs,
-                        specificity,
-                        order: *order,
-                        decls: decls.clone(),
-                        selection,
-                    });
-                }
-            }
-            *order += 1;
-        }
-    });
+        decls
+    }
 }
 
 /// The CSS properties the runtime actually interprets today. Anything outside
@@ -4516,6 +4657,37 @@ fn nth_holds(a: i32, b: i32, n: i32) -> bool {
     }
 }
 
+/// Whether every pseudo-class in `selector` is one Rux matches: what
+/// `@supports selector(…)` asks. Read without parsing the selector for real,
+/// which would warn about the very pseudo-class being tested for.
+fn selector_is_supported(selector: &str) -> bool {
+    let mut rest = selector;
+    while let Some(at) = rest.find(':') {
+        rest = &rest[at + 1..];
+        if let Some(element) = rest.strip_prefix(':') {
+            // A pseudo-element: `::selection` is the one Rux styles.
+            let name: String = element.chars().take_while(|c| c.is_alphanumeric() || *c == '-').collect();
+            if !name.eq_ignore_ascii_case("selection") {
+                return false;
+            }
+            rest = element;
+            continue;
+        }
+        let len = rest.find(|c: char| !(c.is_alphanumeric() || c == '-')).unwrap_or(rest.len());
+        let mut name = rest[..len].to_string();
+        if rest[len..].starts_with('(') {
+            match closing_paren(&rest[len + 1..]) {
+                Some(end) => name.push_str(&rest[len..len + end + 2]),
+                None => return false,
+            }
+        }
+        if matches!(Pseudo::parse(&name), Pseudo::Unknown(_)) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Warn once per unknown pseudo-class. Same reasoning as `warn_if_unhonored`:
 /// valid CSS that quietly does nothing is the worst failure mode we have, and
 /// since an unknown pseudo now *fails closed*, the rule disappears entirely.
@@ -4694,7 +4866,7 @@ fn matched_rules<'r>(desc: &ElemDesc, ancestors: &[AncNode], prev: &[ElemDesc], 
         .iter()
         .filter(|r| !r.selection && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
         .collect();
-    matched.sort_by(|a, b| a.specificity.cmp(&b.specificity).then(a.order.cmp(&b.order)));
+    matched.sort_by(|a, b| layer::cascade(a, b));
     matched
 }
 
@@ -4765,7 +4937,7 @@ fn matched_selection(
     if matched.is_empty() {
         return inherited;
     }
-    matched.sort_by(|a, b| a.specificity.cmp(&b.specificity).then(a.order.cmp(&b.order)));
+    matched.sort_by(|a, b| layer::cascade(a, b));
     let mut out = inherited;
     for rule in matched {
         for (k, v) in &rule.decls {
@@ -14069,6 +14241,63 @@ mod tests {
             matches!(&narrow, Some(Background::Color(c)) if c.g == 1.0),
             "#id still beats a .class inside @media"
         );
+    }
+
+    /// A later layer beats an earlier one whatever the specificity, and a
+    /// rule in no layer beats them both. The order is the one `@layer a, b;`
+    /// named, not the order the blocks come in.
+    #[test]
+    fn layers_decide_before_specificity() {
+        let layered = r#"<template><screen><view class="target" id="t" /></screen></template>
+            <style>
+              @layer base, utilities;
+              @layer utilities { .target { background: #00ff00; } }
+              @layer base { #t { background: #ff0000; } }
+            </style>"#;
+        assert!(
+            matches!(&bg_at_vp(layered, vp(800.0, 600.0)), Some(Background::Color(c)) if c.g == 1.0),
+            "the utilities layer was named last, so its class beats the base layer's id"
+        );
+        let unlayered = r#"<template><screen><view class="target" id="t" /></screen></template>
+            <style>
+              .target { background: #ff0000; }
+              @layer utilities { #t { background: #00ff00; } }
+            </style>"#;
+        assert!(is_red(&bg_at_vp(unlayered, vp(800.0, 600.0))), "a rule in no layer beats every layer");
+    }
+
+    /// `!important` beats every normal declaration, and turns layer order
+    /// around: the earlier layer's important declaration wins.
+    #[test]
+    fn important_beats_normal_and_reverses_layers() {
+        let src = r#"<template><screen><view class="target" id="t" /></screen></template>
+            <style>
+              @layer base, utilities;
+              @layer base { .target { background: #ff0000 !important; } }
+              @layer utilities { .target { background: #00ff00 !important; } }
+              #t { background: #0000ff; }
+            </style>"#;
+        assert!(is_red(&bg_at_vp(src, vp(800.0, 600.0))));
+    }
+
+    /// `@supports` applies its rules when Rux honors what it asks about.
+    #[test]
+    fn supports_asks_whether_rux_honors_the_property() {
+        let src = r#"<template><screen><view class="target" /></screen></template>
+            <style>
+              @supports (display: grid) { .target { background: #ff0000; } }
+              @supports (-webkit-hyphens: none) { .target { background: #00ff00; } }
+              @supports not (display: grid) { .target { background: #0000ff; } }
+            </style>"#;
+        assert!(is_red(&bg_at_vp(src, vp(800.0, 600.0))));
+    }
+
+    /// A `@media` inside a layer still re-evaluates on a resize.
+    #[test]
+    fn media_inside_a_layer_is_reported_to_the_runtime() {
+        let css = "@layer utilities { @media (min-width: 600px) { .a { color: red } } }";
+        assert_eq!(super::media_matches(css, vp(800.0, 600.0)), vec![true]);
+        assert_eq!(super::media_matches(css, vp(400.0, 600.0)), vec![false]);
     }
 
     /// `and`, comma alternatives, orientation, and a media type all evaluate.
