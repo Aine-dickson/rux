@@ -3643,6 +3643,14 @@ impl App {
             // another, so the one that matters is covered.
             #[cfg(target_os = "android")]
             safe_area: android_safe_area(scale),
+            // A finger on a phone, and in a preview of one, so `hover:` rules
+            // are off there as they will be on the device.
+            // In a browser, what the browser says.
+            pointer: if cfg!(target_os = "android") || self.preview.is_some() || web_coarse() {
+                rux_runtime::Pointer::Coarse
+            } else {
+                rux_runtime::Pointer::Fine
+            },
             ..Default::default()
         };
         if self.document.set_environment(environment) {
@@ -8655,6 +8663,14 @@ fn web_is_touch() -> bool {
         .and_then(|w| w.match_media("(pointer: coarse)").ok().flatten())
         .map(|m| m.matches())
         .unwrap_or(false)
+}
+
+/// Whether the browser points with a finger, for `@media (pointer: …)`.
+fn web_coarse() -> bool {
+    #[cfg(target_arch = "wasm32")]
+    return web_is_touch();
+    #[cfg(not(target_arch = "wasm32"))]
+    false
 }
 
 /// The browser's clipboard, when there is one.

@@ -1486,6 +1486,12 @@ const MAX_VAR_DEPTH: usize = 16;
 /// because a silently dropped declaration is the failure mode this project keeps
 /// trying to design away.
 fn resolve_vars(value: &str, vars: &HashMap<String, String>, depth: usize) -> String {
+    resolve_vars_in(value, &|name| vars.get(name).map(String::as_str), depth)
+}
+
+/// [`resolve_vars`] against any lookup, so an element's own custom
+/// properties can be read before they are resolved. See [`take_vars`].
+fn resolve_vars_in<'v>(value: &str, vars: &dyn Fn(&str) -> Option<&'v str>, depth: usize) -> String {
     if depth >= MAX_VAR_DEPTH || !value.contains("var(") {
         return value.to_string();
     }
@@ -1507,11 +1513,11 @@ fn resolve_vars(value: &str, vars: &HashMap<String, String>, depth: usize) -> St
             Some((n, f)) => (n.trim(), Some(f.trim())),
             None => (inner.trim(), None),
         };
-        match vars.get(name) {
+        match vars(name) {
             // The substituted value may itself contain var().
-            Some(v) => out.push_str(&resolve_vars(v, vars, depth + 1)),
+            Some(v) => out.push_str(&resolve_vars_in(v, vars, depth + 1)),
             None => match fallback {
-                Some(f) => out.push_str(&resolve_vars(f, vars, depth + 1)),
+                Some(f) => out.push_str(&resolve_vars_in(f, vars, depth + 1)),
                 None => {
                     warn_undefined_var(name);
                     out.push_str("var(");
@@ -1537,20 +1543,119 @@ fn resolve_vars(value: &str, vars: &HashMap<String, String>, depth: usize) -> St
 /// the *outer* scope, as in CSS.
 fn take_vars(props: &mut HashMap<String, String>, inherited: &Vars) -> Vars {
     let declared: Vec<String> = props.keys().filter(|k| k.starts_with("--")).cloned().collect();
+    let registered = REGISTERED.with(|r| Rc::clone(&r.borrow().1));
+    let inherited = &registered_over(inherited, &registered, &declared);
     if declared.is_empty() {
         return Rc::clone(inherited);
     }
+    // Remove them: a custom property is not a real property, and leaving it in
+    // would only be fed to `interpret` (which ignores it) as noise.
+    let own: HashMap<String, String> =
+        declared.into_iter().filter_map(|name| props.remove(&name).map(|v| (name, v))).collect();
+    // Each is resolved against all of this element's own, as written, over
+    // what it inherited, so `--a: var(--b); --b: red` on one element works
+    // whichever order they come in. A theme declares dozens on one rule, in
+    // terms of each other, and resolving them one by one in a map's order
+    // made some of them undefined at random.
     let mut vars = (**inherited).clone();
-    for name in declared {
-        // Remove it: a custom property is not a real property, and leaving it in
-        // would only be fed to `interpret` (which ignores it) as noise.
-        let Some(value) = props.remove(&name) else { continue };
-        let value = resolve_vars(&value, &vars, 0);
+    for (name, raw) in &own {
+        let lookup = |key: &str| -> Option<&str> {
+            match own.get(key) {
+                Some(_) if key == name => inherited.get(key).map(String::as_str),
+                Some(v) => Some(v.as_str()),
+                None => inherited.get(key).map(String::as_str),
+            }
+        };
+        let value = resolve_vars_in(raw, &lookup, 0);
         // `--pad: env(safe-area-inset-bottom)` is the way an author writes this
         // once and reads it everywhere, so it has to resolve where the variable
         // is declared and not only where a property is.
         let value = if value.contains("env(") { resolve_env(&value) } else { value };
-        vars.insert(name, value);
+        vars.insert(name.clone(), value);
+    }
+    Rc::new(vars)
+}
+
+/// A custom property an `@property` rule registered: what it is when nothing
+/// sets it, and whether it inherits.
+#[derive(Clone, Debug, PartialEq)]
+struct Registered {
+    initial: Option<String>,
+    inherits: bool,
+}
+
+thread_local! {
+    /// The document's `@property` registrations, with the print of the
+    /// sheets they were read from, so a build reads them again only when the
+    /// sheets changed. See [`register_properties`].
+    static REGISTERED: std::cell::RefCell<(u64, Rc<HashMap<String, Registered>>)> =
+        std::cell::RefCell::new((0, Rc::new(HashMap::new())));
+}
+
+/// Read the document's `@property` rules for the build about to run.
+///
+/// The document's sheets and what they include. A component's own
+/// `@property` is not read yet.
+fn register_properties(sfc: &Sfc) {
+    let print = rules_print(sfc);
+    if REGISTERED.with(|r| r.borrow().0 == print) {
+        return;
+    }
+    let mut out = HashMap::new();
+    for css in sfc.style_includes.iter().map(|i| i.css.as_str()).chain(std::iter::once(sfc.style.as_str())) {
+        if !css.contains("@property") {
+            continue;
+        }
+        if let Ok(sheet) = StyleSheet::parse(css, ParserOptions::default()) {
+            gather_registered(&sheet.rules.0, &mut out);
+        }
+    }
+    REGISTERED.with(|r| *r.borrow_mut() = (print, Rc::new(out)));
+}
+
+fn gather_registered(rules: &[CssRule], out: &mut HashMap<String, Registered>) {
+    for rule in rules {
+        match rule {
+            CssRule::Property(p) => {
+                let initial = p.initial_value.as_ref().and_then(|v| v.to_css_string(PrinterOptions::default()).ok());
+                out.insert(p.name.0.to_string(), Registered { initial, inherits: p.inherits });
+            }
+            CssRule::LayerBlock(block) => gather_registered(&block.rules.0, out),
+            CssRule::Supports(sup) if layer::supports(&sup.condition) => gather_registered(&sup.rules.0, out),
+            _ => {}
+        }
+    }
+}
+
+/// What an element inherits, with the registered custom properties put
+/// right: one that does not inherit is back at its initial value here unless
+/// this element sets it, and one nobody set anywhere is at its initial value.
+///
+/// That is what keeps a card's `--tw-shadow` out of a ring on a button
+/// inside it: Tailwind registers its `--tw-*` with `inherits: false`, and
+/// reads several of them into one `box-shadow`. Most elements find nothing
+/// to change and share their parent's map.
+fn registered_over(inherited: &Vars, registered: &HashMap<String, Registered>, own: &[String]) -> Vars {
+    let target = |name: &String, reg: &Registered| -> Option<Option<String>> {
+        if own.contains(name) || (reg.inherits && inherited.contains_key(name)) {
+            return None;
+        }
+        (inherited.get(name) != reg.initial.as_ref()).then(|| reg.initial.clone())
+    };
+    if registered.iter().all(|(name, reg)| target(name, reg).is_none()) {
+        return Rc::clone(inherited);
+    }
+    let mut vars = (**inherited).clone();
+    for (name, reg) in registered {
+        match target(name, reg) {
+            Some(Some(initial)) => {
+                vars.insert(name.clone(), initial);
+            }
+            Some(None) => {
+                vars.remove(name);
+            }
+            None => {}
+        }
     }
     Rc::new(vars)
 }
@@ -2122,6 +2227,7 @@ pub fn build_styled_tree_stateful(
     // What `env()` reads, for the length of this build. Set here rather than
     // threaded, beside the two other build-scoped registers below.
     set_build_env(env);
+    register_properties(sfc);
     forget_interpreted();
 
     // What a `to=` is checked against. Refreshed per build rather than per load
@@ -2592,7 +2698,26 @@ enum Pseudo {
     Only,
     /// `:not(…)`: none of these compounds matches the element.
     Not(Vec<Compound>),
+    /// `:root`: the element with no parent.
+    Root,
+    /// `:host`, which matches nothing: there is no shadow tree for it to be
+    /// the host of. That is what a browser answers in a document's own
+    /// sheet, and why it does not warn: Tailwind writes `:root, :host` for
+    /// its theme, and only the first half can mean anything here.
+    Host,
+    /// `:is(…)` and `:where(…)`: any of these selectors matches the element,
+    /// each one read from it as the subject, so `.x:is(.group:hover *)` is an
+    /// `.x` inside a hovered `.group`. `spec` is what it adds: its most
+    /// specific argument for `:is()`, nothing for `:where()`.
+    Is { alts: Vec<Alt>, spec: (u32, u32, u32) },
     Unknown(String),
+}
+
+/// One selector in an `:is()` or `:where()` list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Alt {
+    chain: Vec<Compound>,
+    combs: Vec<Combinator>,
 }
 
 /// Interaction state for one element, tested by the pseudo-classes above. It is
@@ -2695,7 +2820,27 @@ impl Pseudo {
     fn is_pointer_state(&self) -> bool {
         match self {
             Self::Hover | Self::Active => true,
-            Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(Pseudo::is_pointer_state)),
+            _ => self.nested(Pseudo::is_pointer_state),
+        }
+    }
+
+    /// Whether a pseudo-class inside this one's arguments answers `f`.
+    fn nested(&self, f: fn(&Pseudo) -> bool) -> bool {
+        match self {
+            Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(f)),
+            Self::Is { alts, .. } => alts.iter().any(|alt| alt.chain.iter().any(|c| c.pseudos.iter().any(f))),
+            _ => false,
+        }
+    }
+
+    /// An `:is()` that steps to a sibling inside.
+    fn has_sibling_step(&self) -> bool {
+        match self {
+            Self::Is { alts, .. } => alts.iter().any(|alt| {
+                alt.combs.iter().any(|c| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling))
+                    || alt.chain.iter().any(|c| c.pseudos.iter().any(Pseudo::has_sibling_step))
+            }),
+            Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(Pseudo::has_sibling_step)),
             _ => false,
         }
     }
@@ -2705,8 +2850,7 @@ impl Pseudo {
     fn reads_place(&self) -> bool {
         match self {
             Self::Nth { .. } | Self::NthLast { .. } | Self::Only => true,
-            Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_place)),
-            _ => false,
+            _ => self.nested(Pseudo::reads_place),
         }
     }
 
@@ -2714,8 +2858,7 @@ impl Pseudo {
     fn reads_total(&self) -> bool {
         match self {
             Self::NthLast { .. } | Self::Only => true,
-            Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_total)),
-            _ => false,
+            _ => self.nested(Pseudo::reads_total),
         }
     }
 
@@ -2740,6 +2883,8 @@ impl Pseudo {
             "first-child" => Self::Nth { a: 0, b: 1 },
             "last-child" => Self::NthLast { a: 0, b: 1 },
             "only-child" => Self::Only,
+            "root" => Self::Root,
+            "host" => Self::Host,
             other => match name.split_once('(').and_then(|(f, arg)| Some((f.to_ascii_lowercase(), arg.strip_suffix(')')?))) {
                 Some((f, arg)) if f == "nth-child" => match nth(arg) {
                     Some((a, b)) => Self::Nth { a, b },
@@ -2765,6 +2910,23 @@ impl Pseudo {
                         _ => Self::Unknown(other.to_string()),
                     }
                 }
+                Some((f, arg)) if matches!(f.as_str(), "is" | "where" | "matches" | "-webkit-any") => {
+                    // A forgiving list, as in CSS: an argument that does not
+                    // parse is dropped rather than taking the rest with it.
+                    let mut spec = (0, 0, 0);
+                    let alts: Vec<Alt> = split_selector_list(arg)
+                        .into_iter()
+                        .filter_map(|alt| parse_selector(alt.trim()))
+                        .map(|(chain, combs, s)| {
+                            spec = spec.max(s);
+                            Alt { chain, combs }
+                        })
+                        .collect();
+                    if f == "where" {
+                        spec = (0, 0, 0);
+                    }
+                    Self::Is { alts, spec }
+                }
                 _ => Self::Unknown(other.to_string()),
             },
         }
@@ -2789,7 +2951,8 @@ impl Pseudo {
             Self::Required => s.required == Some(true),
             Self::Optional => s.required == Some(false),
             // Asked of the element in its place, by `matches_compound`.
-            Self::Nth { .. } | Self::NthLast { .. } | Self::Only | Self::Not(_) => true,
+            Self::Nth { .. } | Self::NthLast { .. } | Self::Only | Self::Not(_) | Self::Root | Self::Is { .. } => true,
+            Self::Host => false,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -2843,6 +3006,9 @@ impl Rule {
             .iter()
             .enumerate()
             .any(|(i, c)| sibling(c) && self.combs[i + 1..].iter().any(hop))
+            // Inside an `:is()`, kept whenever it steps across at all: rare,
+            // and keeping siblings is only ever slower, never wrong.
+            || self.chain.iter().any(|c| c.pseudos.iter().any(Pseudo::has_sibling_step))
     }
 
     /// Whether matching this rule counts siblings from the end, so they have
@@ -2857,7 +3023,7 @@ impl Rule {
         self.combs
             .iter()
             .any(|c| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling))
-            || self.chain.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_place))
+            || self.chain.iter().any(|c| c.pseudos.iter().any(|p| p.reads_place() || p.has_sibling_step()))
     }
 }
 
@@ -2923,7 +3089,7 @@ impl ElementIndex {
         // Siblings matter only to `+` and `~`, and to an element's place
         // among them (`:nth-child()`, `:last-child`).
         let siblings = combs.iter().any(|c| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling))
-            || chain.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_place));
+            || chain.iter().any(|c| c.pseudos.iter().any(|p| p.reads_place() || p.has_sibling_step()));
         // Each parent's children: their places, and what they are, shared.
         let mut children: HashMap<&[usize], (Vec<usize>, Rc<[ElemDesc]>)> = HashMap::new();
         if siblings {
@@ -3192,6 +3358,20 @@ pub struct Environment {
     /// Physical pixels per logical pixel. The window's scale factor, named for
     /// what a stylesheet would call it.
     pub density: f32,
+    /// What the person points with, which `@media (hover: hover)` and
+    /// `(pointer: fine)` ask.
+    pub pointer: Pointer,
+}
+
+/// What the person points with. A mouse or a trackpad is `Fine` and can
+/// hover; a finger is `Coarse` and cannot. Tailwind puts every `hover:`
+/// rule inside `@media (hover: hover)`, so that a tap on a phone does not
+/// leave a button looking hovered, and this is the answer it asks for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum Pointer {
+    #[default]
+    Fine,
+    Coarse,
 }
 
 impl Environment {
@@ -3224,6 +3404,7 @@ impl Environment {
         color_scheme: ColorScheme::Light,
         safe_area: Insets { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 },
         density: 1.0,
+        pointer: Pointer::Fine,
     };
 }
 
@@ -3281,6 +3462,10 @@ enum Feature {
     /// author wrote, because a ratio is what the value means and `dpi` is that
     /// ratio times a constant.
     Resolution(Cmp, f32),
+    /// `hover: hover`, or `hover: none` with `false`.
+    Hover(bool),
+    /// `pointer: fine` or `pointer: coarse`.
+    PointerIs(Pointer),
     /// A media *type* we're always in (`screen`, `all`).
     Always,
     /// Unsupported, never matches.
@@ -3298,6 +3483,8 @@ impl Feature {
             Self::Resolution(cmp, v) => cmp.holds(env.density, v),
             Self::ReducedMotion(want) => env.reduced_motion == want,
             Self::Scheme(want) => env.color_scheme == want,
+            Self::Hover(want) => (env.pointer == Pointer::Fine) == want,
+            Self::PointerIs(want) => env.pointer == want,
             Self::Always => true,
             Self::Never => false,
         }
@@ -3363,9 +3550,15 @@ fn parse_media_feature(token: &str) -> Vec<Feature> {
     }
 
     let Some((name, value)) = body.split_once(':') else {
-        // A boolean feature like `(hover)`, not something we can answer.
-        warn_unsupported_media(body);
-        return vec![Feature::Never];
+        // A boolean feature: true unless its value would be `none`.
+        return vec![match body.to_ascii_lowercase().as_str() {
+            "hover" | "any-hover" => Feature::Hover(true),
+            "pointer" | "any-pointer" => Feature::Always,
+            _ => {
+                warn_unsupported_media(body);
+                Feature::Never
+            }
+        }];
     };
     let name = name.trim().to_ascii_lowercase();
     let value = value.trim();
@@ -3382,6 +3575,17 @@ fn parse_media_feature(token: &str) -> Vec<Feature> {
         "prefers-reduced-motion" => match value.to_ascii_lowercase().as_str() {
             "reduce" => Feature::ReducedMotion(true),
             "no-preference" => Feature::ReducedMotion(false),
+            _ => Feature::Never,
+        },
+        // There is one pointer, so `any-` asks the same as the plain one.
+        "hover" | "any-hover" => match value.to_ascii_lowercase().as_str() {
+            "hover" => Feature::Hover(true),
+            "none" => Feature::Hover(false),
+            _ => Feature::Never,
+        },
+        "pointer" | "any-pointer" => match value.to_ascii_lowercase().as_str() {
+            "fine" => Feature::PointerIs(Pointer::Fine),
+            "coarse" => Feature::PointerIs(Pointer::Coarse),
             _ => Feature::Never,
         },
         "prefers-color-scheme" => match value.to_ascii_lowercase().as_str() {
@@ -4271,7 +4475,7 @@ const HONORED_PSEUDO_CLASSES: &[&str] =
         "hover", "focus", "focus-visible", "active", "checked", "current", "enter-from",
         "leave-to", "disabled", "enabled", "valid", "invalid", "user-valid", "user-invalid",
         "required", "optional", "first-child", "last-child", "only-child", "nth-child",
-        "nth-last-child", "not",
+        "nth-last-child", "not", "is", "where", "root",
     ];
 
 /// The properties `transition` can name, in the order `all` expands them.
@@ -4459,6 +4663,12 @@ fn parse_selector(text: &str) -> Option<(Vec<Compound>, Vec<Combinator>, (u32, u
         let mut depth = 0i32;
         while i < chars.len() {
             let d = chars[i];
+            if d == '\\' {
+                // An escaped character is part of a name, even a space or a
+                // `>`: `.\[\&\>\*\]` is one class.
+                i += escape_len(&chars[i..]);
+                continue;
+            }
             if d == '[' || d == '(' {
                 depth += 1;
             } else if d == ']' || d == ')' {
@@ -4512,11 +4722,7 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
         match chars[i] {
             '.' => {
                 i += 1;
-                let mut cls = String::new();
-                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-                    cls.push(chars[i]);
-                    i += 1;
-                }
+                let cls = ident(&chars, &mut i);
                 if !cls.is_empty() {
                     c.classes.push(cls);
                     spec.1 += 1;
@@ -4524,11 +4730,7 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
             }
             '#' => {
                 i += 1;
-                let mut id = String::new();
-                while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '-' || chars[i] == '_') {
-                    id.push(chars[i]);
-                    i += 1;
-                }
+                let id = ident(&chars, &mut i);
                 if !id.is_empty() {
                     c.id = Some(id);
                     spec.0 += 1;
@@ -4591,14 +4793,17 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                 if !name.is_empty() {
                     let pseudo = Pseudo::parse(&name);
                     if let Pseudo::Unknown(n) = &pseudo {
-                        warn_unknown_pseudo(n);
+                        // A vendor's own (`::-webkit-inner-spin-button`,
+                        // `:-moz-focusring`) belongs to one engine, and every
+                        // other engine passes over it without a word. Rux is
+                        // another engine. Reset sheets are full of them.
+                        if !n.trim_start_matches(':').starts_with('-') {
+                            warn_unknown_pseudo(n);
+                        }
                     }
                     // A pseudo-class has class-level specificity, but `:not()`
                     // counts as its most specific argument, as in CSS.
-                    let own = match &pseudo {
-                        Pseudo::Not(list) => list.iter().map(specificity_of).max().unwrap_or_default(),
-                        _ => (0, 1, 0),
-                    };
+                    let own = pseudo_specificity(&pseudo);
                     *spec = (spec.0 + own.0, spec.1 + own.1, spec.2 + own.2);
                     c.pseudos.push(pseudo);
                 }
@@ -4609,13 +4814,85 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
     Some(c)
 }
 
+/// A class or id name from `chars[*i..]`, escapes read: `md\:flex` is the
+/// class `md:flex`, and `\31 0` is `10`, which is how a sheet writes a name
+/// CSS would otherwise read as something else. Every Tailwind variant and
+/// fraction is written this way (`.hover\:bg-x`, `.w-1\/2`, `.py-1\.5`).
+fn ident(chars: &[char], i: &mut usize) -> String {
+    let mut out = String::new();
+    while *i < chars.len() {
+        let c = chars[*i];
+        if c == '\\' {
+            let len = escape_len(&chars[*i..]);
+            let body: String = chars[*i + 1..*i + len].iter().collect();
+            let hex = body.trim_end();
+            match u32::from_str_radix(hex, 16) {
+                Ok(n) if !hex.is_empty() && hex.chars().all(|h| h.is_ascii_hexdigit()) => {
+                    out.push(char::from_u32(n).filter(|&ch| ch != '\0').unwrap_or('\u{FFFD}'));
+                }
+                _ => out.extend(body.chars().next()),
+            }
+            *i += len;
+        } else if c.is_alphanumeric() || c == '-' || c == '_' || !c.is_ascii() {
+            out.push(c);
+            *i += 1;
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+/// How many characters the escape at `chars[0]` (a backslash) takes: one
+/// character after it, or up to six hex digits and one whitespace that ends
+/// them.
+fn escape_len(chars: &[char]) -> usize {
+    let hex = chars[1..].iter().take(6).take_while(|c| c.is_ascii_hexdigit()).count();
+    if hex == 0 {
+        return (1 + 1).min(chars.len());
+    }
+    let ends_in_space = chars.get(1 + hex).is_some_and(|c| c.is_whitespace());
+    1 + hex + ends_in_space as usize
+}
+
+/// What one pseudo-class adds to a selector's specificity: a class's worth,
+/// except `:not()` and `:is()`, which count as their most specific argument,
+/// and `:where()`, which counts nothing.
+fn pseudo_specificity(p: &Pseudo) -> (u32, u32, u32) {
+    match p {
+        Pseudo::Not(list) => list.iter().map(specificity_of).max().unwrap_or_default(),
+        Pseudo::Is { spec, .. } => *spec,
+        _ => (0, 1, 0),
+    }
+}
+
+/// `a, b(c, d), e` as `a`, `b(c, d)` and `e`.
+fn split_selector_list(s: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut start) = (0i32, 0);
+    let mut chars = s.char_indices();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '\\' => {
+                chars.next();
+            }
+            '(' | '[' => depth += 1,
+            ')' | ']' => depth -= 1,
+            ',' if depth == 0 => {
+                out.push(&s[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&s[start..]);
+    out
+}
+
 /// What one compound adds to a selector's specificity.
 fn specificity_of(c: &Compound) -> (u32, u32, u32) {
     let pseudos = c.pseudos.iter().fold((0, 0, 0), |acc: (u32, u32, u32), p| {
-        let own = match p {
-            Pseudo::Not(list) => list.iter().map(specificity_of).max().unwrap_or_default(),
-            _ => (0, 1, 0),
-        };
+        let own = pseudo_specificity(p);
         (acc.0 + own.0, acc.1 + own.1, acc.2 + own.2)
     });
     (
@@ -4694,11 +4971,16 @@ fn selector_is_supported(selector: &str) -> bool {
 fn warn_unknown_pseudo(name: &str) {
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    let message = format!(
-        "pseudo-class `:{name}` is not supported, rules using it will never match \
-         (supported: :{})",
-        HONORED_PSEUDO_CLASSES.join(", :")
-    );
+    // A second colon was kept in the name: a pseudo-element.
+    let message = if let Some(element) = name.strip_prefix(':') {
+        format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection)")
+    } else {
+        format!(
+            "pseudo-class `:{name}` is not supported, rules using it will never match \
+             (supported: :{})",
+            HONORED_PSEUDO_CLASSES.join(", :")
+        )
+    };
     warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
     let Ok(mut seen) = seen.lock() else { return };
@@ -4713,7 +4995,8 @@ fn warn_unknown_pseudo(name: &str) {
 /// rendered siblings, from 1, which `:nth-child()` and `:first-child` read;
 /// `None` where that is not known, and then they hold, so a caller asking
 /// "could this match" is not told no.
-fn matches_compound(c: &Compound, el: &ElemDesc, place: Option<usize>) -> bool {
+fn matches_compound(c: &Compound, el: &ElemDesc, at: Option<Site>) -> bool {
+    let place = at.map(|p| p.at);
     // From the end: a `None` place is "could this match", which holds; a
     // place with no total counted fails, since there is nothing to count
     // from.
@@ -4752,9 +5035,26 @@ fn matches_compound(c: &Compound, el: &ElemDesc, place: Option<usize>) -> bool {
         Pseudo::Nth { a, b } => place.is_none_or(|n| nth_holds(*a, *b, n as i32)),
         Pseudo::NthLast { a, b } => from_end(*a, *b),
         Pseudo::Only => place.is_none_or(|n| n == 1) && from_end(0, 1),
-        Pseudo::Not(list) => !list.iter().any(|c| matches_compound(c, el, place)),
+        Pseudo::Not(list) => !list.iter().any(|c| matches_compound(c, el, at)),
+        // The root has no ancestors. Not known, it could be.
+        Pseudo::Root => at.is_none_or(|p| p.ancestors.is_empty()),
+        Pseudo::Is { alts, .. } => alts.iter().any(|alt| match at {
+            Some(p) => matches_at(&alt.chain, &alt.combs, el, p.at, p.ancestors, p.prev),
+            // Could it match: its last compound is the element.
+            None => alt.chain.last().is_some_and(|last| matches_compound(last, el, None)),
+        }),
         p => p.holds(&el.states),
     })
+}
+
+/// Where an element sits, for the pseudo-classes that ask: its place among
+/// its rendered siblings from 1, its ancestors root first, and the siblings
+/// before it.
+#[derive(Clone, Copy)]
+struct Site<'a> {
+    at: usize,
+    ancestors: &'a [AncNode],
+    prev: &'a [ElemDesc],
 }
 
 /// Does the selector `chain` (joined by `combs`) match the element `el`, whose
@@ -4792,7 +5092,7 @@ fn matches_at(
     let Some((last, rest)) = chain.split_last() else {
         return false;
     };
-    if !matches_compound(last, el, Some(place)) {
+    if !matches_compound(last, el, Some(Site { at: place, ancestors, prev })) {
         return false;
     }
     if rest.is_empty() {
@@ -4848,15 +5148,22 @@ fn pointer_state_sensitive(desc: &ElemDesc, rules: &[Rule]) -> bool {
         states: ElemStates { hover: true, active: true, ..desc.states },
         ..desc.clone()
     };
-    rules.iter().any(|rule| {
-        rule.chain.iter().any(|compound| {
+    // The compounds inside an `:is()` too: `.x:is(.group:hover *)` is
+    // hovered through the group, so it is the group that needs a region.
+    fn sensitive(chain: &[Compound], probe: &ElemDesc) -> bool {
+        chain.iter().any(|compound| {
             // `:not(:hover)` is the one that holds with the pointer away, so
             // probing with it there would say no: such a compound counts.
-            compound.pseudos.iter().any(Pseudo::is_pointer_state)
-                && (matches_compound(compound, &probe, None)
-                    || compound.pseudos.iter().any(|p| matches!(p, Pseudo::Not(_)) && p.is_pointer_state()))
+            let own = compound.pseudos.iter().any(|p| matches!(p, Pseudo::Hover | Pseudo::Active | Pseudo::Not(_)) && p.is_pointer_state())
+                && (matches_compound(compound, probe, None)
+                    || compound.pseudos.iter().any(|p| matches!(p, Pseudo::Not(_)) && p.is_pointer_state()));
+            own || compound.pseudos.iter().any(|p| match p {
+                Pseudo::Is { alts, .. } => alts.iter().any(|alt| sensitive(&alt.chain, probe)),
+                _ => false,
+            })
         })
-    })
+    }
+    rules.iter().any(|rule| sensitive(&rule.chain, &probe))
 }
 
 /// Collect the matching rules' declarations for an element, in cascade order.
@@ -8505,6 +8812,7 @@ pub fn rebuild_children(
         _ => rux_script::profile::time(rux_script::profile::Phase::Css, || parse_document_rules(sfc, env)),
     };
     set_build_env(env);
+    register_properties(sfc);
     ROUTER.with(|r| *r.borrow_mut() = find_router(&sfc.template).cloned());
     NAMESPACES.with(|n| *n.borrow_mut() = namespaces.clone());
     CURRENT_FILE.with(|c| *c.borrow_mut() = DOCUMENT_NAMESPACE.to_string());
@@ -12764,6 +13072,7 @@ mod tests {
                 "nth-child" => "nth-child(2n+1)".to_string(),
                 "nth-last-child" => "nth-last-child(2)".to_string(),
                 "not" => "not(.a)".to_string(),
+                "is" | "where" => format!("{name}(.a .b)"),
                 n => n.to_string(),
             };
             assert!(
@@ -12937,7 +13246,7 @@ mod tests {
     /// why the offset is carried rather than assumed to be zero.
     #[test]
     fn css_warnings_carry_the_line_of_the_file() {
-        let src = "<template>\n  <screen class=\"a\"></screen>\n</template>\n\n<style>\n  .a { display: flex; }\n  .b { float: left; }\n\n  .c:nope { color: red; }\n\n  @media (hover: hover) { .a { gap: 4px; } }\n</style>\n";
+        let src = "<template>\n  <screen class=\"a\"></screen>\n</template>\n\n<style>\n  .a { display: flex; }\n  .b { float: left; }\n\n  .c:nope { color: red; }\n\n  @media (scripting: none) { .a { gap: 4px; } }\n</style>\n";
         let sfc = rux_parser::parse_sfc(src).expect("parses");
         let mut engine = Builder::new().build("").expect("engine");
 
@@ -14290,6 +14599,18 @@ mod tests {
               @supports not (display: grid) { .target { background: #0000ff; } }
             </style>"#;
         assert!(is_red(&bg_at_vp(src, vp(800.0, 600.0))));
+    }
+
+    /// `hover` and `pointer` answer for what the person points with: a mouse
+    /// hovers, a finger does not.
+    #[test]
+    fn hover_and_pointer_queries_ask_what_points() {
+        let css = "@media (hover: hover) { .a { color: red } } @media (pointer: coarse) { .a { color: red } } \
+                   @media (hover: none) { .a { color: red } } @media (any-hover) { .a { color: red } }";
+        let mouse = vp(800.0, 600.0);
+        let finger = Environment { pointer: super::Pointer::Coarse, ..mouse };
+        assert_eq!(super::media_matches(css, mouse), vec![true, false, false, true]);
+        assert_eq!(super::media_matches(css, finger), vec![false, true, true, false]);
     }
 
     /// A `@media` inside a layer still re-evaluates on a resize.
@@ -16218,5 +16539,178 @@ mod from_the_end_tests {
         let (chain, combs, _) = super::parse_selector(".a:not(:last-child)").unwrap();
         assert!(super::matches_chain(&chain, &combs, &el, &[], &prev[..1]));
         assert!(!super::matches_chain(&chain, &combs, &el, &[], &prev));
+    }
+}
+
+#[cfg(test)]
+mod selector_list_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{Background, Node};
+    use rux_script::Builder;
+
+    fn built(src: &str, hovered: Option<Vec<usize>>) -> Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let state = super::InteractionState { hovered, ..Default::default() };
+        super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut super::Instances::new(),
+            &mut crate::Swaps::new(),
+            &state,
+            super::Environment::default(),
+        )
+        .unwrap()
+        .0
+    }
+
+    fn red(node: &Node) -> bool {
+        matches!(&node.style.background, Some(Background::Color(c)) if c.r == 1.0 && c.g == 0.0)
+    }
+
+    /// `:root` is the element with no parent, and a variable declared on it
+    /// reaches everything.
+    #[test]
+    fn root_is_the_top_element() {
+        let root = built(
+            r#"<template><screen><view class="a" /></screen></template>
+               <style>:root { --c: #ff0000; } :root, :host { --d: 1; } .a { background: var(--c); }</style>"#,
+            None,
+        );
+        assert!(red(&root.children[0]));
+    }
+
+    /// `:where()` adds nothing to specificity, so a plain class written after
+    /// it wins; `:is()` adds its most specific argument, so it does not.
+    #[test]
+    fn where_counts_nothing_and_is_counts_its_argument() {
+        let src = |pseudo: &str| {
+            format!(
+                r#"<template><screen><view class="a b" /></screen></template>
+                   <style>.a:{pseudo}(.b, #nope) {{ background: #00ff00; }} .a {{ background: #ff0000; }}</style>"#
+            )
+        };
+        assert!(red(&built(&src("where"), None).children[0]), ":where() lost to the later .a");
+        assert!(!red(&built(&src("is"), None).children[0]), ":is() carried an id's weight");
+    }
+
+    /// Tailwind's `group-hover:`: the element is styled while an ancestor
+    /// with the group class is hovered, and that ancestor gets the pointer
+    /// region the shell reports.
+    #[test]
+    fn is_with_a_descendant_step_reads_the_ancestors() {
+        let src = r#"<template><screen><view class="group"><view class="x" /></view><view class="x" /></screen></template>
+            <style>.x:is(:where(.group):hover *) { background: #ff0000; }</style>"#;
+        let resting = built(src, None);
+        assert!(!red(&resting.children[0].children[0]));
+        assert_eq!(resting.children[0].state_path.as_deref(), Some(&[0][..]), "the group needs a region");
+        let hovered = built(src, Some(vec![0]));
+        assert!(red(&hovered.children[0].children[0]), "inside the hovered group");
+        assert!(!red(&hovered.children[1]), "outside any group");
+    }
+
+    /// Tailwind's `space-y-*`: a `:where()` that is the whole selector.
+    #[test]
+    fn where_can_be_the_whole_selector() {
+        let root = built(
+            r#"<template><screen><view class="s"><view /><view /><view /></view></screen></template>
+               <style>:where(.s > :not(:last-child)) { background: #ff0000; }</style>"#,
+            None,
+        );
+        let kids = &root.children[0].children;
+        assert!(red(&kids[0]) && red(&kids[1]) && !red(&kids[2]));
+    }
+
+    /// An escaped class name is the name with the escapes read.
+    #[test]
+    fn escaped_class_names_match() {
+        let root = built(
+            r#"<template><screen><view class="md:flex" /><view class="py-1.5" /><view class="w-1/2" /><view class="10" /></screen></template>
+               <style>.md\:flex, .py-1\.5, .w-1\/2, .\31 0 { background: #ff0000; }</style>"#,
+            None,
+        );
+        assert!(root.children.iter().all(red));
+    }
+
+    /// A vendor's pseudo-element matches nothing and says nothing.
+    #[test]
+    fn vendor_pseudo_elements_are_passed_over_quietly() {
+        let _ = super::take_warnings();
+        built(
+            r#"<template><screen /></template>
+               <style>::-webkit-inner-spin-button { height: auto; } :-moz-focusring { outline: auto; }</style>"#,
+            None,
+        );
+        let warnings = super::take_warnings();
+        assert!(warnings.iter().all(|w| !w.message.contains("webkit") && !w.message.contains("moz")), "{warnings:?}");
+    }
+}
+
+#[cfg(test)]
+mod custom_property_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{Background, Node};
+    use rux_script::Builder;
+
+    fn built(src: &str) -> Node {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut super::Instances::new(),
+            &mut crate::Swaps::new(),
+            &super::InteractionState::default(),
+            super::Environment::default(),
+        )
+        .unwrap()
+        .0
+    }
+
+    fn red(node: &Node) -> bool {
+        matches!(&node.style.background, Some(Background::Color(c)) if c.r == 1.0 && c.g == 0.0)
+    }
+
+    /// Custom properties on one element read each other whatever order they
+    /// are in. A map's order decided it before, so a theme of dozens lost
+    /// some at random.
+    #[test]
+    fn own_custom_properties_read_each_other() {
+        for _ in 0..8 {
+            let root = built(
+                r#"<template><screen class="t"><view class="a" /></screen></template>
+                   <style>.t { --a: var(--b); --b: var(--c); --c: var(--d); --d: #ff0000; } .a { background: var(--a); }</style>"#,
+            );
+            assert!(red(&root.children[0]));
+        }
+    }
+
+    /// A registered property nobody sets is its initial value.
+    #[test]
+    fn a_registered_property_starts_at_its_initial_value() {
+        let root = built(
+            r#"<template><screen><view class="a" /></screen></template>
+               <style>@property --c { syntax: "<color>"; inherits: false; initial-value: #ff0000; }
+                 .a { background: var(--c); }</style>"#,
+        );
+        assert!(red(&root.children[0]));
+    }
+
+    /// One registered with `inherits: false` is back at its initial value on
+    /// a child, whatever its parent set.
+    #[test]
+    fn a_registered_property_that_does_not_inherit_resets_on_children() {
+        let root = built(
+            r#"<template><screen><view class="p"><view class="a" /></view></screen></template>
+               <style>@property --c { syntax: "<color>"; inherits: false; initial-value: #ff0000; }
+                 .p { --c: #00ff00; } .a { background: var(--c); }</style>"#,
+        );
+        assert!(red(&root.children[0].children[0]));
     }
 }

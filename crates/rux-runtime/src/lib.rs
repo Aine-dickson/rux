@@ -40,7 +40,7 @@ use rux_style::{BindingRegistry, Instances, Namespace, Swaps, DOCUMENT_NAMESPACE
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
 pub use rux_style::{
-    ColorScheme, Environment, Insets, InteractionState, RoutePattern, Viewport, Warning,
+    ColorScheme, Environment, Insets, InteractionState, Pointer, RoutePattern, Viewport, Warning,
 };
 /// Re-exported for the same reason: the shell owns the animator, because the
 /// clock and the previous frame are its business and not the document's.
