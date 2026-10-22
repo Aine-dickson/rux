@@ -825,15 +825,21 @@ browsers' rule: a text field always, anything else only when the keyboard put
 focus there. Driven in `examples/pseudo.rux`.
 
 **Where an element sits, and what it is not** (2026-10-22): `:first-child`,
-`:nth-child(an+b)` (`odd`, `even`, `3`, `2n+1`, `-n+3`) and `:not(a, b)`.
-The place is counted among the elements drawn there, from 1, so a row an
-`r-if` leaves out does not count and a list restyles as rows come and go.
-`:not()` takes compound selectors (`.done`, `button:disabled`) and counts as
-specific as the most specific of them, as in CSS. Not yet: `:last-child`,
-`:only-child` and `:nth-last-child()`, which need the number of siblings before
-they are built; `:nth-child(… of S)`; and a combinator inside `:not()`
-(`:not(.a .b)`). Each of those never matches, with a warning. A rule that reads
-a place stops a list from reusing its built rows, as `+` and `~` already do.
+`:last-child`, `:only-child`, `:nth-child(an+b)` and `:nth-last-child(an+b)`
+(`odd`, `even`, `3`, `2n+1`, `-n+3`), and `:not(a, b)`. The place is counted
+among the elements drawn there, from 1, so a row an `r-if` leaves out does not
+count and a list restyles as rows come and go. **Counting from the end means
+counting first**: a parent whose rules use `:last-child` and its kind evaluates
+each `r-if` chain and each `r-for` collection once before building its
+children, then again as it builds them, so the cost is paid only where such a
+rule is written. A row held on screen while it animates out is not counted, so
+for the length of a leave transition `:last-child` is the last of the rows
+staying. `:not()` takes compound selectors (`.done`, `button:disabled`) and
+counts as specific as the most specific of them, as in CSS. Not yet:
+`:nth-child(… of S)` and a combinator inside `:not()` (`:not(.a .b)`); each
+never matches, with a warning. A rule that reads a place stops a list from
+reusing its built rows, as `+` and `~` already do. `query()` answers all of
+them from the tree as built.
 
 **The focus ring is an `outline`.** The default stylesheet is
 `:focus-visible { outline: auto }`, as every browser's is, so the ring is
@@ -1350,8 +1356,8 @@ it and keeps its own alignment. Until v0.9 only `color`, `font-size` and
 `font-family` inherited, and the rest had to be written on every `<text>`.
 
 A font is drawn from its **outlines**, as a browser draws it, even when it also
-carries black-and-white bitmaps for small sizes (`EBLC`/`EBDT`, in Calibri,
-Cambria and the other fonts of the ClearType era). vello takes any font with a
+carries black-and-white bitmaps for small sizes (`EBLC`/`EBDT`, in Windows' Calibri
+and Cambria). vello takes any font with a
 bitmap strike down its emoji path and dropped every glyph whose bitmap it could
 not read, so until 2026-10-22 Calibri drew three glyphs out of a sentence
 (watchlist #45). Such a font is handed to vello with those two tables hidden.

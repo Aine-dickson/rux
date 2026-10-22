@@ -218,8 +218,11 @@
     { "name": "user-invalid", "detail": "invalid, once the person has been through it", "doc": "Like `:invalid`, but only after the field was changed and left, or its form's submission was tried. The one to put error styling on." },
     { "name": "required", "detail": "an input with `required`", "doc": "Inputs only." },
     { "name": "optional", "detail": "an input without `required`", "doc": "Inputs only." },
-    { "name": "first-child", "detail": "the first of its siblings", "doc": "Counted among the elements drawn there, so a row an `r-if` leaves out is not counted. `:last-child` is not matched yet." },
+    { "name": "first-child", "detail": "the first of its siblings", "doc": "Counted among the elements drawn there, so a row an `r-if` leaves out is not counted." },
+    { "name": "last-child", "detail": "the last of its siblings", "doc": "The siblings are counted before they are built: each `r-for` row, and the branch each `r-if` chain takes. A row animating out is not counted." },
+    { "name": "only-child", "detail": "the one element in its parent", "doc": "Counted as `:last-child` is." },
     { "name": "nth-child", "detail": "`:nth-child(an+b)`: by its place among its siblings", "doc": "Counted from 1: `odd`, `even`, `3`, `2n+1`, `-n+3`. The `of S` form is not read yet." },
+    { "name": "nth-last-child", "detail": "`:nth-last-child(an+b)`: counted from the end", "doc": "As `:nth-child()`, from the last sibling back: `:nth-last-child(-n+2)` is the last two." },
     { "name": "not", "detail": "`:not(a, b)`: matches none of these", "doc": "Takes compound selectors (`.done`, `button:disabled`), separated by commas, and counts as specific as the most specific of them. A combinator inside (`:not(.a .b)`) is not read yet, and the rule never matches." }
   ],
   "voidTags": [

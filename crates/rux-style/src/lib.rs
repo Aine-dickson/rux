@@ -2584,6 +2584,11 @@ enum Pseudo {
     /// among its rendered siblings, counted from 1. Read from where it is,
     /// not from [`ElemStates`]; see [`matches_compound`].
     Nth { a: i32, b: i32 },
+    /// `:nth-last-child(an+b)`, and `:last-child` as `0n+1`: counted from the
+    /// end, which needs [`ElemDesc::total`].
+    NthLast { a: i32, b: i32 },
+    /// `:only-child`.
+    Only,
     /// `:not(…)`: none of these compounds matches the element.
     Not(Vec<Compound>),
     Unknown(String),
@@ -2698,8 +2703,17 @@ impl Pseudo {
     /// reused where its place may have changed. See `Rule::has_sibling_step`.
     fn reads_place(&self) -> bool {
         match self {
-            Self::Nth { .. } => true,
+            Self::Nth { .. } | Self::NthLast { .. } | Self::Only => true,
             Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_place)),
+            _ => false,
+        }
+    }
+
+    /// Counts from the end, so its siblings have to be counted first.
+    fn reads_total(&self) -> bool {
+        match self {
+            Self::NthLast { .. } | Self::Only => true,
+            Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_total)),
             _ => false,
         }
     }
@@ -2723,9 +2737,15 @@ impl Pseudo {
             "required" => Self::Required,
             "optional" => Self::Optional,
             "first-child" => Self::Nth { a: 0, b: 1 },
+            "last-child" => Self::NthLast { a: 0, b: 1 },
+            "only-child" => Self::Only,
             other => match name.split_once('(').and_then(|(f, arg)| Some((f.to_ascii_lowercase(), arg.strip_suffix(')')?))) {
                 Some((f, arg)) if f == "nth-child" => match nth(arg) {
                     Some((a, b)) => Self::Nth { a, b },
+                    None => Self::Unknown(other.to_string()),
+                },
+                Some((f, arg)) if f == "nth-last-child" => match nth(arg) {
+                    Some((a, b)) => Self::NthLast { a, b },
                     None => Self::Unknown(other.to_string()),
                 },
                 // A list of compounds. A combinator inside (`:not(.a .b)`)
@@ -2768,7 +2788,7 @@ impl Pseudo {
             Self::Required => s.required == Some(true),
             Self::Optional => s.required == Some(false),
             // Asked of the element in its place, by `matches_compound`.
-            Self::Nth { .. } | Self::Not(_) => true,
+            Self::Nth { .. } | Self::NthLast { .. } | Self::Only | Self::Not(_) => true,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -2819,8 +2839,14 @@ impl Rule {
             .any(|(i, c)| sibling(c) && self.combs[i + 1..].iter().any(hop))
     }
 
+    /// Whether matching this rule counts siblings from the end, so they have
+    /// to be counted before they are built. See [`count_rendered`].
+    fn reads_total(&self) -> bool {
+        self.chain.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_total))
+    }
+
     /// Whether matching this rule looks at siblings at all, `+` or `~`
-    /// anywhere in it.
+    /// anywhere in it, or an element's place among them.
     fn has_sibling_step(&self) -> bool {
         self.combs
             .iter()
@@ -2888,8 +2914,10 @@ impl ElementIndex {
         // seconds.
         let by_path: HashMap<&[usize], usize> =
             self.entries.iter().enumerate().map(|(i, e)| (&e.path[..], i)).collect();
-        // Preceding siblings matter only to `+` and `~`.
-        let siblings = combs.iter().any(|c| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling));
+        // Siblings matter only to `+` and `~`, and to an element's place
+        // among them (`:nth-child()`, `:last-child`).
+        let siblings = combs.iter().any(|c| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling))
+            || chain.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_place));
         // Each parent's children: their places, and what they are, shared.
         let mut children: HashMap<&[usize], (Vec<usize>, Rc<[ElemDesc]>)> = HashMap::new();
         if siblings {
@@ -2917,6 +2945,15 @@ impl ElementIndex {
                 None => empty(),
             }
         };
+        // An element as a selector sees it here, with how many siblings it
+        // has, which the build only counted where its own rules asked.
+        let described = |path: &[usize], desc: &ElemDesc| -> ElemDesc {
+            let total = match path.split_last() {
+                Some((_, parent)) => children.get(parent).map(|(places, _)| places.len()),
+                None => Some(1),
+            };
+            ElemDesc { total, ..desc.clone() }
+        };
         let mut out = Vec::new();
         for entry in &self.entries {
             // The element itself first: most are not what was asked for, and
@@ -2935,14 +2972,15 @@ impl ElementIndex {
                     let at = &entry.path[..depth];
                     let prev = before(at);
                     AncNode {
-                        desc: by_path.get(at).map(|&i| self.entries[i].desc.clone()).unwrap_or_else(ElemDesc::unknown),
+                        desc: by_path.get(at).map(|&i| described(at, &self.entries[i].desc)).unwrap_or_else(ElemDesc::unknown),
                         place: prev.len() + 1,
+                        child_total: None,
                         prev,
                         form: None,
                     }
                 })
                 .collect();
-            if matches_chain(&chain, &combs, &entry.desc, &ancestors, &before(&entry.path)) {
+            if matches_chain(&chain, &combs, &described(&entry.path, &entry.desc), &ancestors, &before(&entry.path)) {
                 out.push(ElementMatch {
                     path: entry.path.clone(),
                     tag: entry.desc.tag.clone(),
@@ -2963,6 +3001,10 @@ struct ElemDesc {
     classes: Vec<String>,
     role: Option<String>,
     states: ElemStates,
+    /// How many rendered siblings it has, itself included, when a rule
+    /// counts from the end (`:last-child`) and so had them counted before
+    /// they were built. `None` otherwise, and then such a rule fails.
+    total: Option<usize>,
 }
 
 /// An ancestor in the match context: its identity plus the identities of the
@@ -2976,6 +3018,9 @@ struct AncNode {
     /// Where it sits among its rendered siblings, from 1, kept even when
     /// `prev` is not. See [`matches_at`].
     place: usize,
+    /// How many children it renders, counted before they are built when a
+    /// rule counts from the end. See [`count_rendered`].
+    child_total: Option<usize>,
     /// This ancestor's tree path, when it is a `role="form"`: the form a
     /// field below it belongs to. Only the build fills it in; a query's
     /// match context has no use for it.
@@ -3058,6 +3103,7 @@ impl ElemDesc {
             classes: Vec::new(),
             role: None,
             states: ElemStates::default(),
+            total: None,
         }
     }
 
@@ -3068,6 +3114,7 @@ impl ElemDesc {
             classes: el.classes().into_iter().map(str::to_string).collect(),
             role: el.role().map(str::to_string),
             states: ElemStates::default(),
+            total: None,
         }
     }
 }
@@ -4082,7 +4129,8 @@ const HONORED_PSEUDO_CLASSES: &[&str] =
     &[
         "hover", "focus", "focus-visible", "active", "checked", "current", "enter-from",
         "leave-to", "disabled", "enabled", "valid", "invalid", "user-valid", "user-invalid",
-        "required", "optional", "first-child", "nth-child", "not",
+        "required", "optional", "first-child", "last-child", "only-child", "nth-child",
+        "nth-last-child", "not",
     ];
 
 /// The properties `transition` can name, in the order `all` expands them.
@@ -4486,6 +4534,14 @@ fn warn_unknown_pseudo(name: &str) {
 /// `None` where that is not known, and then they hold, so a caller asking
 /// "could this match" is not told no.
 fn matches_compound(c: &Compound, el: &ElemDesc, place: Option<usize>) -> bool {
+    // From the end: a `None` place is "could this match", which holds; a
+    // place with no total counted fails, since there is nothing to count
+    // from.
+    let from_end = |a: i32, b: i32| match (place, el.total) {
+        (None, _) => true,
+        (Some(n), Some(t)) => n <= t && nth_holds(a, b, (t - n + 1) as i32),
+        (Some(_), None) => false,
+    };
     // A highlight is not an element. See `Compound::selection`.
     if c.selection {
         return false;
@@ -4514,6 +4570,8 @@ fn matches_compound(c: &Compound, el: &ElemDesc, place: Option<usize>) -> bool {
     // Every pseudo-class in the compound must hold (`.btn:hover:active`).
     c.pseudos.iter().all(|p| match p {
         Pseudo::Nth { a, b } => place.is_none_or(|n| nth_holds(*a, *b, n as i32)),
+        Pseudo::NthLast { a, b } => from_end(*a, *b),
+        Pseudo::Only => place.is_none_or(|n| n == 1) && from_end(0, 1),
         Pseudo::Not(list) => !list.iter().any(|c| matches_compound(c, el, place)),
         p => p.holds(&el.states),
     })
@@ -4574,15 +4632,19 @@ fn matches_at(
             };
             matches_at(rest, rest_combs, &parent.desc, parent.place, up, &parent.prev)
         }
+        // A sibling has as many siblings as this one, which its recorded
+        // description may not carry.
         Combinator::NextSibling => {
             let Some((sib, earlier)) = prev.split_last() else {
                 return false;
             };
-            matches_at(rest, rest_combs, sib, prev.len(), ancestors, earlier)
+            let sib = ElemDesc { total: el.total, ..sib.clone() };
+            matches_at(rest, rest_combs, &sib, prev.len(), ancestors, earlier)
         }
-        Combinator::SubsequentSibling => (0..prev.len())
-            .rev()
-            .any(|i| matches_at(rest, rest_combs, &prev[i], i + 1, ancestors, &prev[..i])),
+        Combinator::SubsequentSibling => (0..prev.len()).rev().any(|i| {
+            let sib = ElemDesc { total: el.total, ..prev[i].clone() };
+            matches_at(rest, rest_combs, &sib, i + 1, ancestors, &prev[..i])
+        }),
     }
 }
 
@@ -5166,7 +5228,7 @@ fn build_text(
             look: look.clone(),
         };
         let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
-        ancestors.push(AncNode { desc, prev: siblings.into(), place: prev.len() + 1, form: None });
+        ancestors.push(AncNode { desc, prev: siblings.into(), place: prev.len() + 1, child_total: None, form: None });
         let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
         let (children, structural_deps) = build_children(
             &element_children(el),
@@ -5371,6 +5433,12 @@ fn build_node_inner(
     });
 
     let mut desc = ElemDesc::of(el);
+    // Counted by the parent before its children were built, when a rule
+    // counts from the end. The root has no siblings but itself.
+    desc.total = match ancestors.last() {
+        Some(parent) => parent.child_total,
+        None => Some(1),
+    };
     desc.states.disabled = disabled;
     desc.states.enabled = matches!(el.tag.as_str(), "input" | "button") && !disabled;
     if let Some(part) = &form_part {
@@ -6248,7 +6316,7 @@ fn build_node_inner(
     // them. The copy was the build's largest cost: row `i` of a list copied
     // the `i` rows before it, so a 300-row list copied 45,000 of them a build.
     let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
-    ancestors.push(AncNode { desc, prev: siblings.into(), place: prev.len() + 1, form: is_form.then(|| path.to_vec()) });
+    ancestors.push(AncNode { desc, prev: siblings.into(), place: prev.len() + 1, child_total: None, form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
     let child_inherited = Inherited {
         color,
@@ -7411,6 +7479,16 @@ fn build_children(
     // see the elements preceding the one being built. (The synthetic `checked`
     // class is not reflected here, sibling combinators don't see checked state.)
     let mut prev: Vec<ElemDesc> = Vec::new();
+    // `:last-child` and the rest that count from the end need to know how
+    // many children there will be before the first is built and styled, so
+    // they are counted first, only when a rule here asks.
+    let from_end = rules.iter().chain(slot.iter().flat_map(|s| s.rules)).any(Rule::reads_total);
+    if from_end {
+        let total = count_rendered(elements, engine, locals, slot, outlet);
+        if let Some(parent) = ancestors.last_mut() {
+            parent.child_total = Some(total);
+        }
+    }
     // Tracks an active r-if/r-elif/r-else chain and whether a branch was taken.
     let mut in_chain = false;
     let mut chain_satisfied = false;
@@ -7903,6 +7981,69 @@ fn build_children(
         }
     }
     (out, structural_deps)
+}
+
+/// How many elements `build_children` will render from `elements`, counted
+/// the way it counts them into `prev`: the branch an `r-if` chain takes, each
+/// row of an `r-for`, what a `<slot>` is filled with, the route a `<router>`
+/// or `<router-view />` shows, and every other element but a run of text.
+///
+/// The conditions and collections are evaluated here and again when the
+/// children are built, which is why this runs only when a rule counts from
+/// the end. A row or a page held on screen while it animates out is not
+/// counted, so for the length of a leave transition `:last-child` is the
+/// last of the ones staying.
+fn count_rendered(
+    elements: &[&Element],
+    engine: &mut Engine,
+    locals: &Locals,
+    slot: Option<Slot>,
+    outlet: Option<Outlet>,
+) -> usize {
+    let mut n = 0;
+    let (mut in_chain, mut satisfied) = (false, false);
+    for el in elements {
+        if el.tag == "slot" {
+            in_chain = false;
+            n += match slot.filter(|s| !s.children.is_empty()) {
+                Some(s) => s.children.len(),
+                None => element_children(el).len(),
+            };
+        } else if el.tag == "router-view" {
+            in_chain = false;
+            n += outlet.is_some_and(|o| !o.rest.is_empty()) as usize;
+        } else if el.tag == "router" {
+            in_chain = false;
+            let current = engine
+                .eval_value_tracked(rux_script::ROUTE_SIGNAL, locals)
+                .0
+                .map(|v| v.to_display())
+                .unwrap_or_default();
+            n += match_router(el, &current).is_some() as usize;
+        } else if let Some(for_expr) = el.attr("r-for") {
+            in_chain = false;
+            if let Some((_, coll)) = parse_for(for_expr) {
+                if let (Some(Value::List(items)), _) = engine.eval_value_tracked(coll, locals) {
+                    n += items.len();
+                }
+            }
+        } else if let Some(cond) = el.attr("r-if") {
+            in_chain = true;
+            satisfied = engine.eval_bool_tracked(cond, locals).0;
+            n += satisfied as usize;
+        } else if let Some(cond) = el.attr("r-elif") {
+            let taken = in_chain && !satisfied && engine.eval_bool_tracked(cond, locals).0;
+            satisfied |= taken;
+            n += taken as usize;
+        } else if el.attr("r-else").is_some() {
+            n += (in_chain && !satisfied) as usize;
+            in_chain = false;
+        } else {
+            in_chain = false;
+            n += (el.tag != rux_parser::RUN_TAG) as usize;
+        }
+    }
+    n
 }
 
 // ── Reusing list rows ───────────────────────────────────────────────────────
@@ -12441,6 +12582,7 @@ mod tests {
             // argument.
             let written = match *name {
                 "nth-child" => "nth-child(2n+1)".to_string(),
+                "nth-last-child" => "nth-last-child(2)".to_string(),
                 "not" => "not(.a)".to_string(),
                 n => n.to_string(),
             };
@@ -12450,7 +12592,7 @@ mod tests {
             );
         }
         assert!(
-            matches!(Pseudo::parse("last-child"), Pseudo::Unknown(_)),
+            matches!(Pseudo::parse("first-of-type"), Pseudo::Unknown(_)),
             "a pseudo-class Rux does not implement must still parse as Unknown"
         );
     }
@@ -13499,6 +13641,7 @@ mod tests {
             classes: Vec::new(),
             role: None,
             states: ElemStates::default(),
+            total: None,
         };
         let mut rest = spec;
         while let Some(pos) = rest.find(['.', '#']) {
@@ -14367,7 +14510,7 @@ mod tests {
     }
 
     fn anc(spec: &str, prev: &[&str]) -> AncNode {
-        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect::<Vec<_>>().into(), place: prev.len() + 1, form: None }
+        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect::<Vec<_>>().into(), place: prev.len() + 1, child_total: None, form: None }
     }
 
     /// `selector` against element `target` with the given ancestor chain
@@ -14401,7 +14544,7 @@ mod tests {
     /// the usual case: no rule reads them.
     #[test]
     fn an_ancestors_place_is_its_own() {
-        let second = AncNode { desc: el("li"), prev: Vec::<ElemDesc>::new().into(), place: 2, form: None };
+        let second = AncNode { desc: el("li"), prev: Vec::<ElemDesc>::new().into(), place: 2, child_total: None, form: None };
         assert!(hits("li:nth-child(2) .x", ".x", &[second.clone()], &[]));
         assert!(!hits("li:first-child .x", ".x", &[second.clone()], &[]));
         assert!(hits("li:nth-child(2) > .x", ".x", &[second], &[]));
@@ -15750,5 +15893,93 @@ mod text_look_tests {
         assert!(child.decoration_color.is_none());
         let run = look(&[], parent.as_ref(), true).unwrap();
         assert!(run.decoration_color.is_some());
+    }
+}
+
+#[cfg(test)]
+mod from_the_end_tests {
+    use rux_script::Builder;
+    use std::collections::HashMap;
+
+    fn widths(src: &str) -> Vec<Option<rux_layout::Len>> {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = super::build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
+        root.children[0].children.iter().map(|c| c.style.width).collect()
+    }
+
+    fn index(src: &str) -> super::ElementIndex {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        let (_, reg) = super::build_styled_tree_tracked(
+            &sfc, &HashMap::new(), &HashMap::new(), &mut engine, &mut instances, &mut crate::Swaps::new(),
+        )
+        .unwrap();
+        reg.elements
+    }
+
+    /// An `r-if` that holds, one that does not with an `r-else` taken in its
+    /// place, then an `r-for` of three: five rows, and the count has to read
+    /// every one of those.
+    const ROWS: &str = r#"<template><screen>
+        <view class="rows">
+          <view class="row" r-if="true"></view>
+          <view class="row" r-if="false"></view>
+          <view class="row" r-else></view>
+          <view class="row" r-for="n in items"></view>
+        </view>
+      </screen></template>
+      <style>
+        .row:last-child { width: 1px; }
+        .row:nth-last-child(2) { width: 2px; }
+        .row:only-child { width: 9px; }
+      </style>
+      <script>let items = signal([1, 2, 3]);</script>"#;
+
+    /// `:last-child` and `:nth-last-child()` are counted before the rows are
+    /// built: the branch an `r-if` chain takes, and each row of an `r-for`.
+    #[test]
+    fn the_last_child_is_known_before_it_is_built() {
+        use rux_layout::Len::Px;
+        assert_eq!(widths(ROWS), [None, None, None, Some(Px(2.0)), Some(Px(1.0))]);
+        // A row on its own is the only child.
+        let one = ROWS.replace("[1, 2, 3]", "[]").replace(r#"r-if="true""#, r#"r-if="false""#);
+        assert_eq!(widths(&one), [Some(Px(9.0))]);
+    }
+
+    /// `query()` counts from the end too, from the tree as built, whether or
+    /// not the stylesheet asked for a count.
+    #[test]
+    fn a_query_counts_from_the_end() {
+        let plain = ROWS.replace(".row:last-child", ".unused").replace(".row:nth-last-child(2)", ".unused2").replace(".row:only-child", ".unused3");
+        for src in [ROWS.to_string(), plain] {
+            let index = index(&src);
+            let paths = |sel: &str| index.query(sel).unwrap().into_iter().map(|m| m.path).collect::<Vec<_>>();
+            assert_eq!(paths(".row:last-child"), [vec![0, 4]]);
+            assert_eq!(paths(".row:nth-child(2)"), [vec![0, 1]]);
+            assert_eq!(paths(".row:nth-last-child(-n+2)"), [vec![0, 3], vec![0, 4]]);
+            assert!(paths(".row:only-child").is_empty());
+            assert_eq!(paths(".rows:only-child"), [vec![0]]);
+        }
+    }
+
+    /// Matching itself: from the end needs the total, and a sibling found by
+    /// `+` or `~` shares this element's.
+    #[test]
+    fn from_the_end_reads_the_total() {
+        let (chain, combs, _) = super::parse_selector(".a:last-child").unwrap();
+        let mut el = super::ElemDesc { tag: "view".into(), id: None, classes: vec!["a".into()], role: None, states: Default::default(), total: Some(3) };
+        let prev = vec![el.clone(), el.clone()];
+        assert!(super::matches_chain(&chain, &combs, &el, &[], &prev));
+        assert!(!super::matches_chain(&chain, &combs, &el, &[], &prev[..1]));
+        el.total = None;
+        assert!(!super::matches_chain(&chain, &combs, &el, &[], &prev), "nothing counted: fails closed");
+        el.total = Some(3);
+        let (chain, combs, _) = super::parse_selector(".a:nth-last-child(3) ~ .a").unwrap();
+        assert!(super::matches_chain(&chain, &combs, &el, &[], &prev));
+        let (chain, combs, _) = super::parse_selector(".a:not(:last-child)").unwrap();
+        assert!(super::matches_chain(&chain, &combs, &el, &[], &prev[..1]));
+        assert!(!super::matches_chain(&chain, &combs, &el, &[], &prev));
     }
 }

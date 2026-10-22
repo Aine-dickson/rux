@@ -2731,7 +2731,9 @@ Driven in a desktop window on one probe.
 ## `:first-child`, `:nth-child()`, `:not()`, 2026-10-22
 
 Under test in `rux-style` (`nth_child_counts_the_siblings_before`,
-`an_ancestors_place_is_its_own`, `not_matches_what_none_of_its_list_does`).
+`an_ancestors_place_is_its_own`, `not_matches_what_none_of_its_list_does`,
+and in `from_the_end_tests` a whole document whose `r-if`, `r-else` and
+`r-for` have to be counted before they are built, and `query()` over it).
 Driven in a desktop window on one probe: a five-row keyed list with
 `:nth-child(even)` stripes, a `:first-child` bar, `:not(.done)` bold labels
 and `:nth-child(-n+2)` yellow labels, and a disabled button styled by
@@ -2741,6 +2743,8 @@ and `:nth-child(-n+2)` yellow labels, and a disabled button styled by
 |---|---|---|---|
 | First frame | open | rows 2 and 4 striped, row 1 barred, row 3 (done) not bold, rows 1 and 2 yellow, the disabled button red | desktop: pass |
 | A row leaves | tap "Drop first" | row 2 takes the bar, the stripes move to rows 3 and 5, row 3 turns yellow | desktop: pass |
+| `:last-child`, `:nth-last-child(2)` | open the same list with the last row bordered pink and the one before it cyan | row 5 pink, row 4 cyan | desktop: pass |
+| The last row changes | tap "Drop first", then "Add" | the new row 14 pink, row 5 cyan, row 4 neither | desktop: pass |
 | Web, Android | the same page | the same | not driven |
 
 ## Standing gaps

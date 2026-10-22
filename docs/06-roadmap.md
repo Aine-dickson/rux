@@ -2976,8 +2976,9 @@ what *depends* on them:
   `object-fit` (0).
 - ~~**`:nth-child`, `:not()`, `:first-child`, `:disabled`** never match, and
   `05-as-built` says so.~~ `:disabled` came with the forms work and the other
-  three on 2026-10-22. `:last-child` and its kind are still open: they need
-  the number of siblings before the siblings are built.
+  three on 2026-10-22, with `:last-child`, `:only-child` and
+  `:nth-last-child()`, whose siblings are counted before they are built
+  (owner's choice over building twice).
 
 #### Application-shaped gaps
 

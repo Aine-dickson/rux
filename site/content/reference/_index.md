@@ -492,8 +492,8 @@ it and keeps its own alignment. Until v0.9 only `color`, `font-size` and
 `font-family` inherited, and the rest had to be written on every `<text>`.
 
 A font is drawn from its **outlines**, as a browser draws it, even when it also
-carries black-and-white bitmaps for small sizes (`EBLC`/`EBDT`, in Calibri,
-Cambria and the other fonts of the ClearType era). vello takes any font with a
+carries black-and-white bitmaps for small sizes (`EBLC`/`EBDT`, in Windows' Calibri
+and Cambria). vello takes any font with a
 bitmap strike down its emoji path and dropped every glyph whose bitmap it could
 not read, so until 2026-10-22 Calibri drew three glyphs out of a sentence
 (watchlist #45). Such a font is handed to vello with those two tables hidden.

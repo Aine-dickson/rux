@@ -1331,7 +1331,7 @@ mod ellipsis_tests {
 /// A copy of a font with its black-and-white embedded bitmaps hidden, when it
 /// has outlines as well; `None` when the font is fine as it is.
 ///
-/// Calibri, Cambria and other fonts of the ClearType era carry `EBLC`/`EBDT`
+/// Windows' Calibri and Cambria carry `EBLC`/`EBDT`
 /// strikes, small bitmaps meant for GDI at a few pixel sizes. vello 0.9 takes
 /// any font with a bitmap strike down its emoji path, glyph by glyph, and a
 /// glyph whose mask it cannot unpack is skipped, outline and all: Calibri
