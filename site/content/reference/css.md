@@ -222,6 +222,17 @@ ancestors; `:focus-visible` matches it when the focus should show, which is
 browsers' rule: a text field always, anything else only when the keyboard put
 focus there. Driven in `examples/pseudo.rux`.
 
+**Where an element sits, and what it is not** (2026-10-22): `:first-child`,
+`:nth-child(an+b)` (`odd`, `even`, `3`, `2n+1`, `-n+3`) and `:not(a, b)`.
+The place is counted among the elements drawn there, from 1, so a row an
+`r-if` leaves out does not count and a list restyles as rows come and go.
+`:not()` takes compound selectors (`.done`, `button:disabled`) and counts as
+specific as the most specific of them, as in CSS. Not yet: `:last-child`,
+`:only-child` and `:nth-last-child()`, which need the number of siblings before
+they are built; `:nth-child(… of S)`; and a combinator inside `:not()`
+(`:not(.a .b)`). Each of those never matches, with a warning. A rule that reads
+a place stops a list from reusing its built rows, as `+` and `~` already do.
+
 **The focus ring is an `outline`.** The default stylesheet is
 `:focus-visible { outline: auto }`, as every browser's is, so the ring is
 restyled and removed with ordinary CSS:
@@ -242,7 +253,7 @@ scrolled list is clipped by the list, as in a browser. Its style is a border's:
 `dashed`, `dotted`, `double` and the 3D styles are drawn as they are for
 `border`.
 
-Any *other* pseudo-class (`:nth-child(…)`, `::before`) **never
+Any *other* pseudo-class (`:last-child`, `::before`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.

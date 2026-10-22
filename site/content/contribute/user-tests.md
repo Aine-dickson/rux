@@ -2728,6 +2728,21 @@ Driven in a desktop window on one probe.
 | Segoe UI beside it | the same text | unchanged | desktop: pass |
 | Web, Android | the same page | the same | not driven: neither has Calibri unless a page ships it |
 
+## `:first-child`, `:nth-child()`, `:not()`, 2026-10-22
+
+Under test in `rux-style` (`nth_child_counts_the_siblings_before`,
+`an_ancestors_place_is_its_own`, `not_matches_what_none_of_its_list_does`).
+Driven in a desktop window on one probe: a five-row keyed list with
+`:nth-child(even)` stripes, a `:first-child` bar, `:not(.done)` bold labels
+and `:nth-child(-n+2)` yellow labels, and a disabled button styled by
+`:disabled`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| First frame | open | rows 2 and 4 striped, row 1 barred, row 3 (done) not bold, rows 1 and 2 yellow, the disabled button red | desktop: pass |
+| A row leaves | tap "Drop first" | row 2 takes the bar, the stripes move to rows 3 and 5, row 3 turns yellow | desktop: pass |
+| Web, Android | the same page | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

@@ -2974,8 +2974,10 @@ what *depends* on them:
   be built reliably without it.
 - **`calc()` (0)**, `filter` / `backdrop-filter` (0), `::before` / `::after` (0),
   `object-fit` (0).
-- **`:nth-child`, `:not()`, `:first-child`, `:disabled`** never match, and
-  `05-as-built` says so.
+- ~~**`:nth-child`, `:not()`, `:first-child`, `:disabled`** never match, and
+  `05-as-built` says so.~~ `:disabled` came with the forms work and the other
+  three on 2026-10-22. `:last-child` and its kind are still open: they need
+  the number of siblings before the siblings are built.
 
 #### Application-shaped gaps
 

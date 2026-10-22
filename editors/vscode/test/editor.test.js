@@ -166,6 +166,9 @@ test('the pseudo-classes offered are the ones that match', () => {
     'user-invalid',
     'required',
     'optional',
+    'first-child',
+    'nth-child',
+    'not',
   ]);
 });
 
@@ -401,6 +404,9 @@ test('a colon in a selector offers pseudo-classes, not properties', () => {
     'user-invalid',
     'required',
     'optional',
+    'first-child',
+    'nth-child',
+    'not',
   ]);
 });
 

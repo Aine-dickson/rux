@@ -2525,7 +2525,7 @@ use rux_parser::decode_entities;
 // ── Selector model ──────────────────────────────────────────────────────────
 
 /// One compound selector, e.g. `view.card#main[role="section"]:hover`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Compound {
     tag: Option<String>,
     id: Option<String>,
@@ -2580,6 +2580,12 @@ enum Pseudo {
     /// `:required` and `:optional`, on any input.
     Required,
     Optional,
+    /// `:nth-child(an+b)`, and `:first-child` as `0n+1`: the element's place
+    /// among its rendered siblings, counted from 1. Read from where it is,
+    /// not from [`ElemStates`]; see [`matches_compound`].
+    Nth { a: i32, b: i32 },
+    /// `:not(…)`: none of these compounds matches the element.
+    Not(Vec<Compound>),
     Unknown(String),
 }
 
@@ -2681,7 +2687,21 @@ impl Pseudo {
     /// during the build)? Such an element needs a layout region so the shell can
     /// tell when the pointer enters or leaves it.
     fn is_pointer_state(&self) -> bool {
-        matches!(self, Self::Hover | Self::Active)
+        match self {
+            Self::Hover | Self::Active => true,
+            Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(Pseudo::is_pointer_state)),
+            _ => false,
+        }
+    }
+
+    /// Reads where the element sits among its siblings, so a row cannot be
+    /// reused where its place may have changed. See `Rule::has_sibling_step`.
+    fn reads_place(&self) -> bool {
+        match self {
+            Self::Nth { .. } => true,
+            Self::Not(list) => list.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_place)),
+            _ => false,
+        }
     }
 
     fn parse(name: &str) -> Self {
@@ -2702,7 +2722,30 @@ impl Pseudo {
             "user-invalid" => Self::UserInvalid,
             "required" => Self::Required,
             "optional" => Self::Optional,
-            other => Self::Unknown(other.to_string()),
+            "first-child" => Self::Nth { a: 0, b: 1 },
+            other => match name.split_once('(').and_then(|(f, arg)| Some((f.to_ascii_lowercase(), arg.strip_suffix(')')?))) {
+                Some((f, arg)) if f == "nth-child" => match nth(arg) {
+                    Some((a, b)) => Self::Nth { a, b },
+                    None => Self::Unknown(other.to_string()),
+                },
+                // A list of compounds. A combinator inside (`:not(.a .b)`)
+                // is CSS too, but not here yet, and is refused rather than
+                // read as its first compound.
+                Some((f, arg)) if f == "not" => {
+                    let simple = |c: &str| !c.is_empty() && !c.contains(|ch: char| ch.is_whitespace() || "+>~".contains(ch));
+                    let mut spec = (0, 0, 0);
+                    let list = arg
+                        .split(',')
+                        .map(str::trim)
+                        .map(|c| simple(c).then(|| parse_compound(c, &mut spec)).flatten())
+                        .collect::<Option<Vec<_>>>();
+                    match list {
+                        Some(list) if list.iter().all(|c| *c != Compound::default()) => Self::Not(list),
+                        _ => Self::Unknown(other.to_string()),
+                    }
+                }
+                _ => Self::Unknown(other.to_string()),
+            },
         }
     }
 
@@ -2724,6 +2767,8 @@ impl Pseudo {
             Self::UserInvalid => s.user && s.valid == Some(false),
             Self::Required => s.required == Some(true),
             Self::Optional => s.required == Some(false),
+            // Asked of the element in its place, by `matches_compound`.
+            Self::Nth { .. } | Self::Not(_) => true,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
         }
@@ -2780,6 +2825,7 @@ impl Rule {
         self.combs
             .iter()
             .any(|c| matches!(c, Combinator::NextSibling | Combinator::SubsequentSibling))
+            || self.chain.iter().any(|c| c.pseudos.iter().any(Pseudo::reads_place))
     }
 }
 
@@ -2875,7 +2921,7 @@ impl ElementIndex {
         for entry in &self.entries {
             // The element itself first: most are not what was asked for, and
             // need no context to say so.
-            if !matches_compound(last, &entry.desc) {
+            if !matches_compound(last, &entry.desc, None) {
                 continue;
             }
             // From 0, so the root is an ancestor like any other. The root's
@@ -2887,9 +2933,11 @@ impl ElementIndex {
             let ancestors: Vec<AncNode> = (0..entry.path.len())
                 .map(|depth| {
                     let at = &entry.path[..depth];
+                    let prev = before(at);
                     AncNode {
                         desc: by_path.get(at).map(|&i| self.entries[i].desc.clone()).unwrap_or_else(ElemDesc::unknown),
-                        prev: before(at),
+                        place: prev.len() + 1,
+                        prev,
                         form: None,
                     }
                 })
@@ -2925,6 +2973,9 @@ struct ElemDesc {
 struct AncNode {
     desc: ElemDesc,
     prev: Siblings,
+    /// Where it sits among its rendered siblings, from 1, kept even when
+    /// `prev` is not. See [`matches_at`].
+    place: usize,
     /// This ancestor's tree path, when it is a `role="form"`: the form a
     /// field below it belongs to. Only the build fills it in; a query's
     /// match context has no use for it.
@@ -4031,7 +4082,7 @@ const HONORED_PSEUDO_CLASSES: &[&str] =
     &[
         "hover", "focus", "focus-visible", "active", "checked", "current", "enter-from",
         "leave-to", "disabled", "enabled", "valid", "invalid", "user-valid", "user-invalid",
-        "required", "optional",
+        "required", "optional", "first-child", "nth-child", "not",
     ];
 
 /// The properties `transition` can name, in the order `all` expands them.
@@ -4345,15 +4396,68 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                     if let Pseudo::Unknown(n) = &pseudo {
                         warn_unknown_pseudo(n);
                     }
+                    // A pseudo-class has class-level specificity, but `:not()`
+                    // counts as its most specific argument, as in CSS.
+                    let own = match &pseudo {
+                        Pseudo::Not(list) => list.iter().map(specificity_of).max().unwrap_or_default(),
+                        _ => (0, 1, 0),
+                    };
+                    *spec = (spec.0 + own.0, spec.1 + own.1, spec.2 + own.2);
                     c.pseudos.push(pseudo);
-                    // A pseudo-class has class-level specificity.
-                    spec.1 += 1;
                 }
             }
             _ => break,
         }
     }
     Some(c)
+}
+
+/// What one compound adds to a selector's specificity.
+fn specificity_of(c: &Compound) -> (u32, u32, u32) {
+    let pseudos = c.pseudos.iter().fold((0, 0, 0), |acc: (u32, u32, u32), p| {
+        let own = match p {
+            Pseudo::Not(list) => list.iter().map(specificity_of).max().unwrap_or_default(),
+            _ => (0, 1, 0),
+        };
+        (acc.0 + own.0, acc.1 + own.1, acc.2 + own.2)
+    });
+    (
+        c.id.is_some() as u32 + pseudos.0,
+        (c.classes.len() + c.role.is_some() as usize) as u32 + pseudos.1,
+        (c.tag.is_some() || c.selection) as u32 + pseudos.2,
+    )
+}
+
+/// `an+b` as `:nth-child()` takes it: `odd`, `even`, `3`, `2n`, `2n+1`,
+/// `-n+3`, `n`. `None` for anything else.
+fn nth(arg: &str) -> Option<(i32, i32)> {
+    let arg: String = arg.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase();
+    match arg.as_str() {
+        "odd" => return Some((2, 1)),
+        "even" => return Some((2, 0)),
+        _ => {}
+    }
+    let Some((a, b)) = arg.split_once('n') else { return Some((0, arg.parse().ok()?)) };
+    let a = match a {
+        "" | "+" => 1,
+        "-" => -1,
+        a => a.parse().ok()?,
+    };
+    let b = match b {
+        "" => 0,
+        b if b.starts_with('+') || b.starts_with('-') => b.parse().ok()?,
+        _ => return None,
+    };
+    Some((a, b))
+}
+
+/// Whether the element at place `n` (from 1) is one `an+b` names: some
+/// `k >= 0` with `a*k + b == n`.
+fn nth_holds(a: i32, b: i32, n: i32) -> bool {
+    match a {
+        0 => n == b,
+        _ => (n - b) % a == 0 && (n - b) / a >= 0,
+    }
 }
 
 /// Warn once per unknown pseudo-class. Same reasoning as `warn_if_unhonored`:
@@ -4377,7 +4481,11 @@ fn warn_unknown_pseudo(name: &str) {
 
 // ── Matching & cascade ──────────────────────────────────────────────────────
 
-fn matches_compound(c: &Compound, el: &ElemDesc) -> bool {
+/// Whether `el` matches the compound `c`. `place` is where it sits among its
+/// rendered siblings, from 1, which `:nth-child()` and `:first-child` read;
+/// `None` where that is not known, and then they hold, so a caller asking
+/// "could this match" is not told no.
+fn matches_compound(c: &Compound, el: &ElemDesc, place: Option<usize>) -> bool {
     // A highlight is not an element. See `Compound::selection`.
     if c.selection {
         return false;
@@ -4404,10 +4512,11 @@ fn matches_compound(c: &Compound, el: &ElemDesc) -> bool {
         }
     }
     // Every pseudo-class in the compound must hold (`.btn:hover:active`).
-    if !c.pseudos.iter().all(|p| p.holds(&el.states)) {
-        return false;
-    }
-    true
+    c.pseudos.iter().all(|p| match p {
+        Pseudo::Nth { a, b } => place.is_none_or(|n| nth_holds(*a, *b, n as i32)),
+        Pseudo::Not(list) => !list.iter().any(|c| matches_compound(c, el, place)),
+        p => p.holds(&el.states),
+    })
 }
 
 /// Does the selector `chain` (joined by `combs`) match the element `el`, whose
@@ -4427,10 +4536,25 @@ fn matches_chain(
     ancestors: &[AncNode],
     prev: &[ElemDesc],
 ) -> bool {
+    matches_at(chain, combs, el, prev.len() + 1, ancestors, prev)
+}
+
+/// [`matches_chain`] for an element at `place` among its siblings. Passed
+/// down rather than read from `prev`, because an ancestor's `prev` is only
+/// kept when a rule could read it (`KEEP_SIBLINGS`), and its place is wanted
+/// whenever a rule says `:first-child`.
+fn matches_at(
+    chain: &[Compound],
+    combs: &[Combinator],
+    el: &ElemDesc,
+    place: usize,
+    ancestors: &[AncNode],
+    prev: &[ElemDesc],
+) -> bool {
     let Some((last, rest)) = chain.split_last() else {
         return false;
     };
-    if !matches_compound(last, el) {
+    if !matches_compound(last, el, Some(place)) {
         return false;
     }
     if rest.is_empty() {
@@ -4441,23 +4565,24 @@ fn matches_chain(
     let (comb, rest_combs) = combs.split_last().expect("combs matches chain length");
     match comb {
         Combinator::Descendant => (0..ancestors.len()).rev().any(|i| {
-            matches_chain(rest, rest_combs, &ancestors[i].desc, &ancestors[..i], &ancestors[i].prev)
+            let a = &ancestors[i];
+            matches_at(rest, rest_combs, &a.desc, a.place, &ancestors[..i], &a.prev)
         }),
         Combinator::Child => {
             let Some((parent, up)) = ancestors.split_last() else {
                 return false;
             };
-            matches_chain(rest, rest_combs, &parent.desc, up, &parent.prev)
+            matches_at(rest, rest_combs, &parent.desc, parent.place, up, &parent.prev)
         }
         Combinator::NextSibling => {
             let Some((sib, earlier)) = prev.split_last() else {
                 return false;
             };
-            matches_chain(rest, rest_combs, sib, ancestors, earlier)
+            matches_at(rest, rest_combs, sib, prev.len(), ancestors, earlier)
         }
         Combinator::SubsequentSibling => (0..prev.len())
             .rev()
-            .any(|i| matches_chain(rest, rest_combs, &prev[i], ancestors, &prev[..i])),
+            .any(|i| matches_at(rest, rest_combs, &prev[i], i + 1, ancestors, &prev[..i])),
     }
 }
 
@@ -4483,8 +4608,11 @@ fn pointer_state_sensitive(desc: &ElemDesc, rules: &[Rule]) -> bool {
     };
     rules.iter().any(|rule| {
         rule.chain.iter().any(|compound| {
+            // `:not(:hover)` is the one that holds with the pointer away, so
+            // probing with it there would say no: such a compound counts.
             compound.pseudos.iter().any(Pseudo::is_pointer_state)
-                && matches_compound(compound, &probe)
+                && (matches_compound(compound, &probe, None)
+                    || compound.pseudos.iter().any(|p| matches!(p, Pseudo::Not(_)) && p.is_pointer_state()))
         })
     })
 }
@@ -5038,7 +5166,7 @@ fn build_text(
             look: look.clone(),
         };
         let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
-        ancestors.push(AncNode { desc, prev: siblings.into(), form: None });
+        ancestors.push(AncNode { desc, prev: siblings.into(), place: prev.len() + 1, form: None });
         let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
         let (children, structural_deps) = build_children(
             &element_children(el),
@@ -6120,7 +6248,7 @@ fn build_node_inner(
     // them. The copy was the build's largest cost: row `i` of a list copied
     // the `i` rows before it, so a 300-row list copied 45,000 of them a build.
     let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
-    ancestors.push(AncNode { desc, prev: siblings.into(), form: is_form.then(|| path.to_vec()) });
+    ancestors.push(AncNode { desc, prev: siblings.into(), place: prev.len() + 1, form: is_form.then(|| path.to_vec()) });
     let element_children = element_children(el);
     let child_inherited = Inherited {
         color,
@@ -12309,13 +12437,20 @@ mod tests {
     fn honored_pseudo_classes_all_parse() {
         use super::{honored_pseudo_classes, Pseudo};
         for name in honored_pseudo_classes() {
+            // The functional ones are offered by name and written with an
+            // argument.
+            let written = match *name {
+                "nth-child" => "nth-child(2n+1)".to_string(),
+                "not" => "not(.a)".to_string(),
+                n => n.to_string(),
+            };
             assert!(
-                !matches!(Pseudo::parse(name), Pseudo::Unknown(_)),
+                !matches!(Pseudo::parse(&written), Pseudo::Unknown(_)),
                 "`:{name}` is offered as a completion and `Pseudo::parse` does not know it"
             );
         }
         assert!(
-            matches!(Pseudo::parse("first-child"), Pseudo::Unknown(_)),
+            matches!(Pseudo::parse("last-child"), Pseudo::Unknown(_)),
             "a pseudo-class Rux does not implement must still parse as Unknown"
         );
     }
@@ -14169,8 +14304,9 @@ mod tests {
             user: true,
             required: Some(true),
         };
-        assert!(!hits_state(".box:first-child", ".box", all_on));
-        assert!(!hits_state(".box:nth-child(2)", ".box", all_on));
+        assert!(!hits_state(".box:last-child", ".box", all_on));
+        assert!(!hits_state(".box:nth-last-child(1)", ".box", all_on));
+        assert!(!hits_state(".box:not(.a .b)", ".box", all_on), "a combinator in :not() is refused");
         assert!(!hits_state(".box::selection", ".box", all_on));
     }
 
@@ -14231,7 +14367,7 @@ mod tests {
     }
 
     fn anc(spec: &str, prev: &[&str]) -> AncNode {
-        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect::<Vec<_>>().into(), form: None }
+        AncNode { desc: el(spec), prev: prev.iter().map(|s| el(s)).collect::<Vec<_>>().into(), place: prev.len() + 1, form: None }
     }
 
     /// `selector` against element `target` with the given ancestor chain
@@ -14240,6 +14376,60 @@ mod tests {
         let (chain, combs, _) = parse_selector(selector).expect("selector parses");
         let prev: Vec<ElemDesc> = prev.iter().map(|s| el(s)).collect();
         matches_chain(&chain, &combs, &el(target), ancestors, &prev)
+    }
+
+    /// `:first-child` and `:nth-child()` count the rendered siblings before
+    /// an element, from 1.
+    #[test]
+    fn nth_child_counts_the_siblings_before() {
+        let at = |selector: &str, n: usize| hits(selector, ".row", &[], &vec![".row"; n - 1]);
+        assert!(at(".row:first-child", 1));
+        assert!(!at(".row:first-child", 2));
+        for (n, odd) in [(1, true), (2, false), (3, true), (4, false)] {
+            assert_eq!(at(".row:nth-child(odd)", n), odd, "odd at {n}");
+            assert_eq!(at(".row:nth-child(even)", n), !odd, "even at {n}");
+            assert_eq!(at(".row:nth-child(2n+1)", n), odd, "2n+1 at {n}");
+        }
+        assert!(at(".row:nth-child(3)", 3) && !at(".row:nth-child(3)", 2));
+        let first_three: Vec<bool> = (1..=5).map(|n| at(".row:nth-child(-n+3)", n)).collect();
+        assert_eq!(first_three, [true, true, true, false, false]);
+        assert!((1..=4).all(|n| at(".row:nth-child(n)", n)));
+        assert!(at(".row:nth-child(3n + 2)", 5) && !at(".row:nth-child(3n + 2)", 4), "spaces");
+    }
+
+    /// An ancestor's place is kept even when its siblings are not, which is
+    /// the usual case: no rule reads them.
+    #[test]
+    fn an_ancestors_place_is_its_own() {
+        let second = AncNode { desc: el("li"), prev: Vec::<ElemDesc>::new().into(), place: 2, form: None };
+        assert!(hits("li:nth-child(2) .x", ".x", &[second.clone()], &[]));
+        assert!(!hits("li:first-child .x", ".x", &[second.clone()], &[]));
+        assert!(hits("li:nth-child(2) > .x", ".x", &[second], &[]));
+        // A sibling found by `+` or `~` has its own place too.
+        assert!(hits(".a:first-child ~ .x", ".x", &[], &[".a", ".b"]));
+        assert!(!hits(".b:first-child ~ .x", ".x", &[], &[".a", ".b"]));
+        assert!(hits(".b:nth-child(2) + .x", ".x", &[], &[".a", ".b"]));
+    }
+
+    /// `:not()` matches what none of its compounds match, and counts as
+    /// specific as the most specific of them.
+    #[test]
+    fn not_matches_what_none_of_its_list_does() {
+        assert!(hits(".row:not(.done)", ".row", &[], &[]));
+        assert!(!hits(".row:not(.done)", ".row.done", &[], &[]));
+        assert!(!hits(".row:not(.done, .gone)", ".row.gone", &[], &[]));
+        assert!(hits("view:not(button)", "view", &[], &[]));
+        assert!(!hits(".row:not(:first-child)", ".row", &[], &[]));
+        assert!(hits(".row:not(:first-child)", ".row", &[], &[".row"]));
+        assert!(hits(".Row:not(.Done)", ".Row", &[], &[]), "case is kept");
+        assert!(!hits(".Row:not(.Done)", ".Row.Done", &[], &[]));
+        let spec = |sel: &str| parse_selector(sel).unwrap().2;
+        assert_eq!(spec(".a:not(.b)"), (0, 2, 0));
+        assert_eq!(spec(".a:not(.b, #c)"), (1, 1, 0));
+        assert_eq!(spec("li:first-child"), (0, 1, 1));
+        let disabled = ElemStates { disabled: true, ..ElemStates::default() };
+        assert!(!hits_state("button:not(:disabled)", "button", disabled));
+        assert!(hits_state("button:not(:disabled)", "button", ElemStates::default()));
     }
 
     #[test]

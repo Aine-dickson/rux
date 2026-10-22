@@ -332,6 +332,9 @@ const PSEUDO_CLASSES: &[Entry] = &[
     Entry { name: "user-invalid", detail: "invalid, once the person has been through it", doc: "Like `:invalid`, but only after the field was changed and left, or its form's submission was tried. The one to put error styling on." },
     Entry { name: "required", detail: "an input with `required`", doc: "Inputs only." },
     Entry { name: "optional", detail: "an input without `required`", doc: "Inputs only." },
+    Entry { name: "first-child", detail: "the first of its siblings", doc: "Counted among the elements drawn there, so a row an `r-if` leaves out is not counted. `:last-child` is not matched yet." },
+    Entry { name: "nth-child", detail: "`:nth-child(an+b)`: by its place among its siblings", doc: "Counted from 1: `odd`, `even`, `3`, `2n+1`, `-n+3`. The `of S` form is not read yet." },
+    Entry { name: "not", detail: "`:not(a, b)`: matches none of these", doc: "Takes compound selectors (`.done`, `button:disabled`), separated by commas, and counts as specific as the most specific of them. A combinator inside (`:not(.a .b)`) is not read yet, and the rule never matches." },
 ];
 
 /// Keyword values, per property, for the properties whose values are a closed
