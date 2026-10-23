@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-239 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
+247 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -155,6 +155,14 @@ Every property below is one the runtime interprets, and the list is written by t
 | `background-clip` | **which box a background is cut to.** `border-box` (the default), `padding-box` or `content-box`.For example `.card { background-clip: padding-box; }` | `border-box` `padding-box` `content-box` |  |
 | `background-origin` | **which box a background is placed in.** `padding-box` (the default), `border-box` or `content-box`.For example `.card { background-origin: content-box; }` | `padding-box` `border-box` `content-box` |  |
 | `background-attachment` | **what a background moves with.** `scroll` (the box), `fixed` (the window) or `local` (the box's scrolled content).For example `.page { background-attachment: fixed; }` | `scroll` `fixed` `local` |  |
+| `columns` | **a multi-column box.** `column-count` and `column-width` in one: a number, a length, or both. The children are set one after another in columns that even out by height.For example `.article { columns: 2 240px; }` |  |  |
+| `column-count` | **how many columns.** The box's children are set down this many columns, fewer if `column-width` says they would be too narrow.For example `.tags { column-count: 3; }` |  |  |
+| `column-width` | **how wide a column may be.** As many columns as fit at least this wide; with `column-count`, no more than it.For example `.tags { column-width: 160px; }` |  |  |
+| `column-fill` | **balance or fill the columns.** `balance` (the default) evens the columns out; `auto` fills each to the box's own height before the next.For example `.tags { column-fill: auto; height: 300px; }` | `balance` `auto` |  |
+| `column-rule` | **a line between columns.** Width, style and colour, as `border` takes them, drawn down the middle of each gap in use. Drawn solid.For example `.article { column-rule: 1px solid #45475a; }` |  |  |
+| `column-rule-width` | **the line between columns' width.** Overrides the `column-rule` shorthand.For example `.article { column-rule-width: 2px; }` |  |  |
+| `column-rule-style` | **the line between columns' style.** Overrides the `column-rule` shorthand. Any style but `none` and `hidden` is drawn solid.For example `.article { column-rule-style: solid; }` |  |  |
+| `column-rule-color` | **the line between columns' colour.** Overrides the `column-rule` shorthand; none of its own is the text's colour.For example `.article { column-rule-color: #45475a; }` |  |  |
 | `content` | **what `::before` and `::after` hold.** Strings, joined, and `attr(name)`; `""` makes an empty box, `none` makes nothing. Only in a rule ending in `::before` or `::after`.For example `.required::after { content: " *"; color: #f38ba8; }` |  |  |
 | `accent-color` | **the colour a control is drawn in.** A switch's track when on, and a slider's fill and thumb. Not inherited.For example `.volume { accent-color: #f38ba8; }` |  |  |
 | `appearance` | **whether a control is drawn as one.** `none`: a checkbox, radio or switch loses the mark, dot or thumb Rux draws in it, and its default shape and colours, leaving a box to style with `:checked`. Any other value draws the control. A slider and a select are drawn either way.For example `.tick { appearance: none; } .tick:checked { background: #89b4fa; }` | `none` `auto` |  |
@@ -288,4 +296,4 @@ Every property below is one the runtime interprets, and the list is written by t
 
 Real CSS an author reaches for, which the runtime parses, ignores and reports as a pending feature rather than a typo:
 
-`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `columns`, `column-count`, `column-width`, `column-fill`, `column-rule`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`.
+`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`.

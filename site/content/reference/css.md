@@ -187,6 +187,20 @@ scroll-behavior (auto | smooth: a scroll a script's `scrollIntoView()` or Tab
                        moving focus asks for glides there over 300ms; a wheel,
                        a finger and a fling never do, and one of them stops a
                        glide on the same scroller, as in CSS)
+columns, column-count, column-width, column-fill, column-rule,
+column-rule-width, column-rule-style, column-rule-color
+                       (2026-10-23, as in CSS: the count, the width or both
+                       decide how many columns the box's width holds,
+                       column-gap goes between them (`normal` is 1em), and
+                       the children are set one after another down them, a
+                       column ending where the next child would pass the
+                       height that evens them out, or the box's own height
+                       with `column-fill: auto`. The box is as tall as its
+                       tallest column. A child is never split across two
+                       columns, where CSS may break inside one, and a column
+                       in a column is fitted to the outer box's width. The
+                       rule is drawn down the middle of each gap in use, solid
+                       whatever its style, which warns. Not yet: column-span)
 scroll-snap-type, scroll-snap-align, scroll-snap-stop, scroll-padding,
 scroll-padding-top, scroll-padding-right, scroll-padding-bottom,
 scroll-padding-left, scroll-margin, scroll-margin-top, scroll-margin-right,

@@ -4595,6 +4595,9 @@ const HONORED_PROPERTIES: &[&str] = &[
     "object-fit", "object-position", "pointer-events", "scroll-behavior",
     // What `::before` and `::after` hold. See `generated_elements`.
     "content",
+    // Multi-column layout. See `rux_layout::Columns`.
+    "columns", "column-count", "column-width", "column-fill",
+    "column-rule", "column-rule-width", "column-rule-style", "column-rule-color",
     // Scroll snapping: where a scroller comes to rest.
     "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop",
     "scroll-padding", "scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left",
@@ -4893,7 +4896,7 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Motion. A transform is flat, so it has no depth to look into.
     "perspective", "perspective-origin",
     // Other layout models
-    "columns", "column-count", "column-width", "column-fill", "column-rule", "column-span", "table-layout",
+    "column-span", "table-layout",
     "border-collapse", "border-spacing",
 ];
 
@@ -7350,6 +7353,19 @@ fn build_node_inner(
 
     let mut style = screen_fills_the_display(interpreted(&props), el, path, &props);
     style.direction = direction;
+    // A multi-column box's gap: `column-gap` or `gap`, else `normal`, which is
+    // `1em`, and a rule with no colour of its own is the text's.
+    let rule_color = props.get("color").and_then(|c| parse_color(c)).unwrap_or(inherited.color);
+    if let Some(cols) = style.rare.as_mut().and_then(|r| r.columns.as_mut()) {
+        cols.gap = if props.contains_key("column-gap") || props.contains_key("gap") {
+            style.column_gap.unwrap_or(style.gap)
+        } else {
+            own_font_size
+        };
+        if let Some(rule) = cols.rule.as_mut() {
+            rule.color.get_or_insert(rule_color);
+        }
+    }
     if root {
         let canvas = canvas_of(&style, scheme);
         let rare = style.rare_mut();
@@ -11313,6 +11329,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         }
     }
     scroll_snap(p, &mut st);
+    columns(p, &mut st);
     if ["translate", "rotate", "scale"].iter().any(|k| p.contains_key(*k)) {
         st.transform = individual_transforms(p, st.transform);
     }
@@ -14385,6 +14402,78 @@ fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
     }
     st.border = Sides { top: widths[0], right: widths[1], bottom: widths[2], left: widths[3] };
     st.border_style = styles;
+}
+
+/// A multi-column box, as CSS has it: `columns` or its longhands
+/// `column-count` and `column-width`, `column-rule` and its longhands, and
+/// `column-fill`. The gap is `column-gap`'s, set by the build, which knows
+/// the font size `normal` is. See `rux_layout::Columns`.
+fn columns(p: &HashMap<String, String>, st: &mut Style) {
+    let (mut count, mut width) = (None, None);
+    // A count, a width, or `auto`, which is neither.
+    let read = |word: &str, k: &str| -> (Option<u32>, Option<f32>) {
+        if word.eq_ignore_ascii_case("auto") {
+            return (None, None);
+        }
+        if let Ok(n) = word.parse::<u32>() {
+            (Some(n.max(1)), None)
+        } else if let Some(px) = parse_px(word) {
+            (None, Some(px))
+        } else {
+            warn_once(format!("`{k}: {word}` is not a column count or width Rux knows"));
+            (None, None)
+        }
+    };
+    if let Some(v) = p.get("columns") {
+        for w in v.split_whitespace() {
+            let (c, px) = read(w, "columns");
+            count = c.or(count);
+            width = px.or(width);
+        }
+    }
+    if let Some(v) = p.get("column-count") {
+        count = read(v.trim(), "column-count").0;
+    }
+    if let Some(v) = p.get("column-width") {
+        width = read(v.trim(), "column-width").1;
+    }
+    if count.is_none() && width.is_none() {
+        return;
+    }
+    let (mut rule_w, mut rule_style, mut rule_color) = (3.0f32, BorderStyle::None, None);
+    let width_of = |t: &str| match t {
+        "thin" => Some(1.0),
+        "medium" => Some(3.0),
+        "thick" => Some(5.0),
+        t => parse_px(t),
+    };
+    if let Some(v) = p.get("column-rule") {
+        for t in split_top_level(v) {
+            if let Some(s) = BorderStyle::parse(t) {
+                rule_style = s;
+            } else if let Some(w) = width_of(t) {
+                rule_w = w;
+            } else if let Some(c) = parse_color(t) {
+                rule_color = Some(c);
+            }
+        }
+    }
+    if let Some(w) = p.get("column-rule-width").and_then(|v| width_of(v.trim())) {
+        rule_w = w;
+    }
+    if let Some(s) = p.get("column-rule-style").and_then(|v| BorderStyle::parse(v.trim())) {
+        rule_style = s;
+    }
+    if let Some(c) = p.get("column-rule-color").and_then(|v| parse_color(v.trim())) {
+        rule_color = Some(c);
+    }
+    if !matches!(rule_style, BorderStyle::None | BorderStyle::Hidden | BorderStyle::Solid) {
+        warn_once("a `column-rule` is drawn solid: Rux draws column rules as lines alone".to_string());
+    }
+    let rule = (rule_style != BorderStyle::None && rule_style != BorderStyle::Hidden)
+        .then_some(rux_layout::ColumnRule { width: rule_w, style: rule_style, color: rule_color });
+    let fill_auto = p.get("column-fill").is_some_and(|v| v.trim().eq_ignore_ascii_case("auto"));
+    st.rare_mut().columns = Some(rux_layout::Columns { count, width, gap: 0.0, rule, fill_auto });
 }
 
 /// Scroll snapping, as CSS has it: `scroll-snap-type` and `scroll-padding`
@@ -18245,6 +18334,63 @@ mod selector_list_tests {
         assert_eq!((canvas.r, canvas.g), (1.0, 0.0));
         let (canvas, _, _) = look("screen { color-scheme: dark; background: rgba(255, 255, 255, 0.5); }");
         assert!((canvas.r - (0.5 + 0.5 * 18.0 / 255.0)).abs() < 0.01, "{canvas:?}");
+    }
+
+    /// Multi-column layout from CSS to boxes: six 50px children in three
+    /// columns of a 320px box with a 10px gap sit two to a column, 100px
+    /// wide, and the box is as tall as one column; `column-width` decides
+    /// the count from the width; uneven children even out by height; a rule
+    /// is drawn in each gap; `column-fill: auto` fills a column to the box's
+    /// own height before the next.
+    #[test]
+    fn columns_lay_children_out_side_by_side() {
+        let boxes = |css: &str, heights: &[u32]| {
+            let root = built(
+                &format!(
+                    r#"<template><screen><view class="m">
+                         <view r-for="h in hs" :style='"height: " + h + "px"' />
+                       </view></screen></template>
+                       <script>let hs = {heights:?};</script>
+                       <style>screen {{ padding: 0; }} .m {{ width: 320px; column-gap: 10px; {css} }}</style>"#
+                ),
+                None,
+            );
+            let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
+            let out = rux_layout::layout(&root, 400.0, 800.0, &mut measure);
+            let at = |path: &[usize]| {
+                let m = out.metrics.iter().find(|m| m.path == path).unwrap();
+                (m.x, m.y, m.width, m.height)
+            };
+            let kids: Vec<(f32, f32, f32, f32)> = (0..heights.len()).map(|i| at(&[0, i])).collect();
+            (at(&[0]), kids, out)
+        };
+        let (m, kids, _) = boxes("column-count: 3;", &[50; 6]);
+        assert_eq!(m.3, 100.0, "as tall as one column");
+        let xy: Vec<(f32, f32)> = kids.iter().map(|k| (k.0, k.1)).collect();
+        assert_eq!(xy, [(0.0, 0.0), (0.0, 50.0), (110.0, 0.0), (110.0, 50.0), (220.0, 0.0), (220.0, 50.0)]);
+        assert!(kids.iter().all(|k| (k.2 - 100.0).abs() < 0.01), "{kids:?}");
+
+        let (_, kids, _) = boxes("column-width: 140px;", &[50; 4]);
+        assert_eq!(kids[2].0, 165.0, "two 155px columns fit, not three");
+
+        let (m, kids, _) = boxes("columns: 2;", &[100, 20, 20, 20, 20]);
+        assert_eq!(m.3, 100.0, "the tall one alone, the rest beside it");
+        assert_eq!((kids[1].0, kids[1].1), (165.0, 0.0));
+
+        let (_, _, out) = boxes("column-count: 3; column-rule: 2px solid #ff0000;", &[50; 6]);
+        let rules: Vec<f32> = out
+            .paints
+            .iter()
+            .filter_map(|p| match p {
+                rux_layout::Paint::Rect(r) if r.width == 2.0 && r.height == 100.0 => Some(r.x),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rules, [104.0, 214.0]);
+
+        let (m, kids, _) = boxes("column-count: 3; column-fill: auto; height: 120px;", &[50; 4]);
+        assert_eq!(m.3, 120.0);
+        assert_eq!((kids[2].0, kids[3].0), (110.0, 110.0), "two fit the first column's 120px");
     }
 
     /// `::before` and `::after`: a box generated inside the element, first

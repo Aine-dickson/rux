@@ -1181,9 +1181,93 @@ pub struct Rare {
     pub snap: Option<SnapArea>,
     /// A `::before` or `::after` box. See [`Generated`].
     pub generated: Option<Generated>,
+    /// `column-count` / `column-width`: a multi-column box. See [`Columns`].
+    pub columns: Option<Columns>,
     /// On the root alone: its used `color-scheme` is dark, so what Rux
     /// draws itself (a dropdown, the selection toolbar) is drawn dark too.
     pub dark: bool,
+}
+
+/// A multi-column box, as CSS has it: `column-count`, `column-width` or
+/// both decide how many columns its width holds, `column-gap` (`normal` is
+/// `1em`) goes between them, and its children are set one after another in
+/// them, a column ending where the next child would pass the height that
+/// evens them out (`column-fill: balance`), or the box's own height with
+/// `column-fill: auto`. A child is never split across two columns.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Columns {
+    pub count: Option<u32>,
+    pub width: Option<f32>,
+    pub gap: f32,
+    /// `column-rule`: drawn down the middle of each gap.
+    pub rule: Option<ColumnRule>,
+    /// `column-fill: auto`.
+    pub fill_auto: bool,
+}
+
+/// `column-rule`: its width, style and colour (`None` is the text's).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ColumnRule {
+    pub width: f32,
+    pub style: BorderStyle,
+    pub color: Option<Rgba>,
+}
+
+impl Columns {
+    /// How many columns `inner` (the content width) holds, and how wide each
+    /// is: CSS's pseudo-algorithm (css-multicol-1, 3.4).
+    pub fn fit(&self, inner: f32) -> (u32, f32) {
+        let g = self.gap;
+        let by_width = self.width.map(|w| (((inner + g) / (w.max(1.0) + g)).floor() as u32).max(1));
+        let n = match (self.count, by_width) {
+            (Some(c), Some(w)) => c.min(w).max(1),
+            (Some(c), None) => c.max(1),
+            (None, Some(w)) => w,
+            (None, None) => 1,
+        };
+        (n, ((inner - g * (n - 1) as f32) / n as f32).max(0.0))
+    }
+}
+
+/// Where each child of a multi-column box goes: which column, and how far
+/// down it. Heights are the children's outer heights, in order. With `fill`
+/// the columns are filled to that height one after another; without, to the
+/// least height that still fits them all into `n` columns, which evens them.
+/// Returns the column of each child and the height each column reaches.
+pub fn column_spread(heights: &[f32], n: u32, fill: Option<f32>) -> (Vec<u32>, Vec<f32>) {
+    let pack = |limit: f32| -> (Vec<u32>, Vec<f32>) {
+        let mut at = Vec::with_capacity(heights.len());
+        let mut tops = vec![0.0f32];
+        for &h in heights {
+            let col = tops.len() - 1;
+            if tops[col] > 0.0 && tops[col] + h > limit + 0.01 && (col as u32) + 1 < n {
+                tops.push(0.0);
+            }
+            let col = tops.len() - 1;
+            at.push(col as u32);
+            tops[col] += h;
+        }
+        (at, tops)
+    };
+    if let Some(limit) = fill {
+        return pack(limit);
+    }
+    let total: f32 = heights.iter().sum();
+    let tallest = heights.iter().copied().fold(0.0, f32::max);
+    let (mut lo, mut hi) = ((total / n as f32).max(tallest), total.max(tallest));
+    let fits = |limit: f32| pack(limit).1.len() as u32 <= n && pack(limit).1.iter().all(|t| *t <= limit + 0.01);
+    if fits(lo) {
+        return pack(lo);
+    }
+    while hi - lo > 0.5 {
+        let mid = (lo + hi) / 2.0;
+        if fits(mid) {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    pack(hi)
 }
 
 /// A box CSS's `::before` or `::after` made, not an element. It sits at the
@@ -4403,6 +4487,9 @@ struct Built<'a> {
     stickies: &'a [(NodeId, [Option<f32>; 4])],
     /// The boxes a scroller can snap to. See `SnapArea`.
     snaps: &'a [(NodeId, SnapArea)],
+    /// Each multi-column box's rule: how it is drawn, where across, and from
+    /// where down how far. See `Columns`.
+    rules: &'a IdMap<(ColumnRule, Vec<f32>, f32, f32)>,
     /// The boxes with `content-visibility`, and whether each was skipped.
     contained: &'a [(NodeId, bool)],
     at: IdMap<At>,
@@ -4680,6 +4767,8 @@ fn build(
     stickies: &mut Vec<(NodeId, [Option<f32>; 4])>,
     // Boxes a scroller can come to rest on. See `SnapArea`.
     snaps: &mut Vec<(NodeId, SnapArea)>,
+    // Multi-column boxes. See `Columns`.
+    multicols: &mut Vec<(NodeId, Columns)>,
     // Out-of-flow boxes waiting for their containing block, as `(id, fixed)`.
     //
     // taffy positions an absolute child against its *parent*, and CSS positions
@@ -4810,7 +4899,7 @@ fn build(
             // cache on the parent size, and tests/stretch_text.rs, which
             // fails on 0.7 without that exception, passes on 0.15 without
             // it, so the exception is gone.
-            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, snaps, hoisted, stacks, anchoring, skipping, prev, None, owners, garbage);
+            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, snaps, multicols, hoisted, stacks, anchoring, skipping, prev, None, owners, garbage);
             kept_children.push(kept);
             match hoists(&c.style) {
                 Some(fixed) => hoisted.push((cid, fixed)),
@@ -5081,6 +5170,9 @@ fn build(
     }
     if let Some(area) = node.style.rare.as_ref().and_then(|r| r.snap) {
         snaps.push((id, area));
+    }
+    if let Some(cols) = node.style.rare.as_ref().and_then(|r| r.columns).filter(|_| node.text.is_none()) {
+        multicols.push((id, cols));
     }
     if node.style.position.is_sticky() {
         // Resolved to px here, where the viewport is in hand, so `collect` can
@@ -6498,6 +6590,23 @@ fn collect(
         }
     }
 
+    // `column-rule`, over the box's background and under its children.
+    if let (false, Some((rule, xs, top, height))) = (walk.dry, b.rules.get(&id)) {
+        let color = rule.color.unwrap_or(Rgba::new(0.0, 0.0, 0.0, 1.0));
+        for cx in xs {
+            out.paints.push(Paint::Rect(PaintRect {
+                x: x + cx - rule.width / 2.0,
+                y: y + top,
+                width: rule.width,
+                height: *height,
+                background: Some(Background::Color(color)),
+                radius: Corners::default(),
+                border: Sides::default(),
+                border_color: None,
+            }));
+        }
+    }
+
     // overflow: clip/scroll, bound the subtree to this box (following its corners).
     if clip {
         let c = Clip { x, y, width: layout.size.width, height: layout.size.height, radius: clip_radius };
@@ -6917,6 +7026,7 @@ impl LayoutState {
         let mut caps: IdMap<f32> = IdMap::default();
         let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
         let mut snaps: Vec<(NodeId, SnapArea)> = Vec::new();
+        let mut multicols: Vec<(NodeId, Columns)> = Vec::new();
         let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
         let mut stacks: Vec<(NodeId, Stack)> = Vec::new();
         let mut anchoring = Anchoring::default();
@@ -6943,6 +7053,7 @@ impl LayoutState {
             None, // the root is not inside any row
             &mut stickies,
             &mut snaps,
+            &mut multicols,
             &mut hoisted,
             &mut stacks,
             &mut anchoring,
@@ -7099,6 +7210,82 @@ impl LayoutState {
                 .expect("compute layout again");
         }
 
+        // Multi-column boxes, in two more passes: the first lays each one's
+        // children out a column wide, the second pins each in its column,
+        // as taffy has no columns of its own. See `Columns`.
+        let mut rules: IdMap<(ColumnRule, Vec<f32>, f32, f32)> = IdMap::default();
+        if !multicols.is_empty() {
+            let in_flow = |tree: &TaffyTree<TextContent>, id: NodeId| -> Vec<NodeId> {
+                tree.children(id)
+                    .expect("children")
+                    .into_iter()
+                    .filter(|c| tree.style(*c).expect("style").position != taffy::Position::Absolute)
+                    .collect()
+            };
+            let mut plans = Vec::with_capacity(multicols.len());
+            for (id, cols) in &multicols {
+                let l = *tree.layout(*id).expect("layout");
+                let inner = l.size.width - l.padding.left - l.padding.right - l.border.left - l.border.right;
+                let (n, width) = cols.fit(inner);
+                let kids = in_flow(tree, *id);
+                for kid in &kids {
+                    let mut st = tree.style(*kid).expect("style").clone();
+                    let m = tree.layout(*kid).expect("layout").margin;
+                    st.size.width = match st.size.width.into_raw() {
+                        r if r.tag() == taffy::CompactLength::PERCENT_TAG => length(r.value() * width),
+                        r if r.is_auto() => length((width - m.left - m.right).max(0.0)),
+                        _ => st.size.width,
+                    };
+                    tree.set_style(*kid, st).expect("a column wide");
+                }
+                plans.push((*id, *cols, n, width, kids));
+            }
+            tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+                .expect("lay out the columns' children");
+            for (id, cols, n, width, kids) in &plans {
+                let l = *tree.layout(*id).expect("layout");
+                let heights: Vec<f32> = kids
+                    .iter()
+                    .map(|k| {
+                        let kl = tree.layout(*k).expect("layout");
+                        kl.size.height + kl.margin.top + kl.margin.bottom
+                    })
+                    .collect();
+                let own = tree.style(*id).expect("style").clone();
+                let inner_h = l.size.height - l.padding.top - l.padding.bottom - l.border.top - l.border.bottom;
+                let fill = (cols.fill_auto && !own.size.height.is_auto()).then_some(inner_h);
+                let (at, tops) = column_spread(&heights, *n, fill);
+                let mut y = vec![0.0f32; tops.len()];
+                for (i, kid) in kids.iter().enumerate() {
+                    let c = at[i] as usize;
+                    let mut st = tree.style(*kid).expect("style").clone();
+                    st.position = taffy::Position::Absolute;
+                    st.inset.left = length(l.padding.left + c as f32 * (width + cols.gap));
+                    st.inset.top = length(l.padding.top + y[c]);
+                    st.inset.right = auto();
+                    st.inset.bottom = auto();
+                    tree.set_style(*kid, st).expect("pinned in its column");
+                    y[c] += heights[i];
+                }
+                let tallest = tops.iter().copied().fold(0.0, f32::max);
+                if own.size.height.is_auto() {
+                    let mut st = own;
+                    let frame = l.padding.top + l.padding.bottom + l.border.top + l.border.bottom;
+                    st.size.height = length(if st.box_sizing == taffy::BoxSizing::BorderBox { tallest + frame } else { tallest });
+                    tree.set_style(*id, st).expect("as tall as its tallest column");
+                }
+                if let Some(rule) = cols.rule.filter(|r| r.width > 0.0 && r.style != BorderStyle::None) {
+                    // Down the middle of each gap between two columns in use.
+                    let xs = (1..tops.len())
+                        .map(|c| l.border.left + l.padding.left + c as f32 * (width + cols.gap) - cols.gap / 2.0)
+                        .collect();
+                    rules.insert(*id, (rule, xs, l.border.top + l.padding.top, tallest.max(if fill.is_some() { inner_h } else { 0.0 })));
+                }
+            }
+            tree.compute_layout_with_measure(root_id, space, &mut measure_fn)
+                .expect("lay out the columns");
+        }
+
         // `anchor-size()`, and an axis with both insets on one anchor: sizes
         // only the anchor's own layout can answer, given once it has one.
         let mut sized = false;
@@ -7140,6 +7327,7 @@ impl LayoutState {
             paths: &paths,
             stickies: &stickies,
             snaps: &snaps,
+            rules: &rules,
             contained: &skipping.boxes,
             scroll_ids: {
                 let mut ids = IdMap::default();
