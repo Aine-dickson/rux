@@ -669,3 +669,25 @@ fn a_covered_field_is_not_reached() {
     assert_eq!(reach(false, true), (false, false), "both covered");
     assert_eq!(reach(true, false), (false, true), "the field passes the press on; its label still reaches");
 }
+
+/// `transform-origin` moves the point a transform turns about: a box scaled
+/// to nothing about its top left shrinks into that corner, not its centre.
+#[test]
+fn a_transform_turns_about_its_origin() {
+    let pushed = |origin: Option<[Len; 2]>| {
+        let node = Node::new(Style {
+            width: Some(Len::Px(100.0)),
+            height: Some(Len::Px(50.0)),
+            transform: Some([0.0, 0.0, 0.0, 0.0, 0.0, 0.0]),
+            rare: origin.map(|o| Box::new(Rare { transform_origin: Some(o), ..Default::default() })),
+            ..Default::default()
+        });
+        paints(node).into_iter().find_map(|p| match p {
+            Paint::PushTransform(m) => Some((m[4], m[5])),
+            _ => None,
+        })
+    };
+    assert_eq!(pushed(None), Some((50.0, 25.0)), "the centre by default");
+    assert_eq!(pushed(Some([Len::Pct(0.0), Len::Pct(0.0)])), Some((0.0, 0.0)));
+    assert_eq!(pushed(Some([Len::Px(10.0), Len::Pct(1.0)])), Some((10.0, 50.0)));
+}

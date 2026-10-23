@@ -4510,7 +4510,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
     "text-decoration-color", "text-decoration-style", "text-decoration-thickness",
-    "text-underline-offset", "text-transform", "text-indent", "text-overflow", "line-clamp",
+    "text-underline-offset", "text-transform", "text-indent", "text-overflow", "line-clamp", "user-select", "transform-origin",
     "font-variant", "font-variant-caps", "font-variant-numeric", "font-variant-ligatures",
     "font-variant-position", "font-variant-east-asian", "font-feature-settings",
     "font-variation-settings", "font-stretch", "font-width", "caret-color",
@@ -4761,13 +4761,12 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
     // Boxes
     "float", "clear", "order", "resize",
-    // Text. Static text cannot be selected yet, so `user-select` has
-    // nothing to turn off; vertical writing is a layout of its own.
-    "writing-mode", "user-select",
+    // Text. Vertical writing is a layout of its own.
+    "writing-mode",
     "appearance", "list-style", "list-style-type", "list-style-position",
     // Motion. `transition` is honored; keyframe animation and the origin a
     // transform turns about are not.
-    "transform-origin", "perspective", "perspective-origin", "will-change",
+    "perspective", "perspective-origin", "will-change",
     "animation", "animation-name", "animation-duration", "animation-delay",
     "animation-timing-function", "animation-iteration-count", "animation-direction",
     "animation-fill-mode", "animation-play-state",
@@ -5634,6 +5633,44 @@ fn expand_font(v: &str) -> Option<Vec<(&'static str, String)>> {
         }
         rest = rest[token_end..].trim_start();
     }
+}
+
+/// `transform-origin`: one or two positions, x then y, or keywords in either
+/// order (`top left`), against the box's own size; a third value, the z
+/// offset, means nothing to a flat transform and is read past. `None` for
+/// what is not one, which is said.
+fn parse_transform_origin(v: &str) -> Option<[Len; 2]> {
+    let word = |t: &str| -> Option<(f32, Option<bool>)> {
+        // The fraction, and whether the word can only be one axis: `Some(true)`
+        // for x, `Some(false)` for y, `None` for `center`, which is either.
+        Some(match t {
+            "left" => (0.0, Some(true)),
+            "right" => (1.0, Some(true)),
+            "top" => (0.0, Some(false)),
+            "bottom" => (1.0, Some(false)),
+            "center" => (0.5, None),
+            _ => return None,
+        })
+    };
+    let parts: Vec<&str> = v.split_whitespace().collect();
+    let one = |t: &str| word(t).map(|(f, _)| Len::Pct(f)).or_else(|| parse_len(t));
+    let out = match parts[..] {
+        [t] => match word(t) {
+            Some((f, Some(false))) => Some([Len::Pct(0.5), Len::Pct(f)]),
+            _ => one(t).map(|l| [l, Len::Pct(0.5)]),
+        },
+        [a, b, ..] => {
+            // `top left` is `left top`.
+            let swap = word(a).is_some_and(|(_, axis)| axis == Some(false)) || word(b).is_some_and(|(_, axis)| axis == Some(true));
+            let (a, b) = if swap { (b, a) } else { (a, b) };
+            one(a).zip(one(b)).map(|(x, y)| [x, y])
+        }
+        [] => None,
+    };
+    if out.is_none() {
+        warn_once(format!("`transform-origin: {v}` is not a place Rux can read, so the box turns about its centre"));
+    }
+    out
 }
 
 /// `-webkit-backdrop-filter` as `backdrop-filter`: a vendor prefix on a
@@ -10500,6 +10537,15 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("aspect-ratio") {
         st.aspect_ratio = parse_aspect_ratio(v);
     }
+    // Static text cannot be selected yet and a field always can, as in a
+    // browser, so `none` and `auto` are what happens already; asking for
+    // more is said.
+    match p.get("user-select").map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        None | Some("none" | "auto") => {}
+        Some(other) => warn_once(format!(
+            "`user-select: {other}` has nothing to turn on: text outside a field cannot be selected yet"
+        )),
+    }
     match p.get("box-sizing").map(|v| v.trim().to_ascii_lowercase()).as_deref() {
         Some("content-box") => st.box_sizing = rux_layout::BoxSizing::ContentBox,
         Some("border-box") | None => {}
@@ -10510,6 +10556,11 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     }
     if let Some(v) = p.get("transform") {
         st.transform = parse_transform(v);
+    }
+    if let Some(v) = p.get("transform-origin") {
+        if let Some(origin) = parse_transform_origin(v) {
+            st.rare_mut().transform_origin = Some(origin);
+        }
     }
     if ["translate", "rotate", "scale"].iter().any(|k| p.contains_key(*k)) {
         st.transform = individual_transforms(p, st.transform);
@@ -13453,10 +13504,12 @@ fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
         }
         // One side's shorthand colours that side; `border` all of them.
         match sides {
-            [i] => st.border_colors.get_or_insert_default()[*i] = color,
+            [i] => st.rare_mut().border_colors[*i] = color,
             _ => {
                 st.border_color = color;
-                st.border_colors = None;
+                if let Some(rare) = st.rare.as_mut() {
+                    rare.border_colors = [None; 4];
+                }
             }
         }
     };
@@ -13483,14 +13536,16 @@ fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
     if let Some(v) = p.get("border-color") {
         let colors: Vec<Rgba> = split_top_level(v).into_iter().filter_map(parse_color).collect();
         st.border_color = colors.first().copied();
-        st.border_colors = None;
+        if let Some(rare) = st.rare.as_mut() {
+            rare.border_colors = [None; 4];
+        }
         if let Some(sides) = four_sides(&colors).filter(|_| colors.len() > 1) {
-            st.border_colors = Some(Box::new(sides.map(Some)));
+            st.rare_mut().border_colors = sides.map(Some);
         }
     }
     for (i, side) in SIDES.iter().enumerate() {
         if let Some(c) = p.get(&format!("border-{side}-color")).and_then(|v| parse_color(first(v))) {
-            st.border_colors.get_or_insert_default()[i] = Some(c);
+            st.rare_mut().border_colors[i] = Some(c);
         }
         if let Some(w) = p.get(&format!("border-{side}-width")).and_then(|v| outline_width(first(v))) {
             widths[i] = w;
@@ -13870,7 +13925,7 @@ mod tests {
         // Real CSS, unbuilt: named as such, and never offered as a correction
         // for itself.
         assert!(UNIMPLEMENTED_PROPERTIES.contains(&"float"));
-        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"transform-origin"));
+        assert!(UNIMPLEMENTED_PROPERTIES.contains(&"perspective"));
 
         // A typo finds the property it was reaching for.
         assert_eq!(nearest_property("paddding"), Some("padding"));
@@ -17620,6 +17675,27 @@ mod tailwind_property_tests {
         assert!(first(".a { translate: none; }").style.transform.is_none());
     }
 
+    /// `transform-origin`: keywords either way round, lengths, and a single
+    /// value that names only one axis.
+    #[test]
+    fn transform_origin_reads_as_css_does() {
+        // Where it lands on a 100 by 50 box: the sheet parser may respell a
+        // keyword as a length, so the place is what is compared.
+        let at = |v: &str| {
+            first(&format!(".a {{ transform-origin: {v}; }}"))
+                .style
+                .transform_origin()
+                .map(|b| (b[0].px(100.0, (0.0, 0.0)), b[1].px(50.0, (0.0, 0.0))))
+        };
+        assert_eq!(at("top left"), Some((0.0, 0.0)));
+        assert_eq!(at("left top"), Some((0.0, 0.0)));
+        assert_eq!(at("bottom"), Some((50.0, 50.0)));
+        assert_eq!(at("right"), Some((100.0, 25.0)));
+        assert_eq!(at("10px 25%"), Some((10.0, 12.5)));
+        assert_eq!(at("10px 20px 30px"), Some((10.0, 20.0)), "z is read past");
+        assert_eq!(at("sideways"), None);
+    }
+
     /// `inset` is the four sides; a later side wins over it.
     #[test]
     fn inset_sets_four_sides() {
@@ -17638,11 +17714,11 @@ mod tailwind_property_tests {
     fn border_sides_take_their_own_colours() {
         let n = first(".a { border: 2px solid #ff0000; border-top-color: transparent; }");
         assert!(n.style.border_color.is_some_and(|c| c.r == 1.0));
-        let sides = n.style.border_colors.as_deref().unwrap();
+        let sides = n.style.border_colors();
         assert!(sides[0].is_some_and(|c| c.a == 0.0));
         assert!(sides[1].is_none());
         let n = first(".a { border-bottom: 1px solid #00ff00; }");
-        let sides = n.style.border_colors.as_deref().unwrap();
+        let sides = n.style.border_colors();
         assert!(sides[0].is_none(), "only the bottom was coloured; the rest are currentcolor");
         assert!(sides[2].is_some_and(|c| c.g == 1.0));
     }

@@ -1117,6 +1117,35 @@ impl Outline {
     pub const RING: Rgba = Rgba { r: 0.54, g: 0.71, b: 0.98, a: 1.0 }; // #89b4fa
 }
 
+/// The style properties hardly any box sets, kept behind one pointer on
+/// [`Style`] so each costs a box nothing until it is written (watchlist #41).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rare {
+    /// `border-top-color` and the other sides, top, right, bottom, left,
+    /// over `border_color`. `None` for a side takes `border_color`.
+    pub border_colors: [Option<Rgba>; 4],
+    /// `transform-origin`, x then y, against the box's own size. `None` is
+    /// the centre, CSS's initial value.
+    pub transform_origin: Option<[Len; 2]>,
+}
+
+impl Style {
+    /// Each side's own border colour, `None` where it takes `border_color`.
+    pub fn border_colors(&self) -> [Option<Rgba>; 4] {
+        self.rare.as_ref().map_or([None; 4], |r| r.border_colors)
+    }
+
+    /// `transform-origin`, `None` for the centre.
+    pub fn transform_origin(&self) -> Option<[Len; 2]> {
+        self.rare.as_ref().and_then(|r| r.transform_origin)
+    }
+
+    /// The rarely set properties, made to write into.
+    pub fn rare_mut(&mut self) -> &mut Rare {
+        self.rare.get_or_insert_with(Default::default)
+    }
+}
+
 /// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
 #[derive(Clone, Debug)]
 pub struct Style {
@@ -1166,10 +1195,8 @@ pub struct Style {
     pub margin_pct: [Option<f32>; 4],
     pub border: Sides,
     pub border_color: Option<Rgba>,
-    /// `border-top-color` and the other sides, top, right, bottom, left,
-    /// over `border_color`. `None` for a side takes `border_color`. Boxed,
-    /// as it is rarely set (watchlist #41).
-    pub border_colors: Option<Box<[Option<Rgba>; 4]>>,
+    /// What is rarely set, boxed together (watchlist #41): see [`Rare`].
+    pub rare: Option<Box<Rare>>,
     /// `border-style` per side, top, right, bottom, left. The cascade gives a
     /// side whose style is `none` no width, as CSS does; a `Style` built in
     /// code with a width and no style is drawn solid.
@@ -1373,7 +1400,7 @@ impl Default for Style {
             margin_pct: [None; 4],
             border: Sides::default(),
             border_color: None,
-            border_colors: None,
+            rare: None,
             border_style: [BorderStyle::None; 4],
             gap: 0.0,
             row_gap: None,
@@ -4058,7 +4085,7 @@ struct Built<'a> {
     handlers: &'a [Handler],
     models: &'a [Bound],
     focus_labels: &'a [(NodeId, String, Option<String>)],
-    transforms: &'a [(NodeId, Transform)],
+    transforms: &'a [(NodeId, Transform, [Len; 2])],
     opacities: &'a [(NodeId, f32, BlendMode)],
     states: &'a [(NodeId, Vec<usize>)],
     access: &'a [(NodeId, Access, Option<String>)],
@@ -4092,7 +4119,7 @@ fn index(
     hidden: &[(NodeId, bool)],
     opacities: &[(NodeId, f32, BlendMode)],
     scrolls: &[ScrollFacts],
-    transforms: &[(NodeId, Transform)],
+    transforms: &[(NodeId, Transform, [Len; 2])],
     states: &[(NodeId, Vec<usize>)],
     access: &[(NodeId, Access, Option<String>)],
     paths: &[(NodeId, Vec<usize>)],
@@ -4315,7 +4342,7 @@ fn build(
     // `opacity` below 1 or a `mix-blend-mode`: the box is drawn as a layer.
     opacities: &mut Vec<(NodeId, f32, BlendMode)>,
     scrolls: &mut Vec<ScrollFacts>,
-    transforms: &mut Vec<(NodeId, Transform)>,
+    transforms: &mut Vec<(NodeId, Transform, [Len; 2])>,
     states: &mut Vec<(NodeId, Vec<usize>)>,
     access: &mut Vec<(NodeId, Access, Option<String>)>,
     // Where this node sits, and where every node's path is collected.
@@ -4561,7 +4588,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
-                border_colors: node.style.border_colors.as_deref().copied().unwrap_or([None; 4]),
+                border_colors: node.style.border_colors(),
                 border_style: node.style.border_style,
                 clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow.clone(),
@@ -4582,7 +4609,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
-                border_colors: node.style.border_colors.as_deref().copied().unwrap_or([None; 4]),
+                border_colors: node.style.border_colors(),
                 border_style: node.style.border_style,
                 clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow.clone(),
@@ -4598,7 +4625,7 @@ fn build(
                 radius_pct: node.style.radius_pct,
                 border: node.style.border,
                 border_color: node.style.border_color,
-                border_colors: node.style.border_colors.as_deref().copied().unwrap_or([None; 4]),
+                border_colors: node.style.border_colors(),
                 border_style: node.style.border_style,
                 clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow.clone(),
@@ -4628,7 +4655,7 @@ fn build(
                 // Uniform border for rendering (top width is representative).
                 border: node.style.border,
                 border_color: node.style.border_color,
-                border_colors: node.style.border_colors.as_deref().copied().unwrap_or([None; 4]),
+                border_colors: node.style.border_colors(),
                 border_style: node.style.border_style,
                 clip: clips(&node.style, skip.is_some()),
                 shadow: node.style.box_shadow.clone(),
@@ -4702,7 +4729,8 @@ fn build(
         opacities.push((id, node.style.opacity.max(0.0), node.style.blend));
     }
     if let Some(tf) = node.style.transform {
-        transforms.push((id, tf));
+        let origin = node.style.transform_origin().unwrap_or([Len::Pct(0.5); 2]);
+        transforms.push((id, tf, origin));
     }
     if node.style.overflow == Overflow::Scroll {
         scrolls.push(ScrollFacts {
@@ -5607,12 +5635,12 @@ fn collect(
     // `transform` wraps the box and its subtree. The parsed matrix is in local
     // coords; bake in the origin (CSS default: the box centre) so it applies to
     // absolute coordinates directly.
-    let transform = at.transform.map(|i| b.transforms[i as usize].1);
+    let transform = at.transform.map(|i| (b.transforms[i as usize].1, b.transforms[i as usize].2));
     // What the subtree, and anything drawn on its behalf outside the paint
     // list, is seen through.
     let mut child_xform = xform;
-    if let Some(m) = transform {
-        let (ox, oy) = (x + layout.size.width / 2.0, y + layout.size.height / 2.0);
+    if let Some((m, [origin_x, origin_y])) = transform {
+        let (ox, oy) = (x + origin_x.px(layout.size.width, vp), y + origin_y.px(layout.size.height, vp));
         let baked = centre_transform(m, ox, oy);
         out.paints.push(Paint::PushTransform(baked));
         child_xform = Some(match xform {

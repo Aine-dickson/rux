@@ -630,6 +630,7 @@ grid-column, grid-column-start, grid-column-end
 grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1, a line or area name)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
+transform-origin (keywords in either order, lengths, %; the default is the centre)
 translate, rotate, scale (the properties: applied in that order, then `transform`,
                        as in CSS; a 3D value is read for its 2D part)
 place-items, place-content, place-self (align then justify; one value is both)
@@ -717,6 +718,9 @@ text-transform (uppercase, lowercase, capitalize; inherited; a letter whose
                        other case is not one letter, `ß` to `SS`, stays as
                        written, so carets and selections keep their places)
 text-indent (a length or a %, with `hanging` and `each-line`; inherited)
+user-select (none and auto are what Rux does already: text outside a field
+                       cannot be selected yet, and a field's always can, as in
+                       a browser; text and all warn)
 line-clamp (a number of lines or none; the last kept ends in `…` and the text
                        is as tall as the lines kept. `-webkit-line-clamp` beside
                        `display: -webkit-box`, Tailwind's line-clamp-N, is read
@@ -1472,7 +1476,7 @@ yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
 Real CSS Rux has not built includes
-`transform-origin`, `writing-mode`, `user-select`, `columns` (a multi-column
+`writing-mode`, `columns` (a multi-column
 layout of its own), the table properties (Rux has no tables), `content` (Rux
 has no `::before` or `::after`),
 `list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
