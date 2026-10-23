@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-190 properties and 22 pseudo-classes, as of `rux 0.9.0-dev`.
+207 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -34,7 +34,11 @@ Every property below is one the runtime interprets, and the list is written by t
 | `margin-left` | **space outside the left edge.** Overrides the `margin` shorthand for this side.For example `.card { margin-left: 8px; }` |  |  |
 | `border` | **width, style and colour of the outline.** `2px solid #45475a`. The style word is accepted and only the width and colour are drawn.For example `.field { border: 2px solid #45475a; }` |  |  |
 | `border-width` | **how thick the outline is.** Takes room in the layout, so changing it moves the content inside.For example `.field { border-width: 2px; }` |  | yes |
-| `border-color` | **what colour the outline is.** Animatable, so it is the usual way to show focus without the box moving.For example `.field:focus { border-color: #89b4fa; }` |  | yes |
+| `border-color` | **what colour the outline is.** Animatable, so it is the usual way to show focus without the box moving. One to four colours, top, right, bottom, left, as `margin` takes lengths.For example `.field:focus { border-color: #89b4fa; }` |  | yes |
+| `border-top-color` | **the top edge's colour.** Overrides `border-color` for this side. A border whose sides differ in colour is drawn side by side, each with its own; only the box's `border-color` animates.For example `.tab { border-top-color: #89b4fa; }` |  |  |
+| `border-right-color` | **the right edge's colour.** Overrides `border-color` for this side.For example `.cell { border-right-color: #313244; }` |  |  |
+| `border-bottom-color` | **the bottom edge's colour.** Overrides `border-color` for this side.For example `.row { border-bottom-color: #313244; }` |  |  |
+| `border-left-color` | **the left edge's colour.** Overrides `border-color` for this side.For example `.quote { border-left-color: #f9e2af; }` |  |  |
 | `border-radius` | **how round the corners are.** One to four lengths, grouped by diagonal. Takes a percentage, resolved against the box's shorter side, so `50%` rounds a square into a circle and an oblong into a pill. Clips the background and the border; it does **not** clip children unless the box also has `overflow: hidden`.For example `.card { border-radius: 12px; }` |  | yes |
 | `border-top-left-radius` | **roundness of one corner.** Overrides `border-radius` for this corner.For example `.bubble { border-top-left-radius: 2px; }` |  |  |
 | `border-top-right-radius` | **roundness of one corner.** Overrides `border-radius` for this corner.For example `.bubble { border-top-right-radius: 2px; }` |  |  |
@@ -80,6 +84,14 @@ Every property below is one the runtime interprets, and the list is written by t
 | `outline-width` | **the outline's thickness.** A length, or `thin`, `medium` (the initial, 3px) or `thick`. `0` removes the outline.For example `.send { outline-width: 3px; }` |  |  |
 | `transform` | **move, rotate or scale the painted box.** `translate`, `rotate`, `scale`, composed left to right. Paint-only, so it never moves anything else. **A transformed box becomes the containing block** for `absolute` *and* `fixed` descendants, which is why a `fixed` child stops being fixed inside one.For example `.msg:enter-from { transform: translateY(10px); }` |  | yes |
 | `transition` | **animate a property when it changes.** `<property> <duration> <easing>`, comma-separated for more than one. Only some properties can animate; naming one that cannot is a warning rather than silence.For example `.msg { transition: opacity 180ms ease-out; }` |  |  |
+| `transition-property` | **which properties a transition animates.** A comma list. There is one transition per name, and the duration, easing and delay lists are repeated to match, as in CSS. A property that changes at once anyway (`display`, a custom property) is taken without a warning.For example `.btn { transition-property: color, background-color; }` |  |  |
+| `transition-duration` | **how long each transition takes.** A comma list of times, repeated to the length of `transition-property`.For example `.btn { transition-duration: 150ms; }` |  |  |
+| `transition-timing-function` | **the easing of each transition.** A comma list of easings, the same ones `transition` takes, repeated to the length of `transition-property`.For example `.btn { transition-timing-function: ease-out; }` |  |  |
+| `transition-delay` | **how long each transition waits.** A comma list of times, repeated to the length of `transition-property`.For example `.btn { transition-delay: 50ms; }` |  |  |
+| `transition-behavior` | **whether discrete properties transition.** Read and set aside: a discrete property in Rux always changes at once.For example `.menu { transition-behavior: allow-discrete; }` |  |  |
+| `translate` | **move the painted box.** `10px`, `10px 20px`. Applied before `rotate`, `scale` and `transform`, as in CSS. Paint-only, as `transform` is.For example `.card:hover { translate: 0 -4px; }` |  |  |
+| `rotate` | **turn the painted box.** `45deg`, or `z 45deg`. A turn about another axis is 3D and draws as none.For example `.chevron.open { rotate: 180deg; }` |  |  |
+| `scale` | **grow or shrink the painted box.** `1.1`, or `1.1 0.9` for each axis. Applied after `translate` and `rotate`, before `transform`.For example `.btn:active { scale: 0.97; }` |  |  |
 | `flex` | **grow, shrink and basis in one.** `flex: 1` means `1 1 0%`, not `1 1 auto`. The usual way to say \"take the leftover room\".For example `.field { flex: 1; }` | `none` `auto` `initial` |  |
 | `flex-grow` | **share of the spare room this item takes.** `0` (the default) means it never grows.For example `.field { flex-grow: 1; }` |  |  |
 | `flex-shrink` | **how readily this item gives room up.** `0` stops it shrinking below its content.For example `.icon { flex-shrink: 0; }` |  |  |
@@ -91,6 +103,9 @@ Every property below is one the runtime interprets, and the list is written by t
 | `align-self` | **this one item's cross-axis alignment.** Overrides the parent's `align-items` for this item only. `align-self: flex-end` is how one row in a list moves to the far side.For example `.mine { align-self: flex-end; }` | `flex-start` `start` `center` `flex-end` `end` `stretch` |  |
 | `justify-self` | **this one item's main-axis alignment.** Grid mostly; a single item's override.For example `.cell { justify-self: center; }` | `flex-start` `start` `center` `flex-end` `end` `stretch` |  |
 | `justify-items` | **the default main-axis alignment for children.** Grid mostly; set on the parent.For example `.grid { justify-items: start; }` | `flex-start` `start` `center` `flex-end` `end` `stretch` |  |
+| `place-items` | **`align-items` and `justify-items` at once.** One value for both, or the align value then the justify one. `place-items: center` centres every grid item in its cell.For example `.grid { place-items: center; }` |  |  |
+| `place-content` | **`align-content` and `justify-content` at once.** One value for both, or the align value then the justify one.For example `.grid { place-content: center space-between; }` |  |  |
+| `place-self` | **`align-self` and `justify-self` at once.** One value for both, or the align value then the justify one.For example `.badge { place-self: end; }` |  |  |
 | `align-content` | **how whole lines are spaced.** Only does anything with more than one line, so it needs `flex-wrap: wrap`.For example `.wrapped { flex-wrap: wrap; align-content: flex-start; }` | `flex-start` `start` `center` `flex-end` `end` `space-between` `space-around` |  |
 | `row-gap` | **space between rows.** Overrides `gap` on the vertical axis.For example `.grid { row-gap: 12px; }` |  |  |
 | `column-gap` | **space between columns.** Overrides `gap` on the horizontal axis.For example `.grid { column-gap: 8px; }` |  |  |
@@ -113,6 +128,7 @@ Every property below is one the runtime interprets, and the list is written by t
 | `right` | **distance from the right edge.** An offset, or a sticky threshold. `absolute` measures from the nearest positioned ancestor, not the parent.For example `.badge { position: absolute; right: 8px; }` |  |  |
 | `bottom` | **distance from the bottom edge.** An offset, or a sticky threshold.For example `.bar { position: fixed; bottom: 0; }` |  |  |
 | `left` | **distance from the left edge.** An offset, or a sticky threshold.For example `.badge { position: absolute; left: 8px; }` |  |  |
+| `inset` | **`top`, `right`, `bottom` and `left` at once.** One to four values, as `margin` takes them. `inset: 0` on an `absolute` box fills its containing block.For example `.scrim { position: absolute; inset: 0; }` |  | yes |
 | `aspect-ratio` | **width-to-height ratio to keep.** `16 / 9`. Gives a box a height derived from its width, so a media box keeps its shape as it resizes.For example `.cover { width: 100%; aspect-ratio: 16 / 9; }` |  |  |
 | `z-index` | **which box is drawn over which.** `auto` or a whole number. Counts on a positioned box and on a flex or grid item; higher is drawn over lower, inside the same stacking context. A `fixed` box is **not** on top by itself: give it a `z-index`. Animates in whole steps.For example `.menu { position: absolute; z-index: 10; }` |  | yes |
 | `isolation` | **start a stacking context.** `isolate` makes this box a stacking context and does nothing else, so a `z-index` inside it, negative ones included, is sorted inside it and never escapes.For example `.card { position: relative; isolation: isolate; }` | `auto` `isolate` |  |
@@ -143,6 +159,7 @@ Every property below is one the runtime interprets, and the list is written by t
 | `font-size` | **how large the text is.** Also the reference for `em` on this box, so changing it moves anything sized in `em`.For example `.title { font-size: 22px; }` |  | yes |
 | `font-weight` | **how heavy the text is.** `normal`, `bold`, `lighter`, `bolder`, or a number from 100 to 900.For example `.title { font-weight: 700; }` | `normal` `bold` `lighter` `bolder` `100` `200` `300` `400` `500` `600` `700` `800` `900` |  |
 | `font-family` | **which typeface to use.** Falls back through the list to whatever the system has.For example `.app { font-family: Inter, sans-serif; }` |  |  |
+| `font` | **style, weight, size, line height and family at once.** `italic 600 1rem/1.5 Inter, sans-serif`. The size and the family are needed; what is left out goes back to `normal`, as in CSS. A system font (`caption`, `menu`) is not read and warns.For example `.title { font: 600 1.25rem/1.4 Inter, sans-serif; }` |  |  |
 | `font-style` | **upright or italic.** `italic` and `oblique` both slant; anything else is upright.For example `.empty { font-style: italic; }` | `normal` `italic` `oblique` |  |
 | `text-align` | **how lines sit within the box.** `start`, `center`, `end`/`right`, or `justify`. Aligns the **lines inside** the box, which is not the same as moving the box.For example `.title { text-align: center; }` | `left` `start` `center` `right` `end` `justify` |  |
 | `letter-spacing` | **extra space between characters.** A length, positive or negative.For example `.caps { letter-spacing: 0.5px; }` |  |  |
@@ -231,9 +248,12 @@ Every property below is one the runtime interprets, and the list is written by t
 | `:nth-child` | **`:nth-child(an+b)`: by its place among its siblings.** Counted from 1: `odd`, `even`, `3`, `2n+1`, `-n+3`. The `of S` form is not read yet. |
 | `:nth-last-child` | **`:nth-last-child(an+b)`: counted from the end.** As `:nth-child()`, from the last sibling back: `:nth-last-child(-n+2)` is the last two. |
 | `:not` | **`:not(a, b)`: matches none of these.** Takes compound selectors (`.done`, `button:disabled`), separated by commas, and counts as specific as the most specific of them. A combinator inside (`:not(.a .b)`) is not read yet, and the rule never matches. |
+| `:is` | **`:is(a, b)`: matches any of these.** Takes full selectors, combinators included (`.x:is(.group:hover *)`), and counts as specific as the most specific of them. A forgiving list, as in CSS: an argument that does not parse is dropped, not the whole rule. |
+| `:where` | **`:where(a, b)`: as `:is()`, with no weight.** Matches what `:is()` matches and adds nothing to specificity, so any later rule overrides it. The usual way a reset or a library keeps out of the author's way. |
+| `:root` | **the top element of the app.** The screen's own element, so `:root { --accent: #89b4fa; }` sets a variable for everything under it, as on a web page. |
 
 ## Known, and not honored yet
 
 Real CSS an author reaches for, which the runtime parses, ignores and reports as a pending feature rather than a typo:
 
-`box-sizing`, `float`, `clear`, `order`, `inset`, `place-items`, `place-content`, `place-self`, `resize`, `writing-mode`, `user-select`, `appearance`, `list-style`, `list-style-type`, `list-style-position`, `transform-origin`, `perspective`, `perspective-origin`, `will-change`, `animation`, `animation-name`, `animation-duration`, `animation-delay`, `animation-timing-function`, `animation-iteration-count`, `animation-direction`, `animation-fill-mode`, `animation-play-state`, `columns`, `column-count`, `column-width`, `table-layout`, `border-collapse`, `border-spacing`, `content`.
+`box-sizing`, `float`, `clear`, `order`, `resize`, `writing-mode`, `user-select`, `appearance`, `list-style`, `list-style-type`, `list-style-position`, `transform-origin`, `perspective`, `perspective-origin`, `will-change`, `animation`, `animation-name`, `animation-duration`, `animation-delay`, `animation-timing-function`, `animation-iteration-count`, `animation-direction`, `animation-fill-mode`, `animation-play-state`, `columns`, `column-count`, `column-width`, `table-layout`, `border-collapse`, `border-spacing`, `content`.

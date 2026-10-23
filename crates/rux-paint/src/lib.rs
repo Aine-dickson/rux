@@ -496,11 +496,11 @@ fn dots(width: f64) -> [f64; 2] {
 /// exact shades to the browser, and browsers differ.
 fn draw_border(scene: &mut Scene, cur: Affine, b: &PaintBorder) {
     let w = [b.border.top, b.border.right, b.border.bottom, b.border.left];
-    let color = to_color(b.color);
-    let dark = to_color(Rgba::new(b.color.r * 2.0 / 3.0, b.color.g * 2.0 / 3.0, b.color.b * 2.0 / 3.0, b.color.a));
+    let shade = |c: Rgba| to_color(Rgba::new(c.r * 2.0 / 3.0, c.g * 2.0 / 3.0, c.b * 2.0 / 3.0, c.a));
     // Which sides are in light: top and left for `outset` and `ridge`'s
     // outer half, bottom and right for `inset` and `groove`'s.
     let lit = |style: BorderStyle, side: usize, outer: bool| -> Color {
+        let (color, dark) = (to_color(b.colors[side]), shade(b.colors[side]));
         let top_left = side == 0 || side == 3;
         let raised = match style {
             BorderStyle::Outset => true,
@@ -511,7 +511,10 @@ fn draw_border(scene: &mut Scene, cur: Affine, b: &PaintBorder) {
         };
         if raised == top_left { color } else { dark }
     };
-    let uniform = w.iter().all(|v| *v == w[0]) && b.styles.iter().all(|s| *s == b.styles[0]);
+    let uniform = w.iter().all(|v| *v == w[0])
+        && b.styles.iter().all(|s| *s == b.styles[0])
+        && b.colors.iter().all(|c| *c == b.colors[0]);
+    let color = to_color(b.colors[0]);
     let style = b.styles[0];
     let shaded = matches!(style, BorderStyle::Groove | BorderStyle::Ridge | BorderStyle::Inset | BorderStyle::Outset);
     if uniform && !shaded && w[0] > 0.0 {

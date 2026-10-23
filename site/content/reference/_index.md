@@ -400,11 +400,24 @@ To see a non-zero inset on a desktop, see `rux run --preview` below.
 ```
 Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`,
 `resolution` (`dppx`, `x`, `dpi`, `dpcm`), `prefers-color-scheme`,
-`prefers-reduced-motion`, the
+`prefers-reduced-motion`, `hover`, `any-hover`, `pointer` and `any-pointer`
+(fine with hover on a desktop; coarse with none on Android, in a phone preview
+and in a touch browser, so Tailwind's `hover:` utilities stay off a phone), the
 `screen`/`all` types, `and` chains and comma alternatives. A block adds **no
 specificity**: rules inside it cascade by ordinary source order, so a later
 `@media` rule beats an earlier plain one, and `#id` still beats a `.class` in a
-media block. Anything else (`not …`, `(hover)`) warns once and never applies.
+media block. Anything else (`not …`) warns once and never applies.
+
+**Cascade layers, `!important`, `@supports` and `@property`** (2026-10-23), as
+in CSS. `@layer` blocks and `@layer a, b;` statements order the layers; a later
+layer beats an earlier one before specificity is asked, and a rule in no layer
+beats every layered one. `!important` beats every normal declaration and turns
+the layer order round, so an important rule in the first layer wins. `@supports`
+asks whether Rux honors the property, or with `selector()` the pseudo-class, and
+takes `not`, `and` and `or`. `@property --x { initial-value: 0; inherits: false; }`
+gives a custom property its starting value, and with `inherits: false` a child
+starts again from it instead of taking its parent's. Any other at-rule, and a
+rule nested inside a rule, warns instead of vanishing.
 
 **`orientation` and `resolution` are answered by the device**, and both were
 driven on one: rotating a phone re-cascades live, and a Pixel 6 reports 2.625,

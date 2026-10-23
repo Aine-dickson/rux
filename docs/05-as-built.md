@@ -625,7 +625,11 @@ grid-column, grid-column-start, grid-column-end
 grid-row, grid-row-start, grid-row-end   (1 / 3, span 2, -1, a line or area name)
 grid-auto-flow, grid-auto-rows, grid-auto-columns
 transform (translate/scale/rotate; visual only; hit regions aren't transformed)
+translate, rotate, scale (the properties: applied in that order, then `transform`,
+                       as in CSS; a 3D value is read for its 2D part)
+place-items, place-content, place-self (align then justify; one value is both)
 position (static|relative|sticky|absolute|fixed), top, right, bottom, left
+inset (1–4 values, as margin)
 inset-inline, inset-inline-start, inset-inline-end,
 inset-block, inset-block-start, inset-block-end   (logical: see `direction`)
 z-index (auto|<integer>), isolation (auto|isolate)
@@ -640,8 +644,12 @@ margin, margin-top, margin-right, margin-bottom, margin-left
 border, border-width, border-color, border-style (and each side's -width and
                        -style; none, hidden, solid, dashed, dotted, double,
                        groove, ridge, inset, outset; with no style a border is
-                       none and has no width, as in CSS; one colour for all four)
+                       none and has no width, as in CSS; border-color takes
+                       1–4 colours)
 border-top, border-right, border-bottom, border-left
+border-top-color, border-right-color, border-bottom-color, border-left-color
+                      (a border whose sides differ is drawn side by side; the
+                       per-side colours do not animate, `border-color` does)
 border-top-width, border-right-width, border-bottom-width, border-left-width
 border-top-style, border-right-style, border-bottom-style, border-left-style
 background, background-color, background-image, opacity
@@ -666,10 +674,17 @@ outline, outline-width, outline-style, outline-color, outline-offset
   (none | solid | auto; drawn outside the border box, over the content, following
    border-radius; the colour defaults to the element's color; see below)
 transition (property duration easing delay, comma-separated; see below)
+transition-property, transition-duration, transition-timing-function,
+transition-delay, transition-behavior
+                      (lists, one transition per property, the others repeated
+                       to match, as in CSS; transition-behavior is read and set
+                       aside)
 border-radius (1–4 diagonal shorthand; px/rem/em, and % against the box)
 border-top-left-radius, border-top-right-radius
 border-bottom-right-radius, border-bottom-left-radius
 color, font-size, font-weight, font-family, font-style (italic), text-align
+font (shorthand: `italic 600 1rem/1.5 Inter, sans-serif`; what is left out is
+                       `normal`, as in CSS; system fonts are not read)
 letter-spacing, word-spacing, line-height
 white-space (normal|nowrap|pre|pre-wrap|pre-line)
 vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
@@ -847,6 +862,28 @@ never matches, with a warning. A rule that reads a place stops a list from
 reusing its built rows, as `+` and `~` already do. `query()` answers all of
 them from the tree as built.
 
+**`:is()`, `:where()` and `:root`** (2026-10-23). `:is(a, b)` matches any of its
+selectors, combinators included, so `.x:is(.group:hover *)` styles `.x` while
+an ancestor `.group` is hovered, and counts as specific as its most specific
+argument. `:where()` matches the same and adds nothing. Both are forgiving, as
+in CSS: an argument that does not parse is dropped, not the rule. `:root` is the
+screen's own element, so a theme's variables set there reach everything; `:host`
+matches nothing and says nothing, as in a document's sheet. Class and id names
+read CSS escapes (`.md\:flex`, `.py-1\.5`, `.\31 0`), and a vendor's own
+pseudo-element (`::-webkit-scrollbar`) passes quietly, as it does in every
+other engine.
+
+**CSS-wide keywords** (2026-10-23). `inherit`, `initial`, `unset`, `revert` and
+`revert-layer` read as no declaration at all: a property that inherits takes
+its parent's value, one that does not takes Rux's default, which is what
+`initial` and `revert` come to with no user-agent sheet beyond the defaults.
+Two answers are not CSS's and warn once: `initial` on an inheriting property
+gives the parent's value, and `inherit` on a non-inheriting one gives the
+default. A `-webkit-` or `-moz-` spelling of a property Rux honors is that
+property (`-webkit-backdrop-filter`); another vendor's own property passes
+quietly, except `-webkit-line-clamp` and `-webkit-box-orient`, whose effect
+would be visible.
+
 **The focus ring is an `outline`.** The default stylesheet is
 `:focus-visible { outline: auto }`, as every browser's is, so the ring is
 restyled and removed with ordinary CSS:
@@ -867,7 +904,7 @@ scrolled list is clipped by the list, as in a browser. Its style is a border's:
 `dashed`, `dotted`, `double` and the 3D styles are drawn as they are for
 `border`.
 
-Any *other* pseudo-class (`:last-child`, `::before`) **never
+Any *other* pseudo-class (`:has()`, `::before`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
@@ -1270,11 +1307,24 @@ To see a non-zero inset on a desktop, see `rux run --preview` below.
 ```
 Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`,
 `resolution` (`dppx`, `x`, `dpi`, `dpcm`), `prefers-color-scheme`,
-`prefers-reduced-motion`, the
+`prefers-reduced-motion`, `hover`, `any-hover`, `pointer` and `any-pointer`
+(fine with hover on a desktop; coarse with none on Android, in a phone preview
+and in a touch browser, so Tailwind's `hover:` utilities stay off a phone), the
 `screen`/`all` types, `and` chains and comma alternatives. A block adds **no
 specificity**: rules inside it cascade by ordinary source order, so a later
 `@media` rule beats an earlier plain one, and `#id` still beats a `.class` in a
-media block. Anything else (`not …`, `(hover)`) warns once and never applies.
+media block. Anything else (`not …`) warns once and never applies.
+
+**Cascade layers, `!important`, `@supports` and `@property`** (2026-10-23), as
+in CSS. `@layer` blocks and `@layer a, b;` statements order the layers; a later
+layer beats an earlier one before specificity is asked, and a rule in no layer
+beats every layered one. `!important` beats every normal declaration and turns
+the layer order round, so an important rule in the first layer wins. `@supports`
+asks whether Rux honors the property, or with `selector()` the pseudo-class, and
+takes `not`, `and` and `or`. `@property --x { initial-value: 0; inherits: false; }`
+gives a custom property its starting value, and with `inherits: false` a child
+starts again from it instead of taking its parent's. Any other at-rule, and a
+rule nested inside a rule, warns instead of vanishing.
 
 **`orientation` and `resolution` are answered by the device**, and both were
 driven on one: rotating a phone re-cascades live, and a Pixel 6 reports 2.625,

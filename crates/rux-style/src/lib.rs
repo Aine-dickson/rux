@@ -4227,10 +4227,13 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-top-left-radius", "border-top-right-radius",
     "border-bottom-right-radius", "border-bottom-left-radius",
     "border-top", "border-right", "border-bottom", "border-left",
+    "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
     "border-style", "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
     "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "filter", "backdrop-filter", "text-shadow", "cursor", "touch-action", "box-shadow", "transform",
-    "transition",
+    "translate", "rotate", "scale",
+    "transition", "transition-property", "transition-duration", "transition-timing-function",
+    "transition-delay", "transition-behavior",
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
     "object-fit", "object-position", "pointer-events", "scroll-behavior",
@@ -4239,13 +4242,13 @@ const HONORED_PROPERTIES: &[&str] = &[
     // Flex / grid
     "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
     "justify-content", "align-items", "align-self", "justify-self", "justify-items",
-    "align-content", "row-gap", "column-gap",
+    "align-content", "row-gap", "column-gap", "place-items", "place-content", "place-self",
     "grid-template-columns", "grid-template-rows", "grid-template-areas", "grid-template",
     "grid-area", "grid-column", "grid-row",
     "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
     "grid-auto-flow", "grid-auto-rows", "grid-auto-columns",
     // Positioning
-    "position", "top", "right", "bottom", "left", "aspect-ratio", "z-index", "isolation",
+    "position", "top", "right", "bottom", "left", "inset", "aspect-ratio", "z-index", "isolation",
     "anchor-name", "position-anchor",
     "position-try", "position-try-fallbacks", "position-try-order",
     "content-visibility", "contain-intrinsic-size", "contain-intrinsic-width",
@@ -4262,7 +4265,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "background-size", "background-position", "background-position-x", "background-position-y",
     "background-repeat", "background-attachment", "background-clip", "background-origin",
     // Text
-    "color", "font-size", "font-weight", "font-family", "font-style", "text-align",
+    "color", "font", "font-size", "font-weight", "font-family", "font-style", "text-align",
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
     "text-decoration-color", "text-decoration-style", "text-decoration-thickness",
@@ -4516,8 +4519,7 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
     // Boxes
-    "box-sizing", "float", "clear", "order", "inset",
-    "place-items", "place-content", "place-self", "resize",
+    "box-sizing", "float", "clear", "order", "resize",
     // Text. Static text cannot be selected yet, so `user-select` has
     // nothing to turn off; vertical writing is a layout of its own.
     "writing-mode", "user-select",
@@ -4605,7 +4607,16 @@ fn warn_if_unhonored(property: &str) {
 
     // A custom property is not a property we could fail to honor, it is storage
     // for `var()`, and any name is legal.
-    if property.starts_with("--") || is_honored(property) {
+    if property.starts_with("--") || is_honored(property) || vendor_alias(property).is_some() {
+        return;
+    }
+    // Another vendor's own property (`-webkit-tap-highlight-color`) belongs
+    // to one engine, and the others pass over it without a word, as they do
+    // its pseudo-elements. The two that are the one way to clamp lines in
+    // every engine still say so, since what they would do is visible.
+    if (property.starts_with("-webkit-") || property.starts_with("-moz-") || property.starts_with("-ms-"))
+        && !matches!(property, "-webkit-line-clamp" | "-webkit-box-orient")
+    {
         return;
     }
     let message = if UNIMPLEMENTED_PROPERTIES.contains(&property) {
@@ -5201,10 +5212,180 @@ fn matched_props(
 /// a `background-size`, it puts the size back to `auto`. So a `background`
 /// takes away the longhands declared before it.
 pub(crate) fn declare(props: &mut HashMap<String, String>, k: &str, v: &str) {
+    // A shorthand Rux reads as the longhands it sets, put down here so they
+    // take their place in the order everything else was written in.
+    if let Some(longhands) = expand_shorthand(k, v) {
+        for (lk, lv) in longhands {
+            declare(props, lk, &lv);
+        }
+        return;
+    }
+    // A vendor's spelling of a property Rux honors is that property, as a
+    // browser aliases `-webkit-backdrop-filter`.
+    if let Some(unprefixed) = vendor_alias(k) {
+        return declare(props, unprefixed, v);
+    }
     if k == "background" {
         props.retain(|name, _| !BACKGROUND_LONGHANDS.contains(&name.as_str()));
     }
+    if k == "transition" {
+        props.retain(|name, _| !TRANSITION_LONGHANDS.contains(&name.as_str()));
+    }
     props.insert(k.to_string(), v.to_string());
+}
+
+/// `inset` and the `place-*` pair shorthands, as their longhands. `None`
+/// for anything else.
+///
+/// Split before `var()` is substituted, so a lone `var()` standing for
+/// several values is copied to every side whole. A value written as one
+/// token per side, which is what Tailwind writes (`inset: calc(var(--spacing)
+/// * 0)`), is split the way it reads.
+fn expand_shorthand(k: &str, v: &str) -> Option<Vec<(&'static str, String)>> {
+    let parts = split_top_level(v);
+    let part = |i: usize| parts.get(i).copied().unwrap_or(v).to_string();
+    Some(match k {
+        "inset" => {
+            let (top, right, bottom, left) = match parts.len() {
+                0 | 1 => (part(0), part(0), part(0), part(0)),
+                2 => (part(0), part(1), part(0), part(1)),
+                3 => (part(0), part(1), part(2), part(1)),
+                _ => (part(0), part(1), part(2), part(3)),
+            };
+            vec![("top", top), ("right", right), ("bottom", bottom), ("left", left)]
+        }
+        "place-items" | "place-content" | "place-self" => {
+            let (align, justify) = match k {
+                "place-items" => ("align-items", "justify-items"),
+                "place-content" => ("align-content", "justify-content"),
+                _ => ("align-self", "justify-self"),
+            };
+            let second = if parts.len() > 1 { part(1) } else { part(0) };
+            vec![(align, part(0)), (justify, second)]
+        }
+        "font" => return expand_font(v),
+        _ => return None,
+    })
+}
+
+/// The properties that inherit in CSS, of those Rux honors. What a
+/// CSS-wide keyword means depends on it; see [`wide_keywords`].
+const INHERITED_PROPERTIES: &[&str] = &[
+    "color", "font-size", "font-weight", "font-family", "font-style", "font-variant",
+    "font-variant-caps", "font-variant-numeric", "font-variant-ligatures", "font-variant-position",
+    "font-variant-east-asian", "font-feature-settings", "font-variation-settings", "font-stretch",
+    "font-width", "letter-spacing", "word-spacing", "line-height", "text-align", "text-indent",
+    "text-transform", "text-shadow", "white-space", "word-break", "overflow-wrap", "word-wrap",
+    "direction", "visibility", "cursor", "caret-color", "accent-color", "color-scheme",
+    "pointer-events", "fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap",
+    "stroke-linejoin", "scrollbar-color",
+];
+
+/// `inherit`, `initial`, `unset`, `revert` and `revert-layer`, which every
+/// property takes. Read as no declaration at all, which is what they come
+/// to here: a property that inherits takes its parent's value, and one that
+/// does not takes Rux's own default, which is what Rux's `revert` and
+/// `initial` are, as it has no user-agent sheet apart from its defaults.
+///
+/// Two answers are not CSS's, and are said: `initial` on a property that
+/// inherits gives the parent's value, not the property's initial one, and
+/// `inherit` on one that does not inherit gives Rux's default, not the
+/// parent's value.
+fn wide_keywords(props: &mut HashMap<String, String>) {
+    let keyword = |v: &str| matches!(v.trim().to_ascii_lowercase().as_str(), "inherit" | "initial" | "unset" | "revert" | "revert-layer");
+    if !props.values().any(|v| keyword(v)) {
+        return;
+    }
+    props.retain(|k, v| {
+        if k.starts_with("--") || !keyword(v) {
+            return true;
+        }
+        let inherits = INHERITED_PROPERTIES.contains(&k.as_str());
+        match v.trim().to_ascii_lowercase().as_str() {
+            "inherit" if !inherits => warn_once(format!(
+                "`{k}: inherit` takes Rux's default, not the parent's value: `{k}` does not inherit, and \
+                 taking it from the parent is not supported yet"
+            )),
+            "initial" if inherits => warn_once(format!(
+                "`{k}: initial` takes the parent's value, not the initial one: `{k}` inherits, and its \
+                 initial value is not known here yet"
+            )),
+            _ => {}
+        }
+        false
+    });
+}
+
+/// `font: italic 600 1rem/1.5 Inter, sans-serif` as its longhands. The size
+/// is the one token that has to be there; what comes before it is the style,
+/// variant, weight and stretch in any order, and everything after it is the
+/// family. A system font (`caption`, `menu`) is not a font Rux can name, so
+/// it is left to warn as an unreadable `font`.
+fn expand_font(v: &str) -> Option<Vec<(&'static str, String)>> {
+    let v = v.trim();
+    let lower = v.to_ascii_lowercase();
+    if matches!(lower.as_str(), "inherit" | "initial" | "unset" | "revert" | "revert-layer") {
+        return Some(
+            ["font-style", "font-variant", "font-weight", "font-stretch", "font-size", "line-height", "font-family"]
+                .into_iter()
+                .map(|k| (k, v.to_string()))
+                .collect(),
+        );
+    }
+    let mut out = vec![
+        ("font-style", "normal".to_string()),
+        ("font-variant", "normal".to_string()),
+        ("font-weight", "normal".to_string()),
+        ("font-stretch", "normal".to_string()),
+        ("line-height", "normal".to_string()),
+    ];
+    let mut rest = v;
+    loop {
+        let token_end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+        let token = &rest[..token_end];
+        if token.is_empty() {
+            return None;
+        }
+        let lower = token.to_ascii_lowercase();
+        let (size, line) = match token.split_once('/') {
+            Some((s, l)) => (s, Some(l)),
+            None => (token, None),
+        };
+        // A bare number is a weight; a size has a unit, or is zero.
+        let is_size = size == "0"
+            || (size.parse::<f32>().is_err() && (parse_px(size).is_some() || size.ends_with('%') || size.ends_with("vw") || size.ends_with("vh")))
+            || ["calc(", "clamp(", "min(", "max("].iter().any(|f| size.starts_with(f))
+            || matches!(size, "xx-small" | "x-small" | "small" | "medium" | "large" | "x-large" | "xx-large" | "xxx-large" | "smaller" | "larger");
+        if is_size {
+            out.push(("font-size", size.to_string()));
+            if let Some(l) = line {
+                out[4].1 = l.to_string();
+            }
+            let family = rest[token_end..].trim();
+            if family.is_empty() {
+                return None;
+            }
+            out.push(("font-family", family.to_string()));
+            return Some(out);
+        }
+        match lower.as_str() {
+            "normal" => {}
+            "italic" | "oblique" => out[0].1 = token.to_string(),
+            "small-caps" => out[1].1 = token.to_string(),
+            "condensed" | "expanded" | "semi-condensed" | "semi-expanded" | "extra-condensed" | "extra-expanded"
+            | "ultra-condensed" | "ultra-expanded" => out[3].1 = token.to_string(),
+            _ if parse_weight(token).is_some() => out[2].1 = token.to_string(),
+            _ => return None,
+        }
+        rest = rest[token_end..].trim_start();
+    }
+}
+
+/// `-webkit-backdrop-filter` as `backdrop-filter`: a vendor prefix on a
+/// property Rux honors under its own name.
+fn vendor_alias(k: &str) -> Option<&'static str> {
+    let rest = k.strip_prefix("-webkit-").or_else(|| k.strip_prefix("-moz-"))?;
+    HONORED_PROPERTIES.iter().find(|p| **p == rest).copied()
 }
 
 /// Every longhand the `background` shorthand sets.
@@ -6093,6 +6274,7 @@ fn build_node_inner(
             *value = resolve_env(value);
         }
     }
+    wide_keywords(&mut props);
 
     // Resolve `em` here, for the same reason `var()` is resolved here: every
     // length parser would otherwise have to learn about font size, and most of
@@ -9995,8 +10177,11 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("transform") {
         st.transform = parse_transform(v);
     }
-    if let Some(v) = p.get("transition") {
-        st.transitions = parse_transitions(v);
+    if ["translate", "rotate", "scale"].iter().any(|k| p.contains_key(*k)) {
+        st.transform = individual_transforms(p, st.transform);
+    }
+    if let Some(v) = transition_value(p) {
+        st.transitions = parse_transitions(&v);
     }
     if let Some(v) = p.get("box-shadow") {
         st.box_shadow = parse_box_shadow(v);
@@ -10687,6 +10872,89 @@ fn parse_transitions(value: &str) -> Vec<Transition> {
     out
 }
 
+/// The longhands `transition` sets. See [`declare`], which takes them away
+/// when the shorthand comes after them.
+const TRANSITION_LONGHANDS: &[&str] = &[
+    "transition-property",
+    "transition-duration",
+    "transition-timing-function",
+    "transition-delay",
+    "transition-behavior",
+];
+
+/// The element's transitions as one `transition` value: the shorthand as
+/// written, or, when any longhand is set, the lists put back together the
+/// way CSS does. There are as many transitions as `transition-property`
+/// names, and each other list is repeated to that length.
+///
+/// That is how Tailwind writes every `transition` utility, a list of
+/// properties with the duration and the easing beside it, and a list of
+/// that kind names properties Rux cannot animate alongside the ones it can.
+/// A discrete property (`display`), a custom property, and the individual
+/// transforms read as `transform`, are taken quietly; anything else is said
+/// once for the list, since those change at once rather than not at all.
+fn transition_value(p: &HashMap<String, String>) -> Option<String> {
+    let longhand = |name: &str| p.get(name).map(|v| split_top_level_commas(v).into_iter().map(str::to_string).collect::<Vec<_>>());
+    if !TRANSITION_LONGHANDS.iter().any(|n| p.contains_key(*n)) {
+        return p.get("transition").cloned();
+    }
+    // What the shorthand set, as lists, under what the longhands say.
+    let (mut props, mut durations, mut easings, mut delays) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for entry in p.get("transition").map(|v| split_top_level_commas(v)).unwrap_or_default() {
+        let (mut prop, mut times, mut easing) = (None, Vec::new(), None);
+        for token in split_top_level(entry) {
+            if parse_time(token).is_some() {
+                times.push(token.to_string());
+            } else if parse_easing(token).is_some() || token.contains('(') {
+                easing = Some(token.to_string());
+            } else if !matches!(token, "normal" | "allow-discrete") {
+                prop = Some(token.to_string());
+            }
+        }
+        props.push(prop.unwrap_or_else(|| "all".into()));
+        durations.push(times.first().cloned().unwrap_or_else(|| "0s".into()));
+        delays.push(times.get(1).cloned().unwrap_or_else(|| "0s".into()));
+        easings.push(easing.unwrap_or_else(|| "ease".into()));
+    }
+    let or = |list: Option<Vec<String>>, from: Vec<String>, default: &str| {
+        let list = list.unwrap_or(from);
+        if list.is_empty() { vec![default.to_string()] } else { list }
+    };
+    let props = or(longhand("transition-property"), props, "all");
+    let durations = or(longhand("transition-duration"), durations, "0s");
+    let easings = or(longhand("transition-timing-function"), easings, "ease");
+    let delays = or(longhand("transition-delay"), delays, "0s");
+    if props.len() == 1 && props[0].eq_ignore_ascii_case("none") {
+        return Some("none".into());
+    }
+    let mut unanimated = Vec::new();
+    let mut entries = Vec::new();
+    for (i, name) in props.iter().enumerate() {
+        let lower = name.trim().to_ascii_lowercase();
+        let name = match lower.as_str() {
+            "display" | "visibility" | "content-visibility" | "overlay" | "pointer-events" => continue,
+            n if n.starts_with("--") => continue,
+            n if parse_anim_prop(n).is_some() => n,
+            n if props.len() > 1 => {
+                unanimated.push(n.to_string());
+                continue;
+            }
+            // Alone, it is said by `parse_transitions`, as the shorthand is.
+            n => n,
+        };
+        let pick = |list: &[String]| list[i % list.len()].clone();
+        entries.push(format!("{name} {} {} {}", pick(&durations), pick(&easings), pick(&delays)));
+    }
+    if !unanimated.is_empty() {
+        warn_once(format!(
+            "`transition-property` names {}, which Rux does not animate yet, so {} change at once",
+            unanimated.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", "),
+            if unanimated.len() == 1 { "it" } else { "they" }
+        ));
+    }
+    Some(entries.join(", "))
+}
+
 /// A CSS `<time>`: `250ms`, `.3s`, `0`. Unitless is only legal as zero, and a
 /// bare number that is not zero is not a time at all (it is a stray token), so
 /// it parses as `None` and is ignored rather than being read as seconds.
@@ -10763,7 +11031,8 @@ fn parse_anim_prop(s: &str) -> Option<AnimProp> {
         "margin" => AnimProp::Margin,
         "gap" => AnimProp::Gap,
         "font-size" => AnimProp::FontSize,
-        "transform" => AnimProp::Transform,
+        // The individual transforms are part of the one matrix.
+        "transform" | "translate" | "rotate" | "scale" => AnimProp::Transform,
         "inset" | "top" | "right" | "bottom" | "left" => AnimProp::Inset,
         _ => return None,
     })
@@ -10819,6 +11088,53 @@ fn parse_transform(value: &str) -> Option<Transform> {
         rest = rest[close + 1..].trim_start();
     }
     any.then_some(m)
+}
+
+/// `translate`, `rotate` and `scale`, the properties, put in front of
+/// `transform` in the order CSS applies them: translate, then rotate, then
+/// scale, then the transform list. `none` is no change; a 3D value is read
+/// for its 2D part, a rotation about another axis than z as none.
+fn individual_transforms(p: &HashMap<String, String>, transform: Option<Transform>) -> Option<Transform> {
+    let value = |k: &str| p.get(k).map(|v| v.trim()).filter(|v| !v.eq_ignore_ascii_case("none"));
+    let mut m: Transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    let mut any = transform.is_some();
+    if let Some(v) = value("translate") {
+        let parts = split_top_level(v);
+        if let Some(tx) = parts.first().and_then(|s| parse_px(s)) {
+            let ty = parts.get(1).and_then(|s| parse_px(s)).unwrap_or(0.0);
+            m = mat_mul(m, [1.0, 0.0, 0.0, 1.0, tx, ty]);
+            any = true;
+        }
+    }
+    if let Some(v) = value("rotate") {
+        let parts = split_top_level(v);
+        // `45deg`, `z 45deg` or `0 0 1 45deg`.
+        let about_z = match parts.len() {
+            1 => true,
+            2 => parts[0].eq_ignore_ascii_case("z"),
+            4 => parts[..3].iter().map(|s| s.parse::<f32>().ok()).collect::<Option<Vec<_>>>()
+                .is_some_and(|a| a[0] == 0.0 && a[1] == 0.0 && a[2] > 0.0),
+            _ => false,
+        };
+        if let (true, Some(angle)) = (about_z, parts.last().and_then(|s| parse_angle(s))) {
+            let (sin, cos) = angle.sin_cos();
+            m = mat_mul(m, [cos, sin, -sin, cos, 0.0, 0.0]);
+            any = true;
+        }
+    }
+    if let Some(v) = value("scale") {
+        let factor = |s: &str| match s.strip_suffix('%') {
+            Some(pct) => pct.trim().parse::<f32>().ok().map(|n| n / 100.0),
+            None => s.parse::<f32>().ok(),
+        };
+        let parts = split_top_level(v);
+        if let Some(sx) = parts.first().and_then(|s| factor(s)) {
+            let sy = parts.get(1).and_then(|s| factor(s)).unwrap_or(sx);
+            m = mat_mul(m, [sx, 0.0, 0.0, sy, 0.0, 0.0]);
+            any = true;
+        }
+    }
+    any.then(|| mat_mul(m, transform.unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0])))
 }
 
 /// One `transform` function to an affine, or `None` if unrecognised.
@@ -12768,7 +13084,14 @@ fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
             widths[i] = width;
             styles[i] = style;
         }
-        st.border_color = color;
+        // One side's shorthand colours that side; `border` all of them.
+        match sides {
+            [i] => st.border_colors.get_or_insert_default()[*i] = color,
+            _ => {
+                st.border_color = color;
+                st.border_colors = None;
+            }
+        }
     };
     if let Some(v) = p.get("border") {
         shorthand(v, &[0, 1, 2, 3], &mut widths, &mut styles, st);
@@ -12791,9 +13114,17 @@ fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
         }
     }
     if let Some(v) = p.get("border-color") {
-        st.border_color = parse_color(first(v));
+        let colors: Vec<Rgba> = split_top_level(v).into_iter().filter_map(parse_color).collect();
+        st.border_color = colors.first().copied();
+        st.border_colors = None;
+        if let Some(sides) = four_sides(&colors).filter(|_| colors.len() > 1) {
+            st.border_colors = Some(Box::new(sides.map(Some)));
+        }
     }
     for (i, side) in SIDES.iter().enumerate() {
+        if let Some(c) = p.get(&format!("border-{side}-color")).and_then(|v| parse_color(first(v))) {
+            st.border_colors.get_or_insert_default()[i] = Some(c);
+        }
         if let Some(w) = p.get(&format!("border-{side}-width")).and_then(|v| outline_width(first(v))) {
             widths[i] = w;
         }
@@ -16712,5 +17043,146 @@ mod custom_property_tests {
                  .p { --c: #00ff00; } .a { background: var(--c); }</style>"#,
         );
         assert!(red(&root.children[0].children[0]));
+    }
+}
+
+#[cfg(test)]
+mod tailwind_property_tests {
+    use std::collections::HashMap;
+
+    use rux_layout::{AnimProp, Len, Node};
+    use rux_script::Builder;
+
+    fn first(css: &str) -> Node {
+        let src = format!(r#"<template><screen><view class="a" /></screen></template><style>{css}</style>"#);
+        let sfc = rux_parser::parse_sfc(&src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let root = super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut super::Instances::new(),
+            &mut crate::Swaps::new(),
+            &super::InteractionState::default(),
+            super::Environment::default(),
+        )
+        .unwrap()
+        .0;
+        root.children[0].clone()
+    }
+
+    /// Tailwind's `transition`: a list of properties, with one duration and
+    /// one easing beside it, repeated for each.
+    #[test]
+    fn transition_longhands_make_one_transition_per_property() {
+        let n = first(
+            ".a { transition-property: color, background-color, display, --tw-x, opacity; \
+                  transition-duration: 150ms; transition-timing-function: linear; }",
+        );
+        let props: Vec<AnimProp> = n.style.transitions.iter().map(|t| t.property).collect();
+        assert_eq!(props, vec![AnimProp::Color, AnimProp::BackgroundColor, AnimProp::Opacity]);
+        assert!(n.style.transitions.iter().all(|t| t.duration == 150.0));
+    }
+
+    /// The shorthand written after a longhand puts it back.
+    #[test]
+    fn the_transition_shorthand_resets_its_longhands() {
+        let n = first(".a { transition-duration: 900ms; transition: opacity 100ms; }");
+        assert_eq!(n.style.transitions.len(), 1);
+        assert_eq!(n.style.transitions[0].duration, 100.0);
+        let n = first(".a { transition: opacity 100ms; transition-duration: 900ms; }");
+        assert_eq!(n.style.transitions[0].duration, 900.0, "a longhand after it overrides");
+    }
+
+    /// `translate`, `rotate` and `scale` go in front of `transform`.
+    #[test]
+    fn individual_transforms_compose_before_transform() {
+        let n = first(".a { translate: 10px 4px; scale: 50%; }");
+        let m = n.style.transform.unwrap();
+        assert_eq!([m[0], m[3], m[4], m[5]], [0.5, 0.5, 10.0, 4.0]);
+        let n = first(".a { transform: translate(2px, 0); scale: 2; }");
+        let m = n.style.transform.unwrap();
+        assert_eq!([m[0], m[4]], [2.0, 4.0], "scale applies outside the transform list");
+        assert!(first(".a { translate: none; }").style.transform.is_none());
+    }
+
+    /// `inset` is the four sides; a later side wins over it.
+    #[test]
+    fn inset_sets_four_sides() {
+        let n = first(".a { position: absolute; inset: 1px 2px; left: 9px; }");
+        let px = |l: Option<Len>| match l {
+            Some(Len::Px(v)) => v,
+            other => panic!("{other:?}"),
+        };
+        let i = n.style.inset;
+        assert_eq!([px(i[0]), px(i[1]), px(i[2]), px(i[3])], [1.0, 2.0, 1.0, 9.0]);
+    }
+
+    /// A side's colour overrides the box's, and a side's shorthand colours
+    /// that side alone.
+    #[test]
+    fn border_sides_take_their_own_colours() {
+        let n = first(".a { border: 2px solid #ff0000; border-top-color: transparent; }");
+        assert!(n.style.border_color.is_some_and(|c| c.r == 1.0));
+        let sides = n.style.border_colors.as_deref().unwrap();
+        assert!(sides[0].is_some_and(|c| c.a == 0.0));
+        assert!(sides[1].is_none());
+        let n = first(".a { border-bottom: 1px solid #00ff00; }");
+        let sides = n.style.border_colors.as_deref().unwrap();
+        assert!(sides[0].is_none(), "only the bottom was coloured; the rest are currentcolor");
+        assert!(sides[2].is_some_and(|c| c.g == 1.0));
+    }
+
+    /// The `font` shorthand, in its usual shapes.
+    #[test]
+    fn font_shorthand_is_its_longhands() {
+        let font = |v: &str| super::expand_font(v).map(|l| l.into_iter().collect::<HashMap<_, _>>());
+        let f = font("italic 600 20px/1.5 Inter, 'Segoe UI', sans-serif").unwrap();
+        assert_eq!(f["font-style"], "italic");
+        assert_eq!(f["font-weight"], "600");
+        assert_eq!(f["font-size"], "20px");
+        assert_eq!(f["line-height"], "1.5");
+        assert_eq!(f["font-family"], "Inter, 'Segoe UI', sans-serif");
+        assert_eq!(font("1rem serif").unwrap()["font-weight"], "normal");
+        assert!(font("caption").is_none(), "a system font is not one Rux can name");
+        assert_eq!(font("inherit").unwrap()["font-size"], "inherit");
+    }
+
+    /// `font: inherit` on a field takes the font around it, which is what
+    /// every reset sheet writes.
+    #[test]
+    fn font_inherit_takes_the_parents_font() {
+        let src = r#"<template><screen class="s"><input class="i" r-model="v" /></screen></template>
+            <style>.s { font-size: 30px; font-weight: 700; } .i { font: inherit; color: inherit; }</style>
+            <script>let v = signal("x");</script>"#;
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let _ = super::take_warnings();
+        let root = super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut super::Instances::new(),
+            &mut crate::Swaps::new(),
+            &super::InteractionState::default(),
+            super::Environment::default(),
+        )
+        .unwrap()
+        .0;
+        let warnings = super::take_warnings();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        let text = root.children[0].children[0].text.as_ref().unwrap();
+        assert_eq!((text.font_size, text.weight), (30.0, 700));
+    }
+
+    /// `-webkit-backdrop-filter` is `backdrop-filter`.
+    #[test]
+    fn a_vendor_alias_is_the_property() {
+        let a = first(".a { -webkit-backdrop-filter: blur(4px); }");
+        let b = first(".a { backdrop-filter: blur(4px); }");
+        assert_eq!(format!("{:?}", a.style.filters), format!("{:?}", b.style.filters));
+        assert!(format!("{:?}", a.style.filters) != "None");
     }
 }
