@@ -1340,6 +1340,9 @@ impl<'t> Parser<'t> {
                     let optional = *d == "?.";
                     let name = match self.peek() {
                         Tok::Ident(n) => Ident { name: n.to_string(), span: self.bump().span },
+                        // A keyword is a name after a `.`, as in JavaScript:
+                        // `sound.loop`, as HTML's own element spells it.
+                        Tok::Kw(k) => Ident { name: k.to_string(), span: self.bump().span },
                         Tok::Reserved(r) if METHOD_RESERVED.contains(r) && matches!(self.peek_nth(1), Tok::Punct("(" | "()")) => {
                             Ident { name: r.to_string(), span: self.bump().span }
                         }

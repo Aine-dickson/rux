@@ -136,6 +136,15 @@ mod tests {
         assert!(matches!(&body.kind, StmtKind::Expr(Expr { kind: ExprKind::Map { .. }, .. })));
     }
 
+    /// A keyword is a field's name after a `.`, as in JavaScript, so a
+    /// sound's `loop` reads as HTML's element spells it.
+    #[test]
+    fn a_keyword_is_a_field_name_after_a_dot() {
+        ok("sound.loop = true;");
+        ok("let on = sound?.loop ?? false;");
+        assert_eq!(grouped("a.if + b.while"), "(a.if + b.while)");
+    }
+
     #[test]
     fn arrows_and_their_annotations() {
         ok("let add = (a: float, b: float) => a + b;");
