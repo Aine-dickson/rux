@@ -2745,7 +2745,7 @@ impl Document {
         for c in &mut component_sources {
             c.aliases = component_aliases.remove(&c.key).unwrap_or_default();
         }
-        let mut engine = build_engine_linked(&combined_script, &ordered, aliases, component_sources)
+        let mut engine = build_engine_linked(&combined_script, &ordered, aliases, component_sources, imported_types.clone())
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
         report_module_findings(&engine, &ordered);
         // What `x is T` resolves a name against, beyond the script's own
@@ -2903,14 +2903,18 @@ impl Document {
         let (main_script, imports) = extract_imports(&sfc.script);
         // A native module is not a file, so it is reached from here too.
         let mut native_aliases = Vec::new();
+        let mut native_types = Vec::new();
         for import in &imports {
             let Some(module) = native_module_of(&import.file) else { continue };
             let at = sfc.script_line + import.line - 1;
             let written = module.replace('/', "::");
-            if rux_native::registry::interface(&module).is_none() {
+            let Some(iface) = rux_native::registry::interface(&module) else {
                 return Err(LoadError::at_line(no_native_module(&written), at, Path::new("")));
-            }
-            if import.type_name.is_some() {
+            };
+            if let Some(type_name) = &import.type_name {
+                if let Some(item) = iface.items.iter().find(|i| &i.name == type_name && i.is_type()) {
+                    native_types.push((type_name.clone(), rux_script::native::type_text(item)));
+                }
                 continue;
             }
             let (target, local) = match &import.picked {
@@ -2931,7 +2935,8 @@ impl Document {
         // most wants it: this is the only error surface it has. Nothing is
         // appended here, so the whole compiled text is the document's script.
         let main_script_lines = main_script.lines().count();
-        let mut engine = build_engine_linked(&main_script, &[], native_aliases, Vec::new())
+        rux_script::validate::know_types(native_types.iter().cloned());
+        let mut engine = build_engine_linked(&main_script, &[], native_aliases, Vec::new(), native_types.clone())
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, None))?;
         let mut instances = Instances::new();
         let mut swaps = Swaps::new();
@@ -2962,7 +2967,7 @@ impl Document {
         let callers = names_callers_bring(&sfc.template, &engine);
         check_script_functions(&engine, &with_props(&callers, &sfc), usize::MAX, sfc.script_line);
         // With no filesystem there are no type imports either.
-        check_script_types(&engine, &sfc, usize::MAX, Vec::new(), Vec::new(), &computeds, &callers, &TagProps::new());
+        check_script_types(&engine, &sfc, usize::MAX, native_types, Vec::new(), &computeds, &callers, &TagProps::new());
         // Everything the load-time checks said, kept: a rebuild re-raises what
         // the build finds and nothing else, so without this a document whose
         // `mounted` or `computed` ran lost every check error before anyone saw it.
@@ -6593,6 +6598,7 @@ fn build_engine_linked(
     modules: &[modules::ModuleFile],
     aliases: Vec<rux_script::link::Alias>,
     components: Vec<rux_script::ComponentSource>,
+    types: Vec<(String, String)>,
 ) -> Result<Engine, rux_script::ScriptError> {
     let mut builder = Builder::new();
     for c in components {
@@ -6607,6 +6613,7 @@ fn build_engine_linked(
         });
     }
     builder.aliases(aliases);
+    builder.types(types);
 
     let mut engine = builder.build(script)?;
     // The route has to be in scope before the first build, because a `<router>`
@@ -9863,6 +9870,126 @@ let open = signal(true);
         assert!(doc.refresh_native_signals(), "two sets, one refresh");
         assert_eq!(text_of(&doc.root).join("|"), "42|i64", "the newest, and an int");
         assert!(!doc.refresh_native_signals(), "nothing set since");
+    }
+
+    /// A resource that only Rust changes, with a writable property `level`
+    /// and a read-only one `label`, as a playing sound has `volume` and
+    /// `currentTime`.
+    struct Meter {
+        level: std::sync::Mutex<f64>,
+    }
+
+    impl rux_native::Resource for Meter {
+        const NAME: &'static str = "Meter";
+    }
+
+    fn meter_module(name: &str, meter: std::sync::Arc<Meter>) {
+        let of = |args: &[rux_native::Any]| match args.first() {
+            Some(rux_native::Any::Resource(h)) => h.get::<Meter>().ok_or_else(|| rux_native::Error::new("type", "not a Meter")),
+            _ => Err(rux_native::Error::new("type", "not a Meter")),
+        };
+        rux_native::Module::new(name)
+            .export(rux_native::Export {
+                item: rux_native::Item { name: "Meter".into(), kind: rux_native::ItemKind::Resource },
+                call: None,
+            })
+            .export(rux_native::Export::function(
+                "meter",
+                &[],
+                "Meter",
+                rux_native::Call::sync(move |_| Ok(rux_native::Any::Resource(rux_native::Handle::from_arc(meter.clone())))),
+            ))
+            .property(
+                "Meter",
+                "level",
+                "float",
+                rux_native::Call::sync(move |args| Ok(rux_native::Any::Float(*of(&args)?.level.lock().unwrap()))),
+                Some(rux_native::Call::sync(move |args| {
+                    let v = match args.get(1) {
+                        Some(rux_native::Any::Float(f)) => *f,
+                        Some(rux_native::Any::Int(i)) => *i as f64,
+                        _ => return Err(rux_native::Error::new("type", "a number")),
+                    };
+                    *of(&args)?.level.lock().unwrap() = v;
+                    rux_native::notify();
+                    Ok(rux_native::Any::None)
+                })),
+            )
+            .property("Meter", "label", "string", rux_native::Call::sync(|_| Ok(rux_native::Any::Str("meter".into()))), None)
+            .install();
+    }
+
+    /// A resource's properties: read in a binding, which follows a change
+    /// Rust makes on its own once Rust says so ([`rux_native::notify`]);
+    /// written by a handler through the setter, a plain `let` and `+=`
+    /// included, and shown at once; `?.` on one not there yet is `none`.
+    #[test]
+    fn a_native_property_is_read_written_and_followed() {
+        let meter = std::sync::Arc::new(Meter { level: std::sync::Mutex::new(2.0) });
+        meter_module("rts_meter", meter.clone());
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ m.level }}</text><text>{{ later?.level ?? -1 }}</text><text>{{ m.label }}</text></screen></template>
+             <script>use native::rts_meter;
+use type native::rts_meter::Meter;
+let m = rts_meter.meter();
+let later: Meter? = signal(none);
+fn bump() { m.level += 1.5; }
+fn set() { m.level = 10; }</script>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
+        assert_eq!(text_of(&doc.root).join("|"), "2|-1|meter");
+        let from_rust = meter.clone();
+        std::thread::spawn(move || {
+            *from_rust.level.lock().unwrap() = 5.0;
+            rux_native::notify();
+        })
+        .join()
+        .unwrap();
+        assert!(doc.refresh_native_signals(), "Rust said it moved");
+        assert_eq!(text_of(&doc.root).join("|"), "5|-1|meter");
+        doc.apply_handler("bump()");
+        assert_eq!(text_of(&doc.root).join("|"), "6.5|-1|meter", "written through the setter, shown at once");
+        doc.apply_handler("set()");
+        assert_eq!(*meter.level.lock().unwrap(), 10.0, "an int given to a float property");
+    }
+
+    /// A read-only property cannot be written, from script or from a
+    /// template's handler, and a property that is not there is named as
+    /// missing.
+    #[test]
+    fn a_read_only_native_property_says_so() {
+        meter_module("rts_meter_ro", std::sync::Arc::new(Meter { level: std::sync::Mutex::new(0.0) }));
+        let head = "<template><screen></screen></template><script>use native::rts_meter_ro;\nlet m = rts_meter_ro.meter();\n";
+        let said = |script: &str| {
+            let doc = Document::from_source(&format!("{head}{script}</script>")).expect("load");
+            doc.diagnostics.warnings.iter().map(|w| w.message.clone()).collect::<Vec<_>>().join("\n")
+        };
+        let w = said("fn f() { m.label = \"x\"; }");
+        assert!(w.contains("`label` of a `Meter` is read-only"), "{w}");
+        let w = said("fn f(): float { m.levle }");
+        assert!(w.contains("levle"), "{w}");
+        let mut doc = Document::from_source(&format!("{head}</script>")).expect("load");
+        doc.apply_handler("m.label = \"x\"");
+        let w: Vec<String> = take_warnings().iter().map(|w| w.message.clone()).collect();
+        assert!(w.iter().any(|m| m.contains("read-only")), "{w:?}");
+    }
+
+    /// A template's handler writes a property through its setter too, though
+    /// nothing there is typed.
+    #[test]
+    fn a_template_handler_writes_a_native_property() {
+        let meter = std::sync::Arc::new(Meter { level: std::sync::Mutex::new(1.0) });
+        meter_module("rts_meter_tpl", meter.clone());
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ m.level }}</text></screen></template>
+             <script>use native::rts_meter_tpl;
+let m = rts_meter_tpl.meter();</script>",
+        )
+        .expect("load");
+        doc.apply_handler("m.level += 2");
+        assert_eq!(*meter.level.lock().unwrap(), 3.0);
+        assert_eq!(text_of(&doc.root).join("|"), "3");
     }
 
     /// A signal set on another thread reaches the document the same way.

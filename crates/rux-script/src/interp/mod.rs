@@ -127,6 +127,9 @@ struct Track {
     before: HashMap<u32, V>,
     /// Changed by a tracked run inside this one.
     changed: HashSet<u32>,
+    /// Rust said something moved while it ran: a native property it wrote,
+    /// or one Rust changed meanwhile, which no global records.
+    properties: bool,
 }
 
 /// A running piece, for finding a name nothing declared.
@@ -143,6 +146,8 @@ pub struct Interp {
     /// Each native export called so far, by linked name, so the registry
     /// is asked once.
     natives: HashMap<String, rux_native::Call>,
+    /// Whether each native key called so far is a property's getter.
+    getters: HashMap<String, bool>,
     /// The native signals the document reads, by linked name, and the
     /// [`rux_native::signal_epoch`] they were last read at. Read again after
     /// any native call when the epoch moved, so a handler that called Rust
@@ -218,6 +223,7 @@ impl Interp {
             set: vec![false; n],
             by_name,
             natives: HashMap::new(),
+            getters: HashMap::new(),
             native_signals: Rc::from(Vec::new()),
             native_epoch: 0,
             native_moved: HashSet::new(),
@@ -373,14 +379,19 @@ impl Interp {
     /// The epoch is taken before the reads, so a set racing them is read
     /// again next time rather than lost.
     pub(crate) fn refresh_native_signals(&mut self) {
-        if self.native_signals.is_empty() {
-            return;
-        }
         let epoch = rux_native::signal_epoch();
         if epoch == self.native_epoch {
             return;
         }
         self.native_epoch = epoch;
+        // A setter Rust ran may have changed a property something reads.
+        self.native_moved.insert(crate::native::PROPERTIES_READ.to_string());
+        if let Some(t) = self.tracks.last_mut() {
+            t.properties = true;
+        }
+        if self.native_signals.is_empty() {
+            return;
+        }
         let names = Rc::clone(&self.native_signals);
         for name in names.iter() {
             let v = crate::native::read_signal(name);
@@ -576,8 +587,14 @@ impl Interp {
         }
         if let Some(outer) = self.tracks.last_mut() {
             outer.changed.extend(changed.iter().copied());
+            outer.properties |= track.properties;
         }
-        changed.into_iter().map(|g| self.unit.globals[g as usize].name.clone()).collect()
+        let mut names: HashSet<String> =
+            changed.into_iter().map(|g| self.unit.globals[g as usize].name.clone()).collect();
+        if track.properties {
+            names.insert(crate::native::PROPERTIES_READ.to_string());
+        }
+        names
     }
 
     fn wrote(&mut self, g: GlobalId) {
@@ -767,7 +784,19 @@ impl Interp {
 
     /// `b.name`, as a chain with no `?.` reads it.
     pub(crate) fn field_pub(&mut self, b: &V, name: &str) -> R<V> {
-        Ok(field(b, name, false)?.unwrap_or(V::None))
+        Ok(self.field_of(b, name, false)?.unwrap_or(V::None))
+    }
+
+    /// `b.name`, a native resource's property read through its getter where
+    /// the value's type was not known when it was lowered: a template's
+    /// binding, or a value typed `any`.
+    fn field_of(&mut self, b: &V, name: &str, optional: bool) -> R<Option<V>> {
+        if let V::Native(h) = b {
+            if let Some(p) = crate::native::property(h.type_name(), name) {
+                return self.native_pub(&p.key, vec![b.clone()]).map(Some);
+            }
+        }
+        field(b, name, optional)
     }
 
     /// `b[i]`, as a chain with no `?[` reads it.
@@ -777,7 +806,7 @@ impl Interp {
 
     /// `b?.name`: `None` where the chain stops.
     pub(crate) fn field_opt(&mut self, b: &V, name: &str) -> R<Option<V>> {
-        field(b, name, true)
+        self.field_of(b, name, true)
     }
 
     /// `b?[i]`: `None` where the chain stops.
@@ -828,7 +857,18 @@ impl Interp {
     }
 
     /// A native export called without `await`, as [`Interp::call`] calls one.
+    ///
+    /// A resource property's getter counts as a read of
+    /// [`crate::native::PROPERTIES_READ`], so what read it is read again when
+    /// Rust says something moved; on a `none` receiver (`sound?.volume`) it
+    /// is `none`, with no call into Rust.
     pub(crate) fn native_pub(&mut self, key: &str, argv: Vec<V>) -> R<V> {
+        if self.is_getter(key) {
+            crate::note_read(crate::native::PROPERTIES_READ);
+            if matches!(argv.first(), Some(V::None)) {
+                return Ok(V::None);
+            }
+        }
         match self.native(key)? {
             rux_native::Call::Sync(f) => self.call_native(&f, &argv),
             rux_native::Call::Async(_) => {
@@ -836,6 +876,15 @@ impl Interp {
                 fail(format!("{name} is `async` in Rust: await it inside an `async fn`"))
             }
         }
+    }
+
+    fn is_getter(&mut self, key: &str) -> bool {
+        if let Some(g) = self.getters.get(key) {
+            return *g;
+        }
+        let g = crate::native::is_getter(key);
+        self.getters.insert(key.to_string(), g);
+        g
     }
 
     pub(crate) fn call_value_pub(&mut self, f: V, argv: Vec<V>) -> R<V> {
@@ -1061,6 +1110,26 @@ impl Interp {
     /// The value `v` written at `root` and `keys`, applying `op` to what is
     /// there first.
     fn assign_value(&mut self, root: ir::Root, keys: &[Key], op: Option<BinOp>, v: V) -> R<()> {
+        // A native resource's property, where the value's type was not known
+        // when it was lowered (a template's handler): its setter.
+        if let Some((Key::Field(name), parent)) = keys.split_last() {
+            if let Some(base) = self.native_at(root, parent) {
+                let on = if let V::Native(h) = &base { h.type_name() } else { "" };
+                if let Some(p) = crate::native::property(on, name) {
+                    let Some(setter) = p.setter else {
+                        return fail(format!("`{name}` of a `{on}` is read-only: it is set by what it belongs to"));
+                    };
+                    let v = match op {
+                        None => v,
+                        Some(op) => {
+                            let held = self.native_pub(&p.key, vec![base.clone()])?;
+                            self.binary(op, held, v)?
+                        }
+                    };
+                    return self.native_pub(&setter, vec![base, v]).map(|_| ());
+                }
+            }
+        }
         let target = self.take(root, keys, true)?;
         match self.combine(op, target, v) {
             Ok(v) => self.put(root, keys, v),
@@ -1069,6 +1138,28 @@ impl Interp {
                 Err(e)
             }
         }
+    }
+
+    /// The native resource at `root` and `keys`, when that is what is there:
+    /// read without counting as a write, so an ordinary field's write pays
+    /// only this walk.
+    fn native_at(&mut self, root: ir::Root, keys: &[Key]) -> Option<V> {
+        let slot = self.locate(root).ok()?;
+        let mut here: &V = match slot {
+            Slot::Local(f, i) => &self.stack[f].slots[i],
+            Slot::Capture(i) => &self.stack.last()?.captures[i],
+            Slot::Global(g) => &self.globals[g.0 as usize],
+        };
+        for k in keys {
+            here = match (here, k) {
+                (V::Rec(r), Key::Field(n)) => r.get(n)?,
+                (V::Map(m), Key::Field(n)) => m.get(n.as_str())?,
+                (V::Map(m), Key::Index(V::Str(n))) => m.get(&**n)?,
+                (V::Array(a), Key::Index(V::Int(i))) => a.get(usize::try_from(*i).ok()?)?,
+                _ => return None,
+            };
+        }
+        matches!(here, V::Native(_)).then(|| here.clone())
     }
 
     /// What `target op= v` (or `= v`) leaves, or the failure with `target`
@@ -1517,7 +1608,7 @@ impl Interp {
         match &e.kind {
             ExprKind::Field { base, name, optional } => {
                 let Some(b) = base_of(self, base)? else { return Ok(None) };
-                field(&b, name, *optional)
+                self.field_of(&b, name, *optional)
             }
             ExprKind::Index { base, index, optional } => {
                 let Some(b) = base_of(self, base)? else { return Ok(None) };
@@ -1602,13 +1693,7 @@ impl Interp {
             Callee::Fn(id) => self.call_fn(*id, argv),
             Callee::Value(_) => self.call_value(func.unwrap_or(V::None), argv),
             Callee::Builtin(name) => self.builtin(name, argv),
-            Callee::Native(key) => match self.native(key)? {
-                rux_native::Call::Sync(f) => self.call_native(&f, &argv),
-                rux_native::Call::Async(_) => {
-                    let name = key.replace('/', "::");
-                    fail(format!("{name} is `async` in Rust: await it inside an `async fn`"))
-                }
-            },
+            Callee::Native(key) => self.native_pub(key, argv),
             Callee::Dyn(name) => self.call_named(name, argv),
         }
     }

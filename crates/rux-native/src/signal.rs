@@ -34,6 +34,14 @@ pub fn signal_epoch() -> u64 {
     EPOCH.load(Ordering::Acquire)
 }
 
+/// Something Rust owns moved on its own: wake the window, and let whatever
+/// reads a native value read it again. What [`Signal::set`] does, for state
+/// that is not a signal, such as a resource's properties (a playing sound's
+/// `currentTime`). Any thread.
+pub fn notify() {
+    moved();
+}
+
 fn moved() {
     EPOCH.fetch_add(1, Ordering::AcqRel);
     let waker = WAKER.lock().unwrap_or_else(|e| e.into_inner()).clone();

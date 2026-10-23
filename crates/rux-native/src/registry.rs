@@ -77,6 +77,12 @@ pub enum ItemKind {
     /// A `#[rux::export] static` [`crate::Signal`]: a value Rust sets and Rux
     /// follows, of this Rux type. Its call is its getter.
     Signal(String),
+    /// A property of the module's resource type `on`, of Rux type `ty`: read
+    /// as `value.name` by calling its getter (key `Type.name`), and written,
+    /// when `writable`, by its setter (key `Type.name=`). What reads one is
+    /// read again whenever Rust says something moved ([`crate::notify`]), so
+    /// `{{ sound.currentTime }}` follows a playing sound.
+    Property { on: String, ty: String, writable: bool },
 }
 
 /// One thing a module exports, by its Rux name.
@@ -88,11 +94,19 @@ pub struct Item {
 
 impl Item {
     /// Its key among the module's calls: `name`, or `Type.name` for a
-    /// method.
+    /// method or a property's getter.
     pub fn key(&self) -> String {
         match &self.kind {
-            ItemKind::Method { on, .. } => format!("{on}.{}", self.name),
+            ItemKind::Method { on, .. } | ItemKind::Property { on, .. } => format!("{on}.{}", self.name),
             _ => self.name.clone(),
+        }
+    }
+
+    /// A writable property's setter's key, `Type.name=`.
+    pub fn setter_key(&self) -> Option<String> {
+        match &self.kind {
+            ItemKind::Property { on, writable: true, .. } => Some(format!("{on}.{}=", self.name)),
+            _ => None,
         }
     }
 
@@ -143,6 +157,9 @@ impl Interface {
                 }
                 ItemKind::Method { on, sig: s } => {
                     format!("//   {on}.{}{}{}", item.name, sig(s), if s.is_async { "  (async)" } else { "" })
+                }
+                ItemKind::Property { on, ty, writable } => {
+                    format!("//   {on}.{}: {ty}{}", item.name, if *writable { "" } else { "  (read-only)" })
                 }
             };
             out.push_str(&line);
@@ -228,6 +245,21 @@ impl Module {
             self.calls.insert(e.item.key(), call);
         }
         self.interface.items.push(e.item);
+    }
+
+    /// A property `name` of the module's resource type `on`, of Rux type
+    /// `ty`, from Rust written by hand: `get` is called with the resource and
+    /// answers the value; `set`, for a writable one, with the resource and
+    /// the new value. See [`ItemKind::Property`].
+    pub fn property(mut self, on: &str, name: &str, ty: &str, get: Call, set: Option<Call>) -> Module {
+        let writable = set.is_some();
+        let item = Item { name: name.to_string(), kind: ItemKind::Property { on: on.to_string(), ty: ty.to_string(), writable } };
+        self.calls.insert(item.key(), get);
+        if let (Some(key), Some(set)) = (item.setter_key(), set) {
+            self.calls.insert(key, set);
+        }
+        self.interface.items.push(item);
+        self
     }
 
     /// Install it for every document loaded after this.
@@ -328,6 +360,14 @@ pub fn declare(i: Interface) -> Result<(), String> {
         // A signal read from source holds nothing: no Rust runs to set it.
         if let ItemKind::Signal(_) = &item.kind {
             calls.insert(item.key(), Call::sync(|_| Ok(Any::None)));
+            continue;
+        }
+        if let ItemKind::Property { ty, .. } = &item.kind {
+            let empty = empty_of(ty, &i);
+            calls.insert(item.key(), Call::sync(move |_| Ok(empty.clone())));
+            if let Some(setter) = item.setter_key() {
+                calls.insert(setter, Call::sync(|_| Ok(Any::None)));
+            }
             continue;
         }
         let (ItemKind::Fn(sig) | ItemKind::Method { sig, .. }) = &item.kind else { continue };

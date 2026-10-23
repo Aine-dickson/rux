@@ -892,6 +892,9 @@ impl<'a> Lower<'a> {
     }
 
     fn assign(&mut self, target: &ast::Expr, op: &str, value: &ast::Expr) -> Option<StmtKind> {
+        if let Some(write) = self.property_write(target, op, value) {
+            return Some(write);
+        }
         let place = self.place(target)?;
         let v = self.expr(value);
         if op == "=" {
@@ -905,6 +908,26 @@ impl<'a> Lower<'a> {
             None => return None,
         };
         Some(StmtKind::Assign { place, op: Some(op), value: v })
+    }
+
+    /// `value.name = x` where `name` is a native resource's writable
+    /// property: its setter, called with the receiver and the new value.
+    /// `op=` reads the getter first, so the receiver is evaluated twice.
+    fn property_write(&mut self, target: &ast::Expr, op: &str, value: &ast::Expr) -> Option<StmtKind> {
+        let E::Field { base, name, optional: false } = &target.kind else { return None };
+        let p = crate::native::type_name(&self.ty(base)).and_then(|t| crate::native::property(t, &name.name))?;
+        // A read-only one was reported by the checker.
+        let setter = p.setter?;
+        let a = at(target.span);
+        let recv = self.expr(base);
+        let mut v = self.expr(value);
+        if op != "=" {
+            let held = ir::Expr::new(ExprKind::Call { callee: Callee::Native(p.key), args: vec![recv.clone()] }, p.ty.clone(), a);
+            let (op, l, r) = self.operator(op.trim_end_matches('='), held, v, target.span);
+            v = ir::Expr::new(ExprKind::Binary { op: op?, lhs: Box::new(l), rhs: Box::new(r) }, p.ty.clone(), a);
+        }
+        let call = ExprKind::Call { callee: Callee::Native(setter), args: vec![recv, v] };
+        Some(StmtKind::Expr(ir::Expr::new(call, Type::Void, a)))
     }
 
     // ----- Expressions -------------------------------------------------------
@@ -1058,7 +1081,14 @@ impl<'a> Lower<'a> {
         };
         let kind = match &e.kind {
             E::Field { base, name, optional } => {
-                ExprKind::Field { base: Box::new(base_of(self, base)), name: name.name.clone(), optional: *optional }
+                let b = base_of(self, base);
+                // A native resource's property is its getter, called with the
+                // receiver; on a `none` one, `?.` gives `none` (see the
+                // interpreter's native call).
+                if let Some(p) = crate::native::type_name(&b.ty).and_then(|t| crate::native::property(t, &name.name)) {
+                    return ir::Expr::new(ExprKind::Call { callee: Callee::Native(p.key), args: vec![b] }, ty, a);
+                }
+                ExprKind::Field { base: Box::new(b), name: name.name.clone(), optional: *optional }
             }
             E::Index { base, index, optional } => {
                 let b = base_of(self, base);

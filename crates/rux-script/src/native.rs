@@ -208,7 +208,7 @@ pub fn exports(module: &str) -> Option<Vec<Export>> {
                     // Read and followed like a script module's signal, and
                     // like one never written from outside its module.
                     ItemKind::Signal(t) => ExportKind::Signal(ty(t)),
-                    ItemKind::Method { .. } => return None,
+                    ItemKind::Method { .. } | ItemKind::Property { .. } => return None,
                 };
                 Some(Export { name: item.name.clone(), kind })
             })
@@ -342,6 +342,61 @@ pub fn has_method_named(name: &str) -> bool {
 
 /// Whether native type `on` has any methods, for a message about one it
 /// does not have.
+/// A property of a native resource type, as the checker and lowering see it.
+pub struct NativeProperty {
+    /// Its getter's linked name, `native/rux::Sound.currentTime`.
+    pub key: String,
+    /// Its setter's, `native/rux::Sound.currentTime=`, when it is writable.
+    pub setter: Option<String>,
+    pub ty: Type,
+}
+
+/// Property `name` of the native type called `on`, in whichever native
+/// module declares it.
+pub fn property(on: &str, name: &str) -> Option<NativeProperty> {
+    for i in registry::all() {
+        for item in &i.items {
+            if let ItemKind::Property { on: t, ty: text, .. } = &item.kind {
+                if t == on && item.name == name {
+                    let module = i.rux_name();
+                    return Some(NativeProperty {
+                        key: format!("{module}::{}", item.key()),
+                        setter: item.setter_key().map(|k| format!("{module}::{k}")),
+                        ty: ty(text),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The name every read of a native property counts as, so whatever read one
+/// is read again when Rust says something moved ([`rux_native::notify`]).
+pub const PROPERTIES_READ: &str = "#native-properties";
+
+/// Whether linked name `key` is a native property's getter: `Type.name`
+/// where `Type` has a property `name`. Asked once per key by the
+/// interpreter, which caches its calls.
+pub fn is_getter(key: &str) -> bool {
+    let Some((_, member)) = crate::link::split(key) else { return false };
+    let Some((on, name)) = member.split_once('.') else { return false };
+    !name.ends_with('=') && property(on, name).is_some()
+}
+
+/// The names of the properties of native type `on`.
+pub fn properties_of(on: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for i in registry::all() {
+        for item in &i.items {
+            if matches!(&item.kind, ItemKind::Property { on: t, .. } if t == on) {
+                out.push(item.name.clone());
+            }
+        }
+    }
+    out
+}
+
 pub fn methods_of(on: &str) -> Vec<String> {
     let mut out = Vec::new();
     for i in registry::all() {

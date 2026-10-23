@@ -199,6 +199,8 @@ pub struct Builder {
     /// Never use compiled functions, even where some are registered: the
     /// other engine of the step 9 proof.
     interpreted: bool,
+    /// The types the document imports with `use type`. See [`Builder::types`].
+    types: Vec<(String, String)>,
 }
 
 /// The name of the local an instance's state carries to say which component
@@ -305,7 +307,17 @@ impl Builder {
             aliases: Vec::new(),
             components: Vec::new(),
             interpreted: false,
+            types: Vec::new(),
         }
+    }
+
+    /// The types the document's script imports with `use type`, as name and
+    /// text, so it is typed and lowered knowing them. Without them a
+    /// `use type native::shop::Till;` was reported as not imported once the
+    /// document ran, though `rux check` passed it.
+    pub fn types(&mut self, types: Vec<(String, String)>) -> &mut Self {
+        self.types = types;
+        self
     }
 
     /// A component's functions, in a scope of the component's own: they call
@@ -455,6 +467,7 @@ impl Builder {
             script,
             &units,
             &module_types,
+            &self.types,
             std::rc::Rc::clone(&linking),
         );
         // Compiled functions, when a build registered some for this exact
@@ -521,7 +534,7 @@ pub(crate) fn interpreter(
     parsed: &rux_syntax::ast::Script,
     script: &str,
 ) -> interp::Interp {
-    interpreter_linked(parsed, script, &[], &[], Default::default())
+    interpreter_linked(parsed, script, &[], &[], &[], Default::default())
 }
 
 /// [`interpreter`], with script modules linked in: see
@@ -531,11 +544,13 @@ fn interpreter_linked(
     script: &str,
     modules: &[&ModuleChecked],
     module_types: &[(String, String, String)],
+    imported: &[(String, String)],
     linking: std::rc::Rc<link::Linking>,
 ) -> interp::Interp {
     let cx = check::Context {
         provided: ROUTER_SIGNALS.iter().map(|n| (n.to_string(), types::Type::Any)).collect(),
         support_types: module_types.to_vec(),
+        imported_types: imported.to_vec(),
         linked: linking.linked(),
         ..check::Context::default()
     };
@@ -1773,7 +1788,8 @@ impl Engine {
         READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
         let out = f(self);
         let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
-        reads.retain(|n| self.ir.has_global(n));
+        // A native property is no global, but what read one depends on it.
+        reads.retain(|n| self.ir.has_global(n) || n == native::PROPERTIES_READ);
         (out, reads)
     }
 
@@ -2140,6 +2156,9 @@ impl Engine {
         let epoch = rux_native::signal_epoch();
         let names = self.native_signals();
         let mut moved = self.ir.take_native_moved();
+        // A resource's properties are read through their getters, never
+        // held, so any change Rust reported may be theirs.
+        moved.insert(native::PROPERTIES_READ.to_string());
         for name in &names {
             let v = native::read_signal(name);
             if self.signal_value(name).as_ref() != Some(&v.to_value()) || !self.ir.has_global(name) {

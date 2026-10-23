@@ -1787,6 +1787,28 @@ impl<'a> Checker<'a> {
 
     /// `target op value`, `op` being `=` or one of `+=` and the rest.
     fn assign(&mut self, target: &Expr, op: &str, value: &Expr, op_at: Pos) {
+        // A native resource's property is written through its setter: the
+        // resource changes, not whatever holds it, so a plain `let` may.
+        if let ExprKind::Field { base, name, optional: false } = &target.kind {
+            let base_ty = self.infer(base);
+            let on = crate::native::type_name(&base_ty).map(str::to_string);
+            if let Some((on, p)) = on.and_then(|t| crate::native::property(&t, &name.name).map(|p| (t, p))) {
+                if p.setter.is_none() {
+                    self.error(name.span, format!("`{}` of a `{on}` is read-only: it is set by what it belongs to", name.name));
+                }
+                if op == "=" {
+                    self.check_expr(value, &p.ty);
+                } else {
+                    let rhs = self.infer(value);
+                    let result = self.binary(op.trim_end_matches('='), &p.ty, &rhs, op_at);
+                    if !self.assignable(&result, &p.ty) {
+                        let message = format!("`{op}` makes {}, which does not fit {}", self.show(&result), self.show(&p.ty));
+                        self.error(op_at, message);
+                    }
+                }
+                return;
+            }
+        }
         // What was known about the target no longer holds once it is
         // written; what it holds now is its declared type.
         if let Some(path) = path_of(target) {
@@ -2425,6 +2447,14 @@ impl<'a> Checker<'a> {
         let base_written = base;
         let shown = if optional { without_null(base) } else { base.clone() };
         let base = self.resolve(&shown);
+        // A native resource's property, read through its getter.
+        if let ExprKind::Field { name, .. } = &e.kind {
+            if let Some(p) = crate::native::type_name(&shown).and_then(|t| crate::native::property(t, &name.name)) {
+                let ty = if optional && may_be_null(&self.resolve(base_written)) { p.ty.optional() } else { p.ty };
+                self.saw(name.span, "field", &name.name, here.as_deref(), &ty);
+                return (ty, here);
+            }
+        }
         let read = Read { optional, path: path.as_deref() };
         let ty = match &e.kind {
             ExprKind::Index { index, .. } => {
@@ -2567,6 +2597,18 @@ impl<'a> Checker<'a> {
                     pos,
                     format!("this is `none` here, so it has no `{name}`; read it with `?.` if it may be absent"),
                 );
+                Type::Any
+            }
+            // A native resource: its properties were looked for before here.
+            Type::Opaque(t) => {
+                let has = crate::native::properties_of(t);
+                let names: Vec<&str> = has.iter().map(String::as_str).collect();
+                let hint = match near_miss(name, &names) {
+                    Some(n) => format!("; did you mean `{n}`?"),
+                    None if names.is_empty() => String::new(),
+                    None => format!("; its properties are {}", names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")),
+                };
+                self.error(pos, format!("the native type `{t}` has no property `{name}`{hint}"));
                 Type::Any
             }
             _ => Type::Any,

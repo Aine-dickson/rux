@@ -675,6 +675,14 @@ pub fn open_till() -> Till { … }
   `studio.save()` calls the resource's `save` even beside a `<script>`'s
   `fn save()`, which a plain `save()` still calls. An app's actions and its
   resource's methods are naturally the same words.
+- **A resource may have properties**, read as `value.name` and, when
+  writable, written as `value.name = x` (or `+=`), each through Rust: a
+  getter and a setter, never a copy. What reads one, a `{{ }}` binding or an
+  `effect`, reads it again whenever Rust says something moved
+  (`rux::notify()`), so `{{ sound.currentTime }}` follows a playing sound.
+  `?.` on one that is `none` is `none`. Writing a read-only one is an error
+  that says so. A module written by hand declares them with
+  `Module::property`; `#[rux::export]` does not make them yet.
 - **Types cross as `docs/11-next.md` lists them**: every integer is an `int`,
   and one that does not fit throws `kind` `"overflow"` rather than wrapping;
   `Option<T>` is `T?`; `Vec<T>` is `T[]`; a `Result`'s `Err` is thrown. A type
