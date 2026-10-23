@@ -6104,8 +6104,7 @@ fn add_len(a: Len, b: Len) -> Len {
 /// `text-wrap` and its two longhands, over `white-space`, which in CSS is a
 /// shorthand of how spaces collapse and whether lines wrap. `nowrap` stops
 /// the wrapping and keeps the spaces as they were; `wrap` lets lines wrap
-/// again. `pretty` and `stable` wrap as `wrap` does, which CSS allows;
-/// `balance` does too, and says so.
+/// again. The wrapping style (`balance`, `pretty`) is [`text_look`]'s.
 fn text_wrap_mode(props: &HashMap<String, String>, white_space: WhiteSpace) -> WhiteSpace {
     let mut out = white_space;
     for k in ["text-wrap", "text-wrap-mode", "text-wrap-style"] {
@@ -6126,10 +6125,8 @@ fn text_wrap_mode(props: &HashMap<String, String>, white_space: WhiteSpace) -> W
                         other => other,
                     }
                 }
-                "pretty" | "stable" | "auto" => {}
-                "balance" => warn_once(
-                    "`text-wrap: balance` wraps as `wrap` does: Rux does not even out the lines yet".to_string(),
-                ),
+                // The style, which `text_look` reads.
+                "pretty" | "stable" | "auto" | "balance" => {}
                 other => warn_once(format!("`{k}: {other}` is not something Rux knows")),
             }
         }
@@ -13560,8 +13557,16 @@ fn text_look(props: &HashMap<String, String>, parent: Option<&Arc<TextLook>>, in
         variation_settings: up.variation_settings.clone(),
         stretch: up.stretch,
         caret_color: up.caret_color,
+        balance: up.balance,
         ..Default::default()
     };
+    // `text-wrap: balance`, or its longhand. Any other style it names is the
+    // default's: `pretty` and `stable` wrap as `wrap` does, which CSS allows.
+    for k in ["text-wrap", "text-wrap-style"] {
+        if let Some(v) = props.get(k) {
+            look.balance = v.split_whitespace().any(|w| w == "balance");
+        }
+    }
     if in_sentence {
         look.decoration_color = up.decoration_color;
         look.decoration_style = up.decoration_style;

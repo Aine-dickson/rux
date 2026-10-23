@@ -1806,6 +1806,9 @@ pub struct TextLook {
     /// `line-clamp`: no more than this many lines, the last ending in `…`.
     /// Not inherited.
     pub line_clamp: Option<u32>,
+    /// `text-wrap: balance`: lines of even length, as many as wrapping makes.
+    /// Inherits.
+    pub balance: bool,
     /// The OpenType features `font-variant` and its longhands ask for, in
     /// `font-feature-settings` form. Inherits.
     pub variant: Option<String>,
@@ -1829,7 +1832,7 @@ impl TextLook {
         (
             (c(self.decoration_color), self.decoration_style, f(self.decoration_thickness), f(self.underline_offset)),
             (self.overline, self.transform, self.indent.to_bits(), f(self.indent_pct), self.indent_each_line, self.indent_hanging),
-            (self.ellipsis, self.line_clamp),
+            (self.ellipsis, self.line_clamp, self.balance),
             (&self.variant, &self.feature_settings, &self.variation_settings, f(self.stretch), c(self.caret_color)),
         )
     }

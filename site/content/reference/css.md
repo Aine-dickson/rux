@@ -111,8 +111,10 @@ font (shorthand: `italic 600 1rem/1.5 Inter, sans-serif`; what is left out is
 letter-spacing, word-spacing, line-height
 white-space (normal|nowrap|pre|pre-wrap|pre-line)
 text-wrap, text-wrap-mode, text-wrap-style (nowrap and wrap set whether lines
-                       wrap, over white-space; pretty and stable wrap as wrap
-                       does; balance does too for now, and warns; inherited)
+                       wrap, over white-space; balance evens out the lines,
+                       as many as wrapping makes, set where text-align puts
+                       them in a box that keeps its width (justify is left as
+                       wrapped); pretty and stable wrap as wrap does; inherited)
 vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
 direction (ltr|rtl; inherited, and set by the `dir` attribute too)
 color-scheme (normal | light | dark | light dark; inherited; which side of

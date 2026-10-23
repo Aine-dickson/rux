@@ -69,6 +69,51 @@ impl Align {
     }
 }
 
+/// `text-wrap: balance`: break `layout` into as many lines as `width` gives
+/// it, each as short as that number allows, so a heading's last line is not
+/// one word. The box keeps its width, as in CSS: the narrower lines are set
+/// where `align` puts them in it, so a centred heading stays centred.
+/// `justify` is left as it wrapped, as CSS lets an engine do.
+fn balance(layout: &mut Layout<RunId>, width: f32, align: Align) {
+    if align == Align::Justify {
+        return;
+    }
+    let mut count = |w: f32| {
+        layout.break_all_lines(Some(w));
+        layout.len()
+    };
+    let lines = count(width);
+    if lines < 2 {
+        return;
+    }
+    // The narrowest width that still makes no more lines, to half a pixel.
+    let (mut lo, mut hi) = (0.0f32, width);
+    while hi - lo > 0.5 {
+        let mid = (lo + hi) / 2.0;
+        if count(mid) <= lines {
+            hi = mid;
+        } else {
+            lo = mid;
+        }
+    }
+    let rtl = layout.is_rtl();
+    let side = match align {
+        Align::Left => 0.0,
+        Align::Right => 1.0,
+        Align::Center => 0.5,
+        Align::Start => (rtl as u8) as f32,
+        Align::End => (!rtl as u8) as f32,
+        Align::Justify => 0.0,
+    };
+    let mut breaker = layout.break_lines();
+    let state = breaker.state_mut();
+    state.set_layout_max_advance(width);
+    state.set_line_max_advance(hi);
+    state.set_line_x((width - hi) * side);
+    while breaker.break_next().is_some() {}
+    breaker.finish();
+}
+
 /// How a line may break when a word is wider than its box (`overflow-wrap`).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Wrap {
@@ -791,6 +836,9 @@ impl TextEngine {
     fn ensure_shaped(&mut self, key: KeyRef<'_>, text: &str, style: &TextStyle, max_width: Option<f32>, align: Align) {
         if !self.shaped.contains_key(&key as &dyn AsKey) {
             let mut layout = self.build(text, style, max_width);
+            if let (Some(width), true) = (max_width, style.look.is_some_and(|l| l.balance) && !style.nowrap) {
+                balance(&mut layout, width, align);
+            }
             layout.align(align.to_parley(), AlignmentOptions::default());
             if self.shaped.len() >= SHAPED_CAP {
                 self.shaped.clear();
@@ -1440,6 +1488,51 @@ fn outlines_only(data: &[u8], index: u32) -> Option<Vec<u8>> {
         }
     }
     Some(copy)
+}
+
+#[cfg(test)]
+mod balance_tests {
+    use super::{balance, Align, TextEngine, TextStyle, Wrap};
+
+    /// Each line's (x, advance) after breaking at `width`, balanced or not.
+    fn lines(align: Option<Align>, width: f32) -> Vec<(f32, f32)> {
+        let mut te = TextEngine::new();
+        let style = TextStyle::new(16.0, 400, Wrap::Normal);
+        let text = "one two three four five six seven eight nine ten eleven twelve thirteen";
+        let mut layout = te.build(text, &style, Some(width));
+        if let Some(align) = align {
+            balance(&mut layout, width, align);
+        }
+        layout.lines().map(|l| (l.metrics().inline_min_coord, l.metrics().advance - l.metrics().trailing_whitespace)).collect()
+    }
+
+    /// Wrapped at a width that leaves a short last line, the same text
+    /// balanced makes as many lines, of nearly even length, set where the
+    /// alignment puts them in the box: the box itself keeps its width.
+    #[test]
+    fn balance_evens_the_lines_where_the_alignment_puts_them() {
+        let mut te = TextEngine::new();
+        let full = te.measure("one two three four five six seven eight nine ten eleven twelve thirteen", &TextStyle::new(16.0, 400, Wrap::Normal), None).0;
+        let width = full * 0.85;
+        let wrapped = lines(None, width);
+        assert_eq!(wrapped.len(), 2);
+        assert!(wrapped[1].1 < wrapped[0].1 * 0.8, "a short last line to even out: {wrapped:?}");
+
+        let even = lines(Some(Align::Start), width);
+        assert_eq!(even.len(), 2, "no more lines than wrapping makes");
+        assert!((even[0].1 - even[1].1).abs() < wrapped[0].1 - wrapped[1].1, "{even:?}");
+        assert_eq!(even[0].0, 0.0);
+
+        let narrowest = even[0].1.max(even[1].1);
+        let centred = lines(Some(Align::Center), width);
+        assert!(centred[0].0 > 0.0 && (centred[0].0 - (width - narrowest) / 2.0).abs() < 1.0, "{centred:?}");
+        let ended = lines(Some(Align::End), width);
+        assert!(ended[0].0 > centred[0].0, "{ended:?}");
+
+        // One line, or justified text, is left as it wrapped.
+        assert_eq!(lines(Some(Align::Center), full + 10.0).len(), 1);
+        assert_eq!(lines(Some(Align::Justify), width), wrapped);
+    }
 }
 
 #[cfg(test)]
