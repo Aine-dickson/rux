@@ -2397,6 +2397,10 @@ here.
    since a sound effect is an action and not a box. Video is decode plus frames
    into wgpu textures, is platform-specific per OS, and doing it before mobile
    has settled means doing it twice; it is listed under v0.11 for that reason.
+   **Moved 2026-10-23:** the owner brought audio *and* video into v0.9, after
+   the file input, as parts B and C of
+   the file input and media plan (`docs/13-file-input-and-media-plan.md`). Video goes
+   ahead only if that plan's frame-path spike (C.0) shows it can be smooth.
 
 9. **Live regions.** The accessibility tree has existed since v0.4, and nothing
    can *announce* a change through it, so a screen-reader user gets no notice of
@@ -2514,6 +2518,8 @@ UI in Rux.
    plus wgpu texture import is platform-specific, so it wants mobile settled.
    It is also the item most able to eat a milestone alone, and a janky video
    element is worse than none.
+   **Moved to v0.9 on 2026-10-23**, gated on a measured spike: see the
+   audio item there and the plan (`docs/13-file-input-and-media-plan.md`), part C.
 
 **Icons are the unscheduled prerequisite here.** A component set needs them
 and will otherwise grow its own, so the design note below argues them out

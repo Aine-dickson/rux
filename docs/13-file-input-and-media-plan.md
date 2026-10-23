@@ -1,6 +1,8 @@
 # Plan: the file input, then audio, then video
 
-Status: **planned 2026-10-23, from [the file input proposal](12-file-input-proposal.md).**
+Status: **planned 2026-10-23, from [the file input proposal](12-file-input-proposal.md);
+approved by the owner the same day, with every assumption and question below
+answered as written.**
 The owner asked for audio and video elements in the same plan, which answers
 the proposal's decision 8 (an audio proposal now) and widens it to video.
 
@@ -17,8 +19,8 @@ without the owner saying so.
 
 ## What this plan assumes about the open decisions
 
-The proposal's decisions have no answers yet. The plan takes each proposed
-answer, and says what moves if the owner picks the other one.
+**Decided 2026-10-23: all as assumed.** The table stays as the record of what
+each answer cost, and what would move if one were revisited.
 
 | # | Assumed | If the owner decides otherwise |
 |---|---|---|
@@ -304,10 +306,12 @@ Before any element, prove frames can reach the screen fast enough:
   `File.url`; the web in Edge and Brave; Android on the emulator, with
   suspend and resume. Frame times recorded against C.0's.
 
-## New questions for the owner
+## Questions the plan raised (decided 2026-10-23)
 
-Besides the proposal's eight, this plan raises these, none needed before
-part B starts:
+The owner approved each as written: symphonia + cpal with Opus left out,
+Rux-drawn controls, video on Windows, the web and Android with Linux left
+until someone asks for it (no GStreamer or FFmpeg), and video in v0.9 only
+if C.0's numbers allow it.
 
 1. **symphonia + cpal for audio** (B.0), and Opus left out?
 2. **Rux-drawn controls** for `<audio>` and `<video>`, styled like the file

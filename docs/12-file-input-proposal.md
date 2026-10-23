@@ -1,6 +1,8 @@
 # Proposal: `<input type="file">` and picking files everywhere
 
-Status: **proposed 2026-10-23, for the owner to decide before it is built.**
+Status: **proposed 2026-10-23; every decision below DECIDED as proposed by the
+owner on 2026-10-23, and decision 8 answered as "now, and video too".** The
+build plan is [13-file-input-and-media-plan.md](13-file-input-and-media-plan.md).
 The next session builds it, in the order of the phases below, once the
 decisions at the end have answers.
 
