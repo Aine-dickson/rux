@@ -952,12 +952,17 @@ self-contained-vs-`source.css` decision).
   there are no live regions.
 - **Left out of the CSS pass (recorded 2026-10-22).** Each needs the owner's
   decision before it is built:
-  - `columns`: multi-column layout is a project of its own.
-  - Table properties need tables, and `content` needs `::before` / `::after`.
-    Rux has neither.
+  - ~~`columns`~~: built 2026-10-23, `column-span` still not.
+  - Table properties need tables. ~~`content`~~ is built with `::before` /
+    `::after` (2026-10-23).
   - `user-select` has nothing to act on: static text cannot be selected yet.
   - `writing-mode`: vertical text is a layout model of its own.
   - `box-sizing`: closed 2026-10-23. `content-box` is the default, as in CSS.
+  - `hyphens: auto`: **not done** (owner, 2026-10-23). parley draws no
+    hyphen where a line breaks at a soft hyphen, so even `hyphens: manual`
+    needs that first; `auto` then needs a hyphenation dictionary per language
+    (a new dependency, about 1 MB each) and a `lang` attribute, which Rux does
+    not have. Both are the owner's decisions when it is picked up.
 
 ---
 
