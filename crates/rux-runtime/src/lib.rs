@@ -1956,12 +1956,76 @@ pub fn same_file_key(path: impl AsRef<Path>) -> PathBuf {
     source::canonical(path.as_ref())
 }
 
+/// Whether an image's `src` is a URL, `file:///…` or `blob:…`, rather than a
+/// path: a scheme of two letters or more and a colon. One letter is a
+/// Windows drive, `C:\a.png`, which is a path.
+fn is_url(src: &str) -> bool {
+    match src.split_once(':') {
+        Some((scheme, _)) => {
+            scheme.len() > 1
+                && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
+        }
+        None => false,
+    }
+}
+
+/// The file a `file:` URL names: `file:///C:/a%20b.png#3` is `C:/a b.png`.
+/// The fragment is the shell's, which numbers each pick so a file picked
+/// again after it changed is not the cached image of the old one.
+fn file_url_path(src: &str) -> Option<PathBuf> {
+    let rest = src.strip_prefix("file://")?;
+    let rest = rest.split(['#', '?']).next().unwrap_or(rest);
+    // `/C:/x` is a Windows path once the slash before its drive goes.
+    let rest = match rest.as_bytes() {
+        [b'/', d, b':', ..] if d.is_ascii_alphabetic() => &rest[1..],
+        _ => rest,
+    };
+    let bytes = rest.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let hex = |b: u8| (b as char).to_digit(16);
+        match (bytes[i], bytes.get(i + 1).copied().and_then(hex), bytes.get(i + 2).copied().and_then(hex)) {
+            (b'%', Some(hi), Some(lo)) => {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+            }
+            (b, ..) => {
+                out.push(b);
+                i += 1;
+            }
+        }
+    }
+    Some(PathBuf::from(String::from_utf8(out).ok()?))
+}
+
+/// An image's bytes by its resolved `src`: a `file:` URL from the disk, as
+/// it names a file outside the project, and anything else through the
+/// source, as a component or a stylesheet is read.
+fn image_bytes(src: &str) -> std::io::Result<Vec<u8>> {
+    match file_url_path(src) {
+        Some(path) => std::fs::read(path),
+        None => source::read_bytes(Path::new(src)),
+    }
+}
+
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
 /// size, so a sizeless `<image>` lays out at its natural pixel dimensions. Only
 /// the file header is read, not the pixels; the painter decodes and caches those.
 fn resolve_images(node: &mut LayoutNode, base: &Path) {
     if let Some(img) = &mut node.image {
-        if !img.src.is_empty() {
+        // A URL (a picked `File`'s `url`) is where it says, not beside the
+        // .rux file, and stays a URL: the reader below and the painter's
+        // both take it as it is.
+        if is_url(&img.src) {
+            match image_bytes(&img.src).ok().and_then(|bytes| {
+                image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+            }) {
+                Some((w, h)) => img.intrinsic = (w as f32, h as f32),
+                None => eprintln!("rux: cannot read image {}", img.src),
+            }
+        } else if !img.src.is_empty() {
             let path = base.join(&img.src);
             // Read through the provider rather than by path, because `path` is
             // a key and not necessarily a file. `image_dimensions` only takes a
@@ -1998,7 +2062,7 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
         if layers.layers.iter().any(urls) {
             for layer in &mut std::sync::Arc::make_mut(layers).layers {
                 if let rux_layout::Background::Image(src) = &mut layer.image {
-                    if !src.is_empty() {
+                    if !src.is_empty() && !is_url(src) {
                         *src = base.join(&*src).to_string_lossy().into_owned();
                     }
                 }
@@ -2007,7 +2071,7 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
     }
     // So does a `mask-image: url(…)`.
     if let Some(rux_layout::Background::Image(src)) = node.style.mask.as_mut().map(|m| &mut m.image) {
-        if !src.is_empty() {
+        if !src.is_empty() && !is_url(src) {
             *src = base.join(&*src).to_string_lossy().into_owned();
         }
     }
@@ -2150,9 +2214,7 @@ impl Document {
         // resolves the same way a component or a stylesheet does. Installed on
         // every load rather than once, because the provider may have changed
         // since the last one and the reader closes over whichever is current.
-        rux_layout::set_image_reader(std::rc::Rc::new(|src: &str| {
-            source::read_bytes(Path::new(src)).ok()
-        }));
+        rux_layout::set_image_reader(std::rc::Rc::new(|src: &str| image_bytes(src).ok()));
         let src = source::read_text(path)
             .map_err(|e| LoadError::plain(format!("reading {}: {e}", path.display())))?;
         let mut sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
@@ -7145,6 +7207,36 @@ mod tests {
         assert_eq!(Path::new(&img.src), png, "src resolved against the .rux dir");
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A picked file's `url` is shown where it is: not joined to the .rux
+    /// file's folder, and read past its escapes and the pick's number.
+    #[test]
+    fn an_image_src_may_be_a_file_url() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_img_url_{}", std::process::id()));
+        let elsewhere = std::env::temp_dir().join(format!("rux img elsewhere {}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::create_dir_all(&elsewhere).unwrap();
+        let png = elsewhere.join("dot é.png");
+        image::RgbaImage::from_pixel(3, 2, image::Rgba([0, 0, 255, 255])).save(&png).unwrap();
+        let text = png.to_string_lossy().replace('\\', "/");
+        let escaped: String = text
+            .bytes()
+            .map(|b| if b.is_ascii_alphanumeric() || b"/:._-".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+            .collect();
+        let url = format!("file://{}{escaped}#7", if text.starts_with('/') { "" } else { "/" });
+        fs::write(dir.join("app.rux"), format!(r#"<template><screen><image src="{url}" /></screen></template>"#)).unwrap();
+
+        let doc = Document::load(dir.join("app.rux")).expect("load app");
+        let img = doc.root.children[0].image.as_ref().expect("image node");
+        assert_eq!(img.intrinsic, (3.0, 2.0));
+        assert_eq!(img.src, url, "a URL is kept as written");
+        assert!(rux_layout::read_image_bytes(&url).is_some_and(|b| !b.is_empty()), "the painter reads it too");
+        assert!(!is_url(r"C:\a.png") && is_url("blob:https://x/1") && is_url("content://media/1"));
+
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_dir_all(&elsewhere);
     }
 
     fn caret_of(node: &LayoutNode, model: &str) -> Option<usize> {

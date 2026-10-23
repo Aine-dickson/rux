@@ -47,7 +47,11 @@ pub(crate) fn from_path(path: &std::path::Path) -> Option<Any> {
     m.insert("name".to_string(), Any::Str(name));
     m.insert("size".to_string(), Any::Int(size as i64));
     m.insert("type".to_string(), Any::Str(media_type(&ext).unwrap_or("").to_string()));
-    m.insert("url".to_string(), Any::Str(file_url(path)));
+    // Numbered, so the painter, which keeps an image by its `src`, decodes
+    // a file picked again afresh: it may have changed in between.
+    static PICKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let pick = PICKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    m.insert("url".to_string(), Any::Str(format!("{}#{pick}", file_url(path))));
     m.insert("path".to_string(), Any::Str(path.to_string_lossy().into_owned()));
     Some(Any::Map(m))
 }
@@ -171,7 +175,7 @@ mod tests {
         assert_eq!(m["name"], Any::Str("note.TXT".into()));
         assert_eq!(m["size"], Any::Int(7));
         assert_eq!(m["type"], Any::Str("text/plain".into()));
-        assert!(matches!(&m["url"], Any::Str(u) if u.starts_with("file:///") && u.ends_with("/note.TXT")));
+        assert!(matches!(&m["url"], Any::Str(u) if u.starts_with("file:///") && u.contains("/note.TXT#")));
         let read = rux_runtime::native::block_on(text(file)).unwrap();
         assert_eq!(read, Any::Str("café \u{fffd}".into()));
         std::fs::remove_dir_all(&dir).unwrap();
