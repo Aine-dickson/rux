@@ -2807,6 +2807,27 @@ typed into the dialog's name box. Tests cannot open the dialog; the drive can.
 | Web: `pickFile` with no gesture | a `mounted` hook awaiting `pickFile` in `try`, writing `e.kind` | `gesture`, shown at load, no chooser | web (Brave): pass. **Found**: the web loaded the document before installing Rux's modules, so this call cached the module's placeholder and every later `pickFile` in the page answered `none`; fixed by installing first |
 | Android: on a phone, a recorder, `capture="user"` | the same on hardware; `accept="audio/*" capture` | the front camera; a recorder, or the picker where there is none | not driven |
 
+## `loadSound` and `Sound`, desktop, 2026-10-23
+
+Step B.1 of `docs/13-file-input-and-media-plan.md`. Under test in `rux-audio`
+(each format decoded from a fixture and checked to be its tone; the mixer
+summing, pausing, ending, looping and seeking; a long sound streaming the same
+samples and seeking and looping on its reading thread), in `rux-runtime`
+(a resource's properties read, written, followed, refused when read-only, and
+followed by a binding that first ran before the resource arrived) and in
+`rux-script` (`Sound` typed in an optional, its properties). **Driven in a
+desktop window** with clicks injected; heard through the speakers with the
+`play` example.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Load and play | a page that loads a 12 s MP3 and a short Ogg in `mounted` and plays the first | "loaded"; `duration` 12; `currentTime` counting up in step with the clock; `playing true` | desktop: pass |
+| Pause | tap Play / pause while it plays | `playing false`, the time stopped | desktop: pass |
+| Seek and volume | `s.currentTime = 10`, `s.volume = 0.5` from template handlers | time 10, volume 0.5 shown at once | desktop: pass |
+| A short sound, twice | tap the click's button twice | it plays each time, from the start | desktop: pass, heard |
+| Through the output | `cargo run -p rux-audio --example play -- tone12.mp3` | the time in step with the clock, ended once | desktop: pass, heard |
+| Android, web | the same page | Android plays through AAudio; the web says `loadSound` is not built there | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

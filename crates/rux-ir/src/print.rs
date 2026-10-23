@@ -34,7 +34,7 @@ impl<'u> Printer<'u> {
         for (name, params, ty) in &u.types {
             // The built-in types, every program's, which would bury its own.
             // A program's own `File`, replacing the built-in one, goes too.
-            if name == "Result" || name == "File" {
+            if name == "Result" || name == "File" || name == "Sound" {
                 continue;
             }
             let params = if params.is_empty() { String::new() } else { format!("<{}>", params.join(", ")) };

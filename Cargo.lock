@@ -3179,6 +3179,7 @@ dependencies = [
  "notify",
  "pollster",
  "rfd",
+ "rux-audio",
  "rux-layout",
  "rux-paint",
  "rux-reactive",

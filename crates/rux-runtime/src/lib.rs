@@ -2062,6 +2062,23 @@ fn image_bytes(src: &str) -> std::io::Result<Vec<u8>> {
     }
 }
 
+thread_local! {
+    /// The directory of the document last loaded, which a sound's path is
+    /// read from, as an `<image src>` is.
+    static MEDIA_BASE: std::cell::RefCell<PathBuf> = std::cell::RefCell::new(PathBuf::new());
+}
+
+/// A media file's bytes by the `src` a script gave (`loadSound`): a picked
+/// file's URL, a `file:` URL, or a path beside the document, read through
+/// the source, so a release build plays the sounds it embeds.
+pub fn read_media(src: &str) -> std::io::Result<Vec<u8>> {
+    if is_url(src) {
+        return image_bytes(src);
+    }
+    let base = MEDIA_BASE.with(|b| b.borrow().clone());
+    source::read_bytes(&base.join(src))
+}
+
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
 /// size, so a sizeless `<image>` lays out at its natural pixel dimensions. Only
 /// the file header is read, not the pixels; the painter decodes and caches those.
@@ -2273,6 +2290,7 @@ impl Document {
 
         // Resolve `use module::component;` imports relative to this file.
         let base = path.parent().unwrap_or_else(|| Path::new("."));
+        MEDIA_BASE.with(|b| *b.borrow_mut() = base.to_path_buf());
         resolve_style_includes(&mut sfc, base)?;
         let (main_script, imports) = extract_imports(&sfc.script);
         // A module opened on its own (by `rux check`) is checked as the
@@ -3400,11 +3418,14 @@ impl Document {
     /// Re-evaluate the value bindings (text `{{ }}`, input values, `r-show`) whose
     /// deps changed and write them into their nodes, no shape change.
     fn patch_values(&mut self, changed: &HashSet<String>) {
-        for binding in &self.registry.text {
+        for binding in &mut self.registry.text {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
-            let text = rux_style::eval_text_binding(binding, &mut self.engine);
+            // What it reads now, which a branch may have changed: a sound
+            // loaded since is read through from here on.
+            let (text, deps) = rux_style::eval_text_binding_tracked(binding, &mut self.engine);
+            binding.deps = deps;
             if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
                 if let Some(content) = node.text.as_mut() {
                     content.text = text;
@@ -9973,6 +9994,31 @@ fn set() { m.level = 10; }</script>",
         doc.apply_handler("m.label = \"x\"");
         let w: Vec<String> = take_warnings().iter().map(|w| w.message.clone()).collect();
         assert!(w.iter().any(|m| m.contains("read-only")), "{w:?}");
+    }
+
+    /// A binding that first ran while the resource was `none`, so read only
+    /// the variable, follows the resource's properties once it is there: its
+    /// reads are taken again each time it is patched. Before, it showed the
+    /// sound's first `currentTime` for as long as the sound played.
+    #[test]
+    fn a_binding_follows_a_resource_that_arrives_later() {
+        let meter = std::sync::Arc::new(Meter { level: std::sync::Mutex::new(1.0) });
+        meter_module("rts_meter_late", meter.clone());
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ later?.level ?? -1 }}</text></screen></template>
+             <script>use native::rts_meter_late;
+use type native::rts_meter_late::Meter;
+let later: Meter? = signal(none);
+fn arrive() { later = rts_meter_late.meter(); }</script>",
+        )
+        .expect("load");
+        assert_eq!(text_of(&doc.root).join("|"), "-1");
+        doc.apply_handler("arrive()");
+        assert_eq!(text_of(&doc.root).join("|"), "1");
+        *meter.level.lock().unwrap() = 4.0;
+        rux_native::notify();
+        assert!(doc.refresh_native_signals());
+        assert_eq!(text_of(&doc.root).join("|"), "4", "followed once it arrived");
     }
 
     /// A template's handler writes a property through its setter too, though

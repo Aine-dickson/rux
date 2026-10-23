@@ -27,6 +27,8 @@
 //! because two places doing the same coordinate arithmetic eventually disagree.
 
 mod dialogs;
+#[cfg(not(target_arch = "wasm32"))]
+mod sound;
 mod files;
 /// `filter` and `backdrop-filter`, as compute passes. See [`filter::GpuFilters`].
 mod filter;

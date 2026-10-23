@@ -25,7 +25,7 @@ use crate::types::{parse_type, Type};
 pub const BUILTIN_MODULE: &str = "native/rux";
 
 /// The functions [`BUILTIN_MODULE`] gives every script.
-pub const BUILTIN_FNS: &[&str] = &["pickFile", "pickFiles", "pickSaveFile"];
+pub const BUILTIN_FNS: &[&str] = &["pickFile", "pickFiles", "pickSaveFile", "loadSound"];
 
 /// The built-in module's interface: what `rux check` and every document are
 /// checked against, whether or not a shell has installed the code. The shell
@@ -75,8 +75,50 @@ pub fn builtin_interface() -> rux_native::Interface {
             dialog("pickFile", "File?"),
             dialog("pickFiles", "File[]"),
             dialog("pickSaveFile", "string?"),
-        ],
+        ]
+        .into_iter()
+        .chain(sound_items())
+        .collect(),
     }
+}
+
+/// A sound (`docs/13-file-input-and-media-plan.md`, B.1): `loadSound(src)`
+/// gives one, its methods play it, and its properties follow it as it plays.
+fn sound_items() -> Vec<rux_native::Item> {
+    use rux_native::{Item, Sig};
+    let method = |name: &str, params: &[(&str, &str)]| Item {
+        name: name.into(),
+        kind: ItemKind::Method {
+            on: "Sound".into(),
+            sig: Sig {
+                params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+                result: "void".into(),
+                is_async: false,
+            },
+        },
+    };
+    let property = |name: &str, ty: &str, writable: bool| Item {
+        name: name.into(),
+        kind: ItemKind::Property { on: "Sound".into(), ty: ty.into(), writable },
+    };
+    vec![
+        Item { name: "Sound".into(), kind: ItemKind::Resource },
+        Item {
+            name: "loadSound".into(),
+            kind: ItemKind::Fn(Sig { params: vec![("src".into(), "string".into())], result: "Sound".into(), is_async: true }),
+        },
+        method("play", &[]),
+        method("pause", &[]),
+        method("stop", &[]),
+        method("seek", &[("seconds", "float")]),
+        property("volume", "float", true),
+        property("loop", "bool", true),
+        // As HTML's: writing it seeks.
+        property("currentTime", "float", true),
+        // `none` while the file has not said.
+        property("duration", "float?", false),
+        property("playing", "bool", false),
+    ]
 }
 
 fn file_fields() -> Vec<rux_native::FieldSig> {
@@ -92,9 +134,13 @@ fn file_fields() -> Vec<rux_native::FieldSig> {
 
 /// The types every script can name without a `use`, as name and text: `File`,
 /// which an `<input type="file">` binds, so `let photo: File? = none` needs
-/// no import. A file's own type of the same name is its own.
+/// no import, and `Sound`, which `loadSound` gives. A file's own type of the
+/// same name is its own.
 pub fn prelude_types() -> Vec<(String, String)> {
-    vec![("File".to_string(), rux_native::Interface::record_text(&file_fields()))]
+    vec![
+        ("File".to_string(), rux_native::Interface::record_text(&file_fields())),
+        ("Sound".to_string(), "#opaque Sound".to_string()),
+    ]
 }
 
 /// The module behind `settings.get`, `settings.set` and `settings.remove`:

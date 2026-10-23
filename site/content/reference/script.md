@@ -589,6 +589,51 @@ async fn saveAs() {
 - Written out, they are `use native::rux::{pickFile};`, which is what a script
   that calls one gets without writing it.
 
+## Sounds
+
+**`loadSound(src)` loads a sound**, awaited, and gives a `Sound`:
+
+```rux
+let click: Sound? = signal(none);
+let song: Sound? = signal(none);
+
+async fn start() {
+  click = await loadSound("sounds/click.wav");
+  song = await loadSound(picked.url);
+}
+
+fn toggle() {
+  if song != none {
+    if song.playing { song.pause(); } else { song.play(); }
+  }
+}
+```
+
+```rux
+<text>{{ song?.currentTime ?? 0 }} of {{ song?.duration ?? 0 }}</text>
+<button @tap="toggle()">Play</button>
+```
+
+- **`src`** is a path beside the document, read as an `<image src>` is (so a
+  release build plays the sounds it embeds), or a picked `File`'s `url`.
+- **Methods**: `play()` from where it is, or from the start once it has
+  ended; `pause()`; `stop()`, which pauses and goes back to the start;
+  `seek(seconds)`.
+- **Properties**, which follow the sound as it plays, so a `{{ }}` reading
+  one updates by itself: `volume` (0 to 1), `loop`, `currentTime` (writing it
+  seeks, as HTML's does), `duration` (`none` while the file has not said)
+  and `playing`. The last two are read-only.
+- **Formats**: WAV, MP3, AAC in MP4, FLAC and Ogg Vorbis. Not Opus: loading
+  one throws an `Error` of `kind` `"unsupported"`, as does a file that is not
+  a sound.
+- **One output for the whole app**, mixing every sound playing, opened by the
+  first `play()`: an app that only loads sounds touches no audio device. A
+  short sound is decoded whole and plays at once; a long one is read a little
+  ahead of where it plays, so a song is never held in memory.
+- **Not yet in a browser**, where `loadSound` throws `"unsupported"`; the web
+  will play through the browser's own audio. `<audio>` with drawn controls
+  comes next (`docs/13-file-input-and-media-plan.md`, B.3).
+
 ## Settings
 
 **`settings.get(key)`, `settings.set(key, value)` and `settings.remove(key)`**

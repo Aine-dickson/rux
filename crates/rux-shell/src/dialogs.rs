@@ -39,6 +39,15 @@ pub(crate) fn install_builtins() {
         );
     }
     calls.extend(crate::files::calls());
+    #[cfg(not(target_arch = "wasm32"))]
+    calls.extend(crate::sound::calls());
+    // A browser plays a sound itself, through its own audio element; until
+    // that is built, said plainly rather than as a missing function.
+    #[cfg(target_arch = "wasm32")]
+    calls.insert(
+        "loadSound".to_string(),
+        Call::future(|_: Vec<Any>| async { Err(Error::new("unsupported", "`loadSound` does not play in a browser yet")) }),
+    );
     // Twice (a second window, a reload) is harmless: the same code again.
     let _ = install(Module { interface, calls });
 }

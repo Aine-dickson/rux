@@ -148,6 +148,9 @@ pub struct Interp {
     natives: HashMap<String, rux_native::Call>,
     /// Whether each native key called so far is a property's getter.
     getters: HashMap<String, bool>,
+    /// Whether anything has read a native property, without which a report
+    /// from Rust that something moved cannot concern one.
+    read_properties: bool,
     /// The native signals the document reads, by linked name, and the
     /// [`rux_native::signal_epoch`] they were last read at. Read again after
     /// any native call when the epoch moved, so a handler that called Rust
@@ -224,6 +227,7 @@ impl Interp {
             by_name,
             natives: HashMap::new(),
             getters: HashMap::new(),
+            read_properties: false,
             native_signals: Rc::from(Vec::new()),
             native_epoch: 0,
             native_moved: HashSet::new(),
@@ -364,6 +368,11 @@ impl Interp {
         self.native_epoch = epoch;
     }
 
+    /// Whether anything has read a native property yet.
+    pub fn reads_properties(&self) -> bool {
+        self.read_properties
+    }
+
     /// The native signals found moved since the last ask, by a refresh
     /// in the middle of a run.
     pub fn take_native_moved(&mut self) -> HashSet<String> {
@@ -385,9 +394,11 @@ impl Interp {
         }
         self.native_epoch = epoch;
         // A setter Rust ran may have changed a property something reads.
-        self.native_moved.insert(crate::native::PROPERTIES_READ.to_string());
-        if let Some(t) = self.tracks.last_mut() {
-            t.properties = true;
+        if self.read_properties {
+            self.native_moved.insert(crate::native::PROPERTIES_READ.to_string());
+            if let Some(t) = self.tracks.last_mut() {
+                t.properties = true;
+            }
         }
         if self.native_signals.is_empty() {
             return;
@@ -864,6 +875,7 @@ impl Interp {
     /// is `none`, with no call into Rust.
     pub(crate) fn native_pub(&mut self, key: &str, argv: Vec<V>) -> R<V> {
         if self.is_getter(key) {
+            self.read_properties = true;
             crate::note_read(crate::native::PROPERTIES_READ);
             if matches!(argv.first(), Some(V::None)) {
                 return Ok(V::None);

@@ -1134,6 +1134,9 @@ impl<'a> Checker<'a> {
             (Type::Null, Type::Void) => true,
             (Type::Literal(_), Type::String) => true,
             (Type::Literal(a), Type::Literal(b)) => a == b,
+            // A native resource fits its own type, however each was reached:
+            // `Sound` and the `Sound` inside `Sound?` resolve here separately.
+            (Type::Opaque(a), Type::Opaque(b)) => a == b,
             (Type::Array(a), Type::Array(b)) => self.assignable_at(a, b, d),
             (Type::Record(have), Type::Record(want)) => want.iter().all(|w| {
                 match have.iter().find(|h| h.name == w.name) {
@@ -4395,6 +4398,14 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         // from the same file's annotations.
         let f = built_findings("let a: File? = signal(none);\nasync fn g() { a = await pickFile({}); }");
         assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+        // A `Sound`: nameable bare, held in an optional once loaded, its
+        // properties typed and a read-only one refused.
+        let f = built_findings(
+            "let s: Sound? = signal(none);\nasync fn g() { s = await loadSound(\"a.mp3\"); s.loop = true; s.volume += 0.5; let t: float = s.currentTime; let d: float? = s.duration; }",
+        );
+        assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+        let f = built_findings("async fn g() { let s = await loadSound(\"a.mp3\"); s.duration = 3.0; }");
+        assert!(f.iter().any(|f| f.is_error && f.message.contains("`duration` of a `Sound` is read-only")), "{f:?}");
         // A file's own `File` is its own, and is not declared twice.
         let f = built_findings("type File = { id: int };\nfn f(x: File): int { x.id }");
         assert!(f.iter().all(|f| !f.is_error), "{f:?}");

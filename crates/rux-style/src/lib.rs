@@ -2044,11 +2044,19 @@ pub fn build_styled_tree(
 /// Recompute a text binding's string against the engine's current state, what
 /// the runtime writes into the node at `binding.path` when a dependency changes.
 pub fn eval_text_binding(binding: &TextBinding, engine: &mut Engine) -> String {
-    let text = interpolate_tracked(&binding.template, engine, &binding.locals).0;
-    match binding.white_space {
+    eval_text_binding_tracked(binding, engine).0
+}
+
+/// [`eval_text_binding`], with what it read this time: a binding's reads can
+/// change from one evaluation to the next (`s?.currentTime` reads the sound
+/// only once there is one), so the caller keeps these as its deps.
+pub fn eval_text_binding_tracked(binding: &TextBinding, engine: &mut Engine) -> (String, HashSet<String>) {
+    let (text, deps) = interpolate_tracked(&binding.template, engine, &binding.locals);
+    let text = match binding.white_space {
         Some(mode) => white_space::collapse(&text, mode),
         None => text,
-    }
+    };
+    (text, deps)
 }
 
 /// The class names a `:class` value contributes: a string splits on whitespace; a

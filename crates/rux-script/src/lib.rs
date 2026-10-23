@@ -2158,7 +2158,9 @@ impl Engine {
         let mut moved = self.ir.take_native_moved();
         // A resource's properties are read through their getters, never
         // held, so any change Rust reported may be theirs.
-        moved.insert(native::PROPERTIES_READ.to_string());
+        if self.ir.reads_properties() {
+            moved.insert(native::PROPERTIES_READ.to_string());
+        }
         for name in &names {
             let v = native::read_signal(name);
             if self.signal_value(name).as_ref() != Some(&v.to_value()) || !self.ir.has_global(name) {
