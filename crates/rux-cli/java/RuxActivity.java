@@ -113,6 +113,10 @@ public class RuxActivity extends NativeActivity {
             if (saved != null) {
                 nativeRestoreState(saved);
             }
+            String capture = state.getString(CAPTURE_KEY);
+            if (capture != null) {
+                captureUri = android.net.Uri.parse(capture);
+            }
         } else if ((getIntent().getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) == 0) {
             // A link is acted on only on a genuinely fresh start. **getIntent()
             // is the intent that first built the task, not this launch's**, so
@@ -174,6 +178,11 @@ public class RuxActivity extends NativeActivity {
         String state = nativeSaveState();
         if (state != null) {
             out.putString(STATE_KEY, state);
+        }
+        // A camera is exactly what Android makes room for by taking the app
+        // away, and the photo it took is written where this says.
+        if (captureUri != null) {
+            out.putString(CAPTURE_KEY, captureUri.toString());
         }
     }
 
@@ -688,9 +697,300 @@ public class RuxActivity extends NativeActivity {
         }
     }
 
+    /** A file input's picker. */
+    private static final int REQUEST_PICK_FILES = 0x5259;
+
+    /** A file input's camera or recorder ({@code capture}). */
+    private static final int REQUEST_CAPTURE = 0x525A;
+
+    /** Where {@link #REQUEST_CAPTURE}'s camera writes, until it answers. */
+    private android.net.Uri captureUri;
+
+    /** The key {@link #captureUri} is kept under across a re-creation. */
+    private static final String CAPTURE_KEY = "dev.ruxlang.shell.capture";
+
+    /**
+     * Report what a file input's picker gave: one line per file, its URI,
+     * size, media type and name, separated by tabs; or {@code null} when
+     * nothing was chosen.
+     */
+    private static native void nativeFilesPicked(String files);
+
+    /**
+     * Open the platform's picker for an {@code <input type="file">}:
+     * {@code mimeTypes} comma-separated (empty for any file), several files
+     * when {@code multiple}, and the camera or recorder when {@code capture}
+     * is set and {@code mimeTypes} names photos, video or sound.
+     *
+     * <p>{@code ACTION_OPEN_DOCUMENT}: the system's own picker, which needs
+     * no storage permission for a file the person chose. Answered by
+     * {@link #nativeFilesPicked} from {@link #onActivityResult}.
+     */
+    void ruxPickFiles(final String mimeTypes, final boolean multiple, final String capture) {
+        runOnUiThread(
+                () -> {
+                    final String[] types =
+                            mimeTypes.isEmpty() ? new String[0] : mimeTypes.split(",");
+                    if (capture != null && !capture.isEmpty() && startCapture(types, capture)) {
+                        return;
+                    }
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    intent.addCategory(Intent.CATEGORY_OPENABLE);
+                    intent.setType(types.length == 1 ? types[0] : "*/*");
+                    if (types.length > 1) {
+                        intent.putExtra(Intent.EXTRA_MIME_TYPES, types);
+                    }
+                    intent.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, multiple);
+                    try {
+                        startActivityForResult(intent, REQUEST_PICK_FILES);
+                    } catch (RuntimeException e) {
+                        android.util.Log.w("rux", "no file picker", e);
+                        nativeFilesPicked(null);
+                    }
+                });
+    }
+
+    /**
+     * The camera, a video camera or a sound recorder, as {@code capture}
+     * asks, writing into a file of this app's served by {@link Files}.
+     * {@code false} when {@code types} names none of the three or no app on
+     * the phone does it (many have no recorder), and the picker opens
+     * instead, as Chrome on Android does.
+     */
+    private boolean startCapture(String[] types, String facing) {
+        String family = types.length == 0 ? "" : types[0];
+        Intent intent;
+        String extension;
+        if (family.startsWith("image/")) {
+            intent = new Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE);
+            extension = ".jpg";
+        } else if (family.startsWith("video/")) {
+            intent = new Intent(android.provider.MediaStore.ACTION_VIDEO_CAPTURE);
+            extension = ".mp4";
+        } else if (family.startsWith("audio/")) {
+            intent = new Intent(android.provider.MediaStore.Audio.Media.RECORD_SOUND_ACTION);
+            extension = null;
+        } else {
+            return false;
+        }
+        android.net.Uri uri = null;
+        if (extension != null) {
+            java.io.File dir = new java.io.File(getCacheDir(), Files.DIR);
+            if (!dir.isDirectory() && !dir.mkdirs()) {
+                return false;
+            }
+            String name = "capture-" + System.currentTimeMillis() + extension;
+            uri = android.net.Uri.parse("content://" + getPackageName() + Files.AUTHORITY + "/" + name);
+            intent.putExtra(android.provider.MediaStore.EXTRA_OUTPUT, uri);
+            intent.setClipData(ClipData.newRawUri("", uri));
+            intent.addFlags(
+                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        }
+        // The front camera, for `capture="user"`. Not a standard extra, but
+        // the one most camera apps read; the rest open on their own choice.
+        if ("user".equals(facing)) {
+            intent.putExtra("android.intent.extras.CAMERA_FACING", 1);
+            intent.putExtra("android.intent.extras.LENS_FACING_FRONT", 1);
+            intent.putExtra("android.intent.extra.USE_FRONT_CAMERA", true);
+        }
+        try {
+            startActivityForResult(intent, REQUEST_CAPTURE);
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "no app captures " + family, e);
+            return false;
+        }
+        captureUri = uri;
+        return true;
+    }
+
+    /** What {@link #nativeFilesPicked} is handed for these URIs. */
+    private String describe(java.util.List<android.net.Uri> uris) {
+        StringBuilder out = new StringBuilder();
+        for (android.net.Uri uri : uris) {
+            String name = uri.getLastPathSegment();
+            long size = -1;
+            try (android.database.Cursor c =
+                    getContentResolver()
+                            .query(
+                                    uri,
+                                    new String[] {
+                                        android.provider.OpenableColumns.DISPLAY_NAME,
+                                        android.provider.OpenableColumns.SIZE
+                                    },
+                                    null,
+                                    null,
+                                    null)) {
+                if (c != null && c.moveToFirst()) {
+                    if (!c.isNull(0)) {
+                        name = c.getString(0);
+                    }
+                    if (!c.isNull(1)) {
+                        size = c.getLong(1);
+                    }
+                }
+            } catch (RuntimeException e) {
+                android.util.Log.w("rux", "cannot describe " + uri, e);
+            }
+            String type = getContentResolver().getType(uri);
+            out.append(uri.toString())
+                    .append('\t')
+                    .append(size)
+                    .append('\t')
+                    .append(type == null ? "" : type)
+                    .append('\t')
+                    .append(name == null ? "" : name.replace('\t', ' ').replace('\n', ' '))
+                    .append('\n');
+        }
+        return out.toString();
+    }
+
+    /**
+     * The whole of the file at {@code uri}, or {@code null} if it cannot be
+     * read. Called from Rust on whichever thread asks: a picked image when it
+     * arrives, and {@code text()}.
+     */
+    byte[] ruxReadUri(String uri) {
+        try (java.io.InputStream in =
+                getContentResolver().openInputStream(android.net.Uri.parse(uri))) {
+            if (in == null) {
+                return null;
+            }
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buffer = new byte[64 * 1024];
+            for (int n; (n = in.read(buffer)) > 0; ) {
+                out.write(buffer, 0, n);
+            }
+            return out.toByteArray();
+        } catch (java.io.IOException | RuntimeException e) {
+            android.util.Log.w("rux", "cannot read " + uri, e);
+            return null;
+        }
+    }
+
+    /** A picker's or a camera's answer, as {@link #nativeFilesPicked} takes it. */
+    private void filesAnswered(int request, int result, Intent data) {
+        java.util.List<android.net.Uri> uris = new java.util.ArrayList<>();
+        if (request == REQUEST_CAPTURE) {
+            android.net.Uri written = captureUri;
+            captureUri = null;
+            if (result == RESULT_OK) {
+                if (written != null) {
+                    uris.add(written);
+                } else if (data != null && data.getData() != null) {
+                    // A recorder hands back where it put the sound.
+                    uris.add(data.getData());
+                }
+            }
+        } else if (result == RESULT_OK && data != null) {
+            if (data.getClipData() != null) {
+                for (int i = 0; i < data.getClipData().getItemCount(); i++) {
+                    uris.add(data.getClipData().getItemAt(i).getUri());
+                }
+            } else if (data.getData() != null) {
+                uris.add(data.getData());
+            }
+        }
+        nativeFilesPicked(uris.isEmpty() ? null : describe(uris));
+    }
+
+    /**
+     * The files a camera or recorder writes for a file input, in the app's
+     * cache, served to that app and back to Rux as {@code content://} URIs.
+     * AndroidX's {@code FileProvider} does the same, and a Rux app has no
+     * AndroidX. One folder, and a name with no path in it, so nothing else
+     * of the app's can be reached through it.
+     */
+    public static class Files extends android.content.ContentProvider {
+        /** Appended to the package name: the provider's authority. */
+        static final String AUTHORITY = ".ruxfiles";
+        /** The folder under the cache directory. */
+        static final String DIR = "captured";
+
+        @Override
+        public boolean onCreate() {
+            return true;
+        }
+
+        private java.io.File fileOf(android.net.Uri uri) {
+            String name = uri.getLastPathSegment();
+            if (name == null || name.contains("/") || name.startsWith(".")) {
+                return null;
+            }
+            return new java.io.File(new java.io.File(getContext().getCacheDir(), DIR), name);
+        }
+
+        @Override
+        public android.os.ParcelFileDescriptor openFile(android.net.Uri uri, String mode)
+                throws java.io.FileNotFoundException {
+            java.io.File file = fileOf(uri);
+            if (file == null) {
+                throw new java.io.FileNotFoundException(uri.toString());
+            }
+            return android.os.ParcelFileDescriptor.open(
+                    file, android.os.ParcelFileDescriptor.parseMode(mode));
+        }
+
+        @Override
+        public String getType(android.net.Uri uri) {
+            String name = uri.getLastPathSegment();
+            if (name == null) {
+                return null;
+            }
+            if (name.endsWith(".jpg")) {
+                return "image/jpeg";
+            }
+            if (name.endsWith(".mp4")) {
+                return "video/mp4";
+            }
+            return "application/octet-stream";
+        }
+
+        @Override
+        public android.database.Cursor query(
+                android.net.Uri uri,
+                String[] projection,
+                String selection,
+                String[] selectionArgs,
+                String sortOrder) {
+            java.io.File file = fileOf(uri);
+            if (file == null) {
+                return null;
+            }
+            String[] columns = {
+                android.provider.OpenableColumns.DISPLAY_NAME, android.provider.OpenableColumns.SIZE
+            };
+            android.database.MatrixCursor cursor = new android.database.MatrixCursor(columns, 1);
+            cursor.addRow(new Object[] {file.getName(), file.length()});
+            return cursor;
+        }
+
+        @Override
+        public android.net.Uri insert(android.net.Uri uri, android.content.ContentValues values) {
+            return null;
+        }
+
+        @Override
+        public int delete(android.net.Uri uri, String selection, String[] selectionArgs) {
+            return 0;
+        }
+
+        @Override
+        public int update(
+                android.net.Uri uri,
+                android.content.ContentValues values,
+                String selection,
+                String[] selectionArgs) {
+            return 0;
+        }
+    }
+
     @Override
     protected void onActivityResult(int request, int result, Intent data) {
         super.onActivityResult(request, result, data);
+        if (request == REQUEST_PICK_FILES || request == REQUEST_CAPTURE) {
+            filesAnswered(request, result, data);
+            return;
+        }
         if (request != REQUEST_PROCESS_TEXT || result != RESULT_OK || data == null) {
             return;
         }

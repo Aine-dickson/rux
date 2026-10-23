@@ -1309,6 +1309,10 @@ pub struct SavedState {
     /// killer interrupts, and only the focused field coming back loses the
     /// rest of it.
     pub fields: Vec<SavedField>,
+    /// The file input whose picker or camera was open, as `(model, row,
+    /// instance)`. A camera is exactly what Android makes room for by killing
+    /// the app, and its answer comes back to the new one.
+    pub picking: Option<(String, Option<String>, Option<String>)>,
 }
 
 /// A field in a [`SavedState`] that did not have focus: who it is and what
@@ -1374,6 +1378,15 @@ impl SavedState {
             }
             out += &format!("field-text {}\n", escape_line(&f.text));
         }
+        if let Some((model, row, instance)) = &self.picking {
+            out += &format!("picking {}\n", escape_line(model));
+            if let Some(row) = row {
+                out += &format!("picking-row {}\n", escape_line(row));
+            }
+            if let Some(instance) = instance {
+                out += &format!("picking-instance {}\n", escape_line(instance));
+            }
+        }
         out
     }
 
@@ -1414,6 +1427,9 @@ impl SavedState {
                 "field-row" => state.fields.last_mut()?.row = Some(unescape_line(rest)),
                 "field-instance" => state.fields.last_mut()?.instance = Some(unescape_line(rest)),
                 "field-text" => state.fields.last_mut()?.text = unescape_line(rest),
+                "picking" => state.picking = Some((unescape_line(rest), None, None)),
+                "picking-row" => state.picking.as_mut()?.1 = Some(unescape_line(rest)),
+                "picking-instance" => state.picking.as_mut()?.2 = Some(unescape_line(rest)),
                 _ => return None,
             }
         }
@@ -4390,6 +4406,7 @@ impl Document {
             at: self.history.at,
             focus: None,
             fields: Vec::new(),
+            picking: None,
         }
     }
 
@@ -8389,6 +8406,7 @@ use components::detail;
                 },
                 SavedField { model: "empty".into(), ..SavedField::default() },
             ],
+            picking: Some(("photo".into(), Some("r 2".into()), Some("c\n1".into()))),
         };
         assert_eq!(SavedState::decode(&state.encode()), Some(state));
         let bare = SavedState { entries: vec![("/".into(), Vec::new())], ..SavedState::default() };

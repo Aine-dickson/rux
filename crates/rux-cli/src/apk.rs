@@ -534,6 +534,12 @@ fn android_manifest(manifest: &Manifest, dev: bool) -> String {
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>{links}
         </activity>
+        <!-- Where a camera or recorder a file input opened writes, until Rux reads it. -->
+        <provider
+            android:name="{activity}$Files"
+            android:authorities="{id}.ruxfiles"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 </manifest>
 "#,

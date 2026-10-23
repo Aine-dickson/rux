@@ -89,9 +89,7 @@ enum RuxEvent {
     Answered,
     /// A file input's picker closed: the `File`s chosen, or `None` when it
     /// was dismissed. The input is in [`App::pending_file`], for the reason
-    /// a select's is in `pending_select`. Sent by the desktop's and the
-    /// web's pickers; Android's is not built yet.
-    #[cfg_attr(target_os = "android", allow(dead_code))]
+    /// a select's is in `pending_select`.
     PickedFiles { files: Option<Vec<rux_runtime::native::Any>> },
     /// The `.rux` file changed on disk.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -2013,6 +2011,15 @@ struct App {
     /// frame. See [`App::adopt_restored_fields`].
     #[cfg(any(target_os = "android", target_arch = "wasm32"))]
     restored_fields: Vec<rux_runtime::SavedField>,
+    /// The file input whose picker was open when Android killed the app, as
+    /// `(model, row, instance)`: the picker's answer is delivered to the new
+    /// process, and this is who asked. See [`App::picked_files`].
+    #[cfg(target_os = "android")]
+    restored_picking: Option<(String, Option<String>, Option<String>)>,
+    /// That answer, when it came before the first frame had laid the input
+    /// out, waiting for it.
+    #[cfg(target_os = "android")]
+    early_pick: Option<Option<Vec<rux_runtime::native::Any>>>,
     /// A dev build's documents, as the app last loaded them, for hot reload
     /// to patch. `None` in a release build, which never reloads.
     #[cfg(target_os = "android")]
@@ -2238,6 +2245,10 @@ impl App {
             restored_focus: None,
             #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             restored_fields: Vec::new(),
+            #[cfg(target_os = "android")]
+            restored_picking: None,
+            #[cfg(target_os = "android")]
+            early_pick: None,
             #[cfg(target_os = "android")]
             dev_files: None,
             #[cfg(target_os = "android")]
@@ -5624,30 +5635,47 @@ impl App {
         if self.pending_file.is_some() {
             return;
         }
-        self.pending_file = Some(files::PendingFile {
-            model: region.model,
-            row: region.row,
-            instance: region.instance,
-            on_change: region.field.on_change,
-            on_cancel: file.on_cancel.clone(),
-            multiple: file.multiple,
-        });
+        self.pending_file = Some(files::PendingFile::of(region));
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         files::open_picker(self.proxy.clone(), &file.accept, file.multiple);
         #[cfg(target_arch = "wasm32")]
         web_open_files(&file.accept, file.multiple, file.capture.as_deref());
         #[cfg(target_os = "android")]
         {
-            eprintln!("rux: `<input type=\"file\">` cannot open a picker on Android yet");
-            self.pending_file = None;
+            // Now, not at the next frame: the picker is about to cover the
+            // window, and Android may save the state as it does.
+            self.publish_saved_state();
+            android_pick_files(&files::accept_mime_types(&file.accept), file.multiple, file.capture.as_deref());
         }
     }
 
     /// A file input's picker answered: write what was chosen and run
     /// `@change`, or run `@cancel` and leave the value as it was, as a
     /// browser keeps the file it had.
+    ///
+    /// On Android the answer may reach a new process, Android having killed
+    /// the app behind a camera: then the input is the one the saved state
+    /// names, once a frame has laid it out.
     fn picked_files(&mut self, files: Option<Vec<rux_runtime::native::Any>>) {
+        #[cfg(target_os = "android")]
+        if self.pending_file.is_none() {
+            let Some((model, row, instance)) = self.restored_picking.clone() else { return };
+            let region = self.files.iter().find(|f| f.model == model && f.row == row && f.instance == instance);
+            match region {
+                Some(region) => {
+                    self.pending_file = Some(files::PendingFile::of(region.clone()));
+                    self.restored_picking = None;
+                }
+                None => {
+                    // Not laid out yet; the first frame tries again.
+                    self.early_pick = Some(files);
+                    return;
+                }
+            }
+        }
         let Some(input) = self.pending_file.take() else { return };
+        #[cfg(target_os = "android")]
+        files::remember_images(files.as_deref().unwrap_or_default());
         let chosen: Vec<rux_reactive::Value> =
             files.unwrap_or_default().into_iter().map(files::to_value).collect();
         if chosen.is_empty() {
@@ -6197,6 +6225,14 @@ impl App {
             }
             budget -= text.len();
             state.fields.push(rux_runtime::SavedField { model, row, instance, text });
+        }
+        #[cfg(target_os = "android")]
+        {
+            state.picking = match &self.pending_file {
+                Some(p) => Some((p.model.clone(), p.row.clone(), p.instance.clone())),
+                // Still waiting for its input, so still asking after a second kill.
+                None => self.restored_picking.clone(),
+            };
         }
         let encoded = state.encode();
         #[cfg(target_os = "android")]
@@ -8478,6 +8514,12 @@ impl ApplicationHandler<RuxEvent> for App {
                 // back as it was, and that includes which field had it.
                 #[cfg(any(target_os = "android", target_arch = "wasm32"))]
                 self.adopt_restored_focus();
+                // A picker's answer that reached this process before its input
+                // was laid out. After the restored fields, which it writes over.
+                #[cfg(target_os = "android")]
+                if let Some(files) = self.early_pick.take() {
+                    self.picked_files(files);
+                }
                 self.adopt_element_requests();
                 // After any `focus()`, which is the more specific request: an
                 // `autofocus` only takes a field nobody else has put focus in.
@@ -11852,6 +11894,57 @@ fn android_open_date(value: &str, min: Option<(i32, u32, u32)>, max: Option<(i32
     });
 }
 
+/// Open the platform's picker for a file input: `mimes` comma-separated,
+/// empty for any file. Answered by `nativeFilesPicked`.
+#[cfg(target_os = "android")]
+fn android_pick_files(mimes: &str, multiple: bool, capture: Option<&str>) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        let mimes = env.new_string(mimes)?;
+        let capture = env.new_string(capture.unwrap_or_default())?;
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxPickFiles"),
+            jni::jni_sig!("(Ljava/lang/String;ZLjava/lang/String;)V"),
+            &[jni::JValue::Object(&mimes), jni::JValue::Bool(multiple), jni::JValue::Object(&capture)],
+        )?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// The whole of a picked file, by its `content://` URI, read by the
+/// activity's `ContentResolver`. `None` when it cannot be read. Any thread.
+#[cfg(target_os = "android")]
+pub(crate) fn android_read_uri(uri: &str) -> Option<Vec<u8>> {
+    let Ok(activity) = ACTIVITY.lock() else { return None };
+    let Some(activity) = activity.as_ref() else { return None };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        let uri = env.new_string(uri)?;
+        let bytes = env
+            .call_method(
+                activity,
+                jni::jni_str!("ruxReadUri"),
+                jni::jni_sig!("(Ljava/lang/String;)[B"),
+                &[jni::JValue::Object(&uri)],
+            )?
+            .l()?;
+        if bytes.is_null() {
+            return Ok(None);
+        }
+        let bytes = env.cast_local::<jni::objects::JByteArray>(bytes)?;
+        Ok::<_, jni::errors::Error>(Some(env.convert_byte_array(&bytes)?))
+    })
+    .ok()
+    .flatten()
+}
+
 /// The phone's decimal separator, from its language. `None` if the activity
 /// could not be asked, which the caller reads as a dot.
 #[cfg(target_os = "android")]
@@ -12093,6 +12186,32 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeDateChosen(
             let _ = proxy.send_event(RuxEvent::PickedDate { value });
         }
     }
+}
+
+/// A file input's picker, camera or recorder answered: one line per file,
+/// as [`files::from_android`] reads them, or `null` for nothing chosen.
+/// Called from Java, on Android's main thread.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeFilesPicked<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    picked: jni::objects::JString<'frame>,
+) {
+    env.with_env(|env| {
+        let files = if picked.is_null() { None } else { Some(files::from_android(&picked.try_to_string(env)?)) };
+        if let Ok(proxy) = PROXY.lock() {
+            if let Some(proxy) = proxy.as_ref() {
+                let _ = proxy.send_event(RuxEvent::PickedFiles { files });
+            }
+        }
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
 /// An item was chosen from the platform text menu. Called from Java, on
@@ -12550,6 +12669,7 @@ fn run_android_with(
         app.document.restore_state(&state);
         app.restored_focus = Some(state.focus);
         app.restored_fields = state.fields;
+        app.restored_picking = state.picking;
     }
     // After the restore, so a link that arrives as Android brings a killed app
     // back is pushed on top of where the person was, the same as a link to a

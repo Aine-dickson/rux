@@ -124,9 +124,73 @@ fn read(file: &Any) -> Result<Vec<u8>, Error> {
     std::fs::read(path).map_err(|e| Error::new("io", format!("cannot read {path}: {e}")))
 }
 
+/// On Android a picked file is a `content://` URI, which only the
+/// platform's `ContentResolver` opens; the activity reads it for us, on
+/// this thread.
 #[cfg(target_os = "android")]
-fn read(_file: &Any) -> Result<Vec<u8>, Error> {
-    Err(Error::new("unsupported", "reading a `File` is not built on Android yet"))
+fn read(file: &Any) -> Result<Vec<u8>, Error> {
+    let Any::Map(m) = file else { return Err(Error::new("type", "`text` is a method of a `File`")) };
+    let Some(Any::Str(url)) = m.get("url") else {
+        return Err(Error::new("type", "this `File` has no `url` to read"));
+    };
+    crate::android_read_uri(url).ok_or_else(|| Error::new("io", format!("cannot read {url}")))
+}
+
+/// The `File`s a picker's answer describes: one line per file, its URI,
+/// size, media type and name, tab-separated, as `RuxActivity` writes them.
+#[cfg(target_os = "android")]
+pub(crate) fn from_android(lines: &str) -> Vec<Any> {
+    lines
+        .lines()
+        .filter_map(|line| {
+            let mut parts = line.splitn(4, '\t');
+            let (url, size, kind, name) = (parts.next()?, parts.next()?, parts.next()?, parts.next()?);
+            let mut m = std::collections::BTreeMap::new();
+            m.insert("name".to_string(), Any::Str(name.to_string()));
+            m.insert("size".to_string(), Any::Int(size.parse::<i64>().unwrap_or(0).max(0)));
+            m.insert("type".to_string(), Any::Str(kind.to_string()));
+            m.insert("url".to_string(), Any::Str(url.to_string()));
+            m.insert("path".to_string(), Any::None);
+            Some(Any::Map(m))
+        })
+        .collect()
+}
+
+/// Read each picked image now and hold its bytes for its URL, as the web
+/// does, so the painter, which reads at once, can draw `file.url`.
+#[cfg(target_os = "android")]
+pub(crate) fn remember_images(files: &[Any]) {
+    for file in files {
+        let Any::Map(m) = file else { continue };
+        let (Some(Any::Str(url)), Some(Any::Str(kind))) = (m.get("url"), m.get("type")) else { continue };
+        if kind.starts_with("image/") {
+            if let Some(bytes) = crate::android_read_uri(url) {
+                rux_runtime::remember_url_bytes(url, bytes);
+            }
+        }
+    }
+}
+
+/// What Android's picker is asked for: `accept` as media types,
+/// comma-separated, an extension through the table. Empty for any file, and
+/// also when one of them is an extension the table does not know, since
+/// leaving it out would hide the very files asked for.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn accept_mime_types(accept: &str) -> String {
+    let mut out: Vec<String> = Vec::new();
+    for part in accept.split(',').map(|p| p.trim().to_lowercase()).filter(|p| !p.is_empty()) {
+        let kind = match part.strip_prefix('.') {
+            Some(ext) => match media_type(ext) {
+                Some(t) => t.to_string(),
+                None => return String::new(),
+            },
+            None => part,
+        };
+        if !out.contains(&kind) {
+            out.push(kind);
+        }
+    }
+    out.join(",")
 }
 
 /// The file input whose picker is open: where its answer goes, and what
@@ -139,6 +203,21 @@ pub(crate) struct PendingFile {
     pub on_change: Option<String>,
     pub on_cancel: Option<String>,
     pub multiple: bool,
+}
+
+impl PendingFile {
+    /// The input a laid-out region is, as its picker's answer will need it.
+    pub fn of(region: rux_layout::FileRegion) -> Self {
+        let file = region.field.file.as_deref();
+        PendingFile {
+            on_cancel: file.and_then(|f| f.on_cancel.clone()),
+            multiple: file.is_some_and(|f| f.multiple),
+            on_change: region.field.on_change,
+            model: region.model,
+            row: region.row,
+            instance: region.instance,
+        }
+    }
 }
 
 /// Open the platform's picker for a file input, on a thread of its own so
@@ -321,6 +400,9 @@ mod tests {
         let images = accept_extensions("image/*");
         assert!(images.iter().any(|e| e == "jpeg") && images.iter().all(|e| media_type(e).unwrap().starts_with("image/")));
         assert!(accept_extensions("x-unknown/thing").is_empty());
+        assert_eq!(accept_mime_types("image/*, .PDF, image/*"), "image/*,application/pdf");
+        assert_eq!(accept_mime_types(".png, .weird"), "", "an unknown extension asks for any file");
+        assert_eq!(accept_mime_types(""), "");
         assert_eq!(accept_label("image/*"), "Images");
         assert_eq!(accept_label("image/*, .pdf"), "Images, .pdf");
     }

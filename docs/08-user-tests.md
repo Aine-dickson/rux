@@ -2770,7 +2770,7 @@ flung.
 | The `<select>` dropdown, light | open one on a light screen | a white panel | not driven |
 | Web, Android | the same pages | the same | not driven |
 
-## `<input type="file">` and `File`, desktop and web, 2026-10-23
+## `<input type="file">` and `File`, desktop, web and Android, 2026-10-23
 
 Steps A.1 to A.4 of `docs/13-file-input-and-media-plan.md`. Under test in
 `rux-runtime` (`tests/file_input.rs`: the build, the layout's region, the
@@ -2792,13 +2792,17 @@ typed into the dialog's name box. Tests cannot open the dialog; the drive can.
 | A path with a space and an accent | `<image src="file:///…/img%20dir/pic%20%C3%A9.png">`, static and bound | both drawn at their natural size | desktop: pass |
 | Filter | `accept="image/*"`, `".pdf"`, `"text/plain"`, and none, each opened on a folder of a png, a txt and a pdf | only the png under "Images"; only the pdf; only the txt; all three under "All Files"; the image dialog's type list offers "Images" then "All files" | desktop: pass |
 | Disabled, required | `disabled`; `required` with nothing chosen | no dialog; `:invalid` until a pick | under test only |
-| `pickFile` gives a `File` | a button awaiting `pickFile` with a `txt` filter, then `f.name`, `f.type`, `f.path`, `await f.text()` | `note.txt (text/plain) at C:\…
-ote.txt: Hello…`, accents intact | desktop: pass |
+| `pickFile` gives a `File` | a button awaiting `pickFile` with a `txt` filter, then `f.name`, `f.type`, `f.path`, `await f.text()` | `note.txt (text/plain) at C:\…\note.txt: Hello…`, accents intact | desktop: pass |
 | Web: pick, cancel, several, read | the same page in Brave, the file chooser intercepted over CDP and answered with files | the chooser opens from the tap (`selectSingle` with `image/*`, `selectMultiple`); the image drawn from its `blob:` URL; "2 files"; `await other.text()` reads it | web (Brave): pass |
 | Web: cancel | the chooser opened, then the input's `cancel` event | `@cancel` once, the file kept | web (Brave): pass, the event dispatched by the driver |
 | Web: a finger | touch emulation (`pointer: coarse`), a touch on the button | the chooser opens; the image drawn | web (Brave): pass |
 | Web: the real cancel, `capture` | close a real chooser; a phone browser's camera | `@cancel`; the camera | not driven |
-| Android | the same page | prints that the picker is not built there | not driven |
+| Android: several | on the `rux_test` emulator, tap the `multiple` input, long-press files in the system picker, Select | `OPEN_DOCUMENT` with `LAUNCH_MULTIPLE`; "3 files", a list of three | emulator: pass |
+| Android: read | the plain input, `note.txt` from Downloads, then `await other.text()` | its text through the `ContentResolver`, the accent intact | emulator: pass |
+| Android: `capture` | `accept="image/*" capture="environment"`, shutter, accept | the camera opens, not the picker; `capture-….jpg` beside the button; the photo drawn at `width: 120px` with its own proportions; `@change` once | emulator: pass |
+| Android: killed behind the camera | open the camera, `kill -9` the app's process (as root), take and accept a photo | the app comes back with the new photo in that input and `@change` run; the other inputs empty, their `File`s being app data | emulator: pass |
+| Android: cancel | open the camera, Back | `@cancel` once, the photo kept | emulator: pass |
+| Android: on a phone, a recorder, `capture="user"` | the same on hardware; `accept="audio/*" capture` | the front camera; a recorder, or the picker where there is none | not driven |
 
 ## Standing gaps
 

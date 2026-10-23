@@ -2098,9 +2098,22 @@ the bytes read when an image is picked, and `text()` is the browser's own.
 Object URLs are kept for the page's life: a `File` can be copied anywhere,
 so nothing says when the last one goes.
 
-**Not yet on Android**, where a tap prints that the picker is not built there;
-that is the next step of `docs/13-file-input-and-media-plan.md`. Drag and drop
-onto the input is later still. `pickFile` and `pickFiles` give the same `File`
+**On Android** the tap opens the system's document picker
+(`ACTION_OPEN_DOCUMENT`), which needs no storage permission for a file the
+person chose; `accept` becomes its media types, and an extension the table
+does not know asks for any file rather than hiding the one wanted. The `File`
+has no `path`; its `url` is the picker's `content://` URI, good for this run
+of the app, as a browser's `blob:` is for the page (no lasting permission is
+taken). `text()` and `<image :src>` read it through the `ContentResolver`.
+With `capture`, `image/*` opens the camera and `video/*` the video camera,
+writing into the app's cache through a provider of Rux's own, and `audio/*` a
+sound recorder, or the picker on a phone without one, as Chrome does. A camera
+is what Android makes room for by killing the app, so which input asked is
+kept with the rest of the saved state, and the photo is delivered to the app
+as it comes back. `capture="user"` asks for the front camera through the
+extras most camera apps read; the rest open on their own choice.
+
+Drag and drop onto the input is later. `pickFile` and `pickFiles` give the same `File`
 on the desktop (see `docs/07-script.md`).
 
 Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
