@@ -527,7 +527,8 @@ The middle case is the one worth having. Until v0.7.1 a typo got the same "not
 yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
-Real CSS Rux has not built includes
+Real CSS Rux has not built includes scroll snapping (`scroll-snap-type` and
+the rest), `hyphens: auto`, `tab-size`,
 `writing-mode`, `columns` (a multi-column
 layout of its own), the table properties (Rux has no tables), `content` (Rux
 has no `::before` or `::after`),

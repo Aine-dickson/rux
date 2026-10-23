@@ -4581,6 +4581,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "text-decoration", "text-decoration-line",
     "text-decoration-color", "text-decoration-style", "text-decoration-thickness",
     "text-underline-offset", "text-transform", "text-indent", "text-overflow", "line-clamp", "user-select", "transform-origin",
+    "text-wrap", "text-wrap-mode", "text-wrap-style", "will-change",
     "animation", "animation-name", "animation-duration", "animation-delay",
     "animation-timing-function", "animation-iteration-count", "animation-direction",
     "animation-fill-mode", "animation-play-state",
@@ -4834,13 +4835,18 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
     // Boxes
     "float", "clear", "order", "resize",
-    // Text. Vertical writing is a layout of its own.
-    "writing-mode",
+    // Text. Vertical writing is a layout of its own; hyphenation by
+    // dictionary needs the dictionaries; a tab is as wide as its font says.
+    "writing-mode", "hyphens", "hyphenate-character", "tab-size",
     "appearance", "list-style", "list-style-type", "list-style-position",
     // Motion. A transform is flat, so it has no depth to look into.
-    "perspective", "perspective-origin", "will-change",
+    "perspective", "perspective-origin",
+    // Scrolling: a scroller comes to rest where the fling leaves it.
+    "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop",
+    "scroll-padding", "scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left",
+    "scroll-margin", "scroll-margin-top", "scroll-margin-right", "scroll-margin-bottom", "scroll-margin-left",
     // Other layout models
-    "columns", "column-count", "column-width", "table-layout",
+    "columns", "column-count", "column-width", "column-fill", "column-rule", "column-span", "table-layout",
     "border-collapse", "border-spacing", "content",
 ];
 
@@ -5598,7 +5604,7 @@ const INHERITED_PROPERTIES: &[&str] = &[
     "font-variant-caps", "font-variant-numeric", "font-variant-ligatures", "font-variant-position",
     "font-variant-east-asian", "font-feature-settings", "font-variation-settings", "font-stretch",
     "font-width", "letter-spacing", "word-spacing", "line-height", "text-align", "text-indent",
-    "text-transform", "text-shadow", "white-space", "word-break", "overflow-wrap", "word-wrap",
+    "text-transform", "text-shadow", "white-space", "text-wrap", "text-wrap-mode", "text-wrap-style", "word-break", "overflow-wrap", "word-wrap",
     "direction", "visibility", "cursor", "caret-color", "accent-color", "color-scheme",
     "pointer-events", "fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap",
     "stroke-linejoin", "scrollbar-color",
@@ -6051,6 +6057,42 @@ fn add_len(a: Len, b: Len) -> Len {
         (Len::Px(z), other) | (other, Len::Px(z)) if z == 0.0 => other,
         (a, _) => a,
     }
+}
+
+/// `text-wrap` and its two longhands, over `white-space`, which in CSS is a
+/// shorthand of how spaces collapse and whether lines wrap. `nowrap` stops
+/// the wrapping and keeps the spaces as they were; `wrap` lets lines wrap
+/// again. `pretty` and `stable` wrap as `wrap` does, which CSS allows;
+/// `balance` does too, and says so.
+fn text_wrap_mode(props: &HashMap<String, String>, white_space: WhiteSpace) -> WhiteSpace {
+    let mut out = white_space;
+    for k in ["text-wrap", "text-wrap-mode", "text-wrap-style"] {
+        let Some(v) = props.get(k) else { continue };
+        for word in v.split_whitespace() {
+            match word {
+                "nowrap" => {
+                    out = match out {
+                        WhiteSpace::PreWrap => WhiteSpace::Pre,
+                        WhiteSpace::Pre => WhiteSpace::Pre,
+                        _ => WhiteSpace::Nowrap,
+                    }
+                }
+                "wrap" => {
+                    out = match out {
+                        WhiteSpace::Pre => WhiteSpace::PreWrap,
+                        WhiteSpace::Nowrap => WhiteSpace::Normal,
+                        other => other,
+                    }
+                }
+                "pretty" | "stable" | "auto" => {}
+                "balance" => warn_once(
+                    "`text-wrap: balance` wraps as `wrap` does: Rux does not even out the lines yet".to_string(),
+                ),
+                other => warn_once(format!("`{k}: {other}` is not something Rux knows")),
+            }
+        }
+    }
+    out
 }
 
 /// `transform-origin`: one or two positions, x then y, or keywords in either
@@ -7187,7 +7229,7 @@ fn build_node_inner(
         },
         // `white-space`: `nowrap` and `pre` stop line breaking, and a `<text>`
         // collapses its spaces by it (see `white_space`).
-        white_space: props.get("white-space").and_then(|v| WhiteSpace::parse(v)).unwrap_or(up.white_space),
+        white_space: text_wrap_mode(&props, props.get("white-space").and_then(|v| WhiteSpace::parse(v)).unwrap_or(up.white_space)),
         // `line-height`: a unitless number multiplies the font size; a length
         // is absolute; `normal` keeps the font metrics.
         line_height: match props.get("line-height") {
@@ -10956,6 +10998,17 @@ fn interpret(p: &HashMap<String, String>) -> Style {
                 false
             }
         };
+    }
+    // `will-change` is a hint, and the one thing it changes is what CSS has
+    // it change: a box that says it will change a property that makes a
+    // stacking context is one already, so nothing jumps when it does.
+    if let Some(v) = p.get("will-change") {
+        let stacks = split_top_level_commas(v).iter().any(|w| {
+            matches!(w.trim(), "transform" | "translate" | "rotate" | "scale" | "opacity" | "filter" | "backdrop-filter" | "mask" | "clip-path" | "isolation" | "mix-blend-mode" | "z-index")
+        });
+        if stacks {
+            st.isolate = true;
+        }
     }
     if let Some(v) = p.get("aspect-ratio") {
         st.aspect_ratio = parse_aspect_ratio(v);
@@ -18215,6 +18268,24 @@ mod tailwind_property_tests {
             assert!(n.style.rare.as_ref().and_then(|r| r.text_fill.as_ref()).is_some(), "{clip}: kept for the glyphs");
         }
         assert!(first(".a { background: red; }").style.rare.is_none());
+    }
+
+    /// `text-wrap: nowrap` stops the wrapping, over `white-space`, and it
+    /// inherits; `wrap` lets a `nowrap` parent's text wrap again.
+    #[test]
+    fn text_wrap_sets_whether_lines_wrap() {
+        let text = |css: &str| {
+            let src = format!(r#"<template><screen><view class="p"><text class="t">a b</text></view></screen></template><style>{css}</style>"#);
+            let sfc = rux_parser::parse_sfc(&src).unwrap();
+            let mut engine = Builder::new().build(&sfc.script).unwrap();
+            let root = super::build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
+            let t = root.children[0].children[0].text.as_deref().unwrap().clone();
+            (t.nowrap, t.white_space)
+        };
+        assert!(text(".t { text-wrap: nowrap; }").0);
+        assert!(text(".p { text-wrap: nowrap; }").0, "inherited");
+        assert!(!text(".p { white-space: nowrap; } .t { text-wrap: wrap; }").0);
+        assert!(!text(".t { text-wrap: pretty; }").0);
     }
 
     /// `transform-origin`: keywords either way round, lengths, and a single

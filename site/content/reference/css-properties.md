@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-220 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
+224 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -208,6 +208,10 @@ Every property below is one the runtime interprets, and the list is written by t
 | `animation-fill-mode` | **whether the ends hold outside the run.** `forwards` keeps the last keyframe after the end, `backwards` shows the first during the delay, `both` does both. `none`, the default, gives the box its own style outside the run.For example `.toast { animation-fill-mode: forwards; }` | `none` `forwards` `backwards` `both` |  |
 | `animation-play-state` | **pause or resume it.** `paused` stops the clock where it is, and `running` picks it up from there.For example `.spinner.idle { animation-play-state: paused; }` | `running` `paused` |  |
 | `transform-origin` | **the point a transform turns and grows about.** `center` (the default), keywords in either order (`top left`), or lengths and percentages of the box, x then y. A third value, the z offset, is read past.For example `.menu { transform-origin: top right; }` | `center` `top` `right` `bottom` `left` |  |
+| `will-change` | **a hint that a property is about to change.** Rux needs no warning to be fast about it, so it is a hint and nothing more, except as CSS has it: naming a property that makes a stacking context (`transform`, `opacity`, `filter` and the like) makes the box one now.For example `.drawer { will-change: transform; }` |  |  |
+| `text-wrap` | **whether and how lines wrap.** `nowrap` keeps the text on one line, as `white-space: nowrap` does, and `wrap` lets it wrap again. Inherited. `pretty` and `stable` wrap as `wrap` does, which CSS allows; `balance` does too for now, with a warning.For example `.tag { text-wrap: nowrap; }` | `wrap` `nowrap` `balance` `pretty` `stable` |  |
+| `text-wrap-mode` | **whether lines wrap.** `wrap` or `nowrap`: the wrapping half of `white-space`. Inherited.For example `.tag { text-wrap-mode: nowrap; }` | `wrap` `nowrap` |  |
+| `text-wrap-style` | **how wrapped lines are chosen.** `auto`, `pretty` and `stable` wrap as usual; `balance` does too for now, with a warning. Inherited.For example `.lede { text-wrap-style: pretty; }` | `auto` `balance` `pretty` `stable` |  |
 | `user-select` | **whether the person can select this text.** `none` and `auto` are honoured as they are: text outside a field cannot be selected yet, and a field's text always can, as in a browser. `text` and `all` warn, since there is nothing yet for them to turn on.For example `.label { user-select: none; }` | `auto` `none` `text` `all` |  |
 | `line-clamp` | **the most lines a text may wrap to.** `line-clamp: 2` keeps two lines, the second ending in `…`, and the text is as tall as the two. Tailwind's `line-clamp-2` writes it as `-webkit-line-clamp: 2` beside `display: -webkit-box`, which is read too; the prefixed one alone does nothing, as in a browser. On a `<text>`; text with runs is not cut yet.For example `.summary { line-clamp: 2; }` |  |  |
 | `font-variant` | **small capitals, numerals and ligatures.** Any of the `font-variant-*` keywords; the font's own OpenType features.For example `.heading { font-variant: small-caps; }` | `normal` `none` `small-caps` `all-small-caps` `tabular-nums` `oldstyle-nums` `slashed-zero` |  |
@@ -269,4 +273,4 @@ Every property below is one the runtime interprets, and the list is written by t
 
 Real CSS an author reaches for, which the runtime parses, ignores and reports as a pending feature rather than a typo:
 
-`float`, `clear`, `order`, `resize`, `writing-mode`, `appearance`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `will-change`, `columns`, `column-count`, `column-width`, `table-layout`, `border-collapse`, `border-spacing`, `content`.
+`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `appearance`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `scroll-snap-type`, `scroll-snap-align`, `scroll-snap-stop`, `scroll-padding`, `scroll-padding-top`, `scroll-padding-right`, `scroll-padding-bottom`, `scroll-padding-left`, `scroll-margin`, `scroll-margin-top`, `scroll-margin-right`, `scroll-margin-bottom`, `scroll-margin-left`, `columns`, `column-count`, `column-width`, `column-fill`, `column-rule`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`, `content`.

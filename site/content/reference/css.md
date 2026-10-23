@@ -41,6 +41,8 @@ inset (1–4 values, as margin)
 inset-inline, inset-inline-start, inset-inline-end,
 inset-block, inset-block-start, inset-block-end   (logical: see `direction`)
 z-index (auto|<integer>), isolation (auto|isolate)
+will-change (a hint; naming transform, opacity, filter and the like makes the
+                       box a stacking context, as in CSS)
 anchor-name, position-anchor, anchor() in top/right/bottom/left, anchor-size() in width/height
 position-try, position-try-fallbacks (flip-block, flip-inline, flip-start, @position-try names),
 position-try-order
@@ -107,6 +109,9 @@ font (shorthand: `italic 600 1rem/1.5 Inter, sans-serif`; what is left out is
                        `normal`, as in CSS; system fonts are not read)
 letter-spacing, word-spacing, line-height
 white-space (normal|nowrap|pre|pre-wrap|pre-line)
+text-wrap, text-wrap-mode, text-wrap-style (nowrap and wrap set whether lines
+                       wrap, over white-space; pretty and stable wrap as wrap
+                       does; balance does too for now, and warns; inherited)
 vertical-align (baseline|middle|text-top|text-bottom; an <image> or <path> in a <text>)
 direction (ltr|rtl; inherited, and set by the `dir` attribute too)
 color-scheme (normal | light | dark | light dark; inherited; which side of
