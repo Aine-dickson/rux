@@ -11368,6 +11368,11 @@ fn parse_anim_prop(s: &str) -> Option<AnimProp> {
         // The individual transforms are part of the one matrix.
         "transform" | "translate" | "rotate" | "scale" => AnimProp::Transform,
         "inset" | "top" | "right" | "bottom" | "left" => AnimProp::Inset,
+        "box-shadow" => AnimProp::BoxShadow,
+        "outline-color" | "outline" => AnimProp::OutlineColor,
+        "text-decoration-color" => AnimProp::TextDecorationColor,
+        "filter" => AnimProp::Filter,
+        "backdrop-filter" | "-webkit-backdrop-filter" => AnimProp::BackdropFilter,
         _ => return None,
     })
 }

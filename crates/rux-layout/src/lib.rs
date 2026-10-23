@@ -643,6 +643,15 @@ pub enum AnimProp {
     /// `z-index`, which CSS animates as an integer: it steps through every
     /// value between the two ends rather than jumping at the end.
     ZIndex,
+    /// `box-shadow`: each shadow against the one in its place, the shorter
+    /// list padded with clear ones, as CSS does.
+    BoxShadow,
+    OutlineColor,
+    TextDecorationColor,
+    /// `filter` and `backdrop-filter`: step by step, when the two lists are
+    /// the same steps.
+    Filter,
+    BackdropFilter,
     /// `d`: the path's geometry itself.
     ///
     /// The one animatable property that is not a style property, because
@@ -676,6 +685,11 @@ impl AnimProp {
         AnimProp::StrokeWidth,
         AnimProp::ZIndex,
         AnimProp::PathData,
+        AnimProp::BoxShadow,
+        AnimProp::OutlineColor,
+        AnimProp::TextDecorationColor,
+        AnimProp::Filter,
+        AnimProp::BackdropFilter,
     ];
 
     /// The CSS name, for diagnostics.
@@ -701,6 +715,11 @@ impl AnimProp {
             AnimProp::StrokeWidth => "stroke-width",
             AnimProp::ZIndex => "z-index",
             AnimProp::PathData => "d",
+            AnimProp::BoxShadow => "box-shadow",
+            AnimProp::OutlineColor => "outline-color",
+            AnimProp::TextDecorationColor => "text-decoration-color",
+            AnimProp::Filter => "filter",
+            AnimProp::BackdropFilter => "backdrop-filter",
         }
     }
 }

@@ -557,7 +557,8 @@
     "all", "opacity", "background-color", "color", "border-color", "border-width",
     "border-radius", "width", "height", "padding", "margin", "gap",
     "font-size", "transform", "inset", "fill", "stroke", "stroke-width",
-    "z-index", "d"
+    "z-index", "d", "box-shadow", "outline-color", "text-decoration-color", "filter",
+    "backdrop-filter"
   ],
   "easings": [
     "linear", "ease", "ease-in", "ease-out", "ease-in-out", "step-start",

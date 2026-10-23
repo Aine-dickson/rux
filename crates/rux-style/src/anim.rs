@@ -19,8 +19,9 @@
 
 use std::collections::HashMap;
 
+use rux_layout::filter::{FilterOp, Filters};
 use rux_layout::PathCmd;
-use rux_layout::{AnimProp, Background, Easing, Len, Node, Rgba, Sides, Transition};
+use rux_layout::{AnimProp, Background, BoxShadow, Easing, Len, Node, Rgba, Sides, Transition};
 
 /// How soon to ask for the next frame while something is in flight. The shell
 /// presents with vsync, so this is a floor rather than a frame rate: it exists
@@ -58,6 +59,10 @@ enum AnimValue {
     /// command sequence and jumps otherwise, which is the rule every other
     /// value here already follows.
     Path(Vec<PathCmd>),
+    /// `box-shadow`, first written first. Empty is `none`.
+    Shadows(Vec<BoxShadow>),
+    /// `filter` or `backdrop-filter`. Empty is `none`.
+    Filters(Vec<FilterOp>),
 }
 
 /// What one property of one node is doing.
@@ -378,6 +383,16 @@ fn read(node: &Node, prop: AnimProp) -> Option<AnimValue> {
         // it does in CSS.
         AnimProp::ZIndex => AnimValue::Num(st.z_index? as f32),
         AnimProp::PathData => AnimValue::Path(node.path.as_ref()?.commands.clone()),
+        // No shadow and no filter are lists with nothing in them, which
+        // interpolate: a hover that adds a shadow fades it in.
+        AnimProp::BoxShadow => AnimValue::Shadows(st.box_shadow.as_deref().map(<[BoxShadow]>::to_vec).unwrap_or_default()),
+        AnimProp::OutlineColor => AnimValue::Color(st.outline.as_ref()?.color?),
+        AnimProp::TextDecorationColor => {
+            let text = node.text.as_ref()?;
+            AnimValue::Color(text.look.as_ref().and_then(|l| l.decoration_color).unwrap_or(text.color))
+        }
+        AnimProp::Filter => AnimValue::Filters(st.filters.as_ref().map(|f| f.filter.clone()).unwrap_or_default()),
+        AnimProp::BackdropFilter => AnimValue::Filters(st.filters.as_ref().map(|f| f.backdrop.clone()).unwrap_or_default()),
     })
 }
 
@@ -422,6 +437,25 @@ fn write(node: &mut Node, prop: AnimProp, value: AnimValue) {
                 // make every frame look like a fresh authored change.
                 path.commands = cmds;
             }
+        }
+        (AnimProp::BoxShadow, AnimValue::Shadows(list)) => {
+            st.box_shadow = (!list.is_empty()).then(|| list.into());
+        }
+        (AnimProp::OutlineColor, AnimValue::Color(c)) => {
+            if let Some(o) = st.outline.as_mut() {
+                o.color = Some(c);
+            }
+        }
+        (AnimProp::TextDecorationColor, AnimValue::Color(c)) => {
+            if let Some(text) = node.text.as_mut() {
+                let mut look = text.look.as_deref().cloned().unwrap_or_default();
+                look.decoration_color = Some(c);
+                text.look = Some(std::sync::Arc::new(look));
+            }
+        }
+        (AnimProp::Filter, AnimValue::Filters(list)) => st.filters.get_or_insert_with(Box::<Filters>::default).filter = list,
+        (AnimProp::BackdropFilter, AnimValue::Filters(list)) => {
+            st.filters.get_or_insert_with(Box::<Filters>::default).backdrop = list
         }
         // A value of the wrong shape for its property cannot be produced:
         // `read` and `lerp` both preserve the variant.
@@ -469,6 +503,8 @@ fn lerp(a: &AnimValue, b: &AnimValue, t: f32) -> Option<AnimValue> {
         }
         (AnimValue::Len(x), AnimValue::Len(y)) => AnimValue::Len(lerp_len(*x, *y, t)?),
         (AnimValue::Path(x), AnimValue::Path(y)) => AnimValue::Path(rux_layout::path::lerp(x, y, t)?),
+        (AnimValue::Shadows(x), AnimValue::Shadows(y)) => AnimValue::Shadows(lerp_shadows(x, y, t)?),
+        (AnimValue::Filters(x), AnimValue::Filters(y)) => AnimValue::Filters(lerp_filters(x, y, t)?),
         (AnimValue::Insets(x), AnimValue::Insets(y)) => {
             let mut out = [None; 4];
             for i in 0..4 {
@@ -483,6 +519,81 @@ fn lerp(a: &AnimValue, b: &AnimValue, t: f32) -> Option<AnimValue> {
         }
         _ => return None,
     })
+}
+
+/// Two shadow lists, each shadow against the one in its place. The shorter
+/// list is padded with shadows of nothing, clear and in the other's colour,
+/// so a shadow fades in rather than through black; CSS pads with
+/// `transparent`, which its premultiplied mixing makes the same thing. An
+/// inset shadow against an outer one has no midpoint, and the whole list
+/// jumps, as CSS has it.
+fn lerp_shadows(a: &[BoxShadow], b: &[BoxShadow], t: f32) -> Option<Vec<BoxShadow>> {
+    let f = |x: f32, y: f32| x + (y - x) * t;
+    let clear = |s: &BoxShadow| BoxShadow { dx: 0.0, dy: 0.0, blur: 0.0, spread: 0.0, color: Rgba { a: 0.0, ..s.color }, inset: s.inset };
+    (0..a.len().max(b.len()))
+        .map(|i| {
+            let (x, y) = match (a.get(i), b.get(i)) {
+                (Some(x), Some(y)) => (*x, *y),
+                (Some(x), None) => (*x, clear(x)),
+                (None, Some(y)) => (clear(y), *y),
+                (None, None) => unreachable!(),
+            };
+            (x.inset == y.inset).then(|| BoxShadow {
+                dx: f(x.dx, y.dx),
+                dy: f(x.dy, y.dy),
+                blur: f(x.blur, y.blur).max(0.0),
+                spread: f(x.spread, y.spread),
+                color: Rgba { r: f(x.color.r, y.color.r), g: f(x.color.g, y.color.g), b: f(x.color.b, y.color.b), a: f(x.color.a, y.color.a) },
+                inset: y.inset,
+            })
+        })
+        .collect()
+}
+
+/// Two filter lists, step against step, the shorter padded with steps that
+/// change nothing, as CSS pads with each function's initial value. A step
+/// of another kind in the same place has no midpoint, and the list jumps.
+///
+/// The colour functions are kept folded into one matrix each, and walking
+/// matrix to matrix is exact for every one of them but `hue-rotate()`, which
+/// passes through a little grey on its way round.
+fn lerp_filters(a: &[FilterOp], b: &[FilterOp], t: f32) -> Option<Vec<FilterOp>> {
+    let f = |x: f32, y: f32| x + (y - x) * t;
+    let none = |op: &FilterOp| match op {
+        FilterOp::Blur(_) => FilterOp::Blur(0.0),
+        FilterOp::Matrix(_) => FilterOp::Matrix(FilterOp::IDENTITY),
+        FilterOp::DropShadow { color, .. } => FilterOp::DropShadow { dx: 0.0, dy: 0.0, blur: 0.0, color: Rgba { a: 0.0, ..*color } },
+    };
+    (0..a.len().max(b.len()))
+        .map(|i| {
+            let (x, y) = match (a.get(i), b.get(i)) {
+                (Some(x), Some(y)) => (x.clone(), y.clone()),
+                (Some(x), None) => (x.clone(), none(x)),
+                (None, Some(y)) => (none(y), y.clone()),
+                (None, None) => unreachable!(),
+            };
+            Some(match (x, y) {
+                (FilterOp::Blur(p), FilterOp::Blur(q)) => FilterOp::Blur(f(p, q).max(0.0)),
+                (FilterOp::Matrix(p), FilterOp::Matrix(q)) => {
+                    let mut m = [0.0; 20];
+                    for k in 0..20 {
+                        m[k] = f(p[k], q[k]);
+                    }
+                    FilterOp::Matrix(m)
+                }
+                (
+                    FilterOp::DropShadow { dx: x1, dy: y1, blur: b1, color: c1 },
+                    FilterOp::DropShadow { dx: x2, dy: y2, blur: b2, color: c2 },
+                ) => FilterOp::DropShadow {
+                    dx: f(x1, x2),
+                    dy: f(y1, y2),
+                    blur: f(b1, b2).max(0.0),
+                    color: Rgba { r: f(c1.r, c2.r), g: f(c1.g, c2.g), b: f(c1.b, c2.b), a: f(c1.a, c2.a) },
+                },
+                _ => return None,
+            })
+        })
+        .collect()
 }
 
 /// Two lengths interpolate only in the same unit. `10px` → `50%` needs the
@@ -552,6 +663,33 @@ fn close(a: &AnimValue, b: &AnimValue) -> bool {
                             && near(*ay, *by)
                     }
                     (PathCmd::Close, PathCmd::Close) => true,
+                    _ => false,
+                })
+        }
+        // The same guard, for the same reason, shadow by shadow and step by
+        // step.
+        (AnimValue::Shadows(x), AnimValue::Shadows(y)) => {
+            let color = |p: Rgba, q: Rgba| near(p.r, q.r) && near(p.g, q.g) && near(p.b, q.b) && near(p.a, q.a);
+            x.len() == y.len()
+                && x.iter().zip(y).all(|(p, q)| {
+                    p.inset == q.inset
+                        && near(p.dx, q.dx)
+                        && near(p.dy, q.dy)
+                        && near(p.blur, q.blur)
+                        && near(p.spread, q.spread)
+                        && color(p.color, q.color)
+                })
+        }
+        (AnimValue::Filters(x), AnimValue::Filters(y)) => {
+            let color = |p: &Rgba, q: &Rgba| near(p.r, q.r) && near(p.g, q.g) && near(p.b, q.b) && near(p.a, q.a);
+            x.len() == y.len()
+                && x.iter().zip(y).all(|(p, q)| match (p, q) {
+                    (FilterOp::Blur(p), FilterOp::Blur(q)) => near(*p, *q),
+                    (FilterOp::Matrix(p), FilterOp::Matrix(q)) => p.iter().zip(q).all(|(a, b)| near(*a, *b)),
+                    (
+                        FilterOp::DropShadow { dx: a, dy: b, blur: c, color: d },
+                        FilterOp::DropShadow { dx: e, dy: f, blur: g, color: h },
+                    ) => near(*a, *e) && near(*b, *f) && near(*c, *g) && color(d, h),
                     _ => false,
                 })
         }
@@ -982,5 +1120,41 @@ mod tests {
         root.children.clear();
         anim.apply(&mut root, 0.0);
         assert!(anim.nodes.is_empty());
+    }
+
+    /// Tailwind's `hover:shadow-md` on a card with no shadow: the shadow fades
+    /// in from nothing, in its own colour, rather than snapping.
+    #[test]
+    fn a_shadow_fades_in_from_none() {
+        let mut style = Style::default();
+        style.transitions = vec![Transition { property: AnimProp::All, duration: 100.0, delay: 0.0, easing: Easing::Linear }];
+        let mut node = Node::new(style);
+        let mut anim = Animator::new();
+        anim.apply(&mut node, 0.0);
+        let shadow = BoxShadow { dx: 0.0, dy: 4.0, blur: 6.0, spread: 0.0, color: Rgba::new(0.0, 0.0, 0.0, 0.2), inset: false };
+        node.style.box_shadow = Some(vec![shadow].into());
+        anim.apply(&mut node, 0.0);
+        anim.apply(&mut node, 50.0);
+        let mid = node.style.box_shadow.as_deref().expect("a shadow mid-way")[0];
+        assert!((mid.dy - 2.0).abs() < 1e-3 && (mid.color.a - 0.1).abs() < 1e-3, "{mid:?}");
+        anim.apply(&mut node, 100.0);
+        assert_eq!(node.style.box_shadow.as_deref().unwrap()[0].dy, 4.0);
+    }
+
+    /// Lists pad with clear shadows and identity filters; an inset shadow
+    /// against an outer one, or a blur against a colour step, has no
+    /// midpoint.
+    #[test]
+    fn lists_interpolate_in_place() {
+        let sh = |a: f32, inset: bool| BoxShadow { dx: 0.0, dy: 0.0, blur: 0.0, spread: 2.0, color: Rgba::new(1.0, 1.0, 1.0, a), inset };
+        let mid = lerp_shadows(&[sh(1.0, false)], &[sh(1.0, false), sh(1.0, false)], 0.5).unwrap();
+        assert_eq!(mid.len(), 2);
+        assert_eq!((mid[1].spread, mid[1].color.a), (1.0, 0.5));
+        assert!(lerp_shadows(&[sh(1.0, true)], &[sh(1.0, false)], 0.5).is_none());
+        let blur = lerp_filters(&[], &[FilterOp::Blur(8.0)], 0.25).unwrap();
+        assert!(matches!(blur[..], [FilterOp::Blur(b)] if (b - 2.0).abs() < 1e-4));
+        let grey = lerp_filters(&[FilterOp::Matrix(FilterOp::IDENTITY)], &[FilterOp::Matrix(FilterOp::brightness(0.0))], 0.5).unwrap();
+        assert!(matches!(&grey[..], [FilterOp::Matrix(m)] if (m[0] - 0.5).abs() < 1e-4));
+        assert!(lerp_filters(&[FilterOp::Blur(1.0)], &[FilterOp::Matrix(FilterOp::IDENTITY)], 0.5).is_none());
     }
 }

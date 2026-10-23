@@ -961,8 +961,14 @@ drawn yet: the transition eases with `ease` and says so.
 **Animatable:** `opacity`, `background-color`, `color`, `border-color`,
 `border-width`, `border-radius`, `width`, `height`, `padding`, `margin`, `gap`,
 `font-size`, `transform`, the insets (`top`/`right`/`bottom`/`left`, which
-animate together), and on a `<path>`: `fill`, `stroke`, `stroke-width` and `d`,
-the geometry itself. Naming anything else warns and lists what is animatable,
+animate together), `box-shadow`, `outline-color`, `text-decoration-color`,
+`filter` and `backdrop-filter`, and on a `<path>`: `fill`, `stroke`,
+`stroke-width` and `d`, the geometry itself. A shadow list is walked shadow by
+shadow, the shorter padded with clear ones, so a hover that adds a shadow
+fades it in; an inset shadow against an outer one jumps, as in CSS. A filter
+list is walked step by step, padded with steps that change nothing; a step of
+another kind in the same place jumps, and `hue-rotate()` passes through a
+little grey on its way round (since 2026-10-23). Naming anything else warns and lists what is animatable,
 rather than leaving you with an element that silently never moves. A longhand of
 an animatable shorthand (`padding-left`) is pointed at the shorthand: the four
 sides animate as a unit.
