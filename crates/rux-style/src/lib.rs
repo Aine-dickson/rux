@@ -11477,9 +11477,11 @@ fn parse_linear_gradient(inner: &str) -> Option<Gradient> {
     if parts.is_empty() {
         return None;
     }
-    // A leading angle / `to <side>` sets the direction; otherwise it's a stop.
-    let angle = parse_gradient_angle(parts[0].trim());
-    if angle.is_some() {
+    // A leading angle / `to <side>` sets the direction, with or without an
+    // `in <space>` beside it; otherwise it's a stop.
+    let (lead, space, hue) = interpolation_of(parts[0].trim());
+    let angle = parse_gradient_angle(lead);
+    if angle.is_some() || (lead.is_empty() && space.is_some()) {
         parts.remove(0);
     }
     let stops = parse_stops(&parts)?;
@@ -11487,8 +11489,43 @@ fn parse_linear_gradient(inner: &str) -> Option<Gradient> {
         kind: GradientKind::Linear {
             angle: angle.unwrap_or(std::f32::consts::PI), // default: to bottom
         },
-        stops,
+        stops: stops.into(),
+        space: space.unwrap_or_default(),
+        hue,
     })
+}
+
+/// A gradient's first part with its `in <space> [<way> hue]` taken off: what
+/// is left (the direction, or nothing), the space, and the way round. Tailwind
+/// writes `in oklab` into every gradient it makes. A space Rux has no mixing
+/// for is said, and mixes in sRGB.
+fn interpolation_of(part: &str) -> (&str, Option<rux_layout::GradientSpace>, rux_layout::HueWay) {
+    use rux_layout::{GradientSpace as S, HueWay as H};
+    let lower = part.to_ascii_lowercase();
+    let at = if lower.starts_with("in ") { Some(0) } else { lower.find(" in ").map(|i| i + 1) };
+    let Some(at) = at else { return (part, None, H::Shorter) };
+    let words: Vec<&str> = lower[at + 3..].split_whitespace().collect();
+    let space = match words.first().copied() {
+        Some("srgb") => S::Srgb,
+        Some("srgb-linear") => S::LinearSrgb,
+        Some("oklab") => S::Oklab,
+        Some("oklch") => S::Oklch,
+        Some("lab") => S::Lab,
+        Some("lch") => S::Lch,
+        Some("hsl") => S::Hsl,
+        Some("hwb") => S::Hwb,
+        other => {
+            warn_once(format!("a gradient `in {}` is mixed in sRGB; Rux mixes in srgb, srgb-linear, oklab, oklch, lab, lch, hsl and hwb", other.unwrap_or("")));
+            S::Srgb
+        }
+    };
+    let hue = match words.get(1).copied() {
+        Some("longer") => H::Longer,
+        Some("increasing") => H::Increasing,
+        Some("decreasing") => H::Decreasing,
+        _ => H::Shorter,
+    };
+    (part[..at].trim(), Some(space), hue)
 }
 
 /// `radial-gradient([shape/size/at …,]? <stop>, <stop> …)`. The prelude before
@@ -11499,12 +11536,14 @@ fn parse_radial_gradient(inner: &str) -> Option<Gradient> {
     if parts.is_empty() {
         return None;
     }
-    // If the first segment isn't a colour stop, treat it as the (ignored) config.
+    // If the first segment isn't a colour stop, treat it as the (ignored) config,
+    // all but the colour space it may name.
+    let (_, space, hue) = interpolation_of(parts[0].trim());
     if parse_color(first(parts[0].trim())).is_none() && !parts[0].trim().is_empty() {
         parts.remove(0);
     }
     let stops = parse_stops(&parts)?;
-    Some(Gradient { kind: GradientKind::Radial, stops })
+    Some(Gradient { kind: GradientKind::Radial, stops: stops.into(), space: space.unwrap_or_default(), hue })
 }
 
 /// Parse the direction of a linear gradient: `<n>deg` (CSS: 0 = to top,

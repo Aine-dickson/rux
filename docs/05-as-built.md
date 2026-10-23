@@ -666,7 +666,11 @@ border-top-width, border-right-width, border-bottom-width, border-left-width
 border-top-style, border-right-style, border-bottom-style, border-left-style
 background, background-color, background-image, opacity
   (colour, linear-/radial-gradient, or url(…) image; a comma list of layers, the
-   first on top, the colour under them all; clipped to the corners)
+   first on top, the colour under them all; clipped to the corners. A gradient
+   mixes in the space it names, `in oklab` and srgb, srgb-linear, oklch, lab,
+   lch, hsl and hwb, with `longer`/`increasing`/`decreasing hue`; sRGB when it
+   names none, as CSS does for ordinary colours. Until 2026-10-23 a gradient
+   naming one was not drawn at all, which was every gradient Tailwind v4 makes)
 background-size, background-position, background-position-x,
 background-position-y, background-repeat,
 background-clip, background-origin, background-attachment

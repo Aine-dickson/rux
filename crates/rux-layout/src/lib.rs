@@ -992,7 +992,38 @@ pub enum BgAttachment {
 pub struct Gradient {
     pub kind: GradientKind,
     /// Colour stops as `(colour, offset)` with offset in 0..=1, in order.
-    pub stops: Vec<(Rgba, f32)>,
+    /// Shared rather than a `Vec`, which keeps `Style` inside its budget
+    /// (watchlist #41) and a cloned style from copying them.
+    pub stops: std::sync::Arc<[(Rgba, f32)]>,
+    /// `in oklab` and the rest: the colour space the stops are mixed in, and
+    /// which way round a hue goes. sRGB unless one is written, which is
+    /// CSS's answer for a gradient of ordinary colours.
+    pub space: GradientSpace,
+    pub hue: HueWay,
+}
+
+/// The colour space a gradient mixes its stops in.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum GradientSpace {
+    #[default]
+    Srgb,
+    LinearSrgb,
+    Oklab,
+    Oklch,
+    Lab,
+    Lch,
+    Hsl,
+    Hwb,
+}
+
+/// `shorter hue` (the default) and the other three ways round.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum HueWay {
+    #[default]
+    Shorter,
+    Longer,
+    Increasing,
+    Decreasing,
 }
 
 #[derive(Clone, Copy, Debug)]

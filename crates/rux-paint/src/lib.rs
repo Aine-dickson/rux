@@ -34,7 +34,7 @@ use std::collections::HashMap;
 use rux_layout::filter::FilterOp;
 use rux_layout::{
     TextLook, Background, BgAttachment, BgBox, BgLayer, BgLen, BgRepeat, BgSize, BgPos, BlendMode, BorderStyle, PaintBackground, PaintBorder, Sides, Corners, FillRule, Gradient, GradientKind, LineCap, LineJoin, Paint, PathCmd, Rgba,
-    TextAlign, TextContent, TextWrap,
+    TextAlign, TextContent, TextWrap, GradientSpace, HueWay,
 };
 use rux_text::{Align, TextEngine, TextStyle, Wrap};
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Rect, RoundedRect, RoundedRectRadii, Shape, Stroke, Vec2};
@@ -204,7 +204,52 @@ fn ramp_stops(g: &Gradient) -> Vec<ColorStop> {
     if let Some(last) = stops.last().copied().filter(|s| s.offset < 1.0) {
         stops.push(ColorStop { offset: 1.0, ..last });
     }
-    stops
+    if g.space == GradientSpace::Srgb {
+        return stops;
+    }
+    mixed_stops(&stops, g)
+}
+
+/// Stops mixed in the gradient's own colour space, sampled into sRGB ones
+/// close enough together that vello's straight sRGB mix between them is the
+/// curve: vello 0.9 takes `interpolation_cs` and never reads it, so
+/// `in oklab`, which Tailwind writes into every gradient, mixed in sRGB.
+fn mixed_stops(stops: &[ColorStop], g: &Gradient) -> Vec<ColorStop> {
+    use vello::peniko::color::{ColorSpaceTag, DynamicColor, HueDirection, Srgb};
+    const STEPS: usize = 16;
+    let space = match g.space {
+        GradientSpace::Srgb => ColorSpaceTag::Srgb,
+        GradientSpace::LinearSrgb => ColorSpaceTag::LinearSrgb,
+        GradientSpace::Oklab => ColorSpaceTag::Oklab,
+        GradientSpace::Oklch => ColorSpaceTag::Oklch,
+        GradientSpace::Lab => ColorSpaceTag::Lab,
+        GradientSpace::Lch => ColorSpaceTag::Lch,
+        GradientSpace::Hsl => ColorSpaceTag::Hsl,
+        GradientSpace::Hwb => ColorSpaceTag::Hwb,
+    };
+    let way = match g.hue {
+        HueWay::Shorter => HueDirection::Shorter,
+        HueWay::Longer => HueDirection::Longer,
+        HueWay::Increasing => HueDirection::Increasing,
+        HueWay::Decreasing => HueDirection::Decreasing,
+    };
+    let mut out = Vec::with_capacity(stops.len() * STEPS);
+    for pair in stops.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        out.push(a);
+        // A hard stop has nothing between its two colours to mix.
+        if b.offset <= a.offset {
+            continue;
+        }
+        let mix = a.color.interpolate(b.color, space, way);
+        for i in 1..STEPS {
+            let t = i as f32 / STEPS as f32;
+            let color: DynamicColor = mix.eval(t).to_alpha_color::<Srgb>().into();
+            out.push(ColorStop { offset: a.offset + (b.offset - a.offset) * t, color });
+        }
+    }
+    out.extend(stops.last().copied());
+    out
 }
 
 /// A background over a box with its corners rounded: a colour, a gradient
@@ -1535,15 +1580,36 @@ mod tests {
     fn a_gradient_holds_its_first_colour_up_to_its_first_stop() {
         use rux_layout::{Gradient, GradientKind, Rgba};
         let (red, blue) = (Rgba::new(1.0, 0.0, 0.0, 1.0), Rgba::new(0.0, 0.0, 1.0, 1.0));
-        let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.5), (blue, 0.5)] };
+        let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.5), (blue, 0.5)].into(), space: Default::default(), hue: Default::default() };
         let stops = super::ramp_stops(&g);
         let at: Vec<f32> = stops.iter().map(|s| s.offset).collect();
         assert_eq!(at, [0.0, 0.5, 0.5, 1.0]);
         assert_eq!(stops[0].color, stops[1].color, "the added stop is the first colour");
         assert_eq!(stops[3].color, stops[2].color, "and the last");
         // A gradient that starts at 0 is handed over as written.
-        let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.0), (blue, 1.0)] };
+        let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.0), (blue, 1.0)].into(), space: Default::default(), hue: Default::default() };
         assert_eq!(super::ramp_stops(&g).len(), 2);
+    }
+
+    /// `in oklab` mixes in oklab: red to blue is lighter through the middle
+    /// than sRGB's dark purple, and `in hsl longer hue` goes round through
+    /// green. Mixed here, since vello does not read the colour space.
+    #[test]
+    fn a_gradient_mixes_in_its_own_space() {
+        use rux_layout::{Gradient, GradientKind, GradientSpace, HueWay, Rgba};
+        let (red, blue) = (Rgba::new(1.0, 0.0, 0.0, 1.0), Rgba::new(0.0, 0.0, 1.0, 1.0));
+        let middle = |space, hue| {
+            let g = Gradient { kind: GradientKind::Linear { angle: 0.0 }, stops: vec![(red, 0.0), (blue, 1.0)].into(), space, hue };
+            let stops = super::ramp_stops(&g);
+            let mid = stops.iter().min_by(|a, b| (a.offset - 0.5).abs().total_cmp(&(b.offset - 0.5).abs())).unwrap();
+            mid.color.to_alpha_color::<vello::peniko::color::Srgb>().components
+        };
+        let srgb = middle(GradientSpace::Srgb, HueWay::Shorter);
+        assert_eq!(srgb, [1.0, 0.0, 0.0, 1.0], "sRGB is handed over as two stops");
+        let oklab = middle(GradientSpace::Oklab, HueWay::Shorter);
+        assert!(oklab[1] > 0.2, "lighter than sRGB's purple: {oklab:?}");
+        let round = middle(GradientSpace::Hsl, HueWay::Longer);
+        assert!(round[1] > 0.9 && round[0] < 0.1, "green half way round: {round:?}");
     }
 
     fn png(width: u32, height: u32) -> Vec<u8> {
