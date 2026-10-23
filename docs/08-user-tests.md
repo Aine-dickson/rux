@@ -2790,7 +2790,7 @@ typed into the dialog's name box. Tests cannot open the dialog; the drive can.
 | Read | pick a UTF-8 text file, then `await other.text()` | its text, accents intact | desktop: pass |
 | Keyboard | Tab to the first, Enter; then Space, Escape | focus ring on the input; the dialog opens both times | desktop: pass |
 | A path with a space and an accent | `<image src="file:///…/img%20dir/pic%20%C3%A9.png">`, static and bound | both drawn at their natural size | desktop: pass |
-| Filter | `accept="image/*"` | the dialog's filter offers images | not looked at (the path was typed) |
+| Filter | `accept="image/*"`, `".pdf"`, `"text/plain"`, and none, each opened on a folder of a png, a txt and a pdf | only the png under "Images"; only the pdf; only the txt; all three under "All Files"; the image dialog's type list offers "Images" then "All files" | desktop: pass |
 | Disabled, required | `disabled`; `required` with nothing chosen | no dialog; `:invalid` until a pick | under test only |
 | `pickFile` gives a `File` | a button awaiting `pickFile` with a `txt` filter, then `f.name`, `f.type`, `f.path`, `await f.text()` | `note.txt (text/plain) at C:\…
 ote.txt: Hello…`, accents intact | desktop: pass |

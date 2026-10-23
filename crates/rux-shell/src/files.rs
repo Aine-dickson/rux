@@ -53,11 +53,13 @@ pub(crate) struct PendingFile {
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub(crate) fn open_picker(proxy: winit::event_loop::EventLoopProxy<crate::RuxEvent>, accept: &str, multiple: bool) {
     let extensions = accept_extensions(accept);
-    let label = accept.trim().to_string();
+    let label = accept_label(accept);
     let spawned = std::thread::Builder::new().name("rux-file-picker".into()).spawn(move || {
         let mut d = rfd::AsyncFileDialog::new();
+        // The accepted files first, so the dialog opens on them, then every
+        // file: `accept` is a hint, and a browser's dialog offers both.
         if !extensions.is_empty() {
-            d = d.add_filter(&label, &extensions);
+            d = d.add_filter(&label, &extensions).add_filter("All files", &["*"]);
         }
         let files = |hs: Vec<rfd::FileHandle>| hs.iter().filter_map(|h| from_path(h.path())).collect::<Vec<_>>();
         let picked = pollster::block_on(async {
@@ -197,6 +199,25 @@ pub(crate) fn accept_extensions(accept: &str) -> Vec<String> {
     out
 }
 
+/// What a picker calls an `accept` filter: "Images" for `image/*`, the
+/// families and extensions joined for a mix, as a browser names its own.
+#[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+fn accept_label(accept: &str) -> String {
+    let parts: Vec<String> = accept
+        .split(',')
+        .map(|p| p.trim().to_lowercase())
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.as_str() {
+            "image/*" => "Images".to_string(),
+            "video/*" => "Videos".to_string(),
+            "audio/*" => "Audio".to_string(),
+            "text/*" => "Text files".to_string(),
+            _ => p,
+        })
+        .collect();
+    parts.join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -207,6 +228,8 @@ mod tests {
         let images = accept_extensions("image/*");
         assert!(images.iter().any(|e| e == "jpeg") && images.iter().all(|e| media_type(e).unwrap().starts_with("image/")));
         assert!(accept_extensions("x-unknown/thing").is_empty());
+        assert_eq!(accept_label("image/*"), "Images");
+        assert_eq!(accept_label("image/*, .pdf"), "Images, .pdf");
     }
 
     #[test]

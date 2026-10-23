@@ -2072,7 +2072,9 @@ had. `required` is not met by `none` or an empty list.
 - `accept` is HTML's: extensions (`.png`), media types (`application/pdf`) and
   families (`image/*`, `video/*`, `audio/*`), comma-separated. A desktop picker
   filters by extension, so media types reach it through a table of the common
-  ones. A hint, as in HTML: `File.type` says what was really picked.
+  ones. The dialog opens on that filter, named as a browser names it
+  ("Images" for `image/*`), with "All files" beside it: a hint, as in HTML,
+  and `File.type` says what was really picked.
 - `capture` (`environment` or `user`) asks a phone for its camera or recorder
   instead of the picker. Read and kept; the desktop ignores it, as a desktop
   browser does.
