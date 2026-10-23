@@ -2747,6 +2747,36 @@ and `:nth-child(-n+2)` yellow labels, and a disabled button styled by
 | The last row changes | tap "Drop first", then "Add" | the new row 14 pink, row 5 cyan, row 4 neither | desktop: pass |
 | Web, Android | the same page | the same | not driven |
 
+## CSS from Tailwind's gaps, 2026-10-23
+
+The owner's answers (`content-box`, CSS's default colours) and the not-built
+list. Under test in `rux-style` (`html_is_the_root_element`,
+`data_attributes_are_read_by_selectors`, `controls_are_border_box_and_the_rest_content_box`,
+`the_root_takes_its_schemes_canvas_and_text`, `appearance_none_leaves_a_bare_box`,
+`snap_points_follow_the_css`, `a_box_knows_the_scroller_it_is_in`,
+`before_and_after_generate_boxes`, `columns_lay_children_out_side_by_side`),
+`rux-text` (`balance_evens_the_lines_where_the_alignment_puts_them`),
+`rux-shell` (`a_scroll_rests_on_the_nearest_point`) and `rux-layout`
+(`box_sizing`). Every example's boxes were dumped at two window sizes before
+and after `content-box` and match. Driven in a desktop window at 1.5x on
+probes; no input could be injected, so nothing was tapped, scrolled or
+flung.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Default colours | open a screen with no colours written | black text on a white window | desktop: pass |
+| `color-scheme: dark` | the same with `:root { color-scheme: dark; }` | white text on `#121212` | desktop: pass |
+| Canvas | a 200px screen with a background | the background fills the window | desktop: pass |
+| Examples stay dark | open recipes/tab-bar | pages readable, light on dark | desktop: pass |
+| `text-wrap: balance` | centred, right-aligned and underlined headings in 300 to 460px boxes | even lines, centred or at the edge as aligned, the run's colour kept | desktop: pass |
+| Snap on reveal | `scrollIntoView()` a row in a `y mandatory` list | the list rests with a row's top at its top | desktop: pass |
+| Two lists | the same row lying over a second list | the first list moves, not the second | desktop: pass |
+| Snap by finger, fling, wheel | drag, throw and wheel a snapping list | comes to rest on a row | not driven |
+| `::before`/`::after` | required star, card bar and badge, bullet run, quote marks | each where CSS puts it | desktop: pass |
+| Columns | five paragraphs, `column-count: 3`, a rule | 2/2/1, wrapped a column wide, rules in the two gaps, box as tall as the tallest | desktop: pass |
+| The `<select>` dropdown, light | open one on a light screen | a white panel | not driven |
+| Web, Android | the same pages | the same | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
