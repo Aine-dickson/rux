@@ -980,6 +980,8 @@ pub fn visible_paints(
             },
             Paint::Rect(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
             Paint::Background(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
+            // Inside its box, which it is clipped to.
+            Paint::TextFill { rect: (x, y, w, h), .. } => reaches(reach.local, rect_of(*x, *y, *w, *h)),
             Paint::Border(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
             Paint::Image(i) => reaches(reach.local, rect_of(i.x, i.y, i.width, i.height)),
             // vello's blur reaches about three standard deviations, and the
@@ -1316,6 +1318,29 @@ fn build(
             }
             Paint::Background(b) => draw_background(&mut scene, cur, b, images),
             Paint::Border(b) => draw_border(&mut scene, cur, b),
+            // The glyphs into a layer, and the background over them kept only
+            // where they are (`SrcIn`): the background in the shape of the
+            // text.
+            Paint::TextFill { text: t, fill, rect } => {
+                let (rx, ry, rw, rh) = *rect;
+                let clip = Rect::new(rx as f64, ry as f64, (rx + rw) as f64, (ry + rh) as f64);
+                scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, cur, &clip);
+                text.draw_ink(
+                    &mut scene,
+                    t.x,
+                    t.y,
+                    &t.content.text,
+                    &text_style(&t.content),
+                    Color::WHITE,
+                    to_align(t.content.align),
+                    Some(t.width),
+                    cur,
+                );
+                scene.push_layer(Fill::NonZero, PenikoBlend::new(Mix::Normal, Compose::SrcIn), 1.0, cur, &clip);
+                fill_background(&mut scene, cur, fill, *rect, [0.0; 4], images);
+                scene.pop_layer();
+                scene.pop_layer();
+            }
             Paint::Ink(t, color) => {
                 text.draw_ink(
                     &mut scene,

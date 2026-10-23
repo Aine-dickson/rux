@@ -1161,6 +1161,9 @@ pub struct Rare {
     /// `animation`: each one named, with its `@keyframes` already worked out
     /// against this box. Empty for almost every box.
     pub animations: Option<std::sync::Arc<[KeyframeAnimation]>>,
+    /// `background-clip: text`: the background, taken off the box and drawn
+    /// through the glyphs instead, spread over the box as it would have been.
+    pub text_fill: Option<Background>,
     /// A translation in a percentage of the box's own size, or maths with
     /// one in it, x then y: `translate: -50%`, Tailwind's `-translate-x-1/2`.
     /// Only the layout knows the size, so it is kept apart from `transform`
@@ -2868,6 +2871,13 @@ pub enum Paint {
     },
     /// End the most recent clip.
     PopClip,
+    /// `background-clip: text`: `fill` drawn through the glyphs of `text`,
+    /// spread over `rect`, the box, as the box's background would have been.
+    TextFill {
+        text: PaintText,
+        fill: Background,
+        rect: (f32, f32, f32, f32),
+    },
     /// Begin an affine `transform` on the subtree. The matrix already has the
     /// transform-origin baked in, so it applies directly to absolute coords.
     PushTransform(Transform),
@@ -3651,6 +3661,8 @@ enum PaintKind {
         shadow: Shadows,
     },
     Text(TextContent),
+    /// `background-clip: text`, ahead of the text it fills.
+    TextFill(Background, TextContent),
     Image(ImageContent),
     Tick(Rgba),
     /// `clip-path`, read by the walk around the box rather than drawn.
@@ -4718,6 +4730,9 @@ fn build(
                 shadow: node.style.box_shadow.clone(),
             },
         ));
+        if let Some(fill) = node.style.rare.as_ref().and_then(|r| r.text_fill.clone()) {
+            paint.push((id, PaintKind::TextFill(fill, tc.clone())));
+        }
         paint.push((id, PaintKind::Text(tc.clone())));
         if let Some((_, parts)) = joined {
             paint.push((id, PaintKind::Inline(std::sync::Arc::new(parts))));
@@ -5963,6 +5978,18 @@ fn collect(
                 // everything under it: a text has no children, its content *is*
                 // the glyphs. Found on the phone, an event log written with
                 // exactly that CSS running down over the page.
+                // `background-clip: text`: the background through the glyphs,
+                // under them, spread over the box as it would have been.
+                PaintKind::TextFill(fill, tc) => {
+                    let (cx, cy, cw, ch) = content_box(layout);
+                    let mut ghost = tc.clone();
+                    (ghost.caret, ghost.selection, ghost.preedit, ghost.shadows) = (None, None, None, None);
+                    out.paints.push(Paint::TextFill {
+                        text: PaintText { x: x + cx, y: y + cy, width: cw, height: ch, content: ghost },
+                        fill: fill.clone(),
+                        rect: (x, y, layout.size.width, layout.size.height),
+                    });
+                }
                 PaintKind::Text(tc) => {
                     let (cx, cy, cw, ch) = content_box(layout);
                     if clip {

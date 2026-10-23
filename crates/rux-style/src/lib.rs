@@ -10977,6 +10977,14 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(bg) = interpret_background(p) {
         st.background = Some(bg);
     }
+    // `background-clip: text` (Tailwind's `bg-clip-text`) draws the
+    // background through the glyphs and not on the box.
+    let clipped_to_text = |k: &str| p.get(k).is_some_and(|v| split_top_level_commas(v).iter().any(|c| c.trim() == "text"));
+    if clipped_to_text("background-clip") || clipped_to_text("-webkit-background-clip") {
+        if let Some(bg) = st.background.take() {
+            st.rare_mut().text_fill = Some(bg);
+        }
+    }
     if let Some(v) = p.get("transform") {
         st.transform = parse_transform(v);
     }
@@ -11231,6 +11239,9 @@ fn interpret_background(p: &HashMap<String, String>) -> Option<Background> {
                 match parse_bg_box(&v) {
                     Some(b) if origin => l.origin = b,
                     Some(b) => l.clip = b,
+                    // `background-clip: text` takes the whole background
+                    // off the box: see `text_fill`.
+                    None if !origin && v.trim() == "text" => {}
                     None => warn(format!("`{name}: {v}` is not a box Rux knows; use `border-box`, `padding-box` or `content-box`")),
                 }
             }
@@ -18192,6 +18203,18 @@ mod tailwind_property_tests {
         let n = first(".a { --tw-translate-x: calc(calc(1/2 * 100%) * -1); --tw-translate-y: 0; translate: var(--tw-translate-x) var(--tw-translate-y); }");
         assert_eq!(n.style.translate_pct().map(size), Some((-100.0, 0.0)));
         assert!(pct(".a { translate: 10px 4px; }").is_none());
+    }
+
+    /// `background-clip: text` takes the background off the box and keeps it
+    /// for the glyphs; the `-webkit-` spelling too.
+    #[test]
+    fn a_background_clipped_to_text_fills_the_glyphs() {
+        for clip in ["background-clip", "-webkit-background-clip"] {
+            let n = first(&format!(".a {{ background-image: linear-gradient(to right, red, blue); {clip}: text; color: transparent; }}"));
+            assert!(n.style.background.is_none(), "{clip}: not on the box");
+            assert!(n.style.rare.as_ref().and_then(|r| r.text_fill.as_ref()).is_some(), "{clip}: kept for the glyphs");
+        }
+        assert!(first(".a { background: red; }").style.rare.is_none());
     }
 
     /// `transform-origin`: keywords either way round, lengths, and a single

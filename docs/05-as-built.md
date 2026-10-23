@@ -674,6 +674,10 @@ background, background-color, background-image, opacity
 background-size, background-position, background-position-x,
 background-position-y, background-repeat,
 background-clip, background-origin, background-attachment
+                      (background-clip: text, Tailwind's bg-clip-text, draws the
+                       background through the glyphs of a <text>, spread over
+                       its box as it would have been, and not on the box; with
+                       `color: transparent` that is gradient text)
                       (as CSS: cover, contain, lengths, % and auto; one to four
                        position values, `right 10px bottom 20px` included;
                        repeat, no-repeat, repeat-x/-y, space, round; border-,
@@ -681,7 +685,7 @@ background-clip, background-origin, background-attachment
                        image is its natural size, tiled from the padding box's
                        top left, as in CSS: before v0.9 it was drawn cover-sized,
                        which is now `background-size: cover`. Not yet:
-                       `background-clip: text`, and gradient stop positions in
+                       gradient stop positions in
                        px, which are placed as if they had none)
 box-shadow (a comma list, the first on top; `inset` drawn inside the border, over
                        the background; no colour is currentColor; one corner
