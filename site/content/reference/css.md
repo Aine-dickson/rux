@@ -384,7 +384,7 @@ scrolled list is clipped by the list, as in a browser. Its style is a border's:
 `dashed`, `dotted`, `double` and the 3D styles are drawn as they are for
 `border`.
 
-Any *other* pseudo-class (`:has()`, `::before`) **never
+Any *other* pseudo-class (`:has()`, `::first-line`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.

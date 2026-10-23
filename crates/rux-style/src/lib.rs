@@ -2863,6 +2863,10 @@ struct Compound {
     selection: bool,
     /// Ends in `::placeholder`: as `selection`, for an input's placeholder.
     placeholder: bool,
+    /// Ends in `::before` or `::after` (or CSS 2's `:before`, `:after`): as
+    /// `selection`, for the box generated inside the element. See
+    /// [`generated_elements`].
+    generated: Option<rux_layout::Generated>,
 }
 
 /// A pseudo-class in a compound selector. Each one tests a bit of interaction
@@ -3207,6 +3211,9 @@ struct Rule {
     /// A `::placeholder` rule, the same way: its declarations style the
     /// placeholder of the input its chain picks. See [`matched_placeholder`].
     placeholder: bool,
+    /// A `::before` or `::after` rule, the same way: its declarations style
+    /// the box generated inside the element its chain picks.
+    generated: Option<rux_layout::Generated>,
     /// The cascade layer it was written in, empty for none. See [`layer`].
     layer: Vec<u32>,
     /// Its declarations were the `!important` ones of what was written. A
@@ -4499,6 +4506,7 @@ fn push_rules(
             // the chain can match the element the highlight belongs to.
             let selection = chain.last_mut().is_some_and(|last| std::mem::take(&mut last.selection));
             let placeholder = chain.last_mut().is_some_and(|last| std::mem::take(&mut last.placeholder));
+            let generated = chain.last_mut().and_then(|last| last.generated.take());
             for (decls, important) in [(normal, false), (important, true)] {
                 if decls.is_empty() && important {
                     continue;
@@ -4511,6 +4519,7 @@ fn push_rules(
                     decls: decls.to_vec(),
                     selection,
                     placeholder,
+                    generated,
                     layer: at.key.clone(),
                     important,
                 });
@@ -4584,6 +4593,8 @@ const HONORED_PROPERTIES: &[&str] = &[
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
     "object-fit", "object-position", "pointer-events", "scroll-behavior",
+    // What `::before` and `::after` hold. See `generated_elements`.
+    "content",
     // Scroll snapping: where a scroller comes to rest.
     "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop",
     "scroll-padding", "scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left",
@@ -4883,7 +4894,7 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     "perspective", "perspective-origin",
     // Other layout models
     "columns", "column-count", "column-width", "column-fill", "column-rule", "column-span", "table-layout",
-    "border-collapse", "border-spacing", "content",
+    "border-collapse", "border-spacing",
 ];
 
 /// Levenshtein distance, for the did-you-mean below.
@@ -5167,6 +5178,18 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                     spec.2 += 1;
                     continue;
                 }
+                // `::before` and `::after`, and CSS 2's one-colon spelling,
+                // which CSS still reads.
+                let bare = name.strip_prefix(':').unwrap_or(&name);
+                if bare.eq_ignore_ascii_case("before") || bare.eq_ignore_ascii_case("after") {
+                    c.generated = Some(if bare.eq_ignore_ascii_case("before") {
+                        rux_layout::Generated::Before
+                    } else {
+                        rux_layout::Generated::After
+                    });
+                    spec.2 += 1;
+                    continue;
+                }
                 if !name.is_empty() {
                     let pseudo = Pseudo::parse(&name);
                     if let Pseudo::Unknown(n) = &pseudo {
@@ -5275,7 +5298,7 @@ fn specificity_of(c: &Compound) -> (u32, u32, u32) {
     (
         c.id.is_some() as u32 + pseudos.0,
         (c.classes.len() + c.attrs.len()) as u32 + pseudos.1,
-        (c.tag.is_some() as u32 + c.selection as u32 + c.placeholder as u32) + pseudos.2,
+        (c.tag.is_some() as u32 + c.selection as u32 + c.placeholder as u32 + c.generated.is_some() as u32) + pseudos.2,
     )
 }
 
@@ -5319,10 +5342,9 @@ fn selector_is_supported(selector: &str) -> bool {
     while let Some(at) = rest.find(':') {
         rest = &rest[at + 1..];
         if let Some(element) = rest.strip_prefix(':') {
-            // A pseudo-element: `::selection` and `::placeholder` are the
-            // ones Rux styles.
+            // A pseudo-element: these are the ones Rux styles.
             let name: String = element.chars().take_while(|c| c.is_alphanumeric() || *c == '-').collect();
-            if !name.eq_ignore_ascii_case("selection") && !name.eq_ignore_ascii_case("placeholder") {
+            if !["selection", "placeholder", "before", "after"].iter().any(|n| name.eq_ignore_ascii_case(n)) {
                 return false;
             }
             rest = element;
@@ -5351,7 +5373,7 @@ fn warn_unknown_pseudo(name: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     // A second colon was kept in the name: a pseudo-element.
     let message = if let Some(element) = name.strip_prefix(':') {
-        format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection, ::placeholder)")
+        format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection, ::placeholder, ::before, ::after)")
     } else {
         format!(
             "pseudo-class `:{name}` is not supported, rules using it will never match \
@@ -5384,7 +5406,7 @@ fn matches_compound(c: &Compound, el: &ElemDesc, at: Option<Site>) -> bool {
         (Some(_), None) => false,
     };
     // A highlight is not an element. See `Compound::selection`.
-    if c.selection || c.placeholder {
+    if c.selection || c.placeholder || c.generated.is_some() {
         return false;
     }
     if let Some(t) = &c.tag {
@@ -5548,12 +5570,155 @@ fn pointer_state_sensitive(desc: &ElemDesc, rules: &[Rule]) -> bool {
     rules.iter().any(|rule| sensitive(&rule.chain, &probe))
 }
 
+/// `::before` and `::after`, as elements to build: for each side whose
+/// rules match the element and give it a `content` other than `none`, a
+/// `<text>` holding that content, or an empty `<view>` for `content: ""`,
+/// wearing those rules' declarations as its inline style. Built with no
+/// rules of its own, so nothing written for `<text>` or `<view>` reaches it,
+/// and as a child of the element, so it inherits as CSS has it.
+fn generated_elements(
+    el: &Element,
+    desc: &ElemDesc,
+    ancestors: &[AncNode],
+    prev: &[ElemDesc],
+    rules: &[Rule],
+    vars: &HashMap<String, String>,
+) -> Vec<(rux_layout::Generated, Element)> {
+    let mut out = Vec::new();
+    for side in [rux_layout::Generated::Before, rux_layout::Generated::After] {
+        let mut matched: Vec<&Rule> = rules
+            .iter()
+            .filter(|r| r.generated == Some(side) && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
+            .collect();
+        if matched.is_empty() {
+            continue;
+        }
+        matched.sort_by(|a, b| layer::cascade(a, b));
+        let mut props: HashMap<String, String> = HashMap::new();
+        for rule in matched {
+            for (k, v) in &rule.decls {
+                declare(&mut props, k, v);
+            }
+        }
+        // Its own custom properties first, as Tailwind's `content:
+        // var(--tw-content)` sets the one it reads in the same rule.
+        let mut own = vars.clone();
+        own.extend(props.iter().filter(|(k, _)| k.starts_with("--")).map(|(k, v)| (k.clone(), v.clone())));
+        let Some(content) = props.remove("content").and_then(|v| css_content(&resolve_vars(&v, &own, 0), el)) else {
+            continue;
+        };
+        let style = props.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join("; ");
+        let attrs = vec![rux_parser::Attr { name: "style".to_string(), value: style, line: el.line, has_value: true }];
+        let generated = if content.is_empty() {
+            Element { tag: "view".to_string(), attrs, children: Vec::new(), line: el.line }
+        } else {
+            Element { tag: "text".to_string(), attrs, children: vec![TplNode::Text(content, el.line)], line: el.line }
+        };
+        out.push((side, generated));
+    }
+    out
+}
+
+/// Build `generated` as children of `node`, at the end of them, each
+/// marked with its side so the layout puts a `::before` first and no
+/// element's index moves. See `rux_layout::Generated`.
+#[allow(clippy::too_many_arguments)]
+fn build_generated(
+    generated: &[(rux_layout::Generated, Element)],
+    node: &mut LayoutNode,
+    comps: &Components,
+    ancestors: &mut Vec<AncNode>,
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    tpl_path: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    instance: Option<&str>,
+    row: Option<&str>,
+) {
+    for (side, el) in generated {
+        let at = |p: &[usize]| p.iter().copied().chain([side.index()]).collect::<Vec<usize>>();
+        let mut child = build_node(
+            el, &[], comps, ancestors, &[], inherited, engine, locals, &at(path), &at(tpl_path), reg, state,
+            instances, swaps, instance, None, None, row, None,
+        );
+        if child.style.display == Display::None {
+            continue;
+        }
+        child.style.rare_mut().generated = Some(*side);
+        node.children.push(child);
+    }
+}
+
+/// What `content` puts in a `::before` or `::after`: its strings, joined,
+/// and `attr(name)` as the element's attribute. `None` for `none` and
+/// `normal`, which generate nothing. Quotes and counters are not built and
+/// say so.
+fn css_content(value: &str, el: &Element) -> Option<String> {
+    let v = value.trim();
+    if v.eq_ignore_ascii_case("none") || v.eq_ignore_ascii_case("normal") {
+        return None;
+    }
+    let mut out = String::new();
+    let chars: Vec<char> = v.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            q @ ('"' | '\'') => {
+                i += 1;
+                while i < chars.len() && chars[i] != q {
+                    if chars[i] == '\\' && i + 1 < chars.len() {
+                        // A CSS escape: up to six hex digits and a space that
+                        // ends them, or the next character as it is.
+                        let hex: String = chars[i + 1..].iter().take(6).take_while(|c| c.is_ascii_hexdigit()).collect();
+                        if hex.is_empty() {
+                            out.push(chars[i + 1]);
+                            i += 2;
+                        } else {
+                            out.extend(u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32));
+                            i += 1 + hex.len();
+                            if chars.get(i) == Some(&' ') {
+                                i += 1;
+                            }
+                        }
+                        continue;
+                    }
+                    out.push(chars[i]);
+                    i += 1;
+                }
+                i += 1;
+            }
+            c if c.is_whitespace() => i += 1,
+            _ => {
+                let rest: String = chars[i..].iter().collect();
+                let word_end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'').unwrap_or(rest.len());
+                let word = &rest[..word_end];
+                let taken = if let Some(inner) = word.strip_prefix("attr(") {
+                    let end = rest.find(')').map_or(rest.len(), |e| e + 1);
+                    let name = inner.split(')').next().unwrap_or_default().trim();
+                    out.push_str(el.attr(name).unwrap_or_default());
+                    end
+                } else {
+                    warn_once(format!("`content: {value}`: `{word}` is not built yet, only strings and attr() are"));
+                    word_end.max(1)
+                };
+                i += rest[..taken].chars().count();
+            }
+        }
+    }
+    Some(out)
+}
+
 /// Collect the matching rules' declarations for an element, in cascade order.
 /// The rules that apply to an element, in the order they apply.
 fn matched_rules<'r>(desc: &ElemDesc, ancestors: &[AncNode], prev: &[ElemDesc], rules: &'r [Rule]) -> Vec<&'r Rule> {
     let mut matched: Vec<&Rule> = rules
         .iter()
-        .filter(|r| !r.selection && !r.placeholder && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
+        .filter(|r| !r.selection && !r.placeholder && r.generated.is_none() && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
         .collect();
     matched.sort_by(|a, b| layer::cascade(a, b));
     matched
@@ -6660,6 +6825,7 @@ fn build_text(
     dir_own: bool,
     shadows: Option<Arc<Vec<rux_layout::TextShadow>>>,
     look: Option<Arc<TextLook>>,
+    generated: Vec<(rux_layout::Generated, Element)>,
 ) -> LayoutNode {
     // Inside a sentence, the sentence's decorations are drawn under this run's
     // words too. See `RunInherit`.
@@ -6792,6 +6958,23 @@ fn build_text(
             });
         }
         node.children = children;
+    }
+    // `::before` and `::after` are runs of the sentence, its own words
+    // between them when it has no others. See `rux_layout::Generated`.
+    if !generated.is_empty() {
+        let child_inherited = Inherited {
+            color,
+            selection,
+            font_size,
+            font_family: font_family.clone(),
+            vars: Rc::clone(&vars),
+            run: Some(RunInherit { underline, strikethrough }),
+            direction,
+            text: own_text,
+            shadows: shadows.clone(),
+            look: look.clone(),
+        };
+        build_generated(&generated, &mut node, comps, ancestors, &child_inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, row);
     }
     node.on_tap = on_tap;
     // Inside a component a tap here runs against that instance's state,
@@ -7116,6 +7299,13 @@ fn build_node_inner(
     // result is what `var()` sees here *and* below. A node that declares none,
     // most of them, passes the inherited map straight down without copying it.
     let vars = take_vars(&mut props, &inherited.vars);
+    // `::before` and `::after`, worked out while the element is the one being
+    // matched, built once its own children are. See `generated_elements`.
+    let generated = if rules.iter().any(|r| r.generated.is_some()) {
+        generated_elements(el, &desc, ancestors, prev, rules, &vars)
+    } else {
+        Vec::new()
+    };
     // Substitute var() everywhere before interpreting, so every property gets it
     // for free rather than each parser learning about variables. Runs even with no
     // variables in scope: `var(--x, 12px)` is a legitimate way to write a default,
@@ -7334,7 +7524,7 @@ fn build_node_inner(
     let strikethrough = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "line-through"));
 
     if el.tag == "text" {
-        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own, shadows, look.clone());
+        return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own, shadows, look.clone(), generated);
     }
 
     // <image src=…>: a leaf that paints its pixels. The `src` here is still the
@@ -7966,6 +8156,9 @@ fn build_node_inner(
             on_invalid: el.attr("@invalid").map(|h| bind_locals(h, baked)),
         }),
     };
+    if !generated.is_empty() {
+        build_generated(&generated, &mut node, comps, ancestors, &child_inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, row);
+    }
     // A tappable box is a button, named by the text inside it, that is how
     // `<view @tap><text>Save</text></view>` announces as "Save, button". A
     // scroller is worth exposing so its content can be reached; anything else is
@@ -9889,6 +10082,10 @@ pub fn rebuild_children(
     // Each child the cache knows as a row it kept, where the cache last saw
     // it, with the key to prove it is that row.
     let depth = parent.tree_path.len();
+    // `::before` and `::after` sit after every element and are not the
+    // parent's children to rebuild: they stay as they are.
+    let (live_children, generated): (Vec<LayoutNode>, Vec<LayoutNode>) =
+        live_children.into_iter().partition(|n| rux_layout::Generated::of(n).is_none());
     let mut kids: Vec<Option<LayoutNode>> = live_children.into_iter().map(Some).collect();
     let olds = kids.len();
     ORIGINS.with(|o| o.borrow_mut().clear());
@@ -9957,6 +10154,7 @@ pub fn rebuild_children(
             still_the_motion(child);
         }
     }
+    children.extend(generated);
     Some(Rebuilt { children, reg, deps })
 }
 
@@ -18047,6 +18245,60 @@ mod selector_list_tests {
         assert_eq!((canvas.r, canvas.g), (1.0, 0.0));
         let (canvas, _, _) = look("screen { color-scheme: dark; background: rgba(255, 255, 255, 0.5); }");
         assert!((canvas.r - (0.5 + 0.5 * 18.0 / 255.0)).abs() < 0.01, "{canvas:?}");
+    }
+
+    /// `::before` and `::after`: a box generated inside the element, first
+    /// and last as the layout sees it, though built after its elements so
+    /// none of their indices move; a run of a sentence inside a `<text>`,
+    /// its own words between; Tailwind's `content: var(--tw-content)`;
+    /// `attr()`; `""` as an empty box; `none` as nothing.
+    #[test]
+    fn before_and_after_generate_boxes() {
+        use rux_layout::Generated;
+        let root = built(
+            r#"<template><screen>
+                 <view class="card"><view class="body" /></view>
+                 <text class="req">Email</text>
+                 <view class="tw" data-tag="new" />
+                 <view class="none" />
+               </screen></template>
+               <style>
+                 .card::before { content: "\2605  star"; height: 20px; }
+                 .card::after { content: ""; height: 4px; background: #ff0000; }
+                 .body { height: 50px; }
+                 .req::after { content: '*'; color: #ff0000; }
+                 .req:before { content: "> "; }
+                 .tw::after { --tw-content: attr(data-tag) "!"; content: var(--tw-content); }
+                 .none::before { content: none; height: 10px; }
+               </style>"#,
+            None,
+        );
+        let card = &root.children[0];
+        let sides: Vec<Option<Generated>> = card.children.iter().map(Generated::of).collect();
+        assert_eq!(sides, [None, Some(Generated::Before), Some(Generated::After)], "elements first");
+        assert_eq!(card.children[1].text.as_ref().unwrap().text, "\u{2605} star", "the first space ends the escape");
+        assert!(card.children[2].text.is_none(), "an empty content is a box");
+
+        let req = &root.children[1];
+        assert_eq!(req.children.iter().map(Generated::of).collect::<Vec<_>>(), [Some(Generated::Before), Some(Generated::After)]);
+        assert_eq!(root.children[2].children[0].text.as_ref().unwrap().text, "new!");
+        assert!(root.children[3].children.is_empty());
+
+        let mut measure = |tc: &rux_layout::TextContent, _: Option<f32>| (tc.text.chars().count() as f32 * 8.0, 20.0);
+        let out = rux_layout::layout(&root, 400.0, 600.0, &mut measure);
+        let at = |path: &[usize]| out.metrics.iter().find(|m| m.path == path).unwrap_or_else(|| panic!("{path:?}"));
+        // The real child keeps index 0 and sits under the `::before`.
+        assert_eq!(at(&[0, 0]).y, at(&[0]).y + 20.0);
+        assert_eq!(at(&[0, usize::MAX]).y, at(&[0]).y + 70.0, "the ::after is last");
+        // One sentence: "> Email*", the star its own colour.
+        let joined = out.paints.iter().find_map(|p| match p {
+            rux_layout::Paint::Text(t) if t.content.text.contains("Email") => Some(t.content.clone()),
+            _ => None,
+        });
+        let joined = joined.expect("the sentence is drawn");
+        assert_eq!(joined.text, "> Email*");
+        let runs = &joined.rich.as_ref().expect("runs").runs;
+        assert_eq!(runs.last().unwrap().style.color.r, 1.0);
     }
 
     /// Scroll snapping from CSS to the offsets a scroller can rest at: rows

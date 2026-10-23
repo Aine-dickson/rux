@@ -79,6 +79,22 @@ highlight, so a glyph cut by the selection's edge is two colours as it is in a
 browser. `::selection` anywhere but the end of a selector matches nothing.
 Under test in `crates/rux-runtime/tests/selection_style.rs`.
 
+**`::before` and `::after`** (2026-10-23) generate a box inside the element,
+first and last, from the declarations of the rules that end in them (CSS 2's
+`:before` and `:after` too). Only with a `content` that is not `none`:
+strings, joined, CSS escapes read (`"\2022"` is a bullet), and `attr(name)` as
+the element's attribute; `content: ""` makes an empty box, the decorative bar
+or badge, and `var()` reads custom properties set in the same rule, as
+Tailwind's `content: var(--tw-content)` does. Quotes and counters are not
+built and say so. The box inherits from its element and nothing written for
+`<text>` or `<view>` reaches it, as in CSS. Inside a `<text>` it is a run of
+the sentence, the text's own words between the two (`.required::after {
+content: " *"; color: red; }`); in any other element it is a box among the
+children, where Rux has no inline flow for boxes, so beside a `<text>` it
+stacks as a block would rather than sharing its line. An empty one inside a
+`<text>` is not drawn. It is not an element: no `query()` finds it, no
+`:nth-child` counts it, and a tap on it is its element's.
+
 **`::placeholder`** (2026-10-23) colours an empty input's placeholder:
 `color`, with `var()` and `currentcolor` read as the input reads them, and
 `opacity`, which fades it. Anything else written there warns. Only the input's

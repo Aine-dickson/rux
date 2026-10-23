@@ -527,12 +527,11 @@ The middle case is the one worth having. Until v0.7.1 a typo got the same "not
 yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
-Real CSS Rux has not built includes scroll snapping (`scroll-snap-type` and
-the rest), `hyphens: auto`, `tab-size`,
+Real CSS Rux has not built includes `hyphens: auto`, `tab-size`,
 `writing-mode`, `columns` (a multi-column
-layout of its own), the table properties (Rux has no tables), `content` (Rux
-has no `::before` or `::after`),
-`list-style`. `line-height`, `box-shadow`, `outline`,
+layout of its own), the table properties (Rux has no tables),
+`list-style`. Scroll snapping and `content` with `::before` and `::after`
+were on it until 2026-10-23. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.
 

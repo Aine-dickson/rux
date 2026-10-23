@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-238 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
+239 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -155,6 +155,7 @@ Every property below is one the runtime interprets, and the list is written by t
 | `background-clip` | **which box a background is cut to.** `border-box` (the default), `padding-box` or `content-box`.For example `.card { background-clip: padding-box; }` | `border-box` `padding-box` `content-box` |  |
 | `background-origin` | **which box a background is placed in.** `padding-box` (the default), `border-box` or `content-box`.For example `.card { background-origin: content-box; }` | `padding-box` `border-box` `content-box` |  |
 | `background-attachment` | **what a background moves with.** `scroll` (the box), `fixed` (the window) or `local` (the box's scrolled content).For example `.page { background-attachment: fixed; }` | `scroll` `fixed` `local` |  |
+| `content` | **what `::before` and `::after` hold.** Strings, joined, and `attr(name)`; `""` makes an empty box, `none` makes nothing. Only in a rule ending in `::before` or `::after`.For example `.required::after { content: " *"; color: #f38ba8; }` |  |  |
 | `accent-color` | **the colour a control is drawn in.** A switch's track when on, and a slider's fill and thumb. Not inherited.For example `.volume { accent-color: #f38ba8; }` |  |  |
 | `appearance` | **whether a control is drawn as one.** `none`: a checkbox, radio or switch loses the mark, dot or thumb Rux draws in it, and its default shape and colours, leaving a box to style with `:checked`. Any other value draws the control. A slider and a select are drawn either way.For example `.tick { appearance: none; } .tick:checked { background: #89b4fa; }` | `none` `auto` |  |
 | `color` | **the colour of the text.** Inherited, so setting it on a container covers the text inside. Animatable.For example `.label { color: #cdd6f4; }` |  | yes |
@@ -287,4 +288,4 @@ Every property below is one the runtime interprets, and the list is written by t
 
 Real CSS an author reaches for, which the runtime parses, ignores and reports as a pending feature rather than a typo:
 
-`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `columns`, `column-count`, `column-width`, `column-fill`, `column-rule`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`, `content`.
+`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `columns`, `column-count`, `column-width`, `column-fill`, `column-rule`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`.

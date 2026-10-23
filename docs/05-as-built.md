@@ -987,7 +987,7 @@ scrolled list is clipped by the list, as in a browser. Its style is a border's:
 `dashed`, `dotted`, `double` and the 3D styles are drawn as they are for
 `border`.
 
-Any *other* pseudo-class (`:has()`, `::before`) **never
+Any *other* pseudo-class (`:has()`, `::first-line`) **never
 matches**, and says so once on stderr. Before this existed the `:` was silently
 dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
 closed is the safer half of that trade.
@@ -1547,12 +1547,11 @@ The middle case is the one worth having. Until v0.7.1 a typo got the same "not
 yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
-Real CSS Rux has not built includes scroll snapping (`scroll-snap-type` and
-the rest), `hyphens: auto`, `tab-size`,
+Real CSS Rux has not built includes `hyphens: auto`, `tab-size`,
 `writing-mode`, `columns` (a multi-column
-layout of its own), the table properties (Rux has no tables), `content` (Rux
-has no `::before` or `::after`),
-`list-style`. `line-height`, `box-shadow`, `outline`,
+layout of its own), the table properties (Rux has no tables),
+`list-style`. Scroll snapping and `content` with `::before` and `::after`
+were on it until 2026-10-23. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.
 
@@ -2471,6 +2470,22 @@ time. `color` is drawn by painting the glyphs a second time, clipped to the
 highlight, so a glyph cut by the selection's edge is two colours as it is in a
 browser. `::selection` anywhere but the end of a selector matches nothing.
 Under test in `crates/rux-runtime/tests/selection_style.rs`.
+
+**`::before` and `::after`** (2026-10-23) generate a box inside the element,
+first and last, from the declarations of the rules that end in them (CSS 2's
+`:before` and `:after` too). Only with a `content` that is not `none`:
+strings, joined, CSS escapes read (`"\2022"` is a bullet), and `attr(name)` as
+the element's attribute; `content: ""` makes an empty box, the decorative bar
+or badge, and `var()` reads custom properties set in the same rule, as
+Tailwind's `content: var(--tw-content)` does. Quotes and counters are not
+built and say so. The box inherits from its element and nothing written for
+`<text>` or `<view>` reaches it, as in CSS. Inside a `<text>` it is a run of
+the sentence, the text's own words between the two (`.required::after {
+content: " *"; color: red; }`); in any other element it is a box among the
+children, where Rux has no inline flow for boxes, so beside a `<text>` it
+stacks as a block would rather than sharing its line. An empty one inside a
+`<text>` is not drawn. It is not an element: no `query()` finds it, no
+`:nth-child` counts it, and a tap on it is its element's.
 
 **`::placeholder`** (2026-10-23) colours an empty input's placeholder:
 `color`, with `var()` and `currentcolor` read as the input reads them, and

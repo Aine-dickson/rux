@@ -18,7 +18,7 @@ use std::sync::Arc;
 use crate::rich::{InlineItem, RichText, RunStyle, TextRun};
 use crate::white_space::collapse_runs_into;
 use crate::{
-    Access, AccessRole, Background, Corners, Cursor, Display, Gesture, ImageContent, Len, Node, Shadows,
+    Access, AccessRole, Background, Corners, Cursor, Display, Generated, Gesture, ImageContent, Len, Node, Shadows,
     PathContent, PathPaint, Rgba, Sides, TextContent, TouchAction, WhiteSpace,
 };
 
@@ -125,14 +125,36 @@ fn gather<'a>(
     kinds: &mut Vec<Piece>,
     parts: &mut Vec<InlinePart>,
 ) {
-    for (i, c) in node.children.iter().enumerate() {
+    // `::before` first and `::after` last, though both were built last (see
+    // `Generated`); a text of plain words with either has its own words
+    // between them.
+    let side = |c: &Node| Generated::of(c);
+    let own = node.children.iter().all(|c| side(c).is_some()).then_some(node.text.as_deref()).flatten();
+    let order = node
+        .children
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| side(c) == Some(Generated::Before))
+        .chain(node.children.iter().enumerate().filter(|(_, c)| side(c).is_none()))
+        .map(Some)
+        .chain(own.map(|_| None))
+        .chain(node.children.iter().enumerate().filter(|(_, c)| side(c) == Some(Generated::After)).map(Some));
+    for at in order {
+        let Some((i, c)) = at else {
+            let tc = own.expect("chained only with its own words");
+            // Its own words, which its box already draws a background behind.
+            let style = RunStyle { background: None, ..run_style(tc, node) };
+            pieces.push((tc.text.as_str(), tc.white_space));
+            kinds.push(Piece::Run(style));
+            continue;
+        };
         // Not drawn, not in the sentence: `r-show="false"` takes its words
         // out, as `display: none` does.
         if c.hidden || c.style.display == Display::None {
             continue;
         }
         let mut cp = path.to_vec();
-        cp.push(i);
+        cp.push(side(c).map_or(i, Generated::index));
         let first_run = count_runs(kinds);
         let what = if let Some(tc) = &c.text {
             // A run with a `dir` of its own is set apart, its pieces and all.

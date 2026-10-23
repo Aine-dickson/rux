@@ -1179,9 +1179,35 @@ pub struct Rare {
     pub snap_type: Option<(SnapType, [Len; 4])>,
     /// `scroll-snap-align` and the rest, on a box a scroller snaps to.
     pub snap: Option<SnapArea>,
+    /// A `::before` or `::after` box. See [`Generated`].
+    pub generated: Option<Generated>,
     /// On the root alone: its used `color-scheme` is dark, so what Rux
     /// draws itself (a dropdown, the selection toolbar) is drawn dark too.
     pub dark: bool,
+}
+
+/// A box CSS's `::before` or `::after` made, not an element. It sits at the
+/// end of its parent's children, after every element, so a child's index is
+/// still its element's; the layout puts a `::before` first. Its path ends in
+/// [`Generated::index`], which no element's can.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Generated {
+    Before,
+    After,
+}
+
+impl Generated {
+    /// The last step of its path: past any index a child can have.
+    pub fn index(self) -> usize {
+        match self {
+            Generated::Before => usize::MAX - 1,
+            Generated::After => usize::MAX,
+        }
+    }
+
+    pub fn of(node: &Node) -> Option<Generated> {
+        node.style.rare.as_ref().and_then(|r| r.generated)
+    }
 }
 
 /// One `animation` on a box, as the build worked it out: its timing, and its
@@ -4757,6 +4783,7 @@ fn build(
         let mut olds: Vec<Option<Kept>> = std::mem::take(&mut old_children).into_iter().map(Some).collect();
         let mut by_key: Option<HashMap<u64, usize, std::hash::BuildHasherDefault<IdHasher>>> = None;
         kept_children.reserve(node.children.len());
+        let mut before: Vec<NodeId> = Vec::new();
         for (i, c) in node.children.iter().enumerate() {
             let want = c.key.as_deref().map(key_hash);
             let here = olds.get(i).and_then(Option::as_ref).is_some_and(|o| o.key == want);
@@ -4775,7 +4802,7 @@ fn build(
             };
             let prev = at.and_then(|j| olds[j].take());
             let mut cp = path.to_vec();
-            cp.push(i);
+            cp.push(Generated::of(c).map_or(i, Generated::index));
             // Text in a block box once took no automatic `max-width: 100%`
             // here: Taffy 0.7 resolved the percentage against a parent size
             // from an earlier pass and kept a one-line height for text that
@@ -4789,6 +4816,14 @@ fn build(
                 Some(fixed) => hoisted.push((cid, fixed)),
                 None => child_ids.push(cid),
             }
+            if Generated::of(c) == Some(Generated::Before) {
+                before.push(cid);
+            }
+        }
+        // A `::before` is the first thing in its parent, though it was built
+        // last. See `Generated`.
+        if !before.is_empty() {
+            child_ids.sort_by_key(|id| !before.contains(id));
         }
         for gone in olds.into_iter().flatten() {
             bury(gone, garbage);
