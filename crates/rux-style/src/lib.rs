@@ -18083,6 +18083,31 @@ mod selector_list_tests {
         assert_eq!(points(".row { scroll-snap-align: end; }"), [0.0, 50.0, 150.0, 250.0]);
     }
 
+    /// A box and a field scrolled out below one list, lying over the list
+    /// under it, still answer to their own list: `scrollIntoView()` and
+    /// focus moved whichever list lay under them (watchlist #49, #50).
+    #[test]
+    fn a_box_knows_the_scroller_it_is_in() {
+        let root = built(
+            r#"<template><screen>
+                 <view class="list"><view class="row" r-for="i in rows" /><input id="deep" r-model="q" /></view>
+                 <view class="list"><view class="row" r-for="i in rows" /></view>
+               </screen></template>
+               <script>let rows = [1, 2, 3, 4]; let q = signal("");</script>
+               <style>.list { height: 100px; overflow-y: scroll; } .row { height: 100px; }
+                      #deep { height: 30px; }</style>"#,
+            None,
+        );
+        let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
+        let out = rux_layout::layout(&root, 400.0, 600.0, &mut measure);
+        let field = &out.focuses[0];
+        assert!(field.y > 100.0 + 100.0, "it lies over the second list: {}", field.y);
+        assert_eq!(field.within, Some(0));
+        let row = out.metrics.iter().find(|m| m.path == [0, 3]).expect("the fourth row");
+        assert_eq!(row.scroll, Some(0));
+        assert_eq!(out.metrics.iter().find(|m| m.path == [1, 0]).unwrap().scroll, Some(1));
+    }
+
     /// `appearance: none` (and `-webkit-appearance`) takes away what Rux
     /// draws in a checkbox, radio or switch, leaving a box to style.
     #[test]

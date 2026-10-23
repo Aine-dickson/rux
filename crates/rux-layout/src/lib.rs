@@ -3402,6 +3402,9 @@ pub struct FocusRegion {
     /// If this input scrolls (a textarea), the index of its `ScrollRegion` in
     /// `Layout.scrolls`, so the shell can scroll the caret into view.
     pub scroll_id: Option<usize>,
+    /// The scroller it sits in, which moves to show it when it is focused.
+    /// See `NodeMetrics::scroll`.
+    pub within: Option<usize>,
 }
 
 impl FocusRegion {
@@ -6280,6 +6283,7 @@ fn collect(
                 kind: target.map_or(InputKind::Text, |b| b.kind),
                 field,
                 scroll_id: None,
+                within: inside_scroll,
             });
         }
 
@@ -6411,6 +6415,7 @@ fn collect(
                     field: bound.field.clone(),
                     // Ids are given out before the walk: see `number_scrollers`.
                     scroll_id: b.scroll_ids.get(&id).copied(),
+                    within: inside_scroll,
                 });
                 walk.focus_seq.push(at.stack.seq);
                 out.focusables.push(FocusItem {

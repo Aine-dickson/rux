@@ -7004,7 +7004,7 @@ impl App {
                 })
             });
             if let Some(f) = field {
-                if let Some(at) = rux_layout::containing_scroller(&layout.scrolls, offsets, f.x, f.y) {
+                if let Some(at) = f.within.filter(|id| *id < layout.scrolls.len()) {
                     let region = &layout.scrolls[at];
                     let off = &mut offsets[region.id];
                     let before = *off;
