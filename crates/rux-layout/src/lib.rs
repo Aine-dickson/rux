@@ -1623,6 +1623,9 @@ pub struct TextLook {
     pub indent_hanging: bool,
     /// `text-overflow: ellipsis`: a line cut by the box ends in `…`.
     pub ellipsis: bool,
+    /// `line-clamp`: no more than this many lines, the last ending in `…`.
+    /// Not inherited.
+    pub line_clamp: Option<u32>,
     /// The OpenType features `font-variant` and its longhands ask for, in
     /// `font-feature-settings` form. Inherits.
     pub variant: Option<String>,
@@ -1646,7 +1649,7 @@ impl TextLook {
         (
             (c(self.decoration_color), self.decoration_style, f(self.decoration_thickness), f(self.underline_offset)),
             (self.overline, self.transform, self.indent.to_bits(), f(self.indent_pct), self.indent_each_line, self.indent_hanging),
-            self.ellipsis,
+            (self.ellipsis, self.line_clamp),
             (&self.variant, &self.feature_settings, &self.variation_settings, f(self.stretch), c(self.caret_color)),
         )
     }

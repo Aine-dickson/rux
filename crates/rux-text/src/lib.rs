@@ -615,7 +615,9 @@ impl TextEngine {
         let layout = self.build(text, style, max_width);
         // Each line is `line-height` tall when set, else its own leading-trimmed
         // height (ascent + descent) so text hugs its box by default.
-        let height: f32 = Self::lines(&layout, text, style).iter().map(|l| l.height).sum();
+        // `line-clamp`: as tall as the lines it keeps.
+        let kept = style.look.and_then(|l| l.line_clamp).map_or(usize::MAX, |n| n as usize);
+        let height: f32 = Self::lines(&layout, text, style).iter().take(kept).map(|l| l.height).sum();
         (layout.width().ceil(), height.ceil())
     }
 
@@ -1062,6 +1064,47 @@ impl TextEngine {
         Some((cut, TextLook { ellipsis: false, ..look.clone() }))
     }
 
+    /// For `line-clamp`, when the text wraps to more lines than it may have:
+    /// the longest start of it that still wraps to that many with `…` after
+    /// it, and the look to draw that with (no clamp, so it is not cut
+    /// again). `None` when it fits, and for text with runs, which would lose
+    /// them.
+    fn clamped(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Option<(String, TextLook)> {
+        let look = style.look?;
+        let n = look.line_clamp? as usize;
+        if style.rich.is_some() || n == 0 {
+            return None;
+        }
+        let unclamped = TextLook { line_clamp: None, ..look.clone() };
+        let plain = TextStyle { look: Some(&unclamped), ..*style };
+        let lines = |engine: &mut Self, s: &str| {
+            let layout = engine.build(s, &plain, max_width);
+            Self::lines(&layout, s, &plain).len()
+        };
+        let end = {
+            let layout = self.build(text, &plain, max_width);
+            if Self::lines(&layout, text, &plain).len() <= n {
+                return None;
+            }
+            let all: Vec<_> = layout.lines().collect();
+            all[n - 1].text_range().end.saturating_sub(shift(text, &plain)).min(text.len())
+        };
+        // The most characters of the first `n` lines that fit, by halving.
+        let ends: Vec<usize> =
+            text[..end].char_indices().map(|(i, _)| i).chain(std::iter::once(end)).collect();
+        let cut = |n: usize| format!("{}\u{2026}", text[..ends[n]].trim_end());
+        let (mut lo, mut hi) = (0, ends.len() - 1);
+        while lo < hi {
+            let mid = (lo + hi).div_ceil(2);
+            if lines(self, &cut(mid)) <= n {
+                lo = mid;
+            } else {
+                hi = mid - 1;
+            }
+        }
+        Some((cut(lo), unclamped))
+    }
+
     /// [`draw`](Self::draw) with every glyph and decoration in `color`, runs
     /// included, and no run highlights: the second pass `::selection { color }`
     /// paints over the selected part.
@@ -1098,6 +1141,10 @@ impl TextEngine {
         // `text-overflow: ellipsis`: a line too long for its box is drawn cut
         // short, ending in `…`. Only drawing changes; it is measured, hit and
         // edited as the whole text.
+        if let Some((cut, look)) = self.clamped(text, style, max_width) {
+            let style = TextStyle { look: Some(&look), ..*style };
+            return self.draw_inked(scene, x, y, &cut, &style, color, ink, align, max_width, transform);
+        }
         if let Some((cut, look)) = self.ellipsized(text, style, max_width) {
             let style = TextStyle { look: Some(&look), ..*style };
             return self.draw_inked(scene, x, y, &cut, &style, color, ink, align, max_width, transform);
@@ -1325,6 +1372,28 @@ mod ellipsis_tests {
         assert!(te.ellipsized("short", &style, Some(120.0)).is_none());
         let wraps = TextStyle { nowrap: false, ..style };
         assert!(te.ellipsized(text, &wraps, Some(120.0)).is_none());
+    }
+
+    /// `line-clamp: 2`: the text is as tall as two of its lines, and drawn as
+    /// the most of it that still wraps to two with `…` after it.
+    #[test]
+    fn a_clamped_text_keeps_its_lines() {
+        let mut te = TextEngine::new();
+        let look = TextLook { line_clamp: Some(2), ..Default::default() };
+        let style = TextStyle { look: Some(&look), ..TextStyle::new(16.0, 400, Wrap::Normal) };
+        let free = TextStyle { look: None, ..style };
+        let text = "Kinetic and potential energy, and where it goes when the cart comes to rest at the foot of the ramp.";
+        let width = Some(150.0);
+        let (_, whole) = te.measure(text, &free, width);
+        let (_, one) = te.measure("Kinetic", &free, width);
+        let (_, kept) = te.measure(text, &style, width);
+        assert!(whole > 3.0 * one, "the text wraps to more than two lines: {whole} vs {one}");
+        assert!((kept - 2.0 * one).abs() <= 1.0, "two lines tall: {kept} vs {one}");
+        let (cut, drawn) = te.clamped(text, &style, width).expect("cut");
+        assert!(cut.ends_with('\u{2026}') && text.starts_with(cut.trim_end_matches('\u{2026}')), "{cut}");
+        assert!(drawn.line_clamp.is_none(), "not cut again");
+        assert!((te.measure(&cut, &free, width).1 - kept).abs() <= 1.0, "the cut is two lines: {cut}");
+        assert!(te.clamped("Energy", &style, width).is_none(), "one that fits is drawn whole");
     }
 }
 

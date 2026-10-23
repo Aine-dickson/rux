@@ -4510,7 +4510,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "letter-spacing", "word-spacing", "line-height", "white-space",
     "text-decoration", "text-decoration-line",
     "text-decoration-color", "text-decoration-style", "text-decoration-thickness",
-    "text-underline-offset", "text-transform", "text-indent", "text-overflow",
+    "text-underline-offset", "text-transform", "text-indent", "text-overflow", "line-clamp",
     "font-variant", "font-variant-caps", "font-variant-numeric", "font-variant-ligatures",
     "font-variant-position", "font-variant-east-asian", "font-feature-settings",
     "font-variation-settings", "font-stretch", "font-width", "caret-color",
@@ -4853,11 +4853,10 @@ fn warn_if_unhonored(property: &str) {
     }
     // Another vendor's own property (`-webkit-tap-highlight-color`) belongs
     // to one engine, and the others pass over it without a word, as they do
-    // its pseudo-elements. The two that are the one way to clamp lines in
-    // every engine still say so, since what they would do is visible.
-    if (property.starts_with("-webkit-") || property.starts_with("-moz-") || property.starts_with("-ms-"))
-        && !matches!(property, "-webkit-line-clamp" | "-webkit-box-orient")
-    {
+    // its pseudo-elements. `-webkit-line-clamp` is read, by
+    // [`line_clamp`], and `-webkit-box-orient` beside it says only that the
+    // box is the vertical one it already is.
+    if property.starts_with("-webkit-") || property.starts_with("-moz-") || property.starts_with("-ms-") {
         return;
     }
     let message = if UNIMPLEMENTED_PROPERTIES.contains(&property) {
@@ -5641,6 +5640,11 @@ fn expand_font(v: &str) -> Option<Vec<(&'static str, String)>> {
 /// property Rux honors under its own name.
 fn vendor_alias(k: &str) -> Option<&'static str> {
     let rest = k.strip_prefix("-webkit-").or_else(|| k.strip_prefix("-moz-"))?;
+    // Not the same property: it needs `display: -webkit-box` beside it. See
+    // [`line_clamp`].
+    if rest == "line-clamp" {
+        return None;
+    }
     HONORED_PROPERTIES.iter().find(|p| **p == rest).copied()
 }
 
@@ -10181,12 +10185,23 @@ fn interpreted(p: &HashMap<String, String>) -> Style {
 fn interpret(p: &HashMap<String, String>) -> Style {
     let mut st = Style::default();
     if let Some(v) = p.get("display") {
+        // Rux has no inline level for a box (see "Where Rux differs"), so the
+        // inline forms are their block forms: `inline-flex` lays its
+        // children out as a flex box, which was lost when it read as `block`.
         st.display = match v.trim() {
-            "flex" => Display::Flex,
-            "grid" => Display::Grid,
+            "flex" | "inline-flex" => Display::Flex,
+            "grid" | "inline-grid" => Display::Grid,
             "inline" => Display::Inline,
             "none" => Display::None,
-            _ => Display::Block,
+            // `-webkit-box` is how `-webkit-line-clamp` is written; vertical,
+            // it lays its children out as a block does.
+            "block" | "inline-block" | "flow-root" | "list-item" | "-webkit-box" | "-webkit-inline-box" => {
+                Display::Block
+            }
+            other => {
+                warn_once(format!("`display: {other}` is not a layout Rux has, so the box is laid out as `block`"));
+                Display::Block
+            }
         };
     }
     for (i, side) in ["width", "height"].iter().enumerate() {
@@ -12847,6 +12862,33 @@ fn drop_shadow_colors(value: &str, color: Rgba) -> Option<String> {
 /// inheriting ones its own or its parent's, the rest its own. Inside a
 /// sentence a run takes the sentence's decoration too, as it takes its
 /// underline (see [`RunInherit`]). `None` when nothing is set.
+/// `line-clamp: 2`, or the way every engine has it today, Tailwind's
+/// `line-clamp-2`: `-webkit-line-clamp: 2` beside `display: -webkit-box`.
+/// The prefixed one does nothing in a browser without that display, so it
+/// does nothing here either, and says so.
+fn line_clamp(props: &HashMap<String, String>) -> Option<u32> {
+    let count = |v: &str| match v.trim() {
+        "none" => None,
+        n => match n.parse::<u32>() {
+            Ok(n) if n > 0 => Some(n),
+            _ => {
+                warn(format!("`{n}` is not a number of lines to clamp to"));
+                None
+            }
+        },
+    };
+    if let Some(v) = props.get("line-clamp") {
+        return count(v);
+    }
+    let v = props.get("-webkit-line-clamp")?;
+    let boxed = props.get("display").is_some_and(|d| matches!(d.trim(), "-webkit-box" | "-webkit-inline-box"));
+    if !boxed {
+        warn("`-webkit-line-clamp` clamps only a box with `display: -webkit-box`, as in a browser".to_string());
+        return None;
+    }
+    count(v)
+}
+
 fn text_look(props: &HashMap<String, String>, parent: Option<&Arc<TextLook>>, in_sentence: bool) -> Option<Arc<TextLook>> {
     let up = parent.map(|p| (**p).clone()).unwrap_or_default();
     let mut look = TextLook {
@@ -13000,6 +13042,7 @@ fn text_look(props: &HashMap<String, String>, parent: Option<&Arc<TextLook>>, in
             c => parse_color(c),
         };
     }
+    look.line_clamp = line_clamp(props);
     (look != TextLook::default()).then(|| Arc::new(look))
 }
 
@@ -17076,6 +17119,20 @@ mod text_look_tests {
         assert!(cut(&[("text-overflow", "ellipsis"), ("overflow", "hidden")]));
         assert!(cut(&[("text-overflow", "ellipsis"), ("overflow-x", "clip")]));
         assert!(!cut(&[("text-overflow", "ellipsis")]));
+    }
+
+    /// `line-clamp`, and Tailwind's spelling of it, which a browser honours
+    /// only beside `display: -webkit-box`.
+    #[test]
+    fn line_clamp_in_both_spellings() {
+        let clamp = |pairs: &[(&str, &str)]| look(pairs, None, false).and_then(|l| l.line_clamp);
+        assert_eq!(clamp(&[("line-clamp", "3")]), Some(3));
+        assert_eq!(clamp(&[("line-clamp", "none")]), None);
+        assert_eq!(clamp(&[("-webkit-line-clamp", "2"), ("display", "-webkit-box")]), Some(2));
+        assert_eq!(clamp(&[("-webkit-line-clamp", "2")]), None);
+        assert!(look(&[("line-clamp", "2")], None, false).is_some_and(|l| l.line_clamp == Some(2)));
+        let parent = look(&[("line-clamp", "2")], None, false);
+        assert_eq!(look(&[], parent.as_ref(), false).and_then(|l| l.line_clamp), None, "not inherited");
     }
 
     #[test]

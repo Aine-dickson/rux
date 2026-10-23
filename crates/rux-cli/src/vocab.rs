@@ -356,7 +356,7 @@ const PSEUDO_CLASSES: &[Entry] = &[
 /// values are not a closed set: `width` takes a length, `color` a colour,
 /// `grid-template-columns` a track list.
 const CSS_VALUES: &[(&str, &[&str])] = &[
-    ("display", &["block", "flex", "grid", "inline", "none"]),
+    ("display", &["block", "flex", "grid", "inline", "none", "inline-flex", "inline-grid", "inline-block", "flow-root"]),
     // All five, and every one of them honored since v0.7. Before that, four of
     // these were silently `relative`.
     ("position", &["static", "relative", "sticky", "absolute", "fixed"]),
@@ -503,7 +503,7 @@ const VALUE_METHODS: &[Entry] = &[
 /// a scroller, a `transform` becoming a containing block. Those are the places
 /// a general CSS reference is actively wrong here.
 const CSS_PROPERTY_DOCS: &[Entry] = &[
-    Entry { name: "display", detail: "how this box lays its children out", doc: "`block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`." },
+    Entry { name: "display", detail: "how this box lays its children out", doc: "`block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`. Rux has no inline level for a box, so `inline-flex` is `flex`, `inline-grid` is `grid` and `inline-block` is `block`; a value with no layout here (`contents`, `table`) warns and is `block`." },
     Entry { name: "width", detail: "how wide the box is", doc: "A length or a percentage of the parent's width. A child of a flex column already fills its width, since the cross-axis default is `stretch`; `width` is for when it should not." },
     Entry { name: "height", detail: "how tall the box is", doc: "A length or a percentage. A definite height is half of what makes a scroller; the other half is `overflow`." },
     Entry { name: "gap", detail: "space between children", doc: "On a flex or grid parent. Space *between* items only, never outside them, which is what makes it different from margin." },
@@ -687,6 +687,7 @@ const CSS_PROPERTY_DOCS: &[Entry] = &[
     Entry { name: "text-transform", detail: "the text in capitals or small letters", doc: "`uppercase`, `lowercase` or `capitalize`. Inherited." },
     Entry { name: "text-indent", detail: "how far in the first line starts", doc: "A length or a percentage of the width, with `hanging` to indent every line but the first, and `each-line`. Inherited." },
     Entry { name: "text-overflow", detail: "what a line too long for its box ends in", doc: "`ellipsis` ends it in `…`. Needs `overflow: hidden` and `white-space: nowrap`, as in CSS." },
+    Entry { name: "line-clamp", detail: "the most lines a text may wrap to", doc: "`line-clamp: 2` keeps two lines, the second ending in `…`, and the text is as tall as the two. Tailwind's `line-clamp-2` writes it as `-webkit-line-clamp: 2` beside `display: -webkit-box`, which is read too; the prefixed one alone does nothing, as in a browser. On a `<text>`; text with runs is not cut yet." },
     Entry { name: "font-variant", detail: "small capitals, numerals and ligatures", doc: "Any of the `font-variant-*` keywords; the font's own OpenType features." },
     Entry { name: "font-variant-caps", detail: "small capitals", doc: "`small-caps`, `all-small-caps`, `petite-caps` and the rest, when the font has them." },
     Entry { name: "font-variant-numeric", detail: "how numerals are drawn", doc: "`tabular-nums` for columns that line up, `oldstyle-nums`, fractions, `ordinal`, `slashed-zero`." },
@@ -878,6 +879,7 @@ const CSS_PROPERTY_USAGE: &[(&str, &str)] = &[
     ("text-transform", ".label { text-transform: uppercase; }"),
     ("text-indent", ".para { text-indent: 2em; }"),
     ("text-overflow", ".name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }"),
+    ("line-clamp", ".summary { line-clamp: 2; }"),
     ("font-variant", ".heading { font-variant: small-caps; }"),
     ("font-variant-caps", ".heading { font-variant-caps: all-small-caps; }"),
     ("font-variant-numeric", ".price { font-variant-numeric: tabular-nums; }"),

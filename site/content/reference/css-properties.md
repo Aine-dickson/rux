@@ -8,13 +8,13 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-208 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
+209 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
 | Property | What it does | Keywords | Animates |
 |---|---|---|---|
-| `display` | **how this box lays its children out.** `block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`.For example `.row { display: flex; }` | `block` `flex` `grid` `inline` `none` |  |
+| `display` | **how this box lays its children out.** `block` (the default), `flex`, `grid`, `inline` or `none`. **Rux defaults to `block`**, so a box does not lay its children out in a row until you say `display: flex`. Rux has no inline level for a box, so `inline-flex` is `flex`, `inline-grid` is `grid` and `inline-block` is `block`; a value with no layout here (`contents`, `table`) warns and is `block`.For example `.row { display: flex; }` | `block` `flex` `grid` `inline` `none` `inline-flex` `inline-grid` `inline-block` `flow-root` |  |
 | `width` | **how wide the box is.** A length or a percentage of the parent's width. A child of a flex column already fills its width, since the cross-axis default is `stretch`; `width` is for when it should not.For example `.field { width: 100%; }` |  | yes |
 | `height` | **how tall the box is.** A length or a percentage. A definite height is half of what makes a scroller; the other half is `overflow`.For example `.thread { height: 300px; }` |  | yes |
 | `gap` | **space between children.** On a flex or grid parent. Space *between* items only, never outside them, which is what makes it different from margin.For example `.row { display: flex; gap: 8px; }` |  | yes |
@@ -198,6 +198,7 @@ Every property below is one the runtime interprets, and the list is written by t
 | `text-transform` | **the text in capitals or small letters.** `uppercase`, `lowercase` or `capitalize`. Inherited.For example `.label { text-transform: uppercase; }` | `none` `uppercase` `lowercase` `capitalize` |  |
 | `text-indent` | **how far in the first line starts.** A length or a percentage of the width, with `hanging` to indent every line but the first, and `each-line`. Inherited.For example `.para { text-indent: 2em; }` | `hanging` `each-line` |  |
 | `text-overflow` | **what a line too long for its box ends in.** `ellipsis` ends it in `…`. Needs `overflow: hidden` and `white-space: nowrap`, as in CSS.For example `.name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }` | `clip` `ellipsis` |  |
+| `line-clamp` | **the most lines a text may wrap to.** `line-clamp: 2` keeps two lines, the second ending in `…`, and the text is as tall as the two. Tailwind's `line-clamp-2` writes it as `-webkit-line-clamp: 2` beside `display: -webkit-box`, which is read too; the prefixed one alone does nothing, as in a browser. On a `<text>`; text with runs is not cut yet.For example `.summary { line-clamp: 2; }` |  |  |
 | `font-variant` | **small capitals, numerals and ligatures.** Any of the `font-variant-*` keywords; the font's own OpenType features.For example `.heading { font-variant: small-caps; }` | `normal` `none` `small-caps` `all-small-caps` `tabular-nums` `oldstyle-nums` `slashed-zero` |  |
 | `font-variant-caps` | **small capitals.** `small-caps`, `all-small-caps`, `petite-caps` and the rest, when the font has them.For example `.heading { font-variant-caps: all-small-caps; }` | `normal` `small-caps` `all-small-caps` `petite-caps` `all-petite-caps` `unicase` `titling-caps` |  |
 | `font-variant-numeric` | **how numerals are drawn.** `tabular-nums` for columns that line up, `oldstyle-nums`, fractions, `ordinal`, `slashed-zero`.For example `.price { font-variant-numeric: tabular-nums; }` | `normal` `lining-nums` `oldstyle-nums` `proportional-nums` `tabular-nums` `diagonal-fractions` `stacked-fractions` `ordinal` `slashed-zero` |  |

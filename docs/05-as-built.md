@@ -616,7 +616,11 @@ pseudo-class honored, its keywords, whether it animates, and what is known and
 not built yet. What follows is how each behaves, kept by hand.
 
 ```
-display (block|flex|grid|inline|none)
+display (block|flex|grid|inline|none; inline-flex is flex, inline-grid grid,
+                       inline-block, flow-root and -webkit-box block, as Rux has
+                       no inline level for a box; any other value warns and is
+                       block. Until 2026-10-23 every unknown value was block
+                       without a word, inline-flex included)
 flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
@@ -713,6 +717,11 @@ text-transform (uppercase, lowercase, capitalize; inherited; a letter whose
                        other case is not one letter, `ß` to `SS`, stays as
                        written, so carets and selections keep their places)
 text-indent (a length or a %, with `hanging` and `each-line`; inherited)
+line-clamp (a number of lines or none; the last kept ends in `…` and the text
+                       is as tall as the lines kept. `-webkit-line-clamp` beside
+                       `display: -webkit-box`, Tailwind's line-clamp-N, is read
+                       too, and alone does nothing, as in a browser. On a <text>;
+                       not yet for a sentence with runs)
 text-overflow (clip, ellipsis: a line too long for a box that clips, with
                        `white-space: nowrap`, ends in `…`; a field being edited
                        shows all of it; not yet for a sentence with runs)
