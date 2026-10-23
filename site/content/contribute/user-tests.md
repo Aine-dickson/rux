@@ -2833,7 +2833,8 @@ desktop window** with clicks injected; heard through the speakers with the
 | Seek and volume | `s.currentTime = 10`, `s.volume = 0.5` from template handlers | time 10, volume 0.5 shown at once | desktop: pass |
 | A short sound, twice | tap the click's button twice | it plays each time, from the start | desktop: pass, heard |
 | Through the output | `cargo run -p rux-audio --example play -- tone12.mp3` | the time in step with the clock, ended once | desktop: pass, heard |
-| Android | the same page | plays through AAudio | not driven |
+| Android | the same page, a dev APK on the `rux_test` emulator (x86_64), taps through `adb shell input` | plays through AAudio (`AAUDIO_OK`, started); play again after the end, half volume, seek to 10, the click twice, the end at 12 of 12, pause: each as on the desktop | Android emulator: pass |
+| Android, the app away | Home while it plays, back after 6 s | today it plays on (2.3 to 8.7 s): pausing on suspend is B.2 | Android emulator: as expected before B.2 |
 
 ## `loadSound` and `Sound` in a browser, 2026-10-23
 
