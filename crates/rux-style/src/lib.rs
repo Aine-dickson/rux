@@ -4584,6 +4584,10 @@ const HONORED_PROPERTIES: &[&str] = &[
     // Scrolling
     "overscroll-behavior", "overscroll-behavior-x", "overscroll-behavior-y",
     "object-fit", "object-position", "pointer-events", "scroll-behavior",
+    // Scroll snapping: where a scroller comes to rest.
+    "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop",
+    "scroll-padding", "scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left",
+    "scroll-margin", "scroll-margin-top", "scroll-margin-right", "scroll-margin-bottom", "scroll-margin-left",
     "scrollbar-width", "scrollbar-color",
     "outline", "outline-color", "outline-offset", "outline-style", "outline-width",
     // Flex / grid
@@ -4877,10 +4881,6 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     "list-style", "list-style-type", "list-style-position",
     // Motion. A transform is flat, so it has no depth to look into.
     "perspective", "perspective-origin",
-    // Scrolling: a scroller comes to rest where the fling leaves it.
-    "scroll-snap-type", "scroll-snap-align", "scroll-snap-stop",
-    "scroll-padding", "scroll-padding-top", "scroll-padding-right", "scroll-padding-bottom", "scroll-padding-left",
-    "scroll-margin", "scroll-margin-top", "scroll-margin-right", "scroll-margin-bottom", "scroll-margin-left",
     // Other layout models
     "columns", "column-count", "column-width", "column-fill", "column-rule", "column-span", "table-layout",
     "border-collapse", "border-spacing", "content",
@@ -11114,6 +11114,7 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             st.rare_mut().transform_origin = Some(origin);
         }
     }
+    scroll_snap(p, &mut st);
     if ["translate", "rotate", "scale"].iter().any(|k| p.contains_key(*k)) {
         st.transform = individual_transforms(p, st.transform);
     }
@@ -14186,6 +14187,70 @@ fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
     }
     st.border = Sides { top: widths[0], right: widths[1], bottom: widths[2], left: widths[3] };
     st.border_style = styles;
+}
+
+/// Scroll snapping, as CSS has it: `scroll-snap-type` and `scroll-padding`
+/// on a scroller, `scroll-snap-align`, `scroll-snap-stop` and `scroll-margin`
+/// on the boxes in it. Where they lead is worked out by the layout (see
+/// `rux_layout::Snap`) and acted on by the shell when a scroll comes to rest.
+fn scroll_snap(p: &HashMap<String, String>, st: &mut Style) {
+    if let Some(v) = p.get("scroll-snap-type") {
+        let words: Vec<String> = v.split_whitespace().map(str::to_ascii_lowercase).collect();
+        let (mut x, mut y) = (false, false);
+        let mut known = true;
+        match words.first().map(String::as_str) {
+            Some("none") | None => {}
+            // `block` and `inline` are `y` and `x`: Rux writes horizontally.
+            Some("x" | "inline") => x = true,
+            Some("y" | "block") => y = true,
+            Some("both") => (x, y) = (true, true),
+            Some(_) => known = false,
+        }
+        let mandatory = match words.get(1).map(String::as_str) {
+            Some("mandatory") => true,
+            Some("proximity") | None => false,
+            Some(_) => {
+                known = false;
+                false
+            }
+        };
+        if !known {
+            warn_once(format!("`scroll-snap-type: {v}` is not a snap type Rux knows, so the box does not snap"));
+        } else if x || y {
+            let (px, pct) = box_sides(p, "scroll-padding");
+            let side = |px: f32, pct: Option<f32>| pct.map_or(Len::Px(px), |p| Len::Pct(p / 100.0));
+            let pad = [
+                side(px.top, pct[0]),
+                side(px.right, pct[1]),
+                side(px.bottom, pct[2]),
+                side(px.left, pct[3]),
+            ];
+            st.rare_mut().snap_type = Some((rux_layout::SnapType { x, y, mandatory }, pad));
+        }
+    }
+    let align = p.get("scroll-snap-align").map(|v| {
+        let one = |w: &str| match w.to_ascii_lowercase().as_str() {
+            "start" => Some(rux_layout::SnapAlign::Start),
+            "center" => Some(rux_layout::SnapAlign::Center),
+            "end" => Some(rux_layout::SnapAlign::End),
+            "none" => Some(rux_layout::SnapAlign::None),
+            _ => None,
+        };
+        let words: Vec<Option<rux_layout::SnapAlign>> = v.split_whitespace().map(one).collect();
+        match words.as_slice() {
+            [Some(a)] => [*a, *a],
+            [Some(a), Some(b)] => [*a, *b],
+            _ => {
+                warn_once(format!("`scroll-snap-align: {v}` is not an alignment Rux knows, so nothing snaps to the box"));
+                [rux_layout::SnapAlign::None; 2]
+            }
+        }
+    });
+    if let Some(align) = align.filter(|a| a.iter().any(|s| *s != rux_layout::SnapAlign::None)) {
+        let always = p.get("scroll-snap-stop").is_some_and(|v| v.trim().eq_ignore_ascii_case("always"));
+        let (margin, _) = box_sides(p, "scroll-margin");
+        st.rare_mut().snap = Some(rux_layout::SnapArea { align, always, margin });
+    }
 }
 
 /// One to four values to the four sides, as `margin` takes them.
@@ -17982,6 +18047,40 @@ mod selector_list_tests {
         assert_eq!((canvas.r, canvas.g), (1.0, 0.0));
         let (canvas, _, _) = look("screen { color-scheme: dark; background: rgba(255, 255, 255, 0.5); }");
         assert!((canvas.r - (0.5 + 0.5 * 18.0 / 255.0)).abs() < 0.01, "{canvas:?}");
+    }
+
+    /// Scroll snapping from CSS to the offsets a scroller can rest at: rows
+    /// 100px tall in a 250px list with `scroll-padding-top: 20px` snap their
+    /// tops 20px below the view's; `center` and `scroll-margin` move them;
+    /// the last ones clamp to the end; a box with no alignment adds nothing.
+    #[test]
+    fn snap_points_follow_the_css() {
+        let points = |css: &str| {
+            let root = built(
+                &format!(
+                    r#"<template><screen><view class="list">
+                         <view class="row" r-for="i in rows" />
+                         <view class="plain" />
+                       </view></screen></template>
+                       <script>let rows = [1, 2, 3, 4, 5];</script>
+                       <style>.list {{ height: 250px; overflow-y: scroll; scroll-snap-type: y mandatory; }}
+                              .row {{ height: 100px; scroll-snap-align: start; }}
+                              .plain {{ height: 100px; }} {css}</style>"#
+                ),
+                None,
+            );
+            let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
+            let out = rux_layout::layout(&root, 400.0, 600.0, &mut measure);
+            let snap = out.scrolls[0].snap.clone().expect("the list snaps");
+            assert!(snap.mandatory && snap.x.is_empty());
+            snap.y.iter().map(|p| p.0).collect::<Vec<f32>>()
+        };
+        // 600 of content in 250: it travels 350.
+        assert_eq!(points(""), [0.0, 100.0, 200.0, 300.0, 350.0]);
+        assert_eq!(points(".list { scroll-padding-top: 20px; }"), [0.0, 80.0, 180.0, 280.0, 350.0]);
+        assert_eq!(points(".row { scroll-snap-align: center; }"), [0.0, 25.0, 125.0, 225.0, 325.0]);
+        assert_eq!(points(".row { scroll-margin-top: 10px; }"), [0.0, 90.0, 190.0, 290.0, 350.0]);
+        assert_eq!(points(".row { scroll-snap-align: end; }"), [0.0, 50.0, 150.0, 250.0]);
     }
 
     /// `appearance: none` (and `-webkit-appearance`) takes away what Rux

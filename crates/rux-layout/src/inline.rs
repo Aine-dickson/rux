@@ -372,7 +372,7 @@ pub(crate) fn part_regions(
         walk.access_seq.push(seq);
         out.access.push(AccessNode { x: bx, y: by, width: bw, height: bh, access: part.access.clone(), model: None });
     }
-    out.metrics.push(NodeMetrics { path: part.path.clone(), x: bx, y: by, width: bw, height: bh });
+    out.metrics.push(NodeMetrics { path: part.path.clone(), x: bx, y: by, width: bw, height: bh, scroll });
 }
 
 /// The smallest rectangle around all of them, `None` for none.

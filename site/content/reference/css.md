@@ -187,6 +187,23 @@ scroll-behavior (auto | smooth: a scroll a script's `scrollIntoView()` or Tab
                        moving focus asks for glides there over 300ms; a wheel,
                        a finger and a fling never do, and one of them stops a
                        glide on the same scroller, as in CSS)
+scroll-snap-type, scroll-snap-align, scroll-snap-stop, scroll-padding,
+scroll-padding-top, scroll-padding-right, scroll-padding-bottom,
+scroll-padding-left, scroll-margin, scroll-margin-top, scroll-margin-right,
+scroll-margin-bottom, scroll-margin-left (and the -block and -inline forms)
+                       (2026-10-23, as in CSS: a scroller with `x`, `y` or
+                       `both` comes to rest with a box's start, centre or end
+                       at the same place in its view, inset by scroll-padding
+                       and grown by the box's scroll-margin. A finger lifted,
+                       a fling (on the box nearest where it would have
+                       stopped, gliding there instead of coasting), the wheel
+                       after 150ms still, and `scrollIntoView()` (on the
+                       nearest point that shows the whole element) all snap.
+                       `mandatory` always does; `proximity`, the default, only
+                       within 30% of the view. `scroll-snap-stop: always` is
+                       not flung past. Not yet: dragging a scrollbar, the
+                       keyboard, and staying on the same box when the layout
+                       changes under it)
 pointer-events (auto | none; inherited: a pointer goes through the box to what
                        is under it, `:hover` and `:active` do not take it, and a
                        `for=` label does not focus from it; the keyboard still

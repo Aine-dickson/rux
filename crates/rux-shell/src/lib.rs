@@ -54,7 +54,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
     Background, Cursor, EnterKey, Field, FocusItem, FocusKind, FocusRegion, HitRegion, InputKind,
     Keyboard,
-    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, Sides, StateRegion,
+    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, Sides, Snap, StateRegion,
     TextAlign,
     TextContent, TextWrap,
 };
@@ -535,6 +535,36 @@ const BAR_PAGE_DELAY: Duration = Duration::from_millis(400);
 const BAR_PAGE_REPEAT: Duration = Duration::from_millis(60);
 /// How long after a wheel notch the next one still belongs to the same run.
 const WHEEL_LATCH: Duration = Duration::from_millis(300);
+/// How long the wheel stays still before a scroller that snaps comes to rest
+/// on its snap point: a run of notches is one scroll, not several.
+const WHEEL_SETTLE: Duration = Duration::from_millis(150);
+/// How near, as a share of the view, a snap point must be for `proximity`
+/// to take the scroll to it. CSS leaves it to the browser.
+const SNAP_NEAR: f32 = 0.3;
+
+/// Where a scroller that snaps comes to rest when a scroll that started at
+/// `from` would have stopped at `to`, by CSS's rules: the snap point nearest
+/// `to` on each axis that snaps, unless a `scroll-snap-stop: always` point
+/// lies on the way, which it may not pass; with `proximity`, only a point
+/// within [`SNAP_NEAR`] of the view. `None` where nothing snaps, which leaves
+/// the scroll as it was going.
+fn snap_target(snap: &Snap, view: (f32, f32), from: Offset, to: Offset) -> Option<Offset> {
+    let axis = |points: &[(f32, bool)], from: f32, to: f32, view: f32| -> Option<f32> {
+        let toward = |p: f32| (p - from) * (to - from) > 0.0 && (p - from).abs() < (to - from).abs();
+        let barrier = points
+            .iter()
+            .filter(|(p, always)| *always && toward(*p))
+            .map(|(p, _)| *p)
+            .min_by(|a, b| (a - from).abs().total_cmp(&(b - from).abs()));
+        let nearest = barrier.or_else(|| {
+            points.iter().map(|(p, _)| *p).min_by(|a, b| (a - to).abs().total_cmp(&(b - to).abs()))
+        })?;
+        (snap.mandatory || barrier.is_some() || (nearest - to).abs() <= view * SNAP_NEAR).then_some(nearest)
+    };
+    let x = axis(&snap.x, from.x, to.x, view.0);
+    let y = axis(&snap.y, from.y, to.y, view.1);
+    (x.is_some() || y.is_some()).then(|| Offset { x: x.unwrap_or(to.x), y: y.unwrap_or(to.y) })
+}
 /// Shortest a thumb may get, however long the content is.
 const BAR_MIN_THUMB: f32 = 24.0;
 /// One line of scroll travel, the wheel's unit, and the arrow keys'.
@@ -1799,6 +1829,9 @@ struct App {
     /// The scroller a run of wheel notches started on, when the last notch
     /// came, and where the pointer was. See [`App::scroll_wheel`].
     wheel_latch: Option<(usize, Instant, (f64, f64))>,
+    /// A scroller that snaps, and when the wheel last moved it: it comes to
+    /// rest once the wheel has been still for [`WHEEL_SETTLE`].
+    wheel_snap: Option<(usize, Instant)>,
     /// Where the finger last was during a touch drag, in logical px.
     touch: Option<(f32, f32)>,
     /// Recent finger positions with the time each arrived, for the lift
@@ -2078,6 +2111,7 @@ impl App {
             bar_hover: None,
             bar_paging: None,
             wheel_latch: None,
+            wheel_snap: None,
             gesture: None,
             gesture_deadline: None,
             points: Vec::new(),
@@ -2335,6 +2369,32 @@ impl App {
         };
         self.wheel_latch = Some((first, now, self.pointer));
         self.scroll_chain_from(first, dx, dy);
+        // A wheel throws nothing, so what it moved is not a fling's.
+        if let Some(id) = self.scroll_target.take() {
+            if self.scrolls.iter().any(|r| r.id == id && r.snap.is_some()) {
+                self.wheel_snap = Some((id, now));
+            }
+        }
+    }
+
+    /// Bring scroller `id` to rest on a snap point, if it has them, having
+    /// been let go at velocity `v` (logical px per ms, as a fling has it).
+    /// Where a fling would have stopped decides which point; the scroller
+    /// glides there. Whether it snapped, so a fling knows not to run.
+    fn settle(&mut self, id: usize, v: (f32, f32)) -> bool {
+        let Some(region) = self.scrolls.iter().find(|r| r.id == id) else { return false };
+        let Some(snap) = region.snap.clone() else { return false };
+        let (max, view, rtl) = (region.max, (region.width, region.height), region.rtl);
+        let here = self.offsets.get(id).copied().unwrap_or_default();
+        // A fling covers `v * FLING_TAU` before it stops: the integral of its
+        // decay. See `fling_step`.
+        let vx = if rtl { -v.0 } else { v.0 };
+        let thrown = Offset { x: here.x + vx * FLING_TAU, y: here.y + v.1 * FLING_TAU }.clamp_to(max);
+        let Some(to) = snap_target(&snap, view, here, thrown) else { return false };
+        if to != here {
+            self.glide_to(id, here, to.clamp_to(max));
+        }
+        true
     }
 
     /// Move `first` by what it can take of `(dx, dy)`, and pass the rest out
@@ -2520,18 +2580,26 @@ impl App {
         let (Some((t0, p0)), Some((t1, p1))) =
             (self.touch_track.first().copied(), self.touch_track.last().copied())
         else {
+            self.settle(id, (0.0, 0.0));
             return;
         };
         let ms = t1.duration_since(t0).as_secs_f32() * 1000.0;
         // Two samples at the same instant say nothing about speed, and dividing
         // by that interval is how a flick becomes infinitely fast.
         if ms < 1.0 {
+            self.settle(id, (0.0, 0.0));
             return;
         }
         // The content moves opposite to the finger, which is the same sense the
         // drag itself used: `scroll_at` is handed `last - now`.
         let (vx, vy) = ((p0.0 - p1.0) / ms, (p0.1 - p1.1) / ms);
         if vx.hypot(vy) < FLING_MIN_V {
+            self.settle(id, (0.0, 0.0));
+            return;
+        }
+        // A scroller that snaps glides to where the throw would have ended
+        // up, rather than coasting there and stopping wherever it stops.
+        if self.settle(id, (vx, vy)) {
             return;
         }
         self.fling = Some(Fling { id, vx, vy, last: Instant::now() });
@@ -6883,15 +6951,10 @@ impl App {
             }) else {
                 continue;
             };
-            // The innermost scroller containing it, matched against the
-            // scroller's *content* rather than the part of it on screen. See
-            // `containing_scroller`: the visible-rect test failed for exactly
-            // the element a reveal is usually asked about, the one below the
-            // fold, so a list that scrolled itself to its newest row did
-            // nothing at all.
-            let Some(at) =
-                rux_layout::containing_scroller(&layout.scrolls, offsets, m.x, m.y)
-            else {
+            // The scroller it sits in, as the layout walk knew it. Found by
+            // where the box landed until 2026-10-23, which picked whatever
+            // scroller lay under a box scrolled out of its own.
+            let Some(at) = m.scroll.filter(|id| *id < layout.scrolls.len()) else {
                 continue;
             };
             let region = &layout.scrolls[at];
@@ -6905,6 +6968,20 @@ impl App {
                 off.y += (m.y + m.height) - (region.y + region.height);
             }
             *off = off.clamp_to(region.max);
+            // A scroller that snaps rests on a snap point, as CSS has a
+            // script's scrolls do too: the nearest one that still shows all
+            // of the element, else the nearest.
+            if let Some(snap) = region.snap.as_deref().filter(|s| !s.y.is_empty()) {
+                // Where the element's top is at offset 0, from the view's top.
+                let top = m.y - region.y + before.y;
+                let shows = |p: f32| top - p >= -0.5 && top - p + m.height <= region.height + 0.5;
+                let near = |a: &f32, b: &f32| (a - off.y).abs().total_cmp(&(b - off.y).abs());
+                let points = snap.y.iter().map(|p| p.0);
+                if let Some(y) = points.clone().filter(|p| shows(*p)).min_by(near).or_else(|| points.min_by(near)) {
+                    off.y = y;
+                }
+                *off = off.clamp_to(region.max);
+            }
             // `scroll-behavior: smooth`: it stays where it is and glides.
             if region.smooth {
                 let to = *off;
@@ -8307,6 +8384,14 @@ impl ApplicationHandler<RuxEvent> for App {
         if !self.glides.is_empty() && self.step_glides() {
             self.request_redraw();
         }
+        // A scroller the wheel moved, coming to rest on a snap point once the
+        // wheel has been still.
+        if let Some((id, _)) = self.wheel_snap.filter(|(_, at)| at.elapsed() >= WHEEL_SETTLE) {
+            self.wheel_snap = None;
+            if self.settle(id, (0.0, 0.0)) {
+                self.request_redraw();
+            }
+        }
 
         // An entering element has now been painted wearing `:enter-from`, so it
         // can let go of it and the animator has somewhere to walk from. This
@@ -8362,6 +8447,7 @@ impl ApplicationHandler<RuxEvent> for App {
             timer,
             self.gesture_deadline,
             fling,
+            self.wheel_snap.map(|(_, at)| at + WHEEL_SETTLE),
             bars,
         ]
         .into_iter()
@@ -9660,6 +9746,43 @@ mod fit_length_tests {
     #[test]
     fn a_repeated_character_is_still_found_as_the_insertion() {
         assert_eq!(fit_length("aa", "aaaa", 4, 3), ("aaa".to_string(), 3));
+    }
+}
+
+#[cfg(test)]
+mod snapping {
+    use super::{snap_target, Offset, Snap};
+
+    fn at(y: f32) -> Offset {
+        Offset { x: 0.0, y }
+    }
+
+    /// Rows every 100px in a 300px view: a scroll comes to rest on the one
+    /// nearest where it would have stopped; `proximity` only when that one is
+    /// near; a `scroll-snap-stop: always` row is not passed; an axis with no
+    /// points is left alone.
+    #[test]
+    fn a_scroll_rests_on_the_nearest_point() {
+        let rows = |mandatory: bool, always: Option<f32>| Snap {
+            mandatory,
+            x: Vec::new(),
+            y: (0..10).map(|i| (i as f32 * 100.0, always == Some(i as f32 * 100.0))).collect(),
+        };
+        let view = (300.0, 300.0);
+        assert_eq!(snap_target(&rows(true, None), view, at(0.0), at(140.0)), Some(at(100.0)));
+        assert_eq!(snap_target(&rows(true, None), view, at(0.0), at(160.0)), Some(at(200.0)));
+        assert_eq!(snap_target(&rows(true, None), view, at(500.0), at(450.0)), Some(at(400.0)));
+        // Proximity: 40px from a row is near in a 300px view; the far side of
+        // a 1000px gap is not.
+        assert_eq!(snap_target(&rows(false, None), view, at(0.0), at(140.0)), Some(at(100.0)));
+        let sparse = Snap { mandatory: false, x: Vec::new(), y: vec![(0.0, false), (1000.0, false)] };
+        assert_eq!(snap_target(&sparse, view, at(0.0), at(500.0)), None);
+        // A long throw past an `always` row stops on it.
+        assert_eq!(snap_target(&rows(true, Some(300.0)), view, at(0.0), at(820.0)), Some(at(300.0)));
+        assert_eq!(snap_target(&rows(true, Some(300.0)), view, at(900.0), at(120.0)), Some(at(300.0)));
+        // No x points: x goes where it was going.
+        let moved = snap_target(&rows(true, None), view, Offset { x: 0.0, y: 0.0 }, Offset { x: 37.0, y: 90.0 });
+        assert_eq!(moved, Some(Offset { x: 37.0, y: 100.0 }));
     }
 }
 
@@ -12369,6 +12492,7 @@ mod tests {
             contain: (false, false),
             bar: Default::default(),
             smooth: false,
+            snap: None,
         }
     }
 
@@ -12709,6 +12833,7 @@ mod bar_tests {
             contain: (false, false),
             bar,
             smooth: false,
+            snap: None,
         }
     }
 

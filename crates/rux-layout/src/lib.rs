@@ -460,6 +460,7 @@ struct ScrollFacts {
     contain: (bool, bool),
     bar: Scrollbar,
     smooth: bool,
+    snap: Option<(SnapType, [Len; 4])>,
 }
 
 impl Style {
@@ -1173,6 +1174,11 @@ pub struct Rare {
     /// around everything. The root's own background colour, which CSS
     /// propagates there, else its colour scheme's `Canvas`.
     pub canvas: Option<Rgba>,
+    /// `scroll-snap-type` on a scroller, with its `scroll-padding` (top,
+    /// right, bottom, left), which insets the view its boxes snap to.
+    pub snap_type: Option<(SnapType, [Len; 4])>,
+    /// `scroll-snap-align` and the rest, on a box a scroller snaps to.
+    pub snap: Option<SnapArea>,
     /// On the root alone: its used `color-scheme` is dark, so what Rux
     /// draws itself (a dropdown, the selection toolbar) is drawn dark too.
     pub dark: bool,
@@ -3115,6 +3121,8 @@ pub struct ScrollRegion {
     /// asks for glides there rather than jumps. A wheel or a finger is
     /// never smoothed, as in CSS.
     pub smooth: bool,
+    /// Where it comes to rest, with `scroll-snap-type`. See [`Snap`].
+    pub snap: Option<std::sync::Arc<Snap>>,
 }
 
 /// `scrollbar-width` and `scrollbar-color` for one scroller.
@@ -3124,6 +3132,47 @@ pub struct Scrollbar {
     /// The thumb's colour and the track's, as `scrollbar-color` writes them.
     /// `None` is `auto`: the shell's own.
     pub color: Option<(Rgba, Rgba)>,
+}
+
+/// `scroll-snap-type`: which axes of a scroller come to rest on its snap
+/// points, and whether they always do (`mandatory`) or only when one is near
+/// (`proximity`, CSS's default).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SnapType {
+    pub x: bool,
+    pub y: bool,
+    pub mandatory: bool,
+}
+
+/// One axis of `scroll-snap-align`: which edge of a box meets the same edge
+/// of its scroller's view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SnapAlign {
+    #[default]
+    None,
+    Start,
+    Center,
+    End,
+}
+
+/// A box its scroller can come to rest on: `scroll-snap-align` (block, then
+/// inline), `scroll-snap-stop: always`, and `scroll-margin`, which grows the
+/// box for snapping alone.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SnapArea {
+    pub align: [SnapAlign; 2],
+    pub always: bool,
+    pub margin: Sides,
+}
+
+/// Where a scroller can come to rest, as offsets it can take, worked out from
+/// the snap areas inside it. See [`SnapType`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Snap {
+    pub mandatory: bool,
+    /// Per axis, sorted; `true` beside one that a fling may not pass.
+    pub x: Vec<(f32, bool)>,
+    pub y: Vec<(f32, bool)>,
 }
 
 /// `scrollbar-width`: `auto`, `thin`, or `none`, which draws no bar and still
@@ -3527,6 +3576,11 @@ pub struct NodeMetrics {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// The id of the scroller whose offset moves it, if any: the one
+    /// `scrollIntoView()` moves. Known here, where the walk is inside it,
+    /// rather than guessed later from where the box landed, which picked the
+    /// wrong scroller for a box scrolled out under another one.
+    pub scroll: Option<usize>,
 }
 
 /// A node's content box, as an offset from its border-box origin plus a size.
@@ -3996,6 +4050,83 @@ fn to_align_content(j: Justify) -> AlignContent {
 ///
 /// A box that *does* name an inset is asking to be placed against its parent
 /// and is left alone: that is what `top: 0` means and it already works.
+/// Where a scroller with `scroll-snap-type` can come to rest: for each box
+/// inside it that says `scroll-snap-align` (and is not inside a scroller of
+/// its own), the offset that lines the box's edge or centre up with the same
+/// one of the scroller's view, inset by `scroll-padding` and grown by the
+/// box's `scroll-margin`, as CSS has it. Offsets it cannot take are clamped to
+/// the ones it can, which is how the first and last boxes snap at all.
+#[allow(clippy::too_many_arguments)]
+fn snap_points(
+    tree: &TaffyTree<TextContent>,
+    scroller: NodeId,
+    layout: &taffy::Layout,
+    b: &Built,
+    kind: SnapType,
+    pad: [Len; 4],
+    max: Offset,
+    rtl: bool,
+    vp: (f32, f32),
+) -> Option<std::sync::Arc<Snap>> {
+    let port_w = (layout.size.width - layout.border.left - layout.border.right).max(0.0);
+    let port_h = (layout.size.height - layout.border.top - layout.border.bottom).max(0.0);
+    let pad = [pad[0].px(port_h, vp), pad[1].px(port_w, vp), pad[2].px(port_h, vp), pad[3].px(port_w, vp)];
+    let mut snap = Snap { mandatory: kind.mandatory, ..Default::default() };
+    // One axis: the box from `lo` to `hi` against a view `port` long, inset
+    // by `before` and `after`.
+    let at = |align: SnapAlign, lo: f32, hi: f32, port: f32, before: f32, after: f32| -> Option<f32> {
+        Some(match align {
+            SnapAlign::None => return None,
+            SnapAlign::Start => lo - before,
+            SnapAlign::End => hi - (port - after),
+            SnapAlign::Center => (lo + hi) / 2.0 - (before + (port - before - after) / 2.0),
+        })
+    };
+    let mut stack = vec![(scroller, -layout.border.left, -layout.border.top)];
+    while let Some((id, ox, oy)) = stack.pop() {
+        for child in tree.children(id).expect("children") {
+            let l = tree.layout(child).expect("layout");
+            let (x, y) = (ox + l.location.x, oy + l.location.y);
+            let a = b.at(child);
+            if a.hidden {
+                continue;
+            }
+            if let Some((_, area)) = a.snap.map(|i| &b.snaps[i as usize]) {
+                let m = area.margin;
+                let (top, bottom) = (y - m.top, y + l.size.height + m.bottom);
+                let (left, right) = (x - m.left, x + l.size.width + m.right);
+                if kind.y {
+                    if let Some(v) = at(area.align[0], top, bottom, port_h, pad[0], pad[2]) {
+                        snap.y.push((v.clamp(0.0, max.y), area.always));
+                    }
+                }
+                if kind.x {
+                    if let Some(v) = at(area.align[1], left, right, port_w, pad[3], pad[1]) {
+                        // A right-to-left scroller counts its offset from the right.
+                        let v = v.clamp(0.0, max.x);
+                        snap.x.push((if rtl { max.x - v } else { v }, area.always));
+                    }
+                }
+            }
+            // A scroller inside is the one its own boxes snap to.
+            if !a.scroll {
+                stack.push((child, x, y));
+            }
+        }
+    }
+    for axis in [&mut snap.x, &mut snap.y] {
+        axis.sort_by(|a, b| a.0.total_cmp(&b.0));
+        axis.dedup_by(|a, b| {
+            let same = (a.0 - b.0).abs() < 0.5;
+            if same {
+                b.1 |= a.1;
+            }
+            same
+        });
+    }
+    (!snap.x.is_empty() || !snap.y.is_empty()).then(|| std::sync::Arc::new(snap))
+}
+
 fn collect_statics(
     tree: &TaffyTree<TextContent>,
     id: NodeId,
@@ -4216,6 +4347,9 @@ struct At {
     scroll_contain: (bool, bool),
     scroll_bar: Scrollbar,
     scroll_smooth: bool,
+    scroll_snap: Option<(SnapType, [Len; 4])>,
+    /// Into `Built::snaps`, when a scroller can snap to this box.
+    snap: Option<u32>,
     stack: Stack,
     /// Into `Anchoring::names`, when this box is an anchor.
     anchor_name: Option<u32>,
@@ -4238,6 +4372,8 @@ struct Built<'a> {
     access: &'a [(NodeId, Access, Option<String>)],
     paths: &'a [(NodeId, Vec<usize>)],
     stickies: &'a [(NodeId, [Option<f32>; 4])],
+    /// The boxes a scroller can snap to. See `SnapArea`.
+    snaps: &'a [(NodeId, SnapArea)],
     /// The boxes with `content-visibility`, and whether each was skipped.
     contained: &'a [(NodeId, bool)],
     at: IdMap<At>,
@@ -4271,6 +4407,7 @@ fn index(
     access: &[(NodeId, Access, Option<String>)],
     paths: &[(NodeId, Vec<usize>)],
     stickies: &[(NodeId, [Option<f32>; 4])],
+    snaps: &[(NodeId, SnapArea)],
     stacks: &[(NodeId, Stack)],
     anchoring: &Anchoring,
 ) -> IdMap<At> {
@@ -4316,7 +4453,9 @@ fn index(
         a.scroll_contain = f.contain;
         a.scroll_bar = f.bar;
         a.scroll_smooth = f.smooth;
+        a.scroll_snap = f.snap;
     }
+    first(&mut at, snaps.iter().map(|s| s.0), |a| &mut a.snap);
     for (id, stack) in stacks {
         at.entry(*id).or_default().stack = *stack;
     }
@@ -4510,6 +4649,8 @@ fn build(
     row: Option<&str>,
     // Sticky boxes and their thresholds, resolved to px, in `inset` order.
     stickies: &mut Vec<(NodeId, [Option<f32>; 4])>,
+    // Boxes a scroller can come to rest on. See `SnapArea`.
+    snaps: &mut Vec<(NodeId, SnapArea)>,
     // Out-of-flow boxes waiting for their containing block, as `(id, fixed)`.
     //
     // taffy positions an absolute child against its *parent*, and CSS positions
@@ -4639,7 +4780,7 @@ fn build(
             // cache on the parent size, and tests/stretch_text.rs, which
             // fails on 0.7 without that exception, passes on 0.15 without
             // it, so the exception is gone.
-            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, hoisted, stacks, anchoring, skipping, prev, None, owners, garbage);
+            let (cid, kept) = build(tree, c, paint, handlers, models, focus_labels, hidden, opacities, scrolls, transforms, states, access, &cp, paths, vp, child_cap, caps, row, stickies, snaps, hoisted, stacks, anchoring, skipping, prev, None, owners, garbage);
             kept_children.push(kept);
             match hoists(&c.style) {
                 Some(fixed) => hoisted.push((cid, fixed)),
@@ -4897,7 +5038,11 @@ fn build(
                 color: node.style.scrollbar_color.as_deref().copied(),
             },
             smooth: node.style.scroll_smooth,
+            snap: node.style.rare.as_ref().and_then(|r| r.snap_type),
         });
+    }
+    if let Some(area) = node.style.rare.as_ref().and_then(|r| r.snap) {
+        snaps.push((id, area));
     }
     if node.style.position.is_sticky() {
         // Resolved to px here, where the viewport is in hand, so `collect` can
@@ -6104,6 +6249,7 @@ fn collect(
                 y,
                 width: layout.size.width,
                 height: layout.size.height,
+                scroll: inside_scroll,
             });
         }
     }
@@ -6161,6 +6307,7 @@ fn collect(
                 y,
                 width: layout.size.width,
                 height: layout.size.height,
+                scroll: inside_scroll,
             });
         }
 
@@ -6362,6 +6509,7 @@ fn collect(
             contain: at.scroll_contain,
             bar: at.scroll_bar,
             smooth: at.scroll_smooth,
+            snap: at.scroll_snap.and_then(|(kind, pad)| snap_points(tree, id, layout, b, kind, pad, max, at.scroll_rtl, vp)),
         });
     }
 
@@ -6728,6 +6876,7 @@ impl LayoutState {
         let vp = (avail_w, avail_h);
         let mut caps: IdMap<f32> = IdMap::default();
         let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
+        let mut snaps: Vec<(NodeId, SnapArea)> = Vec::new();
         let mut hoisted: Vec<(NodeId, bool)> = Vec::new();
         let mut stacks: Vec<(NodeId, Stack)> = Vec::new();
         let mut anchoring = Anchoring::default();
@@ -6753,6 +6902,7 @@ impl LayoutState {
             &mut caps,
             None, // the root is not inside any row
             &mut stickies,
+            &mut snaps,
             &mut hoisted,
             &mut stacks,
             &mut anchoring,
@@ -6932,7 +7082,7 @@ impl LayoutState {
 
         let at = index(
             &paint, &handlers, &models, &focus_labels, &hidden, &opacities, &scrolls, &transforms,
-            &states, &access, &paths, &stickies, &stacks, &anchoring,
+            &states, &access, &paths, &stickies, &snaps, &stacks, &anchoring,
         );
         let mut at = at;
         for (i, (id, _)) in skipping.boxes.iter().enumerate() {
@@ -6949,6 +7099,7 @@ impl LayoutState {
             access: &access,
             paths: &paths,
             stickies: &stickies,
+            snaps: &snaps,
             contained: &skipping.boxes,
             scroll_ids: {
                 let mut ids = IdMap::default();
@@ -7093,6 +7244,7 @@ mod reveal_tests {
             contain: (false, false),
             bar: Scrollbar::default(),
             smooth: false,
+            snap: None,
         }]
     }
 
@@ -7162,6 +7314,7 @@ mod reveal_tests {
             contain: (false, false),
             bar: Scrollbar::default(),
             smooth: false,
+            snap: None,
         });
         let offsets = vec![Offset { x: 0.0, y: 0.0 }, Offset { x: 0.0, y: 0.0 }];
         assert_eq!(containing_scroller(&scrolls, &offsets, 40.0, 500.0), Some(1));

@@ -26,7 +26,7 @@ pub(crate) fn expand(name: &str, value: &str, dir: Direction) -> Option<Vec<(Str
         Direction::Rtl => ("right", "left"),
     };
     // `inset-*` sides are the bare `left`/`top`; the others are `margin-left`.
-    let (prefix, rest) = ["margin", "padding", "inset"].iter().find_map(|p| {
+    let (prefix, rest) = ["margin", "padding", "inset", "scroll-margin", "scroll-padding"].iter().find_map(|p| {
         let rest = name.strip_prefix(p)?.strip_prefix('-')?;
         Some((*p, rest))
     })?;

@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-225 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
+238 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -230,6 +230,19 @@ Every property below is one the runtime interprets, and the list is written by t
 | `object-position` | **where an image sits in its box.** One to four values, as `background-position`: `left`, `right 8px bottom 8px`.For example `.avatar { object-position: top; }` | `center` `top` `right` `bottom` `left` |  |
 | `pointer-events` | **whether a pointer can reach the box.** `none` lets a tap through to what is under it; the keyboard still reaches it. Inherited.For example `.glass { pointer-events: none; }` | `auto` `none` |  |
 | `scroll-behavior` | **whether a scroll asked for glides.** `smooth` on a scroller: `scrollIntoView()` and Tab glide there. A wheel or a finger never does.For example `.list { scroll-behavior: smooth; }` | `auto` `smooth` |  |
+| `scroll-snap-type` | **where a scroller comes to rest.** On a scroller: `x`, `y` or `both`, then `mandatory` (always rests on a snap point) or `proximity` (only when one is near, the default). A wheel, a finger, a fling and `scrollIntoView()` all come to rest on one.For example `.pages { scroll-snap-type: x mandatory; }` | `none` `x mandatory` `y mandatory` `both mandatory` `x proximity` `y proximity` |  |
+| `scroll-snap-align` | **where a box meets its scroller's view.** On a box in a snapping scroller: `start`, `center` or `end`, one value for both axes or block then inline. The scroller can rest with that edge of the box at the same edge of its view.For example `.page { scroll-snap-align: center; }` | `none` `start` `center` `end` |  |
+| `scroll-snap-stop` | **whether a fling may pass this box.** `always`: a fling stops here rather than passing by, as a carousel's pages do. `normal` lets it pass.For example `.page { scroll-snap-stop: always; }` | `normal` `always` |  |
+| `scroll-padding` | **insets a snapping scroller's view.** One to four lengths or percentages of the view, clockwise from the top: where the boxes snap to, under a sticky header for one.For example `.list { scroll-padding: 48px 0 0; }` |  |  |
+| `scroll-padding-top` | **insets the top of a snapping view.** Overrides the `scroll-padding` shorthand for this side.For example `.list { scroll-padding-top: 48px; }` |  |  |
+| `scroll-padding-right` | **insets the right of a snapping view.** Overrides the `scroll-padding` shorthand for this side.For example `.list { scroll-padding-right: 16px; }` |  |  |
+| `scroll-padding-bottom` | **insets the bottom of a snapping view.** Overrides the `scroll-padding` shorthand for this side.For example `.list { scroll-padding-bottom: 16px; }` |  |  |
+| `scroll-padding-left` | **insets the left of a snapping view.** Overrides the `scroll-padding` shorthand for this side.For example `.list { scroll-padding-left: 16px; }` |  |  |
+| `scroll-margin` | **grows a box for snapping.** One to four lengths, clockwise from the top, added around the box where it snaps, and nowhere else.For example `.row { scroll-margin: 8px; }` |  |  |
+| `scroll-margin-top` | **grows a box's top for snapping.** Overrides the `scroll-margin` shorthand for this side.For example `.row { scroll-margin-top: 8px; }` |  |  |
+| `scroll-margin-right` | **grows a box's right for snapping.** Overrides the `scroll-margin` shorthand for this side.For example `.row { scroll-margin-right: 8px; }` |  |  |
+| `scroll-margin-bottom` | **grows a box's bottom for snapping.** Overrides the `scroll-margin` shorthand for this side.For example `.row { scroll-margin-bottom: 8px; }` |  |  |
+| `scroll-margin-left` | **grows a box's left for snapping.** Overrides the `scroll-margin` shorthand for this side.For example `.row { scroll-margin-left: 8px; }` |  |  |
 | `overflow-wrap` | **whether a long word may break mid-word.** `break-word` or `anywhere` let an unbreakable word break rather than overflow.For example `.body { overflow-wrap: break-word; }` | `normal` `break-word` `anywhere` |  |
 | `word-wrap` | **the older name for `overflow-wrap`.** Accepted as a synonym.For example `.body { word-wrap: break-word; }` | `normal` `break-word` `anywhere` |  |
 | `word-break` | **how aggressively words break.** `break-all` breaks anywhere at all, not only to avoid an overflow.For example `.code { word-break: break-all; }` | `normal` `break-all` |  |
@@ -274,4 +287,4 @@ Every property below is one the runtime interprets, and the list is written by t
 
 Real CSS an author reaches for, which the runtime parses, ignores and reports as a pending feature rather than a typo:
 
-`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `scroll-snap-type`, `scroll-snap-align`, `scroll-snap-stop`, `scroll-padding`, `scroll-padding-top`, `scroll-padding-right`, `scroll-padding-bottom`, `scroll-padding-left`, `scroll-margin`, `scroll-margin-top`, `scroll-margin-right`, `scroll-margin-bottom`, `scroll-margin-left`, `columns`, `column-count`, `column-width`, `column-fill`, `column-rule`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`, `content`.
+`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `columns`, `column-count`, `column-width`, `column-fill`, `column-rule`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`, `content`.
