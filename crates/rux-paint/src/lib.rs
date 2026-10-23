@@ -494,7 +494,26 @@ fn dots(width: f64) -> [f64; 2] {
 /// The 3D styles are shaded from the colour: the side that would be in
 /// light keeps it and the one in shade is a third darker. CSS leaves the
 /// exact shades to the browser, and browsers differ.
+/// Corner radii shrunk, all by one factor, until the two on each side fit
+/// along it, as CSS does: `border-radius: 9999px` on a 64px box is 32px.
+fn fit_radii(radius: Corners, width: f32, height: f32) -> Corners {
+    // No corner rounder than the box is long, which changes nothing after the
+    // scaling below and keeps two huge radii from adding up to infinity:
+    // Tailwind's `rounded-full` is `calc(infinity * 1px)`, which arrives as
+    // the largest float there is.
+    let radius = radius.map(|r| if r.is_nan() { 0.0 } else { r.clamp(0.0, width.max(height)) });
+    let [tl, tr, br, bl] = radius;
+    let fits = |side: f32, a: f32, b: f32| if a + b > side && a + b > 0.0 { side / (a + b) } else { 1.0 };
+    let f = fits(width, tl, tr).min(fits(width, bl, br)).min(fits(height, tl, bl)).min(fits(height, tr, br));
+    radius.map(|r| r * f)
+}
+
 fn draw_border(scene: &mut Scene, cur: Affine, b: &PaintBorder) {
+    // The wedges below reach past each corner by its radius, so a radius
+    // taken as written (9999px for a circle) swept one side's colour over
+    // the whole ring.
+    let fitted = PaintBorder { radius: fit_radii(b.radius, b.width, b.height), ..b.clone() };
+    let b = &fitted;
     let w = [b.border.top, b.border.right, b.border.bottom, b.border.left];
     let shade = |c: Rgba| to_color(Rgba::new(c.r * 2.0 / 3.0, c.g * 2.0 / 3.0, c.b * 2.0 / 3.0, c.a));
     // Which sides are in light: top and left for `outset` and `ridge`'s
