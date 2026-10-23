@@ -4429,7 +4429,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "grid-column-start", "grid-column-end", "grid-row-start", "grid-row-end",
     "grid-auto-flow", "grid-auto-rows", "grid-auto-columns",
     // Positioning
-    "position", "top", "right", "bottom", "left", "inset", "aspect-ratio", "z-index", "isolation",
+    "position", "top", "right", "bottom", "left", "inset", "aspect-ratio", "box-sizing", "z-index", "isolation",
     "anchor-name", "position-anchor",
     "position-try", "position-try-fallbacks", "position-try-order",
     "content-visibility", "contain-intrinsic-size", "contain-intrinsic-width",
@@ -4700,7 +4700,7 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
     // Boxes
-    "box-sizing", "float", "clear", "order", "resize",
+    "float", "clear", "order", "resize",
     // Text. Static text cannot be selected yet, so `user-select` has
     // nothing to turn off; vertical writing is a layout of its own.
     "writing-mode", "user-select",
@@ -10361,6 +10361,11 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     }
     if let Some(v) = p.get("aspect-ratio") {
         st.aspect_ratio = parse_aspect_ratio(v);
+    }
+    match p.get("box-sizing").map(|v| v.trim().to_ascii_lowercase()).as_deref() {
+        Some("content-box") => st.box_sizing = rux_layout::BoxSizing::ContentBox,
+        Some("border-box") | None => {}
+        Some(other) => warn_once(format!("`box-sizing: {other}` is not `border-box` or `content-box`, so the box keeps `border-box`")),
     }
     if let Some(bg) = interpret_background(p) {
         st.background = Some(bg);

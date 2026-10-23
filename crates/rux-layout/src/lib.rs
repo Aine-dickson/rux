@@ -1257,6 +1257,8 @@ pub struct Style {
     pub contain_intrinsic: Option<Box<[IntrinsicSize; 2]>>,
     /// `aspect-ratio` (width / height).
     pub aspect_ratio: Option<f32>,
+    /// `box-sizing`: what `width` and `height` measure.
+    pub box_sizing: BoxSizing,
     /// `transition`: which of this node's properties animate when they change,
     /// and how. Empty for almost every node, and free when it is: the animator
     /// only remembers nodes that declare one.
@@ -1389,6 +1391,7 @@ impl Default for Style {
             scroll_smooth: false,
             contain_intrinsic: None,
             aspect_ratio: None,
+            box_sizing: BoxSizing::BorderBox,
             transitions: Vec::new(),
             swap_progress: None,
             fill: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
@@ -2789,6 +2792,16 @@ pub struct PaintBorder {
     pub colors: [Rgba; 4],
 }
 
+/// `box-sizing`. Rux's default is `border-box`, which is not CSS's.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BoxSizing {
+    /// `width` is the border box: padding and border are inside it.
+    #[default]
+    BorderBox,
+    /// `width` is the content box, as CSS's initial value has it.
+    ContentBox,
+}
+
 /// `mix-blend-mode`: CSS's separable and non-separable blend modes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BlendMode {
@@ -3582,6 +3595,10 @@ fn to_names(names: &[Vec<GridName>]) -> Vec<Vec<String>> {
 /// a `repeat(…)` and so use taffy's non-repeated track type.
 fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
     taffy::Style {
+        box_sizing: match style.box_sizing {
+            BoxSizing::BorderBox => taffy::BoxSizing::BorderBox,
+            BoxSizing::ContentBox => taffy::BoxSizing::ContentBox,
+        },
         // Taffy mirrors flex rows, grid columns and a block's start side.
         direction: match style.direction {
             Direction::Ltr => taffy::Direction::Ltr,
@@ -4113,9 +4130,15 @@ fn index(
 /// pinned one down. A `%` resolves against it; `vw`/`vh` against the viewport.
 /// `min-width` wins over `max-width`, as in CSS.
 fn width_cap(style: &Style, parent: Option<f32>, vp: (f32, f32)) -> Option<f32> {
+    // Under `content-box` a width leaves the padding and border out, so the
+    // box is that much wider than it says.
+    let extra = match style.box_sizing {
+        BoxSizing::BorderBox => 0.0,
+        BoxSizing::ContentBox => horizontal_frame(style, parent),
+    };
     let resolve = |l: Len| match l {
-        Len::Pct(_) | Len::Calc(_) => parent.map(|b| l.px(b, vp)),
-        l => Some(l.px(0.0, vp)),
+        Len::Pct(_) | Len::Calc(_) => parent.map(|b| l.px(b, vp) + extra),
+        l => Some(l.px(0.0, vp) + extra),
     };
     let capped = match (style.width.and_then(resolve), style.max_width.and_then(resolve)) {
         (Some(w), Some(m)) => Some(w.min(m)),
@@ -4133,17 +4156,19 @@ fn width_cap(style: &Style, parent: Option<f32>, vp: (f32, f32)) -> Option<f32> 
 /// border take out of it. A percentage padding is of the containing block's
 /// width, which `parent` stands for; with none known it takes nothing out.
 fn inner_cap(style: &Style, own: Option<f32>, parent: Option<f32>) -> Option<f32> {
+    own.map(|w| (w - horizontal_frame(style, parent)).max(0.0))
+}
+
+/// The padding and border across a box, left and right.
+fn horizontal_frame(style: &Style, parent: Option<f32>) -> f32 {
     let side = |px: f32, pct: Option<f32>| match pct {
         Some(p) => parent.map_or(0.0, |b| b * p / 100.0),
         None => px,
     };
-    own.map(|w| {
-        let horizontal = side(style.padding.left, style.padding_pct[3])
-            + side(style.padding.right, style.padding_pct[1])
-            + style.border.left
-            + style.border.right;
-        (w - horizontal).max(0.0)
-    })
+    side(style.padding.left, style.padding_pct[3])
+        + side(style.padding.right, style.padding_pct[1])
+        + style.border.left
+        + style.border.right
 }
 
 /// A node as the last frame laid it out: its Taffy node, and what it takes to

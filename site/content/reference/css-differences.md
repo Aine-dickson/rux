@@ -19,6 +19,7 @@ So this list is short on purpose, and each entry says which kind it is.
 |---|---|---|
 | ~~Flex cross-axis defaults to `flex-start`, not `stretch`~~ | a preference, taken for ergonomics | **Reverted in v0.8.** The default is `stretch`, as in CSS |
 | `border-radius` in percent resolves against the **shorter side**, so `50%` on a 160x60 box is a pill and not CSS's ellipse | a capability: Rux draws one radius per corner and cannot draw an elliptical corner | Keep |
+| `box-sizing` defaults to `border-box`, not CSS's `content-box`: `width: 100px` with `padding: 20px` is 100px wide, not 140px | found 2026-10-23, never chosen: Taffy's default, taken without a decision. Every reset sheet (Tailwind's included) sets `border-box`, so they agree | **Owner to decide.** `box-sizing: content-box` is honored since 2026-10-23 |
 | No `display: inline` or `inline-block`: two `<text>` siblings stack, and a line holds only words, nested `<text>`, `<image>` and `<path>` | a capability: inline flow is built for text (a `<text>` inside a `<text>`), not for boxes with their own layout | Keep |
 
 Two things that look like differences and are not: `display` defaults to
