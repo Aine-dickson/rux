@@ -171,3 +171,31 @@ fn a_remembered_url_is_an_image() {
     assert_eq!(img.src, url, "kept as written");
     assert!(rux_layout::read_image_bytes(url).is_some(), "the painter reads it too");
 }
+
+/// An image given one side keeps its own proportions for the other, as an
+/// `<img>` with `width` alone does. It took its pixel height instead, which
+/// a picked photo (1392x1856 at `width: 120px`) showed as a strip 1856 tall.
+#[test]
+fn an_image_given_one_side_keeps_its_proportions() {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(400, 200, image::Rgba([0, 0, 255, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let url = "blob:http://127.0.0.1/proportions";
+    rux_runtime::remember_url_bytes(url, png);
+    let d = doc(
+        &format!(r#"<image src="{url}" class="w" /><image src="{url}" class="h" /><image src="{url}" />"#),
+        "",
+        ".w { width: 100px; } .h { height: 50px; }",
+    );
+    let layout = rux_layout::layout(&d.root, 600.0, 800.0, &mut |_, _| (10.0, 10.0));
+    let boxes: Vec<(f32, f32)> = layout
+        .paints
+        .iter()
+        .filter_map(|p| match p {
+            rux_layout::Paint::Image(i) => Some((i.width, i.height)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(boxes, [(100.0, 50.0), (100.0, 50.0), (400.0, 200.0)], "{boxes:?}");
+}

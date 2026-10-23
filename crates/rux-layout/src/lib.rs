@@ -4932,12 +4932,21 @@ fn build(
     } else if node.tick.is_some() {
     } else if let Some(ic) = &node.image {
         // An image with no CSS size falls back to its intrinsic pixel size, the
-        // way a browser sizes an <img>.
-        if node.style.width.is_none() {
-            ts.size.width = length(ic.intrinsic.0);
-        }
-        if node.style.height.is_none() {
-            ts.size.height = length(ic.intrinsic.1);
+        // way a browser sizes an <img>. Given one side only, the other follows
+        // the image's own proportions, as an <img> with `width` alone does:
+        // forcing its pixel height there made a 120px-wide photo 1856px tall.
+        let (iw, ih) = ic.intrinsic;
+        match (node.style.width.is_none(), node.style.height.is_none()) {
+            (true, true) => {
+                ts.size.width = length(iw);
+                ts.size.height = length(ih);
+            }
+            (false, false) => {}
+            _ => {
+                if ts.aspect_ratio.is_none() && iw > 0.0 && ih > 0.0 {
+                    ts.aspect_ratio = Some(iw / ih);
+                }
+            }
         }
     } else if let Some(pc) = &node.path {
         // A path given no CSS size takes the size of its own geometry, the way
