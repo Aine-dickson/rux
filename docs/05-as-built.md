@@ -873,8 +873,12 @@ attribute is matched by its current value and restyles when it changes, so
 `button[disabled]` follows `:disabled="busy"`; `false` and `null` leave it off,
 as binding does in the DOM. A sibling seen through `+` or `~` is matched by what
 it was written with, not its bound attributes. Rux elements take a fixed set of
-attributes, so a selector for one they cannot carry (`[data-state=open]`)
-matches nothing. **Until this date only `[role=…]` was read, and any other
+attributes plus, as in HTML, any `data-*` and `aria-*`, written or bound
+(`:data-state="state"`), so Tailwind's `data-[state=open]:` variants work.
+Those names are the author's: nothing reads them but selectors, except
+`aria-label`, which names the element for assistive technology as `label`
+does. Until 2026-10-23 both were refused as unknown attributes. A selector for
+any other attribute an element cannot carry matches nothing. **Until this date only `[role=…]` was read, and any other
 attribute test was dropped from its compound without a word**, so
 `input[type=checkbox]` styled every input; `[role=…]` still matches
 case-insensitively, as it always has.
@@ -923,7 +927,10 @@ selectors, combinators included, so `.x:is(.group:hover *)` styles `.x` while
 an ancestor `.group` is hovered, and counts as specific as its most specific
 argument. `:where()` matches the same and adds nothing. Both are forgiving, as
 in CSS: an argument that does not parse is dropped, not the rule. `:root` is the
-screen's own element, so a theme's variables set there reach everything; `:host`
+screen's own element, so a theme's variables set there reach everything. So is
+the type selector `html`, weighing as a type (so `:root` beats it), which is
+where Tailwind's preflight puts its font and `line-height`; until 2026-10-23 it
+matched nothing and said nothing. `body` still matches nothing. `:host`
 matches nothing and says nothing, as in a document's sheet. Class and id names
 read CSS escapes (`.md\:flex`, `.py-1\.5`, `.\31 0`), and a vendor's own
 pseudo-element (`::-webkit-scrollbar`) passes quietly, as it does in every

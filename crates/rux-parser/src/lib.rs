@@ -112,9 +112,19 @@ pub fn is_known_attribute(tag: &str, name: &str) -> bool {
         table.iter().any(|(t, names)| *t == tag && names.contains(&n))
     };
     match name.strip_prefix(':') {
-        Some(bound) => BOUND_GLOBAL.contains(&bound) || of(BOUND_ELEMENT, bound),
-        None => GLOBAL_ATTRIBUTES.contains(&name) || of(ELEMENT_ATTRIBUTES, name),
+        Some(bound) => BOUND_GLOBAL.contains(&bound) || of(BOUND_ELEMENT, bound) || is_open_attribute(bound),
+        None => GLOBAL_ATTRIBUTES.contains(&name) || of(ELEMENT_ATTRIBUTES, name) || is_open_attribute(name),
     }
+}
+
+/// `data-*` and `aria-*`, which every element takes, written or bound, as in
+/// HTML: the names are the author's, so there is no list to check them
+/// against. Attribute selectors read them (`[data-state=open]`), and
+/// `aria-label` names the element as `label` does.
+pub fn is_open_attribute(name: &str) -> bool {
+    ["data-", "aria-"]
+        .iter()
+        .any(|p| name.len() > p.len() && name.get(..p.len()).is_some_and(|h| h.eq_ignore_ascii_case(p)))
 }
 
 /// Every attribute `<tag>` takes, globals first, for an error to list and for

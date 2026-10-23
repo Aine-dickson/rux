@@ -2095,11 +2095,12 @@ fn explicit_access_role(el: &Element) -> Option<AccessRole> {
     })
 }
 
-/// The author-supplied accessible name, if any: `label="…"` (or `alt="…"` on an
-/// image). When absent the name comes from the element's own text, or from a
+/// The author-supplied accessible name, if any: `label="…"` or `aria-label`
+/// (or `alt="…"` on an image). When absent the name comes from the element's own text, or from a
 /// `<text for="…">` label pointing at it (see [`link_labels`]).
 fn authored_label(el: &Element) -> Option<String> {
     el.attr("label")
+        .or_else(|| el.attr("aria-label"))
         .or_else(|| el.attr("alt"))
         .filter(|v| !v.trim().is_empty())
         .map(str::to_string)
@@ -2701,9 +2702,9 @@ use rux_parser::decode_entities;
 
 /// An attribute selector, `[name]` or `[name op "value" i]`, as CSS has them.
 ///
-/// Rux elements take a closed set of attributes, so one naming anything else
-/// (`[data-state]`) is read and simply matches nothing, as it would against a
-/// page whose elements never carry it.
+/// Rux elements take a closed set of attributes plus any `data-*` and
+/// `aria-*`, so one naming anything else is read and simply matches nothing,
+/// as it would against a page whose elements never carry it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AttrSel {
     /// Lower-cased: attribute names are not case-sensitive in HTML.
@@ -5352,7 +5353,13 @@ fn matches_compound(c: &Compound, el: &ElemDesc, at: Option<Site>) -> bool {
         return false;
     }
     if let Some(t) = &c.tag {
-        if *t != el.tag {
+        // `html` is the document's root element, which in Rux is the top
+        // element, whatever its tag: `:root` with a type's specificity.
+        if t == "html" {
+            if !at.is_none_or(|p| p.ancestors.is_empty()) {
+                return false;
+            }
+        } else if *t != el.tag {
             return false;
         }
     }
@@ -17885,6 +17892,21 @@ mod selector_list_tests {
         assert!(red(&root.children[0]));
     }
 
+    /// `html` is the root element whatever its tag, so Tailwind's preflight
+    /// reaches the screen; it weighs as a type, so `:root` beats it, and it
+    /// matches nothing lower down.
+    #[test]
+    fn html_is_the_root_element() {
+        let root = built(
+            r#"<template><screen><text class="a">hi</text></screen></template>
+               <style>html { --c: #ff0000; font-size: 20px; } :root { font-size: 18px; } .a { background: var(--c); }
+                      .a html, screen html { background: #00ff00; }</style>"#,
+            None,
+        );
+        assert!(red(&root.children[0]));
+        assert_eq!(root.children[0].text.as_ref().unwrap().font_size, 18.0);
+    }
+
     /// `:where()` adds nothing to specificity, so a plain class written after
     /// it wins; `:is()` adds its most specific argument, so it does not.
     #[test]
@@ -17931,8 +17953,28 @@ mod selector_list_tests {
         assert_eq!(red_for("[placeholder^='']"), (false, false), "an empty prefix matches nothing");
         assert_eq!(red_for("input:not([type=checkbox])"), (true, false));
         assert_eq!(red_for("input:where([type='button'], [type='checkbox'])"), (false, true));
-        assert_eq!(red_for("[data-state]"), (false, false), "no Rux element carries it");
+        assert_eq!(red_for("[data-state]"), (false, false), "neither input carries it");
         assert_eq!(red_for("[type=text"), (false, false), "an unclosed bracket is no selector");
+    }
+
+    /// `data-*` written or bound, as Tailwind's `data-[state=open]:` variant
+    /// asks of it, with the class's escapes.
+    #[test]
+    fn data_attributes_are_read_by_selectors() {
+        let root = built(
+            r#"<template><screen>
+                 <view class="data-[state=open]:bg-red" :data-state="state" />
+                 <view class="data-[state=open]:bg-red" data-state="closed" />
+                 <view aria-expanded="true" />
+               </screen></template>
+               <script>let state = signal("open");</script>
+               <style>.data-\[state\=open\]\:bg-red[data-state=open] { background: #ff0000; }
+                      [aria-expanded=true] { background: #ff0000; }</style>"#,
+            None,
+        );
+        assert!(red(&root.children[0]));
+        assert!(!red(&root.children[1]));
+        assert!(red(&root.children[2]));
     }
 
     /// CSS nesting: `&`, a selector with none (a descendant), `> .b`, and a

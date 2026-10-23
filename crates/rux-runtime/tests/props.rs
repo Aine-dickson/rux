@@ -141,6 +141,19 @@ fn an_unknown_attribute_on_an_element_is_an_error() {
     assert!(found.iter().any(|e| e.contains("`:key`") && e.contains("`r-key`")), "{found:?}");
 }
 
+/// `data-*` and `aria-*` are the author's own names, written or bound, as in
+/// HTML, so Tailwind's `data-[state=open]:` has something to read. A bare
+/// `data-` is not one.
+#[test]
+fn data_and_aria_attributes_are_open_to_any_name() {
+    let comp = "<template><view data-state=\"open\" :data-side='\"top\"' aria-label=\"Menu\" \
+                :aria-expanded='true' data-=\"x\"><text>x</text></view></template>";
+    let doc = load("<stat />", comp);
+    let found = errors(&doc);
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert!(found[0].contains("`data-`"), "{found:?}");
+}
+
 /// A `<route>` stands in for its view's tag: its bound attributes are props.
 #[test]
 fn a_route_passes_bound_attributes_to_its_view_as_props() {
