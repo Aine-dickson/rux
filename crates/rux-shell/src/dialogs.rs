@@ -37,6 +37,7 @@ pub(crate) fn install_builtins() {
             }),
         );
     }
+    calls.extend(crate::files::calls());
     // Twice (a second window, a reload) is harmless: the same code again.
     let _ = install(Module { interface, calls });
 }

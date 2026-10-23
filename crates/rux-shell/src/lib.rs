@@ -27,6 +27,7 @@
 //! because two places doing the same coordinate arithmetic eventually disagree.
 
 mod dialogs;
+mod files;
 /// `filter` and `backdrop-filter`, as compute passes. See [`filter::GpuFilters`].
 mod filter;
 mod settings;

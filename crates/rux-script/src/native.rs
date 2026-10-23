@@ -57,11 +57,40 @@ pub fn builtin_interface() -> rux_native::Interface {
                     field("name", "string", true),
                 ]),
             },
+            // A file the person chose (`docs/12-file-input-proposal.md`): what
+            // `<input type="file">` binds. `path` is the desktop's alone; the
+            // web and Android have no path to give.
+            Item { name: "File".into(), kind: ItemKind::Record(file_fields()) },
+            Item {
+                name: "text".into(),
+                kind: ItemKind::Method {
+                    on: "File".into(),
+                    sig: Sig { params: Vec::new(), result: "string".into(), is_async: true },
+                },
+            },
             dialog("pickFile", "string?"),
             dialog("pickFiles", "string[]"),
             dialog("pickSaveFile", "string?"),
         ],
     }
+}
+
+fn file_fields() -> Vec<rux_native::FieldSig> {
+    let field = |name: &str, ty: &str| rux_native::FieldSig { name: name.into(), ty: ty.into(), optional: false };
+    vec![
+        field("name", "string"),
+        field("size", "int"),
+        field("type", "string"),
+        field("url", "string"),
+        field("path", "string?"),
+    ]
+}
+
+/// The types every script can name without a `use`, as name and text: `File`,
+/// which an `<input type="file">` binds, so `let photo: File? = none` needs
+/// no import. A file's own type of the same name is its own.
+pub fn prelude_types() -> Vec<(String, String)> {
+    vec![("File".to_string(), rux_native::Interface::record_text(&file_fields()))]
 }
 
 /// The module behind `settings.get`, `settings.set` and `settings.remove`:

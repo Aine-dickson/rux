@@ -316,6 +316,8 @@ struct Checker<'a> {
     /// Types that resolve here without being nameable here, with the `use`
     /// path that would make them so.
     hidden: HashMap<String, String>,
+    /// The built-in types not yet replaced by one this file declares.
+    prelude: HashSet<String>,
     fns: HashMap<(String, usize), FnInfo<'a>>,
     /// The top-level `let`s, which are the document's signals.
     globals: HashMap<String, Type>,
@@ -390,6 +392,7 @@ impl<'a> Checker<'a> {
             type_params: HashMap::from([("Result".to_string(), crate::types::result_decl().0)]),
             tparams: Vec::new(),
             hidden: HashMap::new(),
+            prelude: HashSet::new(),
             fns: HashMap::new(),
             globals: HashMap::new(),
             scopes: Vec::new(),
@@ -654,7 +657,15 @@ impl<'a> Checker<'a> {
     fn run(&mut self) {
         let script = self.script;
 
-        // Types first, since everything else names them.
+        // Types first, since everything else names them. The built-in ones
+        // before anything a file brings or declares, which may replace them.
+        for (name, text) in crate::native::prelude_types() {
+            if let Ok((params, ty)) = parse_decl(&text) {
+                self.types.insert(name.clone(), ty);
+                self.type_params.insert(name.clone(), params);
+                self.prelude.insert(name);
+            }
+        }
         for (name, text, path) in &self.cx.support_types {
             if let Ok((params, ty)) = parse_decl(text) {
                 self.types.insert(name.clone(), ty);
@@ -678,6 +689,7 @@ impl<'a> Checker<'a> {
                     let n = name.name.as_str();
                     if self.types.contains_key(n)
                         && !self.hidden.contains_key(n)
+                        && !self.prelude.remove(n)
                         && !self.cx.imported_types.iter().any(|(i, _)| i == n)
                     {
                         self.error(name.span, format!("the type `{n}` is declared twice"));
@@ -4304,6 +4316,27 @@ let b: int? = none;").is_empty());
         let f = native_findings("fn f() { t.load(1); }");
         assert!(f.iter().any(|f| f.is_error && f.message.contains("`async` in Rust")), "{f:?}");
         let f = native_findings("async fn f(): string { await t.load(1) }");
+        assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+    }
+
+    fn built_findings(script: &str) -> Vec<Finding> {
+        let engine = Builder::new().build(script).expect("builds");
+        engine.check_types(&engine.linked_context(&Context::default()))
+    }
+
+    #[test]
+    fn a_file_is_nameable_everywhere_and_typed() {
+        // `File` needs no `use`; its fields and its async `text` are known.
+        let ok = "let photo: File? = none;
+async fn read(f: File): string { let n: int = f.size; let t: string = f.type; let p: string? = f.path; await f.text() }";
+        let f = built_findings(ok);
+        assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+        let f = built_findings("fn f(x: File): string { x.nope }");
+        assert!(f.iter().any(|f| f.is_error && f.message.contains("nope")), "{f:?}");
+        let f = built_findings("fn f(x: File) { x.text(); }");
+        assert!(f.iter().any(|f| f.is_error && f.message.contains("async")), "{f:?}");
+        // A file's own `File` is its own, and is not declared twice.
+        let f = built_findings("type File = { id: int };\nfn f(x: File): int { x.id }");
         assert!(f.iter().all(|f| !f.is_error), "{f:?}");
     }
 
