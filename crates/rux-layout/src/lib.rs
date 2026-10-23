@@ -2535,6 +2535,24 @@ pub struct Field {
     /// `autocomplete=`: what the field holds, for the platform's autofill,
     /// as HTML's tokens. `off` keeps the field away from autofill entirely.
     pub autocomplete: Option<String>,
+    /// `type="file"`: what its picker offers, and its `@cancel`. Boxed, as
+    /// every input but this one has none.
+    pub file: Option<Box<FileInput>>,
+}
+
+/// What an `<input type="file">` asks of the platform's picker
+/// (`docs/12-file-input-proposal.md`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FileInput {
+    /// `accept=`, as written: extensions, media types and `image/*`-style
+    /// families, comma-separated. Empty for any file.
+    pub accept: String,
+    /// `multiple`: the model holds a list of files.
+    pub multiple: bool,
+    /// `capture=`: on a phone, the camera or recorder instead of the picker.
+    pub capture: Option<String>,
+    /// `@cancel`: the picker closed with nothing chosen.
+    pub on_cancel: Option<String>,
 }
 
 /// HTML's `autocomplete` field names Rux passes on, with the Android autofill
@@ -2631,6 +2649,8 @@ pub enum Shape {
     Flag,
     /// A number field or a slider.
     Number,
+    /// `type="file"`: a `File`, or a list of them, or nothing.
+    File,
 }
 
 /// The constraints a field states about its value, checked when its form is
@@ -3561,6 +3581,29 @@ impl FocusRegion {
     }
 }
 
+/// An `<input type="file">`: the shell opens the platform's picker on a tap
+/// and writes what was chosen to `model`.
+#[derive(Clone, Debug)]
+pub struct FileRegion {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub model: String,
+    /// See [`SelectRegion::row`].
+    pub row: Option<String>,
+    /// See [`SelectRegion::instance`].
+    pub instance: Option<String>,
+    /// Its attributes; `field.file` is never `None` here.
+    pub field: Field,
+}
+
+impl FileRegion {
+    pub fn contains(&self, px: f32, py: f32) -> bool {
+        px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
+    }
+}
+
 /// An absolutely-positioned `type="select"`, carrying its bound options so the
 /// shell can open a dropdown and write the chosen value back to `model`.
 #[derive(Clone, Debug)]
@@ -3671,6 +3714,8 @@ pub enum FocusKind {
     },
     /// A button / checkbox / radio: Space or Enter runs its handler.
     Activate { on_tap: String, instance: Option<String> },
+    /// A file input: Space or Enter opens its picker.
+    File { model: String, row: Option<String>, instance: Option<String> },
     /// A select: Space or Enter opens its dropdown.
     Select {
         model: String,
@@ -3689,6 +3734,8 @@ pub struct Layout {
     pub hits: Vec<HitRegion>,
     pub focuses: Vec<FocusRegion>,
     pub selects: Vec<SelectRegion>,
+    /// `<input type="file">`s, which open a picker rather than take a caret.
+    pub files: Vec<FileRegion>,
     /// Keyboard-focusable elements in document (Tab) order.
     pub focusables: Vec<FocusItem>,
     pub scrolls: Vec<ScrollRegion>,
@@ -6520,7 +6567,33 @@ fn collect(
 
         let (fw, fh) = (layout.size.width, layout.size.height);
         if let Some(bound) = at.model.map(|i| &b.models[i as usize]) {
-            if let Some(options) = &bound.options {
+            if bound.field.file.is_some() {
+                // A file input: no caret either, a box that opens a picker.
+                out.files.push(FileRegion {
+                    x,
+                    y,
+                    width: fw,
+                    height: fh,
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    instance: bound.instance.clone(),
+                    field: bound.field.clone(),
+                });
+                walk.focus_seq.push(at.stack.seq);
+                out.focusables.push(FocusItem {
+                    x,
+                    y,
+                    width: fw,
+                    height: fh,
+                    kind: FocusKind::File {
+                        model: bound.model.clone(),
+                        row: bound.row.clone(),
+                        instance: bound.instance.clone(),
+                    },
+                    path: bound.focus_path.clone(),
+                    scroll: inside_scroll,
+                });
+            } else if let Some(options) = &bound.options {
                 // A select: no caret, just a tappable box that opens a dropdown.
                 out.selects.push(SelectRegion {
                     x,

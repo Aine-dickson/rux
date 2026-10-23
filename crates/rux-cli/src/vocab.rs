@@ -162,7 +162,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     (
         "input",
         &[
-            Entry { name: "type", detail: "text | textarea | password | search | number | date | select | checkbox | switch | slider | radio", doc: "Omitted means a single-line text field." },
+            Entry { name: "type", detail: "text | textarea | password | search | number | date | select | checkbox | switch | slider | radio | file", doc: "Omitted means a single-line text field." },
             Entry { name: "placeholder", detail: "text shown while empty", doc: "Shown until the field has a value. Not a label." },
             Entry { name: "value", detail: "the field's value", doc: "The literal starting value. For state that changes, use `r-model`." },
             Entry { name: "checked", detail: "checkbox / radio state", doc: "Live state for `type=\"checkbox\"` and `type=\"radio\"`, and matched by the `:checked` pseudo-class." },
@@ -181,9 +181,13 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "enterkeyhint", detail: "enter | done | go | next | previous | search | send", doc: "What the keyboard's action key says. `next` and `previous` move focus like Tab, `done` closes the field, and in a form every other one submits it; every one commits the field first, which fires `@change`. Left off in a form, it is `next` on each typing field and `go` on the last." },
             Entry { name: "autocomplete", detail: "what the field holds, for autofill", doc: "HTML's field names: `username`, `current-password`, `new-password`, `email`, `tel`, `name`, `postal-code`, `cc-number`, `one-time-code` and the rest. A phone's password manager fills the fields of the focused field's form from them, and offers to save after `@submit`. `off` keeps the field away from autofill. Without it, a password, an email keyboard and a phone keyboard are recognised anyway." },
             Entry { name: "autofocus", detail: "take focus when it appears", doc: "Valueless. Focuses the field when it first appears, a route or an `r-if` bringing it in included, unless something already has focus." },
+            Entry { name: "accept", detail: "which files a file input offers", doc: "For `type=\"file\"`, as HTML's: extensions (`.png`), media types (`application/pdf`) and families (`image/*`, `video/*`, `audio/*`), comma-separated. A hint to the picker, not a check: `File.type` says what was picked." },
+            Entry { name: "multiple", detail: "more than one file", doc: "Valueless, for `type=\"file\"`. The bound signal holds a `File[]`, empty until something is chosen." },
+            Entry { name: "capture", detail: "a phone's camera or recorder", doc: "For `type=\"file\"`: `environment` (the back camera) or `user` (the front), with `accept` saying photo, video or sound. A desktop opens the picker, as a desktop browser does." },
             Entry { name: "@input", detail: "the text changed", doc: "After every change, however it was made. `event.value` is the new text." },
             Entry { name: "@change", detail: "a changed value was committed", doc: "When the field is left with a different value than it had, or Enter is pressed in a one-line field. A select fires it on choosing, a checkbox or radio on toggling. `event.value` is the value." },
             Entry { name: "@focus", detail: "the field gained focus", doc: "`event.value` is its text." },
+            Entry { name: "@cancel", detail: "a file picker closed with nothing chosen", doc: "On `type=\"file\"` only. The bound value stays what it was." },
             Entry { name: "@blur", detail: "the field lost focus", doc: "After `@change`, when both fire. `event.value` is its text." },
         ],
     ),
@@ -247,6 +251,7 @@ const ATTRIBUTE_VALUES: &[(&str, &[(&str, &[Entry])])] = &[(
             Entry { name: "switch", detail: "an on/off switch", doc: "A checkbox that draws as a track and a thumb and is announced as a switch. `:checked` matches it on; `accent-color` colours the track when on." },
             Entry { name: "slider", detail: "a number along a track", doc: "Bound to a number between `min` and `max`, in steps of `step`. A tap puts the thumb where it lands and a sideways drag moves it; a vertical swipe still scrolls the page. `@input` fires as it moves, `@change` when the finger lifts. `accent-color` colours it." },
             Entry { name: "radio", detail: "one of a group", doc: "Radios sharing a `name` are one group, so choosing one clears the others. Carries the chosen value in `value`." },
+            Entry { name: "file", detail: "a file the person chooses", doc: "A \"Choose file\" button and the chosen name; a tap opens the platform's picker. The bound signal holds a `File?` (`File[]` with `multiple`): `name`, `size`, `type`, `url` and `await file.text()`. `::file-selector-button` styles the button. `@change` after a pick, `@cancel` after none." },
         ],
     ), (
         "inputmode",

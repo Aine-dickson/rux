@@ -112,6 +112,16 @@ pub fn field_problem(field: &Field, value: Option<&Value>) -> Option<Problem> {
     match field.shape {
         Shape::Flag => problem(checks, keyboard, FieldValue::Flag(value.is_some_and(Value::is_truthy))),
         Shape::Number => problem(checks, keyboard, FieldValue::Number(value.and_then(Value::as_number))),
+        // Nothing chosen is `none`, or an empty list for `multiple`, which
+        // is truthy and so cannot be read as a flag is.
+        Shape::File => {
+            let chosen = match value {
+                Some(Value::List(files)) => !files.is_empty(),
+                Some(v) => v.is_truthy(),
+                None => false,
+            };
+            problem(checks, keyboard, FieldValue::Flag(chosen))
+        }
         Shape::Text => {
             let text = value.map(Value::to_display).unwrap_or_default();
             problem(checks, keyboard, FieldValue::Text(&text))

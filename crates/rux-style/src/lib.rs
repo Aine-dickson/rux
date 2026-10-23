@@ -565,6 +565,7 @@ fn form_part(el: &Element, required: bool, ancestors: &[AncNode]) -> rux_layout:
         shape: match ty {
             Some("checkbox" | "switch") => rux_layout::Shape::Flag,
             Some("number" | "slider") => rux_layout::Shape::Number,
+            Some("file") => rux_layout::Shape::File,
             _ => rux_layout::Shape::Text,
         },
         keyboard: el
@@ -2863,6 +2864,9 @@ struct Compound {
     selection: bool,
     /// Ends in `::placeholder`: as `selection`, for an input's placeholder.
     placeholder: bool,
+    /// Ends in `::file-selector-button`: as `selection`, for a file input's
+    /// button. See [`matched_file_button`].
+    file_button: bool,
     /// Ends in `::before` or `::after` (or CSS 2's `:before`, `:after`): as
     /// `selection`, for the box generated inside the element. See
     /// [`generated_elements`].
@@ -3211,6 +3215,9 @@ struct Rule {
     /// A `::placeholder` rule, the same way: its declarations style the
     /// placeholder of the input its chain picks. See [`matched_placeholder`].
     placeholder: bool,
+    /// A `::file-selector-button` rule, the same way, for a file input's
+    /// button.
+    file_button: bool,
     /// A `::before` or `::after` rule, the same way: its declarations style
     /// the box generated inside the element its chain picks.
     generated: Option<rux_layout::Generated>,
@@ -4506,6 +4513,7 @@ fn push_rules(
             // the chain can match the element the highlight belongs to.
             let selection = chain.last_mut().is_some_and(|last| std::mem::take(&mut last.selection));
             let placeholder = chain.last_mut().is_some_and(|last| std::mem::take(&mut last.placeholder));
+            let file_button = chain.last_mut().is_some_and(|last| std::mem::take(&mut last.file_button));
             let generated = chain.last_mut().and_then(|last| last.generated.take());
             for (decls, important) in [(normal, false), (important, true)] {
                 if decls.is_empty() && important {
@@ -4519,6 +4527,7 @@ fn push_rules(
                     decls: decls.to_vec(),
                     selection,
                     placeholder,
+                    file_button,
                     generated,
                     layer: at.key.clone(),
                     important,
@@ -4969,8 +4978,8 @@ fn nearest_property(property: &str) -> Option<&'static str> {
 /// release that was never going to fix it.
 /// Real CSS for things Rux has none of, read and passed over without a
 /// word, as a browser passes over a property for an element a page does not
-/// have: tables, lists, a modal dialog's or fullscreen box's `::backdrop`,
-/// a file input's `::file-selector-button`. Every reset sheet sets them,
+/// have: tables, lists, a modal dialog's or fullscreen box's `::backdrop`.
+/// Every reset sheet sets them,
 /// Tailwind's among them, and a warning for each opened every such app under
 /// a panel of things nobody wrote. If Rux grows the thing, its CSS moves to
 /// [`HONORED_PROPERTIES`] or the pseudo-elements, and out of here.
@@ -4980,7 +4989,7 @@ const NOTHING_TO_ACT_ON: &[&str] = &[
     // Lists.
     "list-style", "list-style-type", "list-style-position", "list-style-image",
     // Pseudo-elements, as their names are kept without the colons.
-    "backdrop", "file-selector-button",
+    "backdrop",
 ];
 
 fn warn_if_unhonored(property: &str) {
@@ -5202,6 +5211,11 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                     spec.2 += 1;
                     continue;
                 }
+                if name.eq_ignore_ascii_case(":file-selector-button") {
+                    c.file_button = true;
+                    spec.2 += 1;
+                    continue;
+                }
                 // `::before` and `::after`, and CSS 2's one-colon spelling,
                 // which CSS still reads.
                 let bare = name.strip_prefix(':').unwrap_or(&name);
@@ -5325,7 +5339,7 @@ fn specificity_of(c: &Compound) -> (u32, u32, u32) {
     (
         c.id.is_some() as u32 + pseudos.0,
         (c.classes.len() + c.attrs.len()) as u32 + pseudos.1,
-        (c.tag.is_some() as u32 + c.selection as u32 + c.placeholder as u32 + c.generated.is_some() as u32) + pseudos.2,
+        (c.tag.is_some() as u32 + c.selection as u32 + c.placeholder as u32 + c.file_button as u32 + c.generated.is_some() as u32) + pseudos.2,
     )
 }
 
@@ -5371,7 +5385,7 @@ fn selector_is_supported(selector: &str) -> bool {
         if let Some(element) = rest.strip_prefix(':') {
             // A pseudo-element: these are the ones Rux styles.
             let name: String = element.chars().take_while(|c| c.is_alphanumeric() || *c == '-').collect();
-            if !["selection", "placeholder", "before", "after"].iter().any(|n| name.eq_ignore_ascii_case(n)) {
+            if !["selection", "placeholder", "file-selector-button", "before", "after"].iter().any(|n| name.eq_ignore_ascii_case(n)) {
                 return false;
             }
             rest = element;
@@ -5402,7 +5416,7 @@ fn warn_unknown_pseudo(name: &str) {
     // written with one, which is how the stylesheet parser writes them back.
     let legacy = ["first-letter", "first-line"].iter().any(|n| name.eq_ignore_ascii_case(n));
     let message = if let Some(element) = name.strip_prefix(':').or(legacy.then_some(name)) {
-        format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection, ::placeholder, ::before, ::after)")
+        format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection, ::placeholder, ::file-selector-button, ::before, ::after)")
     } else {
         format!(
             "pseudo-class `:{name}` is not supported, rules using it will never match \
@@ -5435,7 +5449,7 @@ fn matches_compound(c: &Compound, el: &ElemDesc, at: Option<Site>) -> bool {
         (Some(_), None) => false,
     };
     // A highlight is not an element. See `Compound::selection`.
-    if c.selection || c.placeholder || c.generated.is_some() {
+    if c.selection || c.placeholder || c.file_button || c.generated.is_some() {
         return false;
     }
     if let Some(t) = &c.tag {
@@ -5747,7 +5761,9 @@ fn css_content(value: &str, el: &Element) -> Option<String> {
 fn matched_rules<'r>(desc: &ElemDesc, ancestors: &[AncNode], prev: &[ElemDesc], rules: &'r [Rule]) -> Vec<&'r Rule> {
     let mut matched: Vec<&Rule> = rules
         .iter()
-        .filter(|r| !r.selection && !r.placeholder && r.generated.is_none() && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
+        .filter(|r| {
+            !r.selection && !r.placeholder && !r.file_button && r.generated.is_none() && matches_chain(&r.chain, &r.combs, desc, ancestors, prev)
+        })
         .collect();
     matched.sort_by(|a, b| layer::cascade(a, b));
     matched
@@ -6492,6 +6508,60 @@ fn matched_placeholder(
     Some(Rgba { a: c.a * opacity, ..c })
 }
 
+/// A file input's button before any `::file-selector-button` rule: a
+/// browser's, in whichever colour scheme the input is in.
+const FILE_BUTTON_LOOK: &str = "padding: 2px 8px; margin-right: 8px; border: 1px solid light-dark(#767676, #858585); \
+     border-radius: 4px; background: light-dark(#efefef, #3b3b3b); color: light-dark(#000000, #ffffff); \
+     white-space: nowrap";
+
+/// The declarations of a file input's `::file-selector-button` rules, in
+/// cascade order, as an inline style the button wears after its own look.
+/// Only the input's own rules count, as for [`matched_placeholder`].
+fn matched_file_button(
+    desc: &ElemDesc,
+    ancestors: &[AncNode],
+    prev: &[ElemDesc],
+    rules: &[Rule],
+    vars: &HashMap<String, String>,
+) -> String {
+    let mut matched: Vec<&Rule> =
+        rules.iter().filter(|r| r.file_button && matches_chain(&r.chain, &r.combs, desc, ancestors, prev)).collect();
+    if matched.is_empty() {
+        return String::new();
+    }
+    matched.sort_by(|a, b| layer::cascade(a, b));
+    let mut props: HashMap<String, String> = HashMap::new();
+    for rule in matched {
+        for (k, v) in &rule.decls {
+            declare(&mut props, k, v);
+        }
+    }
+    let mut own = vars.clone();
+    own.extend(props.iter().filter(|(k, _)| k.starts_with("--")).map(|(k, v)| (k.clone(), v.clone())));
+    let mut out: Vec<String> = props
+        .iter()
+        .filter(|(k, _)| !k.starts_with("--"))
+        .map(|(k, v)| format!("{k}: {}", if v.contains("var(") { resolve_vars(v, &own, 0) } else { v.clone() }))
+        .collect();
+    out.sort();
+    out.join("; ")
+}
+
+/// What a file input says beside its button, as a browser says it: the
+/// file's name, how many when there are several, or that there is none.
+fn chosen_files(value: Option<&Value>) -> String {
+    let name = |v: &Value| match v.as_map().and_then(|m| m.iter().find(|(k, _)| k == "name")) {
+        Some((_, n)) => n.to_display(),
+        None => v.to_display(),
+    };
+    match value {
+        Some(Value::List(files)) if files.len() > 1 => format!("{} files", files.len()),
+        Some(Value::List(files)) => files.first().map(name).unwrap_or_else(|| "No file chosen".to_string()),
+        Some(v) if v.is_truthy() => name(v),
+        _ => "No file chosen".to_string(),
+    }
+}
+
 /// The placeholder's colour when no `::placeholder` rule gives one.
 const PLACEHOLDER_COLOR: Rgba = Rgba::new(0.42, 0.44, 0.52, 1.0); // #6c7086
 
@@ -7131,9 +7201,9 @@ fn build_node_inner(
     // could Rux.
     if el.tag == "input" {
         if let Some(kind) = el.attr("type") {
-            const KNOWN: [&str; 11] = [
+            const KNOWN: [&str; 12] = [
                 "text", "textarea", "password", "search", "number", "date", "select", "checkbox",
-                "radio", "switch", "slider",
+                "radio", "switch", "slider", "file",
             ];
             if !KNOWN.contains(&kind) {
                 located(Some(el.line), || {
@@ -7668,6 +7738,87 @@ fn build_node_inner(
                 .unwrap_or(AccessRole::None),
             label: el.attr("alt").map(str::to_string),
             ..Access::default()
+        };
+        return node;
+    }
+
+    // `type="file"`: a button, then the name of what was chosen, as a
+    // browser draws one (`docs/12-file-input-proposal.md`, decision 4). The
+    // button is `::file-selector-button`: a look of its own in the root's
+    // colour scheme, then whatever the input's rules for it say. A tap is
+    // the shell's, which opens the platform's picker from the `FileRegion`
+    // the layout makes of `field.file`, and writes what comes back.
+    if el.tag == "input" && el.attr("type") == Some("file") {
+        let model = el.attr("r-model").unwrap_or_default().to_string();
+        let multiple = el.attr("multiple").is_some();
+        let (value, deps) = if model.is_empty() {
+            (None, HashSet::new())
+        } else {
+            engine.eval_value_tracked(&model, locals)
+        };
+        // Reconciled like a toggle: a pick changes the name and nothing about
+        // the tree's shape.
+        reg.toggles.push(ToggleBinding { path: path.to_vec(), deps });
+        let chosen = chosen_files(value.as_ref());
+
+        let mut style = style;
+        if style.display == Display::Block {
+            style.display = Display::Flex;
+        }
+        style.align.get_or_insert(Align::Center);
+        let mut node = LayoutNode::new(style);
+        let button_css = format!("{FILE_BUTTON_LOOK}; {}", matched_file_button(&desc, ancestors, prev, rules, &vars));
+        let text = |css: String, words: &str| Element {
+            tag: "text".to_string(),
+            attrs: vec![rux_parser::Attr { name: "style".to_string(), value: css, line: el.line, has_value: true }],
+            children: vec![TplNode::Text(words.to_string(), el.line)],
+            line: el.line,
+        };
+        let parts = [
+            text(button_css, if multiple { "Choose files" } else { "Choose file" }),
+            text("white-space: nowrap".to_string(), &chosen),
+        ];
+        let child_inherited = Inherited {
+            color,
+            selection: selection.clone(),
+            font_size,
+            font_family: font_family.clone(),
+            vars: Rc::clone(&vars),
+            run: None,
+            direction,
+            text: own_text,
+            shadows: shadows.clone(),
+            look: look.clone(),
+        };
+        for (i, part) in parts.iter().enumerate() {
+            let at = |p: &[usize]| p.iter().copied().chain([i]).collect::<Vec<usize>>();
+            node.children.push(build_node(
+                part, &[], comps, ancestors, &[], &child_inherited, engine, locals, &at(path), &at(tpl_path), reg,
+                state, instances, swaps, instance, None, None, row, None,
+            ));
+        }
+        if !model.is_empty() {
+            node.model = Some(model);
+        }
+        let mut field = field_of(el, disabled, readonly, baked, form_part.clone().unwrap_or_default());
+        field.file = Some(Box::new(rux_layout::FileInput {
+            accept: el.attr("accept").unwrap_or_default().to_string(),
+            multiple,
+            capture: el.attr("capture").map(str::to_string),
+            on_cancel: el.attr("@cancel").map(|h| bind_locals(h, baked)),
+        }));
+        node.field = Some(Box::new(field));
+        node.on_tap = on_tap;
+        node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.instance = instance.map(str::to_string);
+        node.state_path = state_path.clone();
+        node.access = Access {
+            role: AccessRole::Button,
+            label: authored_label(el).or_else(|| Some(if multiple { "Choose files" } else { "Choose file" }.to_string())),
+            placeholder: None,
+            checked: None,
+            value: Some(chosen),
         };
         return node;
     }

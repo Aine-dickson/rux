@@ -17,7 +17,7 @@ tag and `type=` are still known:
 | `<text>` | Label (`role="heading"` → Heading) |
 | `<view @tap>` / `<button>` | Button, **named by the text inside it** |
 | `to="/path"` on anything | Link, so navigating is announced as going somewhere |
-| `<input>` | TextInput · `type="textarea"` → MultilineTextInput · `type="select"` → ComboBox |
+| `<input>` | TextInput · `type="textarea"` → MultilineTextInput · `type="select"` → ComboBox · `type="file"` → Button, its value the chosen name |
 | `<input type="checkbox">` / `="radio"` | CheckBox / RadioButton, with live **checked** state |
 | `<image alt="…">` | Image |
 | a scrolling box | ScrollView |

@@ -811,6 +811,39 @@ follows: only a real day inside the range reaches the signal (`2026-9-3` is
 written back as `2026-09-03`), and anything short of one stays in the field. A
 `min` or `max` that is not a date is an error.
 
+`<input type="file" r-model="photo" accept="image/*">` holds a **`File`**, or
+`none` before anything is chosen; with `multiple` it holds a `File[]`, empty
+until then. It draws as a browser draws one: a "Choose file" button, then the
+chosen file's name ("No file chosen" before, "3 files" for several). **A tap,
+or Enter or Space when it is focused, opens the platform's own picker**; the
+window keeps painting while it is open. Choosing writes the value and fires
+`@change` with it as `event.value`; closing the picker with nothing chosen
+fires `@cancel` and leaves the value as it was, as a browser keeps the file it
+had. `required` is not met by `none` or an empty list.
+
+- `accept` is HTML's: extensions (`.png`), media types (`application/pdf`) and
+  families (`image/*`, `video/*`, `audio/*`), comma-separated. A desktop picker
+  filters by extension, so media types reach it through a table of the common
+  ones. A hint, as in HTML: `File.type` says what was really picked.
+- `capture` (`environment` or `user`) asks a phone for its camera or recorder
+  instead of the picker. Read and kept; the desktop ignores it, as a desktop
+  browser does.
+- **The button is `::file-selector-button`.** Unstyled it is a bordered grey
+  button in the input's colour scheme (`light-dark()` colours); a
+  `::file-selector-button` rule on the input restyles it, so Tailwind's `file:`
+  utilities do what they do in a browser.
+- **`File`** is a built-in record every script can name without a `use`:
+  `name`, `size` (bytes, an `int`), `type` (the media type, `""` when unknown),
+  `url` and `path`, plus `await file.text()`, the whole file as text (UTF-8,
+  with what is not UTF-8 replaced, as a browser's `File.text()` does). `url` is
+  what `<image :src>` shows: a `file:` URL on the desktop. `path` is the
+  desktop's alone. A script's own `type File` replaces the built-in one.
+
+**Desktop only so far.** On the web and on Android a tap prints that the picker
+is not built there yet and fires nothing; both are the next steps of
+`docs/13-file-input-and-media-plan.md`, as are `pickFile` returning a `File`
+and drag and drop onto the input (later still).
+
 Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
 between the switch's two ends, and a drawn date picker on desktop or in a
 browser with a mouse.
@@ -828,6 +861,9 @@ what HTML means by them.
 | `inputmode` | text inputs | Which keyboard a phone raises: `text`, `numeric`, `decimal`, `tel`, `email`, `url`, `search`, or `none` for no on-screen keyboard at all |
 | `enterkeyhint` | text inputs | What the action key says: `enter`, `done`, `go`, `next`, `previous`, `search`, `send` |
 | `autofocus` | text inputs | Takes focus when it first appears, if nothing has focus |
+| `accept` | `type="file"` | Which files the picker offers, as HTML's: extensions, media types, `image/*`-style families |
+| `multiple` | `type="file"` | More than one file; the model holds a `File[]` |
+| `capture` | `type="file"` | `environment` or `user`: a phone's camera or recorder instead of the picker. Ignored on the desktop |
 
 `disabled` and `readonly` are **boolean attributes**: written means on, whatever
 they say, so `disabled="false"` is disabled, exactly as in HTML, and warns.
@@ -860,7 +896,8 @@ default look for a button. Style `:disabled`:
 button:disabled { opacity: 0.5; }
 ```
 
-**Events.** Four, on an input, each handed `event.value`:
+**Events.** Four on every input, each handed `event.value`, and a fifth on a
+file input:
 
 | Event | When |
 |---|---|
@@ -868,6 +905,7 @@ button:disabled { opacity: 0.5; }
 | `@change` | A changed value is committed: the field is left, or Enter is pressed in a one-line field. A select fires it on choosing a different option, a checkbox or radio on every toggle |
 | `@focus` | The field gained focus |
 | `@blur` | The field lost focus, after its `@change` when both fire |
+| `@cancel` | `type="file"` only: the picker closed with nothing chosen. The value is kept |
 
 ```xml
 <input r-model="query" enterkeyhint="search" @change="run_search(event.value)" />

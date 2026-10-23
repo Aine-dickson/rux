@@ -55,7 +55,8 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
     Background, Cursor, EnterKey, Field, FocusItem, FocusKind, FocusRegion, HitRegion, InputKind,
     Keyboard,
-    Offset, Paint, PaintRect, PaintText, ResizeRegion, Rgba, ScrollRegion, SelectRegion, Sides, Snap, StateRegion,
+    FileRegion, Offset, Paint, PaintRect, PaintText, ResizeRegion, Rgba, ScrollRegion, SelectRegion, Sides, Snap,
+    StateRegion,
     TextAlign,
     TextContent, TextWrap,
 };
@@ -86,6 +87,12 @@ enum RuxEvent {
     /// thread it ran on: the waiting tasks can go on. See
     /// [`rux_script::host`].
     Answered,
+    /// A file input's picker closed: the `File`s chosen, or `None` when it
+    /// was dismissed. The input is in [`App::pending_file`], for the reason
+    /// a select's is in `pending_select`. Sent only by the desktop's picker
+    /// until the web's and Android's are built.
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+    PickedFiles { files: Option<Vec<rux_runtime::native::Any>> },
     /// The `.rux` file changed on disk.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     Reload,
@@ -1857,6 +1864,11 @@ struct App {
     focuses: Vec<FocusRegion>,
     /// `type="select"` regions from the most recent layout.
     selects: Vec<SelectRegion>,
+    /// `type="file"` regions from the most recent layout.
+    files: Vec<FileRegion>,
+    /// The file input whose picker is open, until it answers. See
+    /// [`RuxEvent::PickedFiles`].
+    pending_file: Option<files::PendingFile>,
     /// Keyboard-focusable elements in Tab order, from the most recent layout.
     focusables: Vec<FocusItem>,
     /// Index into `focusables` of the keyboard-focused element, if any.
@@ -2178,6 +2190,8 @@ impl App {
             hits: Vec::new(),
             focuses: Vec::new(),
             selects: Vec::new(),
+            files: Vec::new(),
+            pending_file: None,
             focusables: Vec::new(),
             focus_index: None,
             keyboard_modality: false,
@@ -4177,6 +4191,12 @@ impl App {
             return;
         }
 
+        // A tap on a file input opens the platform's picker.
+        if let Some(file) = self.files.iter().find(|f| f.contains(fx, fy)).filter(|_| field_here).cloned() {
+            self.open_file_picker(file);
+            return;
+        }
+
         // A tap on a closed select opens its dropdown.
         if let Some(sel) = self.selects.iter().find(|s| s.contains(fx, fy)).filter(|_| field_here) {
             // **On a phone the platform owns this control**, which the spec has
@@ -5585,8 +5605,62 @@ impl App {
                 self.open_select = Some((model, row, instance));
                 self.request_redraw();
             }
+            Some(FocusKind::File { model, row, instance }) => {
+                let file = self.files.iter().find(|f| f.model == model && f.row == row && f.instance == instance);
+                if let Some(file) = file.cloned() {
+                    self.open_file_picker(file);
+                }
+            }
             _ => {}
         }
+    }
+
+    /// Open the platform's picker for a file input. Its answer comes later,
+    /// as [`RuxEvent::PickedFiles`], and is written by
+    /// [`Self::picked_files`]. One at a time: a second tap while a picker
+    /// is open does nothing, as the picker is in front of the window anyway.
+    fn open_file_picker(&mut self, region: FileRegion) {
+        let Some(file) = region.field.file.clone() else { return };
+        if self.pending_file.is_some() {
+            return;
+        }
+        self.pending_file = Some(files::PendingFile {
+            model: region.model,
+            row: region.row,
+            instance: region.instance,
+            on_change: region.field.on_change,
+            on_cancel: file.on_cancel.clone(),
+            multiple: file.multiple,
+        });
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        files::open_picker(self.proxy.clone(), &file.accept, file.multiple);
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        {
+            let here = if cfg!(target_os = "android") { "on Android" } else { "on the web" };
+            eprintln!("rux: `<input type=\"file\">` cannot open a picker {here} yet");
+            self.pending_file = None;
+        }
+    }
+
+    /// A file input's picker answered: write what was chosen and run
+    /// `@change`, or run `@cancel` and leave the value as it was, as a
+    /// browser keeps the file it had.
+    fn picked_files(&mut self, files: Option<Vec<rux_runtime::native::Any>>) {
+        let Some(input) = self.pending_file.take() else { return };
+        let chosen: Vec<rux_reactive::Value> =
+            files.unwrap_or_default().into_iter().map(files::to_value).collect();
+        if chosen.is_empty() {
+            self.queue_field_event_in(input.on_cancel.as_deref(), input.instance, rux_reactive::Value::Null);
+        } else {
+            let value = if input.multiple {
+                rux_reactive::Value::List(chosen)
+            } else {
+                chosen.into_iter().next().unwrap_or(rux_reactive::Value::Null)
+            };
+            self.document.apply_value_in(&input.model, input.row.as_deref(), input.instance.as_deref(), &value);
+            self.queue_field_event_in(input.on_change.as_deref(), input.instance, value);
+        }
+        self.request_redraw();
     }
 
     /// Focus an input (or clear focus) and tell the document, so the caret and
@@ -6967,6 +7041,7 @@ impl App {
             hits,
             focuses,
             selects,
+            files,
             focusables,
             focus_index,
             open_select,
@@ -7397,6 +7472,7 @@ impl App {
             }
         }
         *selects = layout.selects;
+        *files = layout.files;
         // Keep the focus index in range if the new layout has fewer focusables.
         if focus_index.map(|i| i >= layout.focusables.len()).unwrap_or(false) {
             *focus_index = None;
@@ -7680,6 +7756,7 @@ impl ApplicationHandler<RuxEvent> for App {
             // An `await`'s answer came, or native code set a signal: the
             // same wake-up, since both are Rust telling the document
             // something from another thread.
+            RuxEvent::PickedFiles { files } => self.picked_files(files),
             RuxEvent::Answered => {
                 let settled = self.document.settle_tasks();
                 let moved = self.document.refresh_native_signals();

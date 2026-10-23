@@ -321,6 +321,9 @@ const EVENT_NAMES: &[&str] = &["tap", "press", "release", "longpress", "swipe", 
 /// its value and its focus, which no other element has.
 const FIELD_EVENT_NAMES: &[&str] = &["input", "change", "focus", "blur"];
 
+/// The event only a file input has: its picker closed with nothing chosen.
+const FILE_EVENT_NAMES: &[&str] = &["cancel"];
+
 /// The events only a `role="form"` has: a submission that passed its checks,
 /// and one that did not.
 const FORM_EVENT_NAMES: &[&str] = &["submit", "invalid"];
@@ -354,10 +357,12 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             let field = el.tag == "input";
             let form = el.role().is_some_and(|r| r.eq_ignore_ascii_case("form"));
             let screen = el.tag == "screen";
+            let file = field && el.attr("type") == Some("file");
             if is_component
                 || EVENT_NAMES.contains(&event)
                 || KEY_EVENT_NAMES.contains(&event)
                 || (field && FIELD_EVENT_NAMES.contains(&event))
+                || (file && FILE_EVENT_NAMES.contains(&event))
                 || (form && FORM_EVENT_NAMES.contains(&event))
                 || (screen && SCREEN_EVENT_NAMES.contains(&event))
             {
@@ -367,6 +372,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
                 .iter()
                 .chain(KEY_EVENT_NAMES.iter())
                 .chain(FIELD_EVENT_NAMES.iter().filter(|_| field))
+                .chain(FILE_EVENT_NAMES.iter().filter(|_| file))
                 .chain(FORM_EVENT_NAMES.iter().filter(|_| form))
                 .chain(SCREEN_EVENT_NAMES.iter().filter(|_| screen))
                 .map(|n| format!("`@{n}`"))
@@ -376,6 +382,8 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             // say where they do belong.
             let only_input = if !field && FIELD_EVENT_NAMES.contains(&event) {
                 format!(" `@{event}` belongs on an `<input>`.")
+            } else if !file && FILE_EVENT_NAMES.contains(&event) {
+                format!(" `@{event}` belongs on an `<input type=\"file\">`.")
             } else if !form && FORM_EVENT_NAMES.contains(&event) {
                 format!(" `@{event}` belongs on the `<view role=\"form\">` around the fields.")
             } else if !screen && SCREEN_EVENT_NAMES.contains(&event) {
@@ -968,6 +976,9 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
             let value = match el.attr("type") {
                 Some("number") if el.attr("r-model").is_some() => "float",
                 Some("checkbox" | "switch" | "slider") => "any",
+                // What was chosen: a file input's `@change` comes only after a pick.
+                Some("file") if el.attr("multiple").is_some() => "File[]",
+                Some("file") => "File",
                 _ => "string",
             };
             format!("{{ value: {value} }}")
@@ -1014,6 +1025,7 @@ fn form_values_type(form: &rux_parser::Element, tags: &TagProps) -> rux_script::
                     _ if maybe => Type::Any,
                     Some("number" | "slider") => Type::Float,
                     Some("checkbox" | "switch") => Type::Bool,
+                    Some("file") => file_model_type(c),
                     _ => Type::String,
                 };
                 match out.iter_mut().find(|f| f.name == name) {
@@ -1066,8 +1078,15 @@ fn model_types(el: &rux_parser::Element) -> (rux_script::types::Type, rux_script
         // A select writes one of its options, which may be a narrower type
         // than `string`: only what it shows is held to text.
         Some("select") => (Type::Any, Type::String),
+        // A file input writes what was picked and shows its name itself.
+        Some("file") => (file_model_type(el), Type::Any),
         _ => (Type::String, Type::String),
     }
+}
+
+/// What a file input's model holds: `File?`, or `File[]` with `multiple`.
+fn file_model_type(el: &rux_parser::Element) -> rux_script::types::Type {
+    runtime_type(if el.attr("multiple").is_some() { "File[]" } else { "File?" })
 }
 
 /// `el` itself: an `r-for` makes its whole element the loop's body.

@@ -2777,6 +2777,30 @@ flung.
 | The `<select>` dropdown, light | open one on a light screen | a white panel | not driven |
 | Web, Android | the same pages | the same | not driven |
 
+## `<input type="file">` and `File`, desktop, 2026-10-23
+
+Steps A.1 to A.4 of `docs/13-file-input-and-media-plan.md`. Under test in
+`rux-runtime` (`tests/file_input.rs`: the build, the layout's region, the
+button's pseudo-element, `required`, the checks; `an_image_src_may_be_a_file_url`),
+`rux-script` (`a_file_is_nameable_everywhere_and_typed`) and `rux-shell`
+(`files::tests`). **Driven in a desktop window at 1.5x, with the real Windows
+file dialog**: clicks and keys injected (`SetCursorPos`, `SendKeys`), a path
+typed into the dialog's name box. Tests cannot open the dialog; the drive can.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The look | open a page with three file inputs, one `multiple`, one with a `::file-selector-button` rule | grey bordered "Choose file" / "Choose files", "No file chosen"; the third a blue pill | desktop: pass |
+| Dark | the same with `:root { color-scheme: dark; }` | the button dark grey with white words | desktop: pass |
+| Pick | tap the first, type an image's path, Enter | its name beside the button; `name`, `size`, `type` shown; the image drawn from `photo.url`; `@change` once | desktop: pass |
+| Cancel | tap it again, Escape | `@cancel` once, the file kept | desktop: pass |
+| Several | tap the `multiple` one, choose two | "2 files", a list of two | desktop: pass |
+| Read | pick a UTF-8 text file, then `await other.text()` | its text, accents intact | desktop: pass |
+| Keyboard | Tab to the first, Enter; then Space, Escape | focus ring on the input; the dialog opens both times | desktop: pass |
+| A path with a space and an accent | `<image src="file:///…/img%20dir/pic%20%C3%A9.png">`, static and bound | both drawn at their natural size | desktop: pass |
+| Filter | `accept="image/*"` | the dialog's filter offers images | not looked at (the path was typed) |
+| Disabled, required | `disabled`; `required` with nothing chosen | no dialog; `:invalid` until a pick | under test only |
+| Web, Android | the same page | prints that the picker is not built there | not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

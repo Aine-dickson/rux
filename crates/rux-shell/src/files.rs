@@ -36,6 +36,58 @@ fn read(_file: &Any) -> Result<Vec<u8>, Error> {
     Err(Error::new("unsupported", format!("reading a `File` is not built {here} yet")))
 }
 
+/// The file input whose picker is open: where its answer goes, and what
+/// runs then. Held rather than looked up when the answer comes, because the
+/// tree may have been rebuilt in between.
+pub(crate) struct PendingFile {
+    pub model: String,
+    pub row: Option<String>,
+    pub instance: Option<String>,
+    pub on_change: Option<String>,
+    pub on_cancel: Option<String>,
+    pub multiple: bool,
+}
+
+/// Open the platform's picker for a file input, on a thread of its own so
+/// the window keeps painting, and send what was chosen back to the loop.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(crate) fn open_picker(proxy: winit::event_loop::EventLoopProxy<crate::RuxEvent>, accept: &str, multiple: bool) {
+    let extensions = accept_extensions(accept);
+    let label = accept.trim().to_string();
+    let spawned = std::thread::Builder::new().name("rux-file-picker".into()).spawn(move || {
+        let mut d = rfd::AsyncFileDialog::new();
+        if !extensions.is_empty() {
+            d = d.add_filter(&label, &extensions);
+        }
+        let files = |hs: Vec<rfd::FileHandle>| hs.iter().filter_map(|h| from_path(h.path())).collect::<Vec<_>>();
+        let picked = pollster::block_on(async {
+            if multiple {
+                d.pick_files().await.map(files)
+            } else {
+                d.pick_file().await.map(|h| files(vec![h]))
+            }
+        });
+        let _ = proxy.send_event(crate::RuxEvent::PickedFiles { files: picked });
+    });
+    if let Err(e) = spawned {
+        eprintln!("rux: could not open the file picker: {e}");
+    }
+}
+
+/// A `File` (or anything else from native code) as a signal holds it.
+pub(crate) fn to_value(a: Any) -> rux_reactive::Value {
+    use rux_reactive::Value;
+    match a {
+        Any::None | Any::Resource(_) => Value::Null,
+        Any::Bool(b) => Value::Bool(b),
+        Any::Int(i) => Value::Number(i as f64),
+        Any::Float(f) => Value::Number(f),
+        Any::Str(s) => Value::Text(s),
+        Any::Array(xs) => Value::List(xs.into_iter().map(to_value).collect()),
+        Any::Map(m) => Value::Map(m.into_iter().map(|(k, v)| (k, to_value(v))).collect()),
+    }
+}
+
 /// The `File` for the file at `path`, or `None` when it cannot be looked at
 /// (gone between the dialog closing and now).
 #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]

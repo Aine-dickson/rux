@@ -85,7 +85,8 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[&str])] = &[
         &[
             "type", "placeholder", "value", "checked", "name", "required", "minlength",
             "pattern", "options", "disabled", "readonly", "min", "max", "step", "maxlength",
-            "inputmode", "enterkeyhint", "autocomplete", "autofocus", "r-model",
+            "inputmode", "enterkeyhint", "autocomplete", "autofocus", "r-model", "accept",
+            "multiple", "capture",
         ],
     ),
     ("button", &["disabled", "type"]),
