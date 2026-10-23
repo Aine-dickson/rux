@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-211 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
+220 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -198,6 +198,15 @@ Every property below is one the runtime interprets, and the list is written by t
 | `text-transform` | **the text in capitals or small letters.** `uppercase`, `lowercase` or `capitalize`. Inherited.For example `.label { text-transform: uppercase; }` | `none` `uppercase` `lowercase` `capitalize` |  |
 | `text-indent` | **how far in the first line starts.** A length or a percentage of the width, with `hanging` to indent every line but the first, and `each-line`. Inherited.For example `.para { text-indent: 2em; }` | `hanging` `each-line` |  |
 | `text-overflow` | **what a line too long for its box ends in.** `ellipsis` ends it in `…`. Needs `overflow: hidden` and `white-space: nowrap`, as in CSS.For example `.name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }` | `clip` `ellipsis` |  |
+| `animation` | **run a @keyframes on this box.** `<name> <duration> <easing> <delay> <count> <direction> <fill> <play-state>`, in any order after the name, comma-separated for more than one. It starts when the box first appears and keeps running while the box keeps the name; a new name starts it again. The keyframes animate what `transition` can; `prefers-reduced-motion` stills it, as it stills a transition.For example `.spinner { animation: spin 1s linear infinite; }` |  |  |
+| `animation-name` | **which @keyframes to run.** A comma list, one animation for each name; the other `animation-*` lists are repeated to match. `none` is none. A name with no `@keyframes` warns.For example `.toast { animation-name: slide-in; }` |  |  |
+| `animation-duration` | **how long one run takes.** A comma list of times. `0s` is over at once: the box shows its own style, or its last keyframe when filled forwards.For example `.toast { animation-duration: 300ms; }` |  |  |
+| `animation-timing-function` | **the easing between keyframes.** The same easings `transition` takes. It runs from each keyframe to the next, not over the whole run, and a keyframe can set its own.For example `.toast { animation-timing-function: ease-out; }` |  |  |
+| `animation-delay` | **how long before it starts.** A comma list of times. Until then the box shows its own style, or the first keyframe when filled backwards.For example `.toast { animation-delay: 1s; }` |  |  |
+| `animation-iteration-count` | **how many times it runs.** A number, fractions included, or `infinite`.For example `.pulse { animation-iteration-count: infinite; }` | `infinite` |  |
+| `animation-direction` | **which way each run goes.** `normal`, `reverse`, `alternate` (every other run backwards) or `alternate-reverse`.For example `.breathe { animation-direction: alternate; }` | `normal` `reverse` `alternate` `alternate-reverse` |  |
+| `animation-fill-mode` | **whether the ends hold outside the run.** `forwards` keeps the last keyframe after the end, `backwards` shows the first during the delay, `both` does both. `none`, the default, gives the box its own style outside the run.For example `.toast { animation-fill-mode: forwards; }` | `none` `forwards` `backwards` `both` |  |
+| `animation-play-state` | **pause or resume it.** `paused` stops the clock where it is, and `running` picks it up from there.For example `.spinner.idle { animation-play-state: paused; }` | `running` `paused` |  |
 | `transform-origin` | **the point a transform turns and grows about.** `center` (the default), keywords in either order (`top left`), or lengths and percentages of the box, x then y. A third value, the z offset, is read past.For example `.menu { transform-origin: top right; }` | `center` `top` `right` `bottom` `left` |  |
 | `user-select` | **whether the person can select this text.** `none` and `auto` are honoured as they are: text outside a field cannot be selected yet, and a field's text always can, as in a browser. `text` and `all` warn, since there is nothing yet for them to turn on.For example `.label { user-select: none; }` | `auto` `none` `text` `all` |  |
 | `line-clamp` | **the most lines a text may wrap to.** `line-clamp: 2` keeps two lines, the second ending in `…`, and the text is as tall as the two. Tailwind's `line-clamp-2` writes it as `-webkit-line-clamp: 2` beside `display: -webkit-box`, which is read too; the prefixed one alone does nothing, as in a browser. On a `<text>`; text with runs is not cut yet.For example `.summary { line-clamp: 2; }` |  |  |
@@ -260,4 +269,4 @@ Every property below is one the runtime interprets, and the list is written by t
 
 Real CSS an author reaches for, which the runtime parses, ignores and reports as a pending feature rather than a typo:
 
-`float`, `clear`, `order`, `resize`, `writing-mode`, `appearance`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `will-change`, `animation`, `animation-name`, `animation-duration`, `animation-delay`, `animation-timing-function`, `animation-iteration-count`, `animation-direction`, `animation-fill-mode`, `animation-play-state`, `columns`, `column-count`, `column-width`, `table-layout`, `border-collapse`, `border-spacing`, `content`.
+`float`, `clear`, `order`, `resize`, `writing-mode`, `appearance`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `will-change`, `columns`, `column-count`, `column-width`, `table-layout`, `border-collapse`, `border-spacing`, `content`.

@@ -26,6 +26,7 @@ use rux_layout::{AnimProp, BlendMode, BorderStyle, Easing, GradientKind, GridFlo
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
 use rux_layout::{ContentVisibility, IntrinsicSize};
+use rux_layout::{AnimationDirection, AnimationFill, KeyframeAnimation, KeyframeStep, TransformFn};
 use rux_layout::{DecorationStyle, ObjectFit, TextLook, TextTransform};
 use rux_layout::{BgAttachment, BgBox, BgLayer, BgLayers, BgLen, BgPos, BgRepeat, BgSize};
 use rux_layout::{GridAreas, GridName, GridNames, GridTrack, Repeat};
@@ -1590,6 +1591,17 @@ thread_local! {
     /// sheets changed. See [`register_properties`].
     static REGISTERED: std::cell::RefCell<(u64, Rc<HashMap<String, Registered>>)> =
         std::cell::RefCell::new((0, Rc::new(HashMap::new())));
+    /// The document's `@keyframes`, by name, read with the `@property`
+    /// rules. See [`register_properties`].
+    static KEYFRAMES: std::cell::RefCell<Rc<HashMap<String, Rc<[Keyframe]>>>> =
+        std::cell::RefCell::new(Rc::new(HashMap::new()));
+}
+
+/// One keyframe as written: where it sits, from 0 to 1, and its declarations.
+#[derive(Clone, Debug)]
+struct Keyframe {
+    offset: f32,
+    decls: Vec<(String, String)>,
 }
 
 /// Read the document's `@property` rules for the build about to run.
@@ -1602,15 +1614,59 @@ fn register_properties(sfc: &Sfc) {
         return;
     }
     let mut out = HashMap::new();
+    let mut frames = HashMap::new();
     for css in sfc.style_includes.iter().map(|i| i.css.as_str()).chain(std::iter::once(sfc.style.as_str())) {
-        if !css.contains("@property") {
+        if !css.contains("@property") && !css.contains("keyframes") {
             continue;
         }
         if let Ok(sheet) = StyleSheet::parse(css, ParserOptions::default()) {
             gather_registered(&sheet.rules.0, &mut out);
+            gather_keyframes(&sheet.rules.0, &mut frames);
         }
     }
     REGISTERED.with(|r| *r.borrow_mut() = (print, Rc::new(out)));
+    KEYFRAMES.with(|k| *k.borrow_mut() = Rc::new(frames));
+}
+
+/// Every `@keyframes` in the sheet, the last of a name winning, as in CSS.
+/// A keyframe listing several places (`0%, 100%`) is one at each.
+fn gather_keyframes(rules: &[CssRule], out: &mut HashMap<String, Rc<[Keyframe]>>) {
+    use lightningcss::rules::keyframes::{KeyframeSelector, KeyframesName};
+    for rule in rules {
+        match rule {
+            CssRule::Keyframes(k) => {
+                let name = match &k.name {
+                    KeyframesName::Ident(i) => i.0.to_string(),
+                    KeyframesName::Custom(s) => s.to_string(),
+                };
+                let mut frames = Vec::new();
+                for frame in &k.keyframes {
+                    let decls: Vec<(String, String)> = frame
+                        .declarations
+                        .declarations
+                        .iter()
+                        .filter_map(|p| p.to_css_string(false, PrinterOptions::default()).ok())
+                        .filter_map(|t| t.split_once(':').map(|(k, v)| (k.trim().to_lowercase(), v.trim().to_string())))
+                        .collect();
+                    for selector in &frame.selectors {
+                        let offset = match selector {
+                            KeyframeSelector::From => 0.0,
+                            KeyframeSelector::To => 1.0,
+                            KeyframeSelector::Percentage(p) => p.0,
+                            // A scroll timeline's range: Rux's timelines are time.
+                            KeyframeSelector::TimelineRangePercentage(_) => continue,
+                        };
+                        frames.push(Keyframe { offset: offset.clamp(0.0, 1.0), decls: decls.clone() });
+                    }
+                }
+                frames.sort_by(|a, b| a.offset.total_cmp(&b.offset));
+                out.insert(name, frames.into());
+            }
+            CssRule::LayerBlock(block) => gather_keyframes(&block.rules.0, out),
+            CssRule::Supports(sup) if layer::supports(&sup.condition) => gather_keyframes(&sup.rules.0, out),
+            _ => {}
+        }
+    }
 }
 
 fn gather_registered(rules: &[CssRule], out: &mut HashMap<String, Registered>) {
@@ -2400,13 +2456,25 @@ pub fn build_styled_tree_stateful(
     Ok((node, reg))
 }
 
-/// Take the time out of every transition in the tree.
+/// Take the time out of every transition and animation in the tree.
 fn still_the_motion(node: &mut LayoutNode) {
     for transition in &mut node.style.transitions {
         transition.duration = 0.0;
         // The delay goes too. A delay with no duration is a change that waits
         // and then happens anyway, which is still something moving on a clock.
         transition.delay = 0.0;
+    }
+    // An animation with no time is over before it starts: the box shows its
+    // own style, or its last keyframe where it is filled forwards.
+    if let Some(rare) = node.style.rare.as_mut() {
+        if let Some(list) = rare.animations.as_mut() {
+            let mut stilled: Vec<KeyframeAnimation> = list.to_vec();
+            for a in &mut stilled {
+                a.duration = 0.0;
+                a.delay = 0.0;
+            }
+            *list = stilled.into();
+        }
     }
     for child in &mut node.children {
         still_the_motion(child);
@@ -4233,6 +4301,8 @@ fn collect_rules(rules: &[CssRule], at: &mut Collecting, out: &mut Vec<Rule>, or
             // `registered_properties`.
             CssRule::Unknown(u) if u.name.eq_ignore_ascii_case("position-try") => {}
             CssRule::Property(_) => {}
+            // Read by `gather_keyframes`, and run by what names it.
+            CssRule::Keyframes(_) => {}
             // Says nothing about how anything looks.
             CssRule::Ignored | CssRule::Namespace(_) => {}
             other => located(file_line(at.base, at_rule_line(other)), || warn_at_rule(other)),
@@ -4511,6 +4581,9 @@ const HONORED_PROPERTIES: &[&str] = &[
     "text-decoration", "text-decoration-line",
     "text-decoration-color", "text-decoration-style", "text-decoration-thickness",
     "text-underline-offset", "text-transform", "text-indent", "text-overflow", "line-clamp", "user-select", "transform-origin",
+    "animation", "animation-name", "animation-duration", "animation-delay",
+    "animation-timing-function", "animation-iteration-count", "animation-direction",
+    "animation-fill-mode", "animation-play-state",
     "font-variant", "font-variant-caps", "font-variant-numeric", "font-variant-ligatures",
     "font-variant-position", "font-variant-east-asian", "font-feature-settings",
     "font-variation-settings", "font-stretch", "font-width", "caret-color",
@@ -4764,12 +4837,8 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Text. Vertical writing is a layout of its own.
     "writing-mode",
     "appearance", "list-style", "list-style-type", "list-style-position",
-    // Motion. `transition` is honored; keyframe animation and the origin a
-    // transform turns about are not.
+    // Motion. A transform is flat, so it has no depth to look into.
     "perspective", "perspective-origin", "will-change",
-    "animation", "animation-name", "animation-duration", "animation-delay",
-    "animation-timing-function", "animation-iteration-count", "animation-direction",
-    "animation-fill-mode", "animation-play-state",
     // Other layout models
     "columns", "column-count", "column-width", "table-layout",
     "border-collapse", "border-spacing", "content",
@@ -5633,6 +5702,290 @@ fn expand_font(v: &str) -> Option<Vec<(&'static str, String)>> {
         }
         rest = rest[token_end..].trim_start();
     }
+}
+
+/// One `animation` as written, before its keyframes are looked up.
+struct AnimationSpec {
+    name: String,
+    duration: f32,
+    delay: f32,
+    easing: Easing,
+    iterations: f32,
+    direction: AnimationDirection,
+    fill: AnimationFill,
+    paused: bool,
+}
+
+/// The element's `animation`s: the shorthand's list, with the longhands over
+/// it, as `transition` is read. There is one animation per name, and each
+/// other list is repeated to that length, as in CSS. `none` is no animation.
+fn animation_specs(p: &HashMap<String, String>) -> Vec<AnimationSpec> {
+    let list = |k: &str| p.get(k).map(|v| split_top_level_commas(v).into_iter().map(|s| s.trim().to_string()).collect::<Vec<_>>());
+    let direction_of = |t: &str| match t {
+        "normal" => Some(AnimationDirection::Normal),
+        "reverse" => Some(AnimationDirection::Reverse),
+        "alternate" => Some(AnimationDirection::Alternate),
+        "alternate-reverse" => Some(AnimationDirection::AlternateReverse),
+        _ => None,
+    };
+    let fill_of = |t: &str| match t {
+        "none" => Some(AnimationFill::None),
+        "forwards" => Some(AnimationFill::Forwards),
+        "backwards" => Some(AnimationFill::Backwards),
+        "both" => Some(AnimationFill::Both),
+        _ => None,
+    };
+    let count_of = |t: &str| match t {
+        "infinite" => Some(f32::INFINITY),
+        n => n.parse::<f32>().ok().filter(|n| *n >= 0.0),
+    };
+    let mut specs: Vec<AnimationSpec> = Vec::new();
+    for entry in list("animation").unwrap_or_default() {
+        let mut spec = AnimationSpec {
+            name: "none".to_string(),
+            duration: 0.0,
+            delay: 0.0,
+            easing: Easing::EASE,
+            iterations: 1.0,
+            direction: AnimationDirection::Normal,
+            fill: AnimationFill::None,
+            paused: false,
+        };
+        let (mut times, mut named) = (0, false);
+        for token in split_top_level(&entry) {
+            let lower = token.to_ascii_lowercase();
+            if let Some(ms) = parse_time(token) {
+                if times == 0 { spec.duration = ms } else { spec.delay = ms }
+                times += 1;
+            } else if let Some(e) = parse_easing(token) {
+                spec.easing = e;
+            } else if let Some(n) = count_of(&lower) {
+                spec.iterations = n;
+            } else if let Some(d) = direction_of(&lower).filter(|_| lower != "normal" || named) {
+                spec.direction = d;
+            } else if let Some(f) = fill_of(&lower).filter(|_| lower != "none" || named) {
+                spec.fill = f;
+            } else if lower == "paused" || lower == "running" {
+                spec.paused = lower == "paused";
+            } else if !named {
+                spec.name = token.trim_matches(|c| c == '"' || c == '\'').to_string();
+                named = true;
+            }
+        }
+        specs.push(spec);
+    }
+    if let Some(names) = list("animation-name") {
+        let base = std::mem::take(&mut specs);
+        specs = names
+            .into_iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let from = base.get(i).or(base.last());
+                AnimationSpec {
+                    name: name.trim_matches(|c| c == '"' || c == '\'').to_string(),
+                    duration: from.map_or(0.0, |s| s.duration),
+                    delay: from.map_or(0.0, |s| s.delay),
+                    easing: from.map_or(Easing::EASE, |s| s.easing),
+                    iterations: from.map_or(1.0, |s| s.iterations),
+                    direction: from.map_or_else(Default::default, |s| s.direction),
+                    fill: from.map_or_else(Default::default, |s| s.fill),
+                    paused: from.is_some_and(|s| s.paused),
+                }
+            })
+            .collect();
+    }
+    let n = specs.len();
+    let each = |k: &str| list(k).map(|l| (0..n).map(|i| l[i % l.len()].clone()).collect::<Vec<_>>());
+    if let Some(l) = each("animation-duration") {
+        for (s, v) in specs.iter_mut().zip(l) {
+            s.duration = parse_time(&v).unwrap_or(0.0);
+        }
+    }
+    if let Some(l) = each("animation-delay") {
+        for (s, v) in specs.iter_mut().zip(l) {
+            s.delay = parse_time(&v).unwrap_or(0.0);
+        }
+    }
+    if let Some(l) = each("animation-timing-function") {
+        for (s, v) in specs.iter_mut().zip(l) {
+            s.easing = parse_easing(&v).unwrap_or(Easing::EASE);
+        }
+    }
+    if let Some(l) = each("animation-iteration-count") {
+        for (s, v) in specs.iter_mut().zip(l) {
+            s.iterations = count_of(&v.to_ascii_lowercase()).unwrap_or(1.0);
+        }
+    }
+    if let Some(l) = each("animation-direction") {
+        for (s, v) in specs.iter_mut().zip(l) {
+            s.direction = direction_of(&v.to_ascii_lowercase()).unwrap_or_default();
+        }
+    }
+    if let Some(l) = each("animation-fill-mode") {
+        for (s, v) in specs.iter_mut().zip(l) {
+            s.fill = fill_of(&v.to_ascii_lowercase()).unwrap_or_default();
+        }
+    }
+    if let Some(l) = each("animation-play-state") {
+        for (s, v) in specs.iter_mut().zip(l) {
+            s.paused = v.eq_ignore_ascii_case("paused");
+        }
+    }
+    specs.retain(|s| !s.name.eq_ignore_ascii_case("none"));
+    specs
+}
+
+/// A box's `animation`s with their keyframes worked out against it: each
+/// keyframe's declarations over the box's own, resolved as the box's are
+/// (`var()`, `em`, `currentcolor`), and read into a style. `None` when it has
+/// none that name a `@keyframes`.
+///
+/// Its own function, not inline in [`build_node_inner`]: watchlist #41.
+#[inline(never)]
+fn keyframe_animations(
+    props: &HashMap<String, String>,
+    vars: &HashMap<String, String>,
+    inherited_font_size: f32,
+    inherited_color: Rgba,
+    scheme: ColorScheme,
+) -> Option<std::sync::Arc<[KeyframeAnimation]>> {
+    let specs = animation_specs(props);
+    if specs.is_empty() {
+        return None;
+    }
+    let all = KEYFRAMES.with(|k| Rc::clone(&k.borrow()));
+    let mut out = Vec::new();
+    for spec in specs {
+        let Some(frames) = all.get(&spec.name) else {
+            warn_once(format!("`animation` names `{}`, and there is no `@keyframes {}`", spec.name, spec.name));
+            continue;
+        };
+        let steps = frames
+            .iter()
+            .map(|frame| {
+                let mut p = props.clone();
+                let mut easing = None;
+                let mut animated = Vec::new();
+                for (k, v) in &frame.decls {
+                    if k == "animation-timing-function" {
+                        easing = parse_easing(v);
+                        continue;
+                    }
+                    let v = resolve_env(&resolve_vars(v, vars, 0));
+                    match parse_anim_prop(k) {
+                        Some(prop) if prop != AnimProp::All => {
+                            if !animated.contains(&prop) {
+                                animated.push(prop);
+                            }
+                        }
+                        _ if k.starts_with("--") => {}
+                        _ => warn_once(format!(
+                            "`{k}` in a `@keyframes` is not animated by Rux yet, so it is left as the box has it"
+                        )),
+                    }
+                    p.insert(k.clone(), v);
+                }
+                wide_keywords(&mut p);
+                let own_size = resolve_lengths(&mut p, inherited_font_size);
+                resolve_colors(&mut p, inherited_color, scheme);
+                let style = interpreted(&p);
+                KeyframeStep {
+                    offset: frame.offset,
+                    easing,
+                    color: p.get("color").and_then(|c| parse_color(c)),
+                    font_size: p.contains_key("font-size").then_some(own_size),
+                    transform: transform_fns(&p),
+                    props: animated,
+                    style: Box::new(style),
+                }
+            })
+            .collect();
+        out.push(KeyframeAnimation {
+            name: spec.name,
+            duration: spec.duration,
+            delay: spec.delay,
+            easing: spec.easing,
+            iterations: spec.iterations,
+            direction: spec.direction,
+            fill: spec.fill,
+            paused: spec.paused,
+            steps,
+            base_transform: transform_fns(props),
+        });
+    }
+    (!out.is_empty()).then(|| out.into())
+}
+
+/// A box's transform as its functions, in the order CSS applies them: the
+/// `translate`, `rotate` and `scale` properties, then the `transform` list.
+/// Arguments in px, radians and plain numbers. Empty for `none`.
+fn transform_fns(p: &HashMap<String, String>) -> Vec<TransformFn> {
+    let value = |k: &str| p.get(k).map(|v| v.trim()).filter(|v| !v.eq_ignore_ascii_case("none"));
+    let f = |name: &str, args: Vec<f32>| TransformFn { name: name.to_string(), args };
+    let mut out = Vec::new();
+    if let Some(v) = value("translate") {
+        let parts = split_top_level(v);
+        if let Some(tx) = parts.first().and_then(|s| parse_px(s)) {
+            out.push(f("translate", vec![tx, parts.get(1).and_then(|s| parse_px(s)).unwrap_or(0.0)]));
+        }
+    }
+    if let Some(angle) = value("rotate").and_then(|v| split_top_level(v).last().and_then(|s| parse_angle(s))) {
+        out.push(f("rotate", vec![angle]));
+    }
+    if let Some(v) = value("scale") {
+        let factor = |s: &str| match s.strip_suffix('%') {
+            Some(pct) => pct.trim().parse::<f32>().ok().map(|n| n / 100.0),
+            None => s.parse::<f32>().ok(),
+        };
+        let parts = split_top_level(v);
+        if let Some(sx) = parts.first().and_then(|s| factor(s)) {
+            out.push(f("scale", vec![sx, parts.get(1).and_then(|s| factor(s)).unwrap_or(sx)]));
+        }
+    }
+    let mut rest = value("transform").unwrap_or("");
+    while let Some(open) = rest.find('(') {
+        let name = rest[..open].trim().to_ascii_lowercase();
+        let Some(close) = rest[open..].find(')').map(|c| c + open) else { break };
+        let args: Vec<&str> = rest[open + 1..close].split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
+        let nums: Option<Vec<f32>> = match name.as_str() {
+            "translate" | "translatex" | "translatey" => args.iter().map(|a| parse_px(a)).collect(),
+            "rotate" => args.iter().map(|a| parse_angle(a)).collect(),
+            "scale" | "scalex" | "scaley" => args.iter().map(|a| a.parse::<f32>().ok()).collect(),
+            _ => None,
+        };
+        if let Some(nums) = nums.filter(|n| !n.is_empty()) {
+            out.push(f(&name, nums));
+        }
+        rest = rest[close + 1..].trim_start();
+    }
+    out
+}
+
+/// The matrix of a list of transform functions, as [`transform_fns`] reads
+/// them.
+pub(crate) fn transform_fns_matrix(list: &[TransformFn]) -> Transform {
+    let mut m = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
+    for f in list {
+        let a = |i: usize| f.args.get(i).copied();
+        let step = match f.name.as_str() {
+            "translate" => [1.0, 0.0, 0.0, 1.0, a(0).unwrap_or(0.0), a(1).unwrap_or(0.0)],
+            "translatex" => [1.0, 0.0, 0.0, 1.0, a(0).unwrap_or(0.0), 0.0],
+            "translatey" => [1.0, 0.0, 0.0, 1.0, 0.0, a(0).unwrap_or(0.0)],
+            "scale" => {
+                let sx = a(0).unwrap_or(1.0);
+                [sx, 0.0, 0.0, a(1).unwrap_or(sx), 0.0, 0.0]
+            }
+            "scalex" => [a(0).unwrap_or(1.0), 0.0, 0.0, 1.0, 0.0, 0.0],
+            "scaley" => [1.0, 0.0, 0.0, a(0).unwrap_or(1.0), 0.0, 0.0],
+            "rotate" => {
+                let (sin, cos) = a(0).unwrap_or(0.0).sin_cos();
+                [cos, sin, -sin, cos, 0.0, 0.0]
+            }
+            _ => continue,
+        };
+        m = mat_mul(m, step);
+    }
+    m
 }
 
 /// `transform-origin`: one or two positions, x then y, or keywords in either
@@ -6654,6 +7007,11 @@ fn build_node_inner(
 
     let mut style = screen_fills_the_display(interpreted(&props), el, path, &props);
     style.direction = direction;
+    if props.keys().any(|k| k.starts_with("animation")) {
+        if let Some(list) = keyframe_animations(&props, &vars, inherited.font_size, inherited.color, inherited.text.scheme) {
+            style.rare_mut().animations = Some(list);
+        }
+    }
     // A `@tap` handler runs later, in global scope, where the `r-for` loop
     // variable no longer exists, so `@tap="picked = item"` would see `item`
     // undefined and silently do nothing. Bake the current loop bindings into the
@@ -17675,6 +18033,37 @@ mod tailwind_property_tests {
         assert!(first(".a { translate: none; }").style.transform.is_none());
     }
 
+    /// Tailwind's `animate-spin`: `@keyframes`, the `animation` shorthand
+    /// through a variable, and the keyframe's transform kept as functions.
+    #[test]
+    fn keyframes_and_the_animation_shorthand() {
+        let n = first(
+            ":root { --animate-spin: spin 1s linear infinite; }              @keyframes spin { to { transform: rotate(360deg); } }              .a { animation: var(--animate-spin); }",
+        );
+        let list = n.style.animations().expect("an animation");
+        let a = &list[0];
+        assert_eq!((a.name.as_str(), a.duration, a.iterations), ("spin", 1000.0, f32::INFINITY));
+        assert_eq!(a.easing, rux_layout::Easing::Linear);
+        assert_eq!(a.steps.len(), 1);
+        assert_eq!(a.steps[0].offset, 1.0);
+        assert_eq!(a.steps[0].props, vec![AnimProp::Transform]);
+        let turn = &a.steps[0].transform[0];
+        assert_eq!(turn.name, "rotate");
+        assert!((turn.args[0] - std::f32::consts::TAU).abs() < 1e-4);
+        assert!(a.base_transform.is_empty());
+
+        // Longhands over the shorthand, and a percentage keyframe.
+        let n = first(
+            "@keyframes pulse { 50% { opacity: .5; } }              .a { animation: pulse 2s infinite; animation-delay: 100ms; animation-direction: alternate; animation-fill-mode: both; }",
+        );
+        let a = &n.style.animations().unwrap()[0];
+        assert_eq!((a.duration, a.delay, a.steps[0].offset), (2000.0, 100.0, 0.5));
+        assert_eq!(a.direction, rux_layout::AnimationDirection::Alternate);
+        assert_eq!(a.fill, rux_layout::AnimationFill::Both);
+        assert!(first(".a { animation: nothing-here 1s; }").style.animations().is_none());
+        assert!(first(".a { animation: none; }").style.animations().is_none());
+    }
+
     /// `transform-origin`: keywords either way round, lengths, and a single
     /// value that names only one axis.
     #[test]
@@ -17775,3 +18164,4 @@ mod tailwind_property_tests {
         assert!(format!("{:?}", a.style.filters) != "None");
     }
 }
+

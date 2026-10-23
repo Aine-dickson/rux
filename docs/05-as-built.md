@@ -681,6 +681,9 @@ outline, outline-width, outline-style, outline-color, outline-offset
   (none | solid | auto; drawn outside the border box, over the content, following
    border-radius; the colour defaults to the element's color; see below)
 transition (property duration easing delay, comma-separated; see below)
+animation, animation-name, animation-duration, animation-timing-function,
+animation-delay, animation-iteration-count, animation-direction,
+animation-fill-mode, animation-play-state, and @keyframes (see below)
 transition-property, transition-duration, transition-timing-function,
 transition-delay, transition-behavior
                       (lists, one transition per property, the others repeated
@@ -992,6 +995,30 @@ An app with no transitions running is still fully event-driven: it sleeps
 waiting for real events and renders nothing. Frames are scheduled only while
 something is actually in flight, and stop the frame it lands. Driven in
 `examples/transition.rux`.
+
+**Keyframe animation** (2026-10-23): `@keyframes` and `animation`, as CSS has
+them, so Tailwind's `animate-spin`, `animate-ping` and `animate-pulse` run.
+```css
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { animation: spin 1s linear infinite; }
+
+@keyframes slide-in { from { opacity: 0; transform: translateX(-12px); } }
+.toast { animation: slide-in 300ms ease-out both; }
+```
+An animation starts when its box first appears and keeps running while the
+box keeps the name; a new name starts it again. A keyframe that leaves a
+property out leaves it to the box, so `to` alone runs from the box's own
+value. The easing runs from each keyframe to the next, the animation's or the
+keyframe's own `animation-timing-function`. Each keyframe is worked out
+against the box, so `var()`, `em` and `currentcolor` in it mean what they mean
+on the box. A transform is walked function by function, so `rotate(0)` to
+`rotate(360deg)` turns all the way round though the two are the same matrix;
+lists whose functions differ walk their matrices. The keyframes animate the
+properties `transition` can, below; any other in a keyframe warns and is left
+as the box has it. An animation overrides a transition of the same property,
+as in CSS, and `prefers-reduced-motion` stills it the way it stills a
+transition: over before it starts. Not yet: `animation-composition`, scroll
+timelines, and `translate()` in a percentage, which is drawn as no move.
 
 **Enter and leave:** `r-transition` on an element with `r-if` (or on a keyed
 `r-for` row) says that its arrival and departure are animated. What the two
@@ -1479,7 +1506,7 @@ Real CSS Rux has not built includes
 `writing-mode`, `columns` (a multi-column
 layout of its own), the table properties (Rux has no tables), `content` (Rux
 has no `::before` or `::after`),
-`list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
+`list-style`. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.
 

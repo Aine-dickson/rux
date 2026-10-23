@@ -22,6 +22,7 @@ use std::collections::HashMap;
 use rux_layout::filter::{FilterOp, Filters};
 use rux_layout::PathCmd;
 use rux_layout::{AnimProp, Background, BoxShadow, Easing, Len, Node, Rgba, Sides, Transition};
+use rux_layout::{AnimationDirection, AnimationFill, KeyframeAnimation, TransformFn};
 
 /// How soon to ask for the next frame while something is in flight. The shell
 /// presents with vsync, so this is a floor rather than a frame rate: it exists
@@ -97,6 +98,29 @@ struct Track {
 struct NodeState {
     touched: bool,
     props: HashMap<AnimProp, Track>,
+    /// One per `animation` on the node, in its order.
+    keyframes: Vec<KeyTrack>,
+}
+
+/// What one `animation` on one node is doing: when it began, and, per
+/// property, the node's own value under it and what was last written over
+/// that, which tell a rebuild apart from the animation's own output as
+/// [`Track::written`] does for a transition.
+struct KeyTrack {
+    name: String,
+    start_ms: f64,
+    /// When `animation-play-state: paused` stopped the clock.
+    paused_at: Option<f64>,
+    base: HashMap<AnimProp, AnimValue>,
+    written: HashMap<AnimProp, AnimValue>,
+    /// Whether it last wrote anything but the node's own values.
+    running: bool,
+}
+
+impl KeyTrack {
+    fn new(name: &str, now: f64) -> Self {
+        Self { name: name.to_string(), start_ms: now, paused_at: None, base: HashMap::new(), written: HashMap::new(), running: false }
+    }
 }
 
 /// Per-node memory of what each transitioned property was showing.
@@ -113,7 +137,7 @@ impl Animator {
     /// Whether anything is currently animating. Used to decide whether a frame
     /// needs to be scheduled at all.
     pub fn is_idle(&self) -> bool {
-        self.nodes.values().all(|n| n.props.values().all(|t| !t.active))
+        self.nodes.values().all(|n| n.props.values().all(|t| !t.active) && n.keyframes.iter().all(|k| !k.running))
     }
 
     /// Fold this frame into `root`: start transitions for any transitioned
@@ -138,7 +162,7 @@ impl Animator {
     }
 
     fn visit(&mut self, node: &mut Node, path: &mut Vec<Seg>, now: f64, wake: &mut Option<f64>) {
-        if !node.style.transitions.is_empty() {
+        if !node.style.transitions.is_empty() || node.style.animations().is_some() {
             self.node_frame(node, path, now, wake);
         }
         for (i, child) in node.children.iter_mut().enumerate() {
@@ -159,9 +183,25 @@ impl Animator {
         // came and finishing it is the runtime's call rather than the
         // animator's.
         let driven = node.style.swap_progress;
-        let specs = specs_of(&node.style.transitions);
+        let animations = node.style.animations().cloned();
+        let mut specs = specs_of(&node.style.transitions);
+        // What an animation is moving is the animation's: CSS puts it over
+        // any transition, and a transition left watching it would read every
+        // frame of it as a new value to walk to.
+        for a in animations.iter().flat_map(|l| l.iter()) {
+            for step in &a.steps {
+                for prop in &step.props {
+                    specs.remove(prop);
+                }
+            }
+        }
         let state = self.nodes.entry(path.to_vec()).or_default();
         state.touched = true;
+        if let Some(list) = &animations {
+            keyframe_frame(node, list, &mut state.keyframes, now, wake);
+        } else {
+            state.keyframes.clear();
+        }
         // A property that stopped being transitioned stops being remembered, so
         // re-adding the declaration later starts from what is on screen.
         state.props.retain(|prop, _| specs.contains_key(prop));
@@ -253,6 +293,184 @@ impl Animator {
             }
         }
     }
+}
+
+/// One node's `animation`s, one frame: where each is in its timeline, and the
+/// value of everything its keyframes set, written over the node.
+///
+/// The keyframes that do not set a property leave it to the node, so a
+/// property set in `to` alone starts from the node's own value, as CSS has
+/// it. The easing runs from each keyframe to the next, the animation's own or
+/// the keyframe's `animation-timing-function`. A later animation in the list
+/// wins where two set the same property.
+fn keyframe_frame(node: &mut Node, list: &[KeyframeAnimation], tracks: &mut Vec<KeyTrack>, now: f64, wake: &mut Option<f64>) {
+    // A new name in a place starts that animation over; the same name keeps
+    // it running, whatever else about it changed.
+    tracks.truncate(list.len());
+    for (i, a) in list.iter().enumerate() {
+        match tracks.get_mut(i) {
+            Some(t) if t.name == a.name => {}
+            Some(t) => *t = KeyTrack::new(&a.name, now),
+            None => tracks.push(KeyTrack::new(&a.name, now)),
+        }
+    }
+    for (a, track) in list.iter().zip(tracks.iter_mut()) {
+        match (a.paused, track.paused_at) {
+            (true, None) => track.paused_at = Some(now),
+            (false, Some(at)) => {
+                track.start_ms += now - at;
+                track.paused_at = None;
+            }
+            _ => {}
+        }
+        let clock = track.paused_at.unwrap_or(now);
+        let (at, next) = progress(a, clock - track.start_ms);
+        track.running = at.is_some() && next.is_some() && !a.paused;
+        if let (Some(ms), false) = (next, a.paused) {
+            *wake = Some(wake.map_or(ms, |w: f64| w.min(ms)));
+        }
+        let mut props: Vec<AnimProp> = Vec::new();
+        for step in &a.steps {
+            for p in &step.props {
+                if !props.contains(p) {
+                    props.push(*p);
+                }
+            }
+        }
+        for prop in props {
+            let Some(tree) = read(node, prop) else { continue };
+            // The tree holds our own last write unless the node was rebuilt,
+            // and then it holds the node's own value afresh.
+            let base = match (track.written.get(&prop), track.base.get(&prop)) {
+                (Some(w), Some(b)) if close(&tree, w) => b.clone(),
+                _ => tree,
+            };
+            let value = match at {
+                Some(g) => value_at(a, node, prop, g, &base).unwrap_or_else(|| base.clone()),
+                None => base.clone(),
+            };
+            write(node, prop, value.clone());
+            track.base.insert(prop, base);
+            track.written.insert(prop, value);
+        }
+    }
+}
+
+/// Where an animation is at `elapsed` ms since it began: its directed
+/// progress through the current iteration, from 0 to 1, or `None` when it
+/// has no effect (before its delay, or after its end, unless filled); and how
+/// long until the next frame is needed, `None` when it never will be.
+fn progress(a: &KeyframeAnimation, elapsed: f64) -> (Option<f32>, Option<f64>) {
+    let local = elapsed - a.delay as f64;
+    let duration = a.duration.max(0.0) as f64;
+    let total = if duration <= 0.0 { 0.0 } else { duration * a.iterations.max(0.0) as f64 };
+    let directed = |iteration: f64, f: f64| -> f32 {
+        let odd = iteration as u64 % 2 == 1;
+        let reverse = match a.direction {
+            AnimationDirection::Normal => false,
+            AnimationDirection::Reverse => true,
+            AnimationDirection::Alternate => odd,
+            AnimationDirection::AlternateReverse => !odd,
+        };
+        (if reverse { 1.0 - f } else { f }) as f32
+    };
+    let backwards = matches!(a.fill, AnimationFill::Backwards | AnimationFill::Both);
+    let forwards = matches!(a.fill, AnimationFill::Forwards | AnimationFill::Both);
+    if local < 0.0 {
+        return (backwards.then(|| directed(0.0, 0.0)), Some(-local));
+    }
+    if local < total {
+        let at = local / duration;
+        let iteration = at.floor();
+        return (Some(directed(iteration, at - iteration)), Some(FRAME_MS));
+    }
+    if !forwards {
+        return (None, None);
+    }
+    // At the end: the last iteration, as far through it as the count goes.
+    let end = if a.iterations.is_finite() && a.iterations > 0.0 && duration > 0.0 {
+        let iterations = a.iterations as f64;
+        let last = (iterations.ceil() - 1.0).max(0.0);
+        directed(last, iterations - last)
+    } else {
+        directed(0.0, if a.iterations > 0.0 && a.iterations.is_finite() { 1.0 } else { 0.0 })
+    };
+    (Some(end), None)
+}
+
+/// `prop` at directed progress `g` through `a`'s keyframes: between the two
+/// keyframes around `g` that set it, the node's own value standing in at 0
+/// and 1 where no keyframe is. `None` when no keyframe sets it after all.
+fn value_at(a: &KeyframeAnimation, node: &Node, prop: AnimProp, g: f32, base: &AnimValue) -> Option<AnimValue> {
+    // (offset, easing out of it, value, transform functions)
+    let mut points: Vec<(f32, Option<Easing>, AnimValue, Option<Vec<TransformFn>>)> = Vec::new();
+    for step in a.steps.iter().filter(|s| s.props.contains(&prop)) {
+        let mut probe = Node::new((*step.style).clone());
+        if let Some(text) = &node.text {
+            let mut text = text.clone();
+            if let Some(c) = step.color {
+                text.color = c;
+            }
+            if let Some(s) = step.font_size {
+                text.font_size = s;
+            }
+            probe.text = Some(text);
+        }
+        let Some(v) = read(&probe, prop) else { continue };
+        points.push((step.offset, step.easing, v, (prop == AnimProp::Transform).then(|| step.transform.clone())));
+    }
+    if points.is_empty() {
+        return None;
+    }
+    let own = (prop == AnimProp::Transform).then(|| a.base_transform.clone());
+    if points[0].0 > 0.0 {
+        points.insert(0, (0.0, None, base.clone(), own.clone()));
+    }
+    if points[points.len() - 1].0 < 1.0 {
+        points.push((1.0, None, base.clone(), own));
+    }
+    let i = points.iter().rposition(|p| p.0 <= g).unwrap_or(0);
+    let Some(next) = points.get(i + 1) else { return Some(points[i].2.clone()) };
+    let here = &points[i];
+    let span = next.0 - here.0;
+    let local = if span > 0.0 { ((g - here.0) / span).clamp(0.0, 1.0) } else { 1.0 };
+    let eased = here.1.unwrap_or(a.easing).eval(local);
+    if let (Some(from), Some(to)) = (&here.3, &next.3) {
+        if let Some(m) = lerp_transform_fns(from, to, eased) {
+            return Some(AnimValue::Mat(m));
+        }
+    }
+    // A value with no midpoint changes halfway, as a discrete one does in CSS.
+    Some(lerp(&here.2, &next.2, eased).unwrap_or_else(|| if eased < 0.5 { here.2.clone() } else { next.2.clone() }))
+}
+
+/// Two transform lists, function against function, as CSS interpolates them:
+/// when one is `none` it stands for the other's functions at their identity,
+/// so `rotate(360deg)` from nothing turns all the way round. Lists whose
+/// functions differ are left to the matrices.
+fn lerp_transform_fns(a: &[TransformFn], b: &[TransformFn], t: f32) -> Option<rux_layout::Transform> {
+    let identity = |f: &TransformFn| TransformFn {
+        name: f.name.clone(),
+        args: f.args.iter().map(|_| if f.name.starts_with("scale") { 1.0 } else { 0.0 }).collect(),
+    };
+    let (a, b): (Vec<TransformFn>, Vec<TransformFn>) = match (a.is_empty(), b.is_empty()) {
+        (true, true) => return None,
+        (true, false) => (b.iter().map(identity).collect(), b.to_vec()),
+        (false, true) => (a.to_vec(), a.iter().map(identity).collect()),
+        (false, false) => (a.to_vec(), b.to_vec()),
+    };
+    if a.len() != b.len() || a.iter().zip(&b).any(|(x, y)| x.name != y.name || x.args.len() != y.args.len()) {
+        return None;
+    }
+    let mixed: Vec<TransformFn> = a
+        .iter()
+        .zip(&b)
+        .map(|(x, y)| TransformFn {
+            name: x.name.clone(),
+            args: x.args.iter().zip(&y.args).map(|(p, q)| p + (q - p) * t).collect(),
+        })
+        .collect();
+    Some(crate::transform_fns_matrix(&mixed))
 }
 
 impl Track {
@@ -1156,5 +1374,90 @@ mod tests {
         let grey = lerp_filters(&[FilterOp::Matrix(FilterOp::IDENTITY)], &[FilterOp::Matrix(FilterOp::brightness(0.0))], 0.5).unwrap();
         assert!(matches!(&grey[..], [FilterOp::Matrix(m)] if (m[0] - 0.5).abs() < 1e-4));
         assert!(lerp_filters(&[FilterOp::Blur(1.0)], &[FilterOp::Matrix(FilterOp::IDENTITY)], 0.5).is_none());
+    }
+
+    fn animated(a: KeyframeAnimation) -> Node {
+        let mut style = Style::default();
+        style.rare_mut().animations = Some(vec![a].into());
+        Node::new(style)
+    }
+
+    fn spin(fill: AnimationFill, iterations: f32) -> KeyframeAnimation {
+        let mut to = Style::default();
+        to.transform = Some([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
+        KeyframeAnimation {
+            name: "spin".into(),
+            duration: 1000.0,
+            delay: 0.0,
+            easing: Easing::Linear,
+            iterations,
+            direction: AnimationDirection::Normal,
+            fill,
+            paused: false,
+            steps: vec![rux_layout::KeyframeStep {
+                offset: 1.0,
+                easing: None,
+                props: vec![AnimProp::Transform],
+                style: Box::new(to),
+                color: None,
+                font_size: None,
+                transform: vec![TransformFn { name: "rotate".into(), args: vec![std::f32::consts::TAU] }],
+            }],
+            base_transform: Vec::new(),
+        }
+    }
+
+    /// From no transform to `rotate(360deg)` is a whole turn, though the two
+    /// are the same matrix: a quarter of the way, it is a quarter turn.
+    #[test]
+    fn a_spinner_turns() {
+        let mut node = animated(spin(AnimationFill::None, f32::INFINITY));
+        let mut anim = Animator::new();
+        assert!(anim.apply(&mut node, 0.0).is_some(), "it keeps asking for frames");
+        anim.apply(&mut node, 250.0);
+        let m = node.style.transform.unwrap();
+        assert!(m[0].abs() < 1e-4 && (m[1] - 1.0).abs() < 1e-4, "a quarter turn: {m:?}");
+        anim.apply(&mut node, 1500.0);
+        let m = node.style.transform.unwrap();
+        assert!((m[0] + 1.0).abs() < 1e-4, "half way round the second turn: {m:?}");
+        assert!(!anim.is_idle());
+    }
+
+    /// Run once and not filled, it gives the node back its own value; filled
+    /// forwards, it holds the last keyframe.
+    #[test]
+    fn an_animation_ends_as_its_fill_says() {
+        let fading = |fill| {
+            let mut to = Style::default();
+            to.opacity = 1.0;
+            let a = KeyframeAnimation {
+                steps: vec![rux_layout::KeyframeStep {
+                    offset: 1.0,
+                    easing: None,
+                    props: vec![AnimProp::Opacity],
+                    style: Box::new(to),
+                    color: None,
+                    font_size: None,
+                    transform: Vec::new(),
+                }],
+                ..spin(fill, 1.0)
+            };
+            let mut node = animated(a);
+            node.style.opacity = 0.2;
+            node
+        };
+        let mut anim = Animator::new();
+        let mut node = fading(AnimationFill::None);
+        anim.apply(&mut node, 0.0);
+        anim.apply(&mut node, 500.0);
+        assert!((node.style.opacity - 0.6).abs() < 1e-4, "from its own value: {}", node.style.opacity);
+        assert_eq!(anim.apply(&mut node, 1200.0), None, "over, and asleep");
+        assert!((node.style.opacity - 0.2).abs() < 1e-4, "back to its own value");
+
+        let mut anim = Animator::new();
+        let mut node = fading(AnimationFill::Forwards);
+        anim.apply(&mut node, 0.0);
+        anim.apply(&mut node, 1200.0);
+        assert!((node.style.opacity - 1.0).abs() < 1e-4, "held at the end");
     }
 }

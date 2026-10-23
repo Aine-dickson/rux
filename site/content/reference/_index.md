@@ -531,7 +531,7 @@ Real CSS Rux has not built includes
 `writing-mode`, `columns` (a multi-column
 layout of its own), the table properties (Rux has no tables), `content` (Rux
 has no `::before` or `::after`),
-`list-style` and the `animation` family. `line-height`, `box-shadow`, `outline`,
+`list-style`. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.
 

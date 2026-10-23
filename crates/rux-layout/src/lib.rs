@@ -1119,7 +1119,7 @@ impl Outline {
 
 /// The style properties hardly any box sets, kept behind one pointer on
 /// [`Style`] so each costs a box nothing until it is written (watchlist #41).
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, Default)]
 pub struct Rare {
     /// `border-top-color` and the other sides, top, right, bottom, left,
     /// over `border_color`. `None` for a side takes `border_color`.
@@ -1127,6 +1127,79 @@ pub struct Rare {
     /// `transform-origin`, x then y, against the box's own size. `None` is
     /// the centre, CSS's initial value.
     pub transform_origin: Option<[Len; 2]>,
+    /// `animation`: each one named, with its `@keyframes` already worked out
+    /// against this box. Empty for almost every box.
+    pub animations: Option<std::sync::Arc<[KeyframeAnimation]>>,
+}
+
+/// One `animation` on a box, as the build worked it out: its timing, and its
+/// keyframes as styles of their own.
+#[derive(Clone, Debug)]
+pub struct KeyframeAnimation {
+    /// The `@keyframes` name, which is its identity: a box that keeps the
+    /// name keeps the animation running, and a new name starts it again.
+    pub name: String,
+    /// ms.
+    pub duration: f32,
+    pub delay: f32,
+    pub easing: Easing,
+    /// `infinite` is `f32::INFINITY`.
+    pub iterations: f32,
+    pub direction: AnimationDirection,
+    pub fill: AnimationFill,
+    /// `animation-play-state: paused`.
+    pub paused: bool,
+    pub steps: Vec<KeyframeStep>,
+    /// The box's own transform, as its functions, for the keyframes that
+    /// leave the transform to it: `none` is empty.
+    pub base_transform: Vec<TransformFn>,
+}
+
+/// One keyframe: where it sits, from 0 to 1, the properties it sets, and the
+/// box's style with them set.
+#[derive(Clone, Debug)]
+pub struct KeyframeStep {
+    pub offset: f32,
+    /// `animation-timing-function` inside the keyframe: the easing from here
+    /// to the next one.
+    pub easing: Option<Easing>,
+    pub props: Vec<AnimProp>,
+    pub style: Box<Style>,
+    /// The text's colour and size here, for a box with text.
+    pub color: Option<Rgba>,
+    pub font_size: Option<f32>,
+    /// `transform` as its functions, so `rotate(0)` to `rotate(360deg)`
+    /// turns all the way round rather than standing still between two
+    /// identical matrices.
+    pub transform: Vec<TransformFn>,
+}
+
+/// A transform function and its arguments in px, radians or plain numbers.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransformFn {
+    pub name: String,
+    pub args: Vec<f32>,
+}
+
+/// `animation-direction`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnimationDirection {
+    #[default]
+    Normal,
+    Reverse,
+    Alternate,
+    AlternateReverse,
+}
+
+/// `animation-fill-mode`: whether the first keyframe holds before the start,
+/// and the last after the end.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AnimationFill {
+    #[default]
+    None,
+    Forwards,
+    Backwards,
+    Both,
 }
 
 impl Style {
@@ -1138,6 +1211,11 @@ impl Style {
     /// `transform-origin`, `None` for the centre.
     pub fn transform_origin(&self) -> Option<[Len; 2]> {
         self.rare.as_ref().and_then(|r| r.transform_origin)
+    }
+
+    /// The box's `animation`s, none for almost every box.
+    pub fn animations(&self) -> Option<&std::sync::Arc<[KeyframeAnimation]>> {
+        self.rare.as_ref().and_then(|r| r.animations.as_ref())
     }
 
     /// The rarely set properties, made to write into.
