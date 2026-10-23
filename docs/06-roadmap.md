@@ -380,7 +380,8 @@ and driven in `examples/fonts.rux`.
   for us.
 - **Per-side border *colours***: we store per-side widths but stroke one uniform
   rounded rect, so four different colours means four paths.
-- **`box-sizing`**: taffy sizes border-box; `content-box` needs real work.
+- ~~**`box-sizing`**: taffy sizes border-box; `content-box` needs real work.~~
+  Done: both honored, and `content-box` is the default since 2026-10-23.
 
 **Also worth doing while in here:** *say something* when a declaration is ignored.
 **Done (2026-07-15):** `warn_if_unhonored` prints one line per unhonored
@@ -946,8 +947,7 @@ self-contained-vs-`source.css` decision).
     Rux has neither.
   - `user-select` has nothing to act on: static text cannot be selected yet.
   - `writing-mode`: vertical text is a layout model of its own.
-  - `box-sizing`: Rux sizes are border-box, CSS defaults to content-box. Still
-    open.
+  - `box-sizing`: closed 2026-10-23. `content-box` is the default, as in CSS.
 
 ---
 

@@ -5,6 +5,8 @@
   </view>
 </template>
 <style>
+  * { box-sizing: border-box; }
+
   .panel {
     display: flex;
     flex-direction: column;

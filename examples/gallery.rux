@@ -37,6 +37,8 @@
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .screen {
     display: flex;
     flex-direction: column;

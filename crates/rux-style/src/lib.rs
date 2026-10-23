@@ -7121,6 +7121,13 @@ fn build_node_inner(
 
     let mut style = screen_fills_the_display(interpreted(&props), el, path, &props);
     style.direction = direction;
+    // Form controls are `border-box` unless the author says, as browsers'
+    // own sheets make buttons, checkboxes, radios and selects. A text field
+    // joins them because its width is Rux's `100%`, which a padded field
+    // would otherwise stick out of.
+    if matches!(el.tag.as_str(), "input" | "button") && !props.contains_key("box-sizing") {
+        style.box_sizing = rux_layout::BoxSizing::BorderBox;
+    }
     if props.keys().any(|k| k.starts_with("animation")) {
         if let Some(list) = keyframe_animations(&props, &vars, inherited.font_size, inherited.color, inherited.text.scheme) {
             style.rare_mut().animations = Some(list);
@@ -11030,9 +11037,9 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         )),
     }
     match p.get("box-sizing").map(|v| v.trim().to_ascii_lowercase()).as_deref() {
-        Some("content-box") => st.box_sizing = rux_layout::BoxSizing::ContentBox,
-        Some("border-box") | None => {}
-        Some(other) => warn_once(format!("`box-sizing: {other}` is not `border-box` or `content-box`, so the box keeps `border-box`")),
+        Some("border-box") => st.box_sizing = rux_layout::BoxSizing::BorderBox,
+        Some("content-box") | None => {}
+        Some(other) => warn_once(format!("`box-sizing: {other}` is not `border-box` or `content-box`, so the box keeps `content-box`")),
     }
     if let Some(bg) = interpret_background(p) {
         st.background = Some(bg);
@@ -17890,6 +17897,24 @@ mod selector_list_tests {
             None,
         );
         assert!(red(&root.children[0]));
+    }
+
+    /// `content-box` is the default, as in CSS; `<input>` and `<button>` are
+    /// `border-box` unless the author writes otherwise.
+    #[test]
+    fn controls_are_border_box_and_the_rest_content_box() {
+        use rux_layout::BoxSizing::{BorderBox, ContentBox};
+        let root = built(
+            r#"<template><screen>
+                 <view /><input r-model="q" /><button>go</button>
+                 <input class="c" r-model="q" /><view class="b" />
+               </screen></template>
+               <script>let q = signal("");</script>
+               <style>.c { box-sizing: content-box; } .b { box-sizing: border-box; }</style>"#,
+            None,
+        );
+        let sizing: Vec<_> = root.children.iter().map(|c| c.style.box_sizing).collect();
+        assert_eq!(sizing, [ContentBox, BorderBox, BorderBox, ContentBox, BorderBox]);
     }
 
     /// `html` is the root element whatever its tag, so Tailwind's preflight

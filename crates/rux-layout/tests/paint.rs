@@ -344,6 +344,7 @@ fn shadows_go_under_and_inset_ones_over_the_background() {
         height: Some(Len::Px(50.0)),
         background: Some(Background::Color(Rgba::new(1.0, 1.0, 1.0, 1.0))),
         border: Sides { top: 2.0, right: 2.0, bottom: 2.0, left: 2.0 },
+        box_sizing: BoxSizing::BorderBox,
         border_color: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
         radius: [10.0; 4],
         box_shadow: Some(vec![shadow(1.0, 0.0, false), shadow(5.0, 0.0, true), shadow(2.0, 3.0, false)].into()),
@@ -501,6 +502,7 @@ fn image_layers_paint_apart_with_the_boxes_they_are_placed_in() {
         border_color: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
         border_style: [BorderStyle::Solid; 4],
         padding: Sides::uniform(3.0),
+        box_sizing: BoxSizing::BorderBox,
         background: Some(Background::Layers(layers)),
         ..Default::default()
     });
@@ -544,6 +546,7 @@ fn an_image_is_drawn_inside_its_padding() {
             width: Some(Len::Px(100.0)),
             height: Some(Len::Px(100.0)),
             padding: Sides::uniform(10.0),
+            box_sizing: BoxSizing::BorderBox,
             ..Default::default()
         },
         ImageContent { intrinsic: (50.0, 50.0), ..ImageContent::new("a.png".into()) },

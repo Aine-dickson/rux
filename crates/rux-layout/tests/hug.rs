@@ -67,6 +67,7 @@ fn hugging_box_clamps_to_parent_inner_width() {
         Style {
             width: Some(Len::Px(320.0)),
             padding: Sides::uniform(16.0),
+            box_sizing: BoxSizing::BorderBox,
             background: Some(Background::Color(Rgba::new(0.2, 0.2, 0.2, 1.0))),
             ..flex(Axis::Column)
         },

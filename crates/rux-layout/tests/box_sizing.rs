@@ -30,9 +30,23 @@ fn sized(box_sizing: BoxSizing) -> (f32, f32) {
     rect(&lay(&root), 0.5).expect("the child is painted")
 }
 
-/// Rux's default holds the padding inside the width; `content-box` adds it.
+/// `content-box`, CSS's default and Rux's since 2026-10-23, adds the padding
+/// to the width; `border-box` holds it inside.
 #[test]
 fn content_box_adds_the_padding_to_the_width() {
+    assert_eq!(sized(BoxSizing::default()), (140.0, 60.0));
     assert_eq!(sized(BoxSizing::BorderBox), (100.0, 40.0));
     assert_eq!(sized(BoxSizing::ContentBox), (140.0, 60.0));
+}
+
+/// The root is the window's size, its padding inside, whatever `box-sizing`
+/// says: it fills the viewport as an `auto` width does in CSS.
+#[test]
+fn the_root_is_the_window_whatever_its_padding() {
+    let root = Node::new(Style {
+        background: Some(Background::Color(Rgba::new(0.25, 0.0, 0.0, 1.0))),
+        padding: Sides { top: 30.0, right: 30.0, bottom: 30.0, left: 30.0 },
+        ..Default::default()
+    });
+    assert_eq!(rect(&lay(&root), 0.25), Some((800.0, 600.0)));
 }

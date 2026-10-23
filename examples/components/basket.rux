@@ -6,6 +6,8 @@
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .basket {
     display: flex;
     gap: 10px;

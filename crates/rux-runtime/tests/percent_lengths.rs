@@ -137,12 +137,12 @@ fn padding_margin_and_gap_resolve_a_percentage() {
     assert_eq!((a[0], a[1]), (20.0, 20.0), "the margin is 5% of the width, on every side");
     // 10% of the containing block's width (the screen's 400) is 40, top and left.
     assert_eq!((b[0] - a[0], b[1] - a[1]), (40.0, 40.0), "so is the padding");
-    // The gap is 10% of the box's content height: 200 less the 40 padding on
-    // top, 160, so 16 between the two children.
+    // The gap is 10% of the box's content height, which under CSS's
+    // `content-box` is the 200 written, so 20 between the two children.
     // The two children, blue then green, both with no red in them.
     let kids = found.iter().filter(|(r, _)| *r == 0.0).map(|(_, x)| *x).collect::<Vec<_>>();
     let (first, second) = (kids[0], kids[1]);
-    assert_eq!(second[1] - (first[1] + first[3]), 16.0, "and the gap is of the content height: {found:?}");
+    assert_eq!(second[1] - (first[1] + first[3]), 20.0, "and the gap is of the content height: {found:?}");
 }
 
 /// A percentage keeps its place in the shorthand. It used to be dropped,

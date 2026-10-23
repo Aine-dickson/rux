@@ -28,6 +28,8 @@
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   /* The palette. Declared once; everything below reads it through var(). */
   .app {
     --bg: #1e1e2e;

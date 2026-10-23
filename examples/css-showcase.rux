@@ -26,6 +26,7 @@
 </template>
 
 <style>
+  * { box-sizing: border-box; }
   /* `:class="c"` adds the colour name as a class. `:style` owns the background
      (inline wins)*/
   .teal { border: 2px white solid; }

@@ -11,6 +11,8 @@
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .counter {
     display: flex;
     flex-direction: column;

@@ -28,6 +28,8 @@
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .v1 {
     background: #193822;
     width: 320px;

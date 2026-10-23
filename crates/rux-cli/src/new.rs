@@ -74,6 +74,8 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .app {
     display: flex;
     flex-direction: column;
@@ -171,6 +173,8 @@ const HOME: &str = r#"<!-- The list. A page is an ordinary component that a `<ro
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .page {
     width: 100%;
     display: flex;
@@ -242,6 +246,8 @@ const NEW_TASK: &str = r#"<!-- The form. Every input needs an `r-model`: it is t
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .page {
     width: 100%;
     display: flex;
@@ -337,6 +343,8 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .page {
     width: 100%;
     display: flex;
@@ -424,6 +432,8 @@ const MISSING: &str = r#"<!-- The fallback route: shown for any path no other ro
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .page {
     width: 100%;
     display: flex;
@@ -462,6 +472,8 @@ const TASK_ROW: &str = r#"<!-- One row of the list.
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .row {
     width: 100%;
     display: flex;

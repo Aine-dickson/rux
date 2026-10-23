@@ -1,5 +1,6 @@
 <template><view class="panel"><text class="t">no such page</text></view></template>
 <style>
+  * { box-sizing: border-box; }
   .panel { padding: 12px; background: #1e1e2e; border-radius: 8px; }
   .t { color: #f38ba8; font-size: 14px; }
 </style>

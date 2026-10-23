@@ -8,6 +8,8 @@
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .session {
     display: flex;
     flex-direction: column;

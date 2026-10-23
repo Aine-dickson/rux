@@ -22,6 +22,8 @@
 </template>
 
 <style src="palette.css">
+  * { box-sizing: border-box; }
+
   /* The include lands first, so these rules cascade over it. */
 
   .app {

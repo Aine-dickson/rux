@@ -213,6 +213,7 @@ fn a_flex_scroller_counts_its_end_padding_once() {
                 width: Some(Len::Px(300.0)),
                 height: Some(Len::Px(96.0)),
                 padding: pad,
+                box_sizing: BoxSizing::BorderBox,
                 overflow: Overflow::Scroll,
                 ..Default::default()
             },

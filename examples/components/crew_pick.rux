@@ -2,6 +2,7 @@
   <view class="panel"><text class="t">pick somebody above</text></view>
 </template>
 <style>
+  * { box-sizing: border-box; }
   .panel { padding: 12px; background: #1e1e2e; border-radius: 8px; }
   .t { color: #6c7086; font-size: 13px; }
 </style>

@@ -21,6 +21,8 @@
 </template>
 
 <style>
+  * { box-sizing: border-box; }
+
   .stepper {
     display: flex;
     flex-direction: column;

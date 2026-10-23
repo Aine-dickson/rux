@@ -47,7 +47,8 @@ anchor-name, position-anchor, anchor() in top/right/bottom/left, anchor-size() i
 position-try, position-try-fallbacks (flip-block, flip-inline, flip-start, @position-try names),
 position-try-order
 aspect-ratio
-box-sizing (border-box, Rux's default, or content-box: see "Where Rux differs")
+box-sizing (content-box, the default as in CSS, or border-box; <input> and
+                       <button> are border-box unless it is written)
 width, height, min-width, max-width, min-height, max-height
 padding, padding-top, padding-right, padding-bottom, padding-left
 margin, margin-top, margin-right, margin-bottom, margin-left

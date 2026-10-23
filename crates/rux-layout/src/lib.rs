@@ -1569,7 +1569,7 @@ impl Default for Style {
             scroll_smooth: false,
             contain_intrinsic: None,
             aspect_ratio: None,
-            box_sizing: BoxSizing::BorderBox,
+            box_sizing: BoxSizing::ContentBox,
             transitions: Vec::new(),
             swap_progress: None,
             fill: Some(Rgba::new(0.0, 0.0, 0.0, 1.0)),
@@ -2980,13 +2980,14 @@ pub struct PaintBorder {
     pub colors: [Rgba; 4],
 }
 
-/// `box-sizing`. Rux's default is `border-box`, which is not CSS's.
+/// `box-sizing`, `content-box` by default as in CSS. Until 2026-10-23 the
+/// default was Taffy's `border-box`, taken without a decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum BoxSizing {
     /// `width` is the border box: padding and border are inside it.
-    #[default]
     BorderBox,
-    /// `width` is the content box, as CSS's initial value has it.
+    /// `width` is the content box, CSS's initial value.
+    #[default]
     ContentBox,
 }
 
@@ -4689,6 +4690,9 @@ fn build(
             width: length(w),
             height: length(h),
         };
+        // The viewport is the root's outside, as an `auto` width fills it in
+        // CSS, so its padding and border sit inside whatever `box-sizing` says.
+        ts.box_sizing = taffy::BoxSizing::BorderBox;
     }
     // A `<text>` of pieces is laid out as the one sentence they make.
     let joined = (skip.is_none() && inline::is_sentence(node)).then(|| inline::join(node, path));
