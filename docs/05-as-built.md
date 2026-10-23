@@ -826,9 +826,22 @@ exactly, and the pill is what someone writing `50%` on a button is after.
 a radius larger than the box is clamped to it. That is what the runtime itself
 uses to draw a radio button.
 
-**Selectors:** tag, `.class`, `#id`, `[role="…"]`, compounds, and all four
+**Selectors:** tag, `.class`, `#id`, attribute selectors, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
 subsequent-sibling (`.a ~ .b`).
+
+**Attribute selectors** (2026-10-23) are CSS's: `[type]`, `[type=checkbox]`,
+`[class~=word]`, `[lang|=en]`, `[placeholder^=Sea]`, `[placeholder$=…]`,
+`[placeholder*=…]`, with `i` for a case-blind match (`[type=TEXT i]`). A bound
+attribute is matched by its current value and restyles when it changes, so
+`button[disabled]` follows `:disabled="busy"`; `false` and `null` leave it off,
+as binding does in the DOM. A sibling seen through `+` or `~` is matched by what
+it was written with, not its bound attributes. Rux elements take a fixed set of
+attributes, so a selector for one they cannot carry (`[data-state=open]`)
+matches nothing. **Until this date only `[role=…]` was read, and any other
+attribute test was dropped from its compound without a word**, so
+`input[type=checkbox]` styled every input; `[role=…]` still matches
+case-insensitively, as it always has.
 
 **Pseudo-classes:** `:hover`, `:focus`, `:focus-visible`, `:active`, `:checked`, `:current` (a
 link whose `to` names the path you are on), `:disabled` / `:enabled` (an

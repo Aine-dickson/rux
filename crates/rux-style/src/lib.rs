@@ -5,7 +5,7 @@
 //! the cascade, and produces a styled `rux_layout::Node` tree. This is Stage 2
 //! of `docs/04-architecture.md`, narrowed to the honored subset.
 //!
-//! Selector support: tag, `.class`, `#id`, `[role="…"]`, compound
+//! Selector support: tag, `.class`, `#id`, attribute selectors, compound
 //! (`view.card`), and all four combinators, descendant (`.a .b`), child
 //! (`.a > .b`), next-sibling (`.a + .b`) and subsequent-sibling (`.a ~ .b`).
 //! Specificity and source order resolve conflicts, as in CSS.
@@ -2631,13 +2631,127 @@ use rux_parser::decode_entities;
 
 // ── Selector model ──────────────────────────────────────────────────────────
 
+/// An attribute selector, `[name]` or `[name op "value" i]`, as CSS has them.
+///
+/// Rux elements take a closed set of attributes, so one naming anything else
+/// (`[data-state]`) is read and simply matches nothing, as it would against a
+/// page whose elements never carry it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttrSel {
+    /// Lower-cased: attribute names are not case-sensitive in HTML.
+    name: String,
+    op: AttrOp,
+    value: String,
+    /// The `i` flag, or `role`, whose values Rux has always compared that way.
+    ci: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttrOp {
+    /// `[a]`
+    Exists,
+    /// `[a=v]`
+    Equals,
+    /// `[a~=v]`: one of its space-separated words.
+    Word,
+    /// `[a|=v]`: `v`, or `v-` and more, as `[lang|=en]` takes `en-GB`.
+    Dash,
+    /// `[a^=v]`
+    Prefix,
+    /// `[a$=v]`
+    Suffix,
+    /// `[a*=v]`
+    Contains,
+}
+
+impl AttrSel {
+    /// Read the inside of `[…]`. `None` is an attribute selector that is not
+    /// one, which makes the whole selector invalid, as it does in CSS.
+    fn parse(inner: &str) -> Option<Self> {
+        let inner = inner.trim();
+        let name_end = inner
+            .find(|c: char| !(c.is_alphanumeric() || c == '-' || c == '_'))
+            .unwrap_or(inner.len());
+        let name = inner[..name_end].to_ascii_lowercase();
+        if name.is_empty() {
+            return None;
+        }
+        let rest = inner[name_end..].trim_start();
+        if rest.is_empty() {
+            return Some(Self { ci: name == "role", name, op: AttrOp::Exists, value: String::new() });
+        }
+        let (op, rest) = [
+            ("~=", AttrOp::Word),
+            ("|=", AttrOp::Dash),
+            ("^=", AttrOp::Prefix),
+            ("$=", AttrOp::Suffix),
+            ("*=", AttrOp::Contains),
+            ("=", AttrOp::Equals),
+        ]
+        .into_iter()
+        .find_map(|(token, op)| rest.strip_prefix(token).map(|r| (op, r.trim_start())))?;
+        let (value, rest) = match rest.chars().next()? {
+            q @ ('"' | '\'') => {
+                let close = rest[1..].find(q)? + 1;
+                (rest[1..close].to_string(), &rest[close + 1..])
+            }
+            _ => {
+                let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                (rest[..end].to_string(), &rest[end..])
+            }
+        };
+        let ci = match rest.trim().to_ascii_lowercase().as_str() {
+            "" => name == "role",
+            "i" => true,
+            "s" => false,
+            _ => return None,
+        };
+        Some(Self { name, op, value, ci })
+    }
+
+    fn holds(&self, el: &ElemDesc) -> bool {
+        let joined;
+        let found = match self.name.as_str() {
+            "id" => el.id.as_deref(),
+            "role" => el.role.as_deref(),
+            "class" => {
+                joined = el.classes.join(" ");
+                Some(joined.as_str())
+            }
+            name => el.attrs.iter().find(|(n, _)| n == name).map(|(_, v)| v.as_str()),
+        };
+        let Some(found) = found else { return false };
+        let (have, want) = if self.ci {
+            (found.to_lowercase(), self.value.to_lowercase())
+        } else {
+            (found.to_string(), self.value.clone())
+        };
+        // A word, a prefix, a suffix or a part that is empty matches nothing,
+        // as CSS has it: `[class^=""]` is not every element with a class.
+        match self.op {
+            AttrOp::Exists => true,
+            AttrOp::Equals => have == want,
+            AttrOp::Word => !want.is_empty() && have.split_whitespace().any(|w| w == want),
+            AttrOp::Dash => have == want || have.strip_prefix(&want).is_some_and(|r| r.starts_with('-')),
+            AttrOp::Prefix => !want.is_empty() && have.starts_with(&want),
+            AttrOp::Suffix => !want.is_empty() && have.ends_with(&want),
+            AttrOp::Contains => !want.is_empty() && have.contains(&want),
+        }
+    }
+}
+
+/// Attributes that are on or off, which a bound `true` writes as present and
+/// empty, as Vue and the DOM do; anything else bound to `true` reads `"true"`.
+const BOOLEAN_ATTRIBUTES: &[&str] = &["disabled", "readonly", "required", "checked", "autofocus", "multiple", "hidden", "open"];
+
 /// One compound selector, e.g. `view.card#main[role="section"]:hover`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct Compound {
     tag: Option<String>,
     id: Option<String>,
     classes: Vec<String>,
-    role: Option<String>,
+    /// `[type="checkbox"]`, `[disabled]`, `[role=heading]` and the rest.
+    attrs: Vec<AttrSel>,
     pseudos: Vec<Pseudo>,
     /// Ends in `::selection`. Such a compound never matches an element: it
     /// names the element's highlighted text, which [`matched_selection`]
@@ -3011,6 +3125,20 @@ impl Rule {
             || self.chain.iter().any(|c| c.pseudos.iter().any(Pseudo::has_sibling_step))
     }
 
+    /// Whether an attribute selector anywhere in this rule asks about `name`,
+    /// so the build has to evaluate a bound form of it.
+    fn reads_attribute(&self, name: &str) -> bool {
+        fn compound(c: &Compound, name: &str) -> bool {
+            c.attrs.iter().any(|a| a.name == name)
+                || c.pseudos.iter().any(|p| match p {
+                    Pseudo::Not(list) => list.iter().any(|c| compound(c, name)),
+                    Pseudo::Is { alts, .. } => alts.iter().any(|alt| alt.chain.iter().any(|c| compound(c, name))),
+                    _ => false,
+                })
+        }
+        self.chain.iter().any(|c| compound(c, name))
+    }
+
     /// Whether matching this rule counts siblings from the end, so they have
     /// to be counted before they are built. See [`count_rendered`].
     fn reads_total(&self) -> bool {
@@ -3172,6 +3300,10 @@ struct ElemDesc {
     id: Option<String>,
     classes: Vec<String>,
     role: Option<String>,
+    /// The attributes an attribute selector can ask about, as written, and
+    /// the bound ones the build evaluated. Not `class`, `id` or `role`,
+    /// which are above, nor a directive or a handler.
+    attrs: Vec<(String, String)>,
     states: ElemStates,
     /// How many rendered siblings it has, itself included, when a rule
     /// counts from the end (`:last-child`) and so had them counted before
@@ -3274,6 +3406,7 @@ impl ElemDesc {
             id: None,
             classes: Vec::new(),
             role: None,
+            attrs: Vec::new(),
             states: ElemStates::default(),
             total: None,
         }
@@ -3285,10 +3418,58 @@ impl ElemDesc {
             id: el.id().map(str::to_string),
             classes: el.classes().into_iter().map(str::to_string).collect(),
             role: el.role().map(str::to_string),
+            attrs: el
+                .attrs
+                .iter()
+                .filter(|a| selectable_attribute(&a.name))
+                .map(|a| (a.name.to_ascii_lowercase(), a.value.clone()))
+                .collect(),
             states: ElemStates::default(),
             total: None,
         }
     }
+}
+
+/// Whether `[name]` can ask about an attribute written this way: not one
+/// Rux reads into the descriptor itself, a directive, a handler or a bound
+/// form, which the build evaluates (see [`bound_attributes`]).
+fn selectable_attribute(name: &str) -> bool {
+    !(matches!(name, "class" | "id" | "role")
+        || name.starts_with("r-")
+        || name.starts_with('@')
+        || name.starts_with(':'))
+}
+
+/// The bound attributes of `el` some rule asks about, evaluated, with what
+/// they read put into `deps` so a change restyles the element. `false` and
+/// `null` leave the attribute off, as the DOM does when Vue binds them.
+fn bound_attributes(
+    el: &Element,
+    rules: &[Rule],
+    engine: &mut Engine,
+    locals: &Locals,
+    deps: &mut HashSet<String>,
+) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for attr in &el.attrs {
+        let Some(name) = attr.name.strip_prefix(':') else { continue };
+        let name = name.to_ascii_lowercase();
+        if !selectable_attribute(&name) || matches!(name.as_str(), "style" | "key") {
+            continue;
+        }
+        if !rules.iter().any(|r| r.reads_attribute(&name)) {
+            continue;
+        }
+        let (value, read) = located(Some(attr.line), || engine.eval_value_tracked(&attr.value, locals));
+        deps.extend(read);
+        let text = match value {
+            None | Some(Value::Null) | Some(Value::Bool(false)) => continue,
+            Some(Value::Bool(true)) if BOOLEAN_ATTRIBUTES.contains(&name.as_str()) => String::new(),
+            Some(v) => v.to_display(),
+        };
+        out.push((name, text));
+    }
+    out
 }
 
 // ── Media queries ───────────────────────────────────────────────────────────
@@ -4748,16 +4929,27 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                 }
             }
             '[' => {
-                // Only `[role="…"]` / `[role=…]` is understood in M2.
-                let end = token.find(']')?;
-                let inner = &token[i + 1..end];
-                if let Some(rest) = inner.strip_prefix("role") {
-                    let val = rest
-                        .trim_start_matches('=')
-                        .trim_matches(|ch| ch == '"' || ch == '\'');
-                    c.role = Some(val.to_string());
-                    spec.1 += 1;
+                // Up to the `]` that is not inside quotes.
+                let mut end = i + 1;
+                let mut quote = None;
+                while end < chars.len() {
+                    match (quote, chars[end]) {
+                        (None, '"' | '\'') => quote = Some(chars[end]),
+                        (Some(q), ch) if ch == q => quote = None,
+                        (None, ']') => break,
+                        _ => {}
+                    }
+                    end += 1;
                 }
+                let inner: String = chars.get(i + 1..end)?.iter().collect();
+                let Some(sel) = AttrSel::parse(&inner) else {
+                    warn_once(format!(
+                        "`[{inner}]` is not an attribute selector CSS can read, so the rule `{token}` is in never applies"
+                    ));
+                    return None;
+                };
+                c.attrs.push(sel);
+                spec.1 += 1;
                 i = end + 1;
             }
             ':' => {
@@ -4908,7 +5100,7 @@ fn specificity_of(c: &Compound) -> (u32, u32, u32) {
     });
     (
         c.id.is_some() as u32 + pseudos.0,
-        (c.classes.len() + c.role.is_some() as usize) as u32 + pseudos.1,
+        (c.classes.len() + c.attrs.len()) as u32 + pseudos.1,
         (c.tag.is_some() || c.selection) as u32 + pseudos.2,
     )
 }
@@ -5035,11 +5227,9 @@ fn matches_compound(c: &Compound, el: &ElemDesc, at: Option<Site>) -> bool {
             return false;
         }
     }
-    if let Some(r) = &c.role {
-        // Roles match case-insensitively (role="Heading" ~ [role="heading"]).
-        if !el.role.as_deref().is_some_and(|er| er.eq_ignore_ascii_case(r)) {
-            return false;
-        }
+    // Roles match case-insensitively (role="Heading" ~ [role="heading"]).
+    if !c.attrs.iter().all(|a| a.holds(el)) {
+        return false;
     }
     // Every pseudo-class in the compound must hold (`.btn:hover:active`).
     c.pseudos.iter().all(|p| match p {
@@ -6101,6 +6291,7 @@ fn build_node_inner(
     });
 
     let mut desc = ElemDesc::of(el);
+    desc.attrs.extend(bound_attributes(el, rules, engine, locals, &mut disabled_deps));
     // Counted by the parent before its children were built, when a rule
     // counts from the end. The root has no siblings but itself.
     desc.total = match ancestors.last() {
@@ -14460,6 +14651,7 @@ mod tests {
             id: None,
             classes: Vec::new(),
             role: None,
+            attrs: Vec::new(),
             states: ElemStates::default(),
             total: None,
         };
@@ -16858,7 +17050,7 @@ mod from_the_end_tests {
     #[test]
     fn from_the_end_reads_the_total() {
         let (chain, combs, _) = super::parse_selector(".a:last-child").unwrap();
-        let mut el = super::ElemDesc { tag: "view".into(), id: None, classes: vec!["a".into()], role: None, states: Default::default(), total: Some(3) };
+        let mut el = super::ElemDesc { tag: "view".into(), id: None, classes: vec!["a".into()], role: None, attrs: Vec::new(), states: Default::default(), total: Some(3) };
         let prev = vec![el.clone(), el.clone()];
         assert!(super::matches_chain(&chain, &combs, &el, &[], &prev));
         assert!(!super::matches_chain(&chain, &combs, &el, &[], &prev[..1]));
@@ -16926,6 +17118,70 @@ mod selector_list_tests {
         };
         assert!(red(&built(&src("where"), None).children[0]), ":where() lost to the later .a");
         assert!(!red(&built(&src("is"), None).children[0]), ":is() carried an id's weight");
+    }
+
+    /// Every attribute operator CSS has. Until 2026-10-23 only `[role=…]` was
+    /// read, and any other attribute test was dropped from its compound, so
+    /// `input[type=checkbox]` styled every input.
+    #[test]
+    fn attribute_selectors_test_the_attribute() {
+        let red_for = |selector: &str| {
+            let root = built(
+                &format!(
+                    r#"<template><screen>
+                         <input type="text" placeholder="Search lessons" r-model="q" />
+                         <input type="checkbox" r-model="on" />
+                       </screen></template>
+                       <script>let q = signal(""); let on = signal(false);</script>
+                       <style>{selector} {{ background: #ff0000; }}</style>"#
+                ),
+                None,
+            );
+            (red(&root.children[0]), red(&root.children[1]))
+        };
+        assert_eq!(red_for("input[type=checkbox]"), (false, true));
+        assert_eq!(red_for("[type='text']"), (true, false));
+        assert_eq!(red_for("[placeholder]"), (true, false));
+        assert_eq!(red_for("[placeholder~=lessons]"), (true, false));
+        assert_eq!(red_for("[placeholder^=Sea]"), (true, false));
+        assert_eq!(red_for("[placeholder$=\"sons\"]"), (true, false));
+        assert_eq!(red_for("[placeholder*=h\\ l]"), (true, false), "an escaped space is part of the value");
+        assert_eq!(red_for("[placeholder*='h l']"), (true, false));
+        assert_eq!(red_for("[type=TEXT]"), (false, false), "values are case-sensitive");
+        assert_eq!(red_for("[type=TEXT i]"), (true, false));
+        assert_eq!(red_for("[placeholder^='']"), (false, false), "an empty prefix matches nothing");
+        assert_eq!(red_for("input:not([type=checkbox])"), (true, false));
+        assert_eq!(red_for("input:where([type='button'], [type='checkbox'])"), (false, true));
+        assert_eq!(red_for("[data-state]"), (false, false), "no Rux element carries it");
+        assert_eq!(red_for("[type=text"), (false, false), "an unclosed bracket is no selector");
+    }
+
+    /// `[lang|=en]` is `en` and `en-` anything; `[dir=rtl]` reads the
+    /// attribute as written.
+    #[test]
+    fn dash_and_dir_attributes() {
+        let root = built(
+            r#"<template><screen><view dir="rtl" class="a" /><view class="a" /></screen></template>
+               <style>.a[dir|=rtl] { background: #ff0000; }</style>"#,
+            None,
+        );
+        assert!(red(&root.children[0]));
+        assert!(!red(&root.children[1]));
+    }
+
+    /// A bound attribute is matched by its value now, and `false` takes it
+    /// off, as binding it does in the DOM.
+    #[test]
+    fn a_bound_attribute_is_matched_by_its_value() {
+        let src = |on: bool| {
+            format!(
+                r#"<template><screen><button :disabled="off" class="b"><text>Go</text></button></screen></template>
+                   <script>let off = signal({on});</script>
+                   <style>.b[disabled] {{ background: #ff0000; }}</style>"#
+            )
+        };
+        assert!(red(&built(&src(true), None).children[0]));
+        assert!(!red(&built(&src(false), None).children[0]));
     }
 
     /// Tailwind's `group-hover:`: the element is styled while an ancestor
