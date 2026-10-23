@@ -2113,8 +2113,9 @@ kept with the rest of the saved state, and the photo is delivered to the app
 as it comes back. `capture="user"` asks for the front camera through the
 extras most camera apps read; the rest open on their own choice.
 
-Drag and drop onto the input is later. `pickFile` and `pickFiles` give the same `File`
-on the desktop (see `docs/07-script.md`).
+Drag and drop onto the input is later. `pickFile` and `pickFiles` give the
+same `File` on every platform, through the same picker on the web and
+Android (see `docs/07-script.md`).
 
 Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
 between the switch's two ends, and a drawn date picker on desktop or in a

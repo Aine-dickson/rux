@@ -576,9 +576,16 @@ async fn saveAs() {
   dialog run off the window's thread, and the path comes back as an `await`'s
   answer does. On Linux it is the desktop portal's dialog, not GTK's.
 - **`file.path` is the desktop's**, for the app's Rust to open; `file.text()`
-  reads it from script. On the web and on Android each dialog throws an
-  `Error` of `kind` `"unsupported"` until those are built, and there a `File`
-  will carry no `path`.
+  reads it from script, everywhere.
+- **On the web and on Android** `pickFile` and `pickFiles` open the picker an
+  `<input type="file">` opens (the browser's; the system's document picker),
+  `filters` becoming its `accept`, and give the same `File`s, with no `path`.
+  `title` and `folder` have nothing to set there. A browser opens a picker
+  only during a person's gesture, so call one **in a tap handler, before
+  any other `await`**: anywhere else it throws an `Error` of `kind`
+  `"gesture"` rather than a picker that never opens. One picker at a time:
+  a second call while one is open throws `"busy"`. `pickSaveFile` throws
+  `"unsupported"` there, since neither has a save dialog that gives a path.
 - Written out, they are `use native::rux::{pickFile};`, which is what a script
   that calls one gets without writing it.
 

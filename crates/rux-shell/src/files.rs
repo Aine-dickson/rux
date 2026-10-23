@@ -55,12 +55,19 @@ fn url_of(file: &Any) -> Option<String> {
 }
 
 /// An answer that arrives from elsewhere: a one-shot channel, as a future.
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 #[derive(Clone, Default)]
-struct Slot(std::sync::Arc<std::sync::Mutex<(Option<Result<Any, Error>>, Option<std::task::Waker>)>>);
+pub(crate) struct Slot(std::sync::Arc<std::sync::Mutex<(Option<Result<Any, Error>>, Option<std::task::Waker>)>>);
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 impl Slot {
+    /// A slot already answered with this error.
+    pub(crate) fn failed(error: Error) -> Self {
+        let slot = Slot::default();
+        slot.set(Err(error));
+        slot
+    }
+
     fn set(&self, answer: Result<Any, Error>) {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         s.0 = Some(answer);
@@ -70,7 +77,7 @@ impl Slot {
     }
 }
 
-#[cfg(target_arch = "wasm32")]
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
 impl std::future::Future for Slot {
     type Output = Result<Any, Error>;
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
@@ -191,6 +198,45 @@ pub(crate) fn accept_mime_types(accept: &str) -> String {
         }
     }
     out.join(",")
+}
+
+/// A script's `pickFile` or `pickFiles` waiting on the picker a file input
+/// also opens, and whether it asked for several. Its answer comes back as an
+/// input's does, and is taken here first. See [`answer_script_pick`].
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+static SCRIPT_PICK: std::sync::Mutex<Option<(Slot, bool)>> = std::sync::Mutex::new(None);
+
+/// Wait for the picker's next answer, for a script. An error while another
+/// script's pick is waiting: there is one picker.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub(crate) fn script_pick(multiple: bool) -> Result<Slot, Error> {
+    let mut waiting = SCRIPT_PICK.lock().unwrap_or_else(|e| e.into_inner());
+    if waiting.is_some() {
+        return Err(Error::new("busy", "a picker is already open"));
+    }
+    let slot = Slot::default();
+    *waiting = Some((slot.clone(), multiple));
+    Ok(slot)
+}
+
+/// Whether a script is waiting on the picker, which a file input then
+/// leaves alone.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub(crate) fn script_picking() -> bool {
+    SCRIPT_PICK.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+/// Give a picker's answer to the script waiting on it: `pickFile` a `File`
+/// or `none`, `pickFiles` a list, empty when cancelled. The files back when
+/// no script is waiting, for the file input that is.
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+pub(crate) fn answer_script_pick(files: Option<Vec<Any>>) -> Option<Option<Vec<Any>>> {
+    let Some((slot, multiple)) = SCRIPT_PICK.lock().unwrap_or_else(|e| e.into_inner()).take() else {
+        return Some(files);
+    };
+    let files = files.unwrap_or_default();
+    slot.set(Ok(if multiple { Any::Array(files) } else { files.into_iter().next().unwrap_or(Any::None) }));
+    None
 }
 
 /// The file input whose picker is open: where its answer goes, and what

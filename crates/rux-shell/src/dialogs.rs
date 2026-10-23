@@ -12,9 +12,9 @@
 //! Windows, the desktop portal on Linux, so no GTK), the window keeps
 //! painting, and the path comes back as an `await`'s answer does.
 //!
-//! On the web and on Android a dialog gives no path (a browser gives the
-//! contents, Android a `content://` address), so there each one throws an
-//! `Error` of `kind` `"unsupported"` until those are built.
+//! On the web and on Android `pickFile` and `pickFiles` open the picker a
+//! file input opens, and give the same `File`s it does, with no `path`.
+//! `pickSaveFile` throws there: neither has a save dialog that gives a path.
 
 use rux_runtime::native::{install, Any, Call, Error, Module};
 
@@ -115,13 +115,44 @@ async fn pick(kind: Pick, given: Any) -> Result<Any, Error> {
     })
 }
 
+/// On the web and Android, the picker a file input opens (the browser's,
+/// the system's document picker), its answer through a
+/// [`crate::files::Slot`]. `filters` become `accept`; `title` and `folder`
+/// have nothing to set there. A save dialog has no counterpart that gives a
+/// path, so `pickSaveFile` throws.
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-async fn pick(kind: Pick, _given: Any) -> Result<Any, Error> {
-    let name = match kind {
-        Pick::File => "pickFile",
-        Pick::Files => "pickFiles",
-        Pick::Save => "pickSaveFile",
-    };
+fn pick(kind: Pick, given: Any) -> crate::files::Slot {
+    use crate::files::Slot;
     let here = if cfg!(target_os = "android") { "on Android" } else { "on the web" };
-    Err(Error::new("unsupported", format!("`{name}` is not built {here} yet")))
+    let multiple = match kind {
+        Pick::File => false,
+        Pick::Files => true,
+        Pick::Save => {
+            return Slot::failed(Error::new("unsupported", format!("`pickSaveFile` gives a path, and there is none {here}")))
+        }
+    };
+    let accept = options(given)
+        .filters
+        .iter()
+        .flat_map(|(_, exts)| exts.iter().map(|e| format!(".{e}")))
+        .collect::<Vec<_>>()
+        .join(",");
+    // A browser opens a picker only during a person's gesture, and one that
+    // is refused never answers: an error now says why instead.
+    #[cfg(target_arch = "wasm32")]
+    if !crate::web_user_activation() {
+        let name = if multiple { "pickFiles" } else { "pickFile" };        return Slot::failed(Error::new(
+            "gesture",
+            format!("`{name}` opens the browser's picker only from a tap: call it in a tap handler, before any `await`"),
+        ));
+    }
+    let slot = match crate::files::script_pick(multiple) {
+        Ok(slot) => slot,
+        Err(e) => return Slot::failed(e),
+    };
+    #[cfg(target_arch = "wasm32")]
+    crate::web_open_files(&accept, multiple, None);
+    #[cfg(target_os = "android")]
+    crate::android_pick_files(&crate::files::accept_mime_types(&accept), multiple, None);
+    slot
 }

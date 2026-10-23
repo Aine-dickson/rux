@@ -2802,6 +2802,9 @@ typed into the dialog's name box. Tests cannot open the dialog; the drive can.
 | Android: `capture` | `accept="image/*" capture="environment"`, shutter, accept | the camera opens, not the picker; `capture-….jpg` beside the button; the photo drawn at `width: 120px` with its own proportions; `@change` once | emulator: pass |
 | Android: killed behind the camera | open the camera, `kill -9` the app's process (as root), take and accept a photo | the app comes back with the new photo in that input and `@change` run; the other inputs empty, their `File`s being app data | emulator: pass |
 | Android: cancel | open the camera, Back | `@cancel` once, the photo kept | emulator: pass |
+| Android: `pickFile` | a button awaiting `pickFile` with a `txt` filter, then `f.name`, `f.type`, `await f.text()`; again, Back; then the camera input, Back | the picker opens on `text/plain` (the png greyed); `note.txt (text/plain): Hello…`, accent intact; `none`; the input's `@cancel` runs, so the picker is free again | emulator: pass |
+| Web: `pickFile` | the same button in Brave, the chooser intercepted over CDP; then cancelled; then the first input | the chooser opens from the tap with `accept=".txt"`; the file's name, type and text; `none`; the input opens its own chooser after | web (Brave): pass |
+| Web: `pickFile` with no gesture | a `mounted` hook awaiting `pickFile` in `try`, writing `e.kind` | `gesture`, shown at load, no chooser | web (Brave): pass. **Found**: the web loaded the document before installing Rux's modules, so this call cached the module's placeholder and every later `pickFile` in the page answered `none`; fixed by installing first |
 | Android: on a phone, a recorder, `capture="user"` | the same on hardware; `accept="audio/*" capture` | the front camera; a recorder, or the picker where there is none | not driven |
 
 ## Standing gaps

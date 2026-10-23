@@ -5635,6 +5635,10 @@ impl App {
         if self.pending_file.is_some() {
             return;
         }
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        if files::script_picking() {
+            return;
+        }
         self.pending_file = Some(files::PendingFile::of(region));
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         files::open_picker(self.proxy.clone(), &file.accept, file.multiple);
@@ -5658,6 +5662,11 @@ impl App {
     /// names, once a frame has laid it out.
     fn picked_files(&mut self, files: Option<Vec<rux_runtime::native::Any>>) {
         #[cfg(target_os = "android")]
+        files::remember_images(files.as_deref().unwrap_or_default());
+        // A script's `pickFile` asked, not an input.
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        let Some(files) = files::answer_script_pick(files) else { return };
+        #[cfg(target_os = "android")]
         if self.pending_file.is_none() {
             let Some((model, row, instance)) = self.restored_picking.clone() else { return };
             let region = self.files.iter().find(|f| f.model == model && f.row == row && f.instance == instance);
@@ -5674,8 +5683,6 @@ impl App {
             }
         }
         let Some(input) = self.pending_file.take() else { return };
-        #[cfg(target_os = "android")]
-        files::remember_images(files.as_deref().unwrap_or_default());
         let chosen: Vec<rux_reactive::Value> =
             files.unwrap_or_default().into_iter().map(files::to_value).collect();
         if chosen.is_empty() {
@@ -9277,6 +9284,19 @@ thread_local! {
     static WEB_FILE: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
 }
 
+/// Whether the page holds a user activation, so a picker would open:
+/// `navigator.userActivation.isActive`, and `true` in a browser too old to
+/// say, which then decides for itself.
+#[cfg(target_arch = "wasm32")]
+fn web_user_activation() -> bool {
+    let Some(window) = web_sys::window() else { return false };
+    let get = |o: &wasm_bindgen::JsValue, k: &str| js_sys::Reflect::get(o, &k.into()).ok();
+    match get(&window.navigator(), "userActivation") {
+        Some(ua) if ua.is_object() => get(&ua, "isActive").and_then(|v| v.as_bool()).unwrap_or(true),
+        _ => true,
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 fn web_send(event: RuxEvent) {
     WEB_PROXY.with(|p| {
@@ -10423,6 +10443,7 @@ pub fn start_web(
 ) {
     use winit::platform::web::EventLoopExtWebSys;
 
+    install_rux_modules();
     let mut document = match Document::from_source(&source) {
         Ok(doc) => doc,
         Err(err) => {
@@ -10522,6 +10543,7 @@ pub fn start_web_app(
 ) {
     use winit::platform::web::EventLoopExtWebSys;
 
+    install_rux_modules();
     let mut document = match Document::load(std::path::Path::new(&entry)) {
         Ok(doc) => doc,
         Err(err) => {
@@ -10784,18 +10806,30 @@ impl DeviceProfile {
     }
 }
 
+/// Rux's own native modules: the file dialogs and settings.
+///
+/// **Before any document loads.** Loading declares what a document uses
+/// from source, with placeholder calls, and a call made while it loads (a
+/// `mounted` hook, a top-level read) keeps the one it resolved: the web
+/// loaded first, and its `pickFile` in a `mounted` answered `none` from
+/// then on. Again later is harmless: the same code again.
+fn install_rux_modules() {
+    dialogs::install_builtins();
+    settings::install_settings();
+    // A browser has no thread to run a native call's future on: it runs on
+    // the page's own, between frames, as every promise does. Before loading
+    // too, or a call made then is dropped unanswered.
+    #[cfg(target_arch = "wasm32")]
+    rux_runtime::native::set_spawner(|task| wasm_bindgen_futures::spawn_local(task));
+}
+
 /// Wake `event_loop` whenever a host function an `async fn` awaits
 /// answers. Every loop installs this, so a window asleep in `Wait` still
 /// hears the answer.
 fn wake_on_answers(event_loop: &EventLoop<RuxEvent>) {
     // Every loop passes here first, so this is also where Rux's own native
     // functions (the file dialogs) are put in place for every document.
-    dialogs::install_builtins();
-    settings::install_settings();
-    // A browser has no thread to run a native call's future on: it runs on
-    // the page's own, between frames, as every promise does.
-    #[cfg(target_arch = "wasm32")]
-    rux_runtime::native::set_spawner(|task| wasm_bindgen_futures::spawn_local(task));
+    install_rux_modules();
     let proxy = event_loop.create_proxy();
     rux_runtime::host::set_waker(move || {
         let _ = proxy.send_event(RuxEvent::Answered);
