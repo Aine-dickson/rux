@@ -45,10 +45,8 @@ async fn send() {
 </script>
 ```
 
-- `type="file"` with `r-model` holding the chosen file, or `none`.
-  `multiple` makes it a list. `accept` takes what HTML's does: extensions
-  (`.png`) and media types (`image/*`, `application/pdf`). `disabled`,
-  `required` and `@change` as other inputs have them.
+- `type="file"` with `r-model` holding the chosen file, or `none`, and the
+  attributes below.
 - **Drawn by Rux** as a browser draws one: a "Choose file" button and the
   chosen name beside it ("No file chosen" before). The button is
   `::file-selector-button`, which moves out of the CSS that passes quietly
@@ -57,6 +55,26 @@ async fn send() {
 - **A `File` value**: `name`, `size` (bytes), `type` (media type, `""` when
   unknown), `url` (something `<image :src>` can show), and `await
   file.text()` to read it as text. See decision 2 for bytes.
+
+## Its attributes and events
+
+HTML's, so a web author writes what they know. `allow` is not one (it is an
+`<iframe>`'s); `accept` is the one that says which files.
+
+| Attribute | What it does | In Rux |
+|---|---|---|
+| `accept` | Which files the picker offers: extensions (`.png`), media types (`application/pdf`) and families (`image/*`, `video/*`, `audio/*`), comma-separated | Desktop pickers filter by extension, so media types go through a small table of the common ones (`image/*` → png, jpg, jpeg, gif, webp, …). The web passes it to the browser as written; Android passes the media types to the intent. Only a hint, as in HTML: a person can still pick another file on some platforms, and `File.type` says what was picked |
+| `multiple` | More than one file | `r-model` holds a list, empty when nothing is chosen |
+| `capture` | On a phone, open the camera or a recorder rather than the file picker: `environment` (back camera) or `user` (front), with `accept` saying photo (`image/*`), video (`video/*`) or sound (`audio/*`) | Android: `ACTION_IMAGE_CAPTURE`, `ACTION_VIDEO_CAPTURE` or `RECORD_SOUND_ACTION` into a file Rux owns, handed back as a `File`. The web passes it to the browser, which honours it on phones. The desktop ignores it and opens the picker, as desktop browsers do |
+| `required` | Nothing chosen is invalid | Joins the form's validity, `:invalid` and `:user-invalid`, as other fields |
+| `disabled`, `:disabled` | Cannot be opened | As other inputs |
+| `name` | The field's name in a form | As other inputs |
+| `webkitdirectory` | Pick a whole folder | **Not proposed.** Not standard, though every browser has it, and Android's folder picking is another intent with another value. Later, if an app needs it |
+
+| Event | When | Notes |
+|---|---|---|
+| `@change` | A file (or files) was chosen, and `r-model` already holds it | After the binding is written, as other inputs do |
+| `@cancel` | The picker closed with nothing chosen | Newer HTML. Lets an app tell "nothing chosen" from "still choosing", which a spinner needs |
 
 ## How each platform does it
 
@@ -75,6 +93,44 @@ tap handler, and the docs say so.
 `pickFile` and `pickFiles` get the same plumbing on the web and Android once
 the input has it, which is what makes the return type a decision (3).
 
+## Media: what this starts, and what it does not
+
+The file input is where media enters Rux, and the `File` value is designed
+here as what media will play, so audio and video do not need a second idea
+of a file later.
+
+**What this proposal gives media:**
+
+- **Getting media in.** A photo, a video or a recording from the gallery or
+  the file system, and with `capture`, straight from the phone's own camera or
+  recorder. Recording is the platform app's, so Rux records nothing itself.
+- **A source a player can open on every platform.** `File.url` is a `file:`
+  path on the desktop, an object URL (`blob:`) on the web and a `content://`
+  URI on Android: each is exactly what that platform's own player accepts.
+  So the rule for this proposal is that **`url` must be playable as well as
+  showable**: an `<image :src>` today, an `<audio :src>` or `<video :src>`
+  when they exist, and the same value an `https:` address will be.
+- **`type`**, the media type, which a player needs to choose a decoder and an
+  app needs to tell a video from a photo.
+
+**What it does not give: playback.** That is the roadmap's, and stays split
+the way the roadmap splits it:
+
+- **Audio** (roadmap, v0.9 item 8) is an output stream, and probably a script
+  call before it is an element, since a sound effect is an action and not a
+  box: `let s = await loadSound(file.url); s.play();`, then an `<audio>` with
+  controls for a player. It is the smaller of the two: a decoder and an
+  output device, the same shape on every platform.
+- **Video** (roadmap, v0.11) is decoding plus frames into the wgpu textures
+  Rux draws with, through each platform's own decoder (Media Foundation,
+  AVFoundation, Android's `MediaCodec`, the browser's `<video>`), and is the
+  item most able to eat a milestone alone.
+
+Neither is part of this proposal. What this one owes them is the `File`
+value and its `url`, built so that they can take it as it is. A separate
+proposal for audio can be written whenever the owner wants it, now or when
+the roadmap reaches it.
+
 ## Phases
 
 1. **The `File` value and the desktop input.** The element, its look,
@@ -85,8 +141,9 @@ the input has it, which is what makes the return type a decision (3).
 2. **The web.** The hidden input, the gesture, the DOM `File`, `url` as an
    object URL (revoked when the value goes).
 3. **Android.** The intent, the activity result, `ContentResolver` reads,
-   `url` from the content URI. Driven on the emulator; a phone when there is
-   one.
+   `url` from the content URI, and `capture`'s camera and recorder intents.
+   Driven on the emulator, whose camera is a test scene; a phone when there
+   is one.
 4. **`pickFile` / `pickFiles` on the web and Android**, on the same
    plumbing, with whatever decision 3 says they return.
 
@@ -119,4 +176,11 @@ are later and not in this proposal.
    plain button with no name beside it.
 5. **Large files.** `text()` reads the whole file into memory. Proposed: no
    limit, a warning in the docs, and streaming left for when there is a
-   need.
+   need. A video is never read this way: a player opens its `url`.
+6. **`capture` in the first build?** It is the phone's camera and recorder for
+   the price of three intents, and the start of media for an app. Proposed:
+   yes, in phase 3 with the rest of Android.
+7. **`@cancel`?** Proposed: yes; it is cheap on every platform (the dialog
+   returns nothing) and a loading state needs it.
+8. **An audio proposal now, or when the roadmap reaches audio?** Nothing here
+   waits on it.
