@@ -691,3 +691,20 @@ fn a_transform_turns_about_its_origin() {
     assert_eq!(pushed(Some([Len::Pct(0.0), Len::Pct(0.0)])), Some((0.0, 0.0)));
     assert_eq!(pushed(Some([Len::Px(10.0), Len::Pct(1.0)])), Some((10.0, 50.0)));
 }
+
+/// A translation in a percentage is of the box's own size, put in front of
+/// the rest of the transform: Tailwind's `-translate-x-1/2` centring.
+#[test]
+fn a_percentage_translation_moves_by_the_box() {
+    let node = Node::new(Style {
+        width: Some(Len::Px(100.0)),
+        height: Some(Len::Px(50.0)),
+        rare: Some(Box::new(Rare { translate: Some([Len::Pct(-0.5), Len::Pct(1.0)]), ..Default::default() })),
+        ..Default::default()
+    });
+    let moved = paints(node).into_iter().find_map(|p| match p {
+        Paint::PushTransform(m) => Some((m[4], m[5])),
+        _ => None,
+    });
+    assert_eq!(moved, Some((-50.0, 50.0)));
+}

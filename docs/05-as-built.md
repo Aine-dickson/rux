@@ -633,6 +633,11 @@ transform (translate/scale/rotate; visual only; hit regions aren't transformed)
 transform-origin (keywords in either order, lengths, %; the default is the centre)
 translate, rotate, scale (the properties: applied in that order, then `transform`,
                        as in CSS; a 3D value is read for its 2D part)
+                      (a translation in % of the box's own size, Tailwind's
+                       -translate-x-1/2, is read in the `translate` property and
+                       in a translate() that leads a transform list; after a
+                       rotate or scale it warns. Until 2026-10-23 a % translation
+                       was dropped without a word)
 place-items, place-content, place-self (align then justify; one value is both)
 position (static|relative|sticky|absolute|fixed), top, right, bottom, left
 inset (1–4 values, as margin)
@@ -1018,7 +1023,7 @@ properties `transition` can, below; any other in a keyframe warns and is left
 as the box has it. An animation overrides a transition of the same property,
 as in CSS, and `prefers-reduced-motion` stills it the way it stills a
 transition: over before it starts. Not yet: `animation-composition`, scroll
-timelines, and `translate()` in a percentage, which is drawn as no move.
+timelines.
 
 **Enter and leave:** `r-transition` on an element with `r-if` (or on a keyed
 `r-for` row) says that its arrival and departure are animated. What the two

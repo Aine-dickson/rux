@@ -5895,6 +5895,7 @@ fn keyframe_animations(
                     color: p.get("color").and_then(|c| parse_color(c)),
                     font_size: p.contains_key("font-size").then_some(own_size),
                     transform: transform_fns(&p),
+                    translate: translate_pct(&p),
                     props: animated,
                     style: Box::new(style),
                 }
@@ -5911,6 +5912,7 @@ fn keyframe_animations(
             paused: spec.paused,
             steps,
             base_transform: transform_fns(props),
+            base_translate: translate_pct(props),
         });
     }
     (!out.is_empty()).then(|| out.into())
@@ -5986,6 +5988,69 @@ pub(crate) fn transform_fns_matrix(list: &[TransformFn]) -> Transform {
         m = mat_mul(m, step);
     }
     m
+}
+
+/// A translation in a percentage of the box, or maths with one in it, which
+/// the matrix cannot hold: it is the box's size that a percentage is of, and
+/// only the layout knows it. Read where CSS puts it first, so it can be put
+/// in front of the matrix exactly: the `translate` property, which always
+/// applies first, and a `translate()` leading a `transform` list with no
+/// `rotate` or `scale` property before it. Anywhere else it is said.
+fn translate_pct(p: &HashMap<String, String>) -> Option<[Len; 2]> {
+    let lens = |x: &str, y: Option<&str>| -> Option<[Len; 2]> {
+        let x = parse_len(x)?;
+        let y = match y {
+            Some(y) => parse_len(y)?,
+            None => Len::Px(0.0),
+        };
+        let relative = |l: Len| matches!(l, Len::Pct(_) | Len::Calc(_));
+        (relative(x) || relative(y)).then_some([x, y])
+    };
+    let mut out = p.get("translate").map(|v| v.trim()).filter(|v| !v.eq_ignore_ascii_case("none")).and_then(|v| {
+        let parts = split_top_level(v);
+        lens(parts.first()?, parts.get(1).copied())
+    });
+    let mut rest = p.get("transform").map(|v| v.trim()).unwrap_or("");
+    let mut first = !["rotate", "scale"].iter().any(|k| p.get(*k).is_some_and(|v| !v.trim().eq_ignore_ascii_case("none")));
+    while let Some(open) = rest.find('(') {
+        let name = rest[..open].trim().to_ascii_lowercase();
+        let Some(close) = closing_paren(&rest[open + 1..]).map(|c| c + open + 1) else { break };
+        let args: Vec<&str> = split_top_level_commas(&rest[open + 1..close]).into_iter().map(str::trim).collect();
+        let pct = match name.as_str() {
+            "translate" => args.first().and_then(|x| lens(x, args.get(1).copied())),
+            "translatex" => args.first().and_then(|x| lens(x, None)),
+            "translatey" => args.first().and_then(|y| lens("0", Some(y))),
+            _ => None,
+        };
+        if let Some(pct) = pct {
+            if first {
+                // Two leading translations add up; a translation commutes
+                // with another.
+                out = Some(match out {
+                    Some([x, y]) => [add_len(x, pct[0]), add_len(y, pct[1])],
+                    None => pct,
+                });
+            } else {
+                warn_once(format!(
+                    "`{name}()` in a percentage after another transform is not drawn yet; put it first in the list"
+                ));
+            }
+        }
+        first = first && pct.is_some();
+        rest = rest[close + 1..].trim_start();
+    }
+    out
+}
+
+/// Two lengths as one, where both are a percentage or both px; otherwise the
+/// first, which is the one a translation was asked for in.
+fn add_len(a: Len, b: Len) -> Len {
+    match (a, b) {
+        (Len::Pct(x), Len::Pct(y)) => Len::Pct(x + y),
+        (Len::Px(x), Len::Px(y)) => Len::Px(x + y),
+        (Len::Px(z), other) | (other, Len::Px(z)) if z == 0.0 => other,
+        (a, _) => a,
+    }
 }
 
 /// `transform-origin`: one or two positions, x then y, or keywords in either
@@ -10915,6 +10980,9 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("transform") {
         st.transform = parse_transform(v);
     }
+    if let Some(pct) = translate_pct(p) {
+        st.rare_mut().translate = Some(pct);
+    }
     if let Some(v) = p.get("transform-origin") {
         if let Some(origin) = parse_transform_origin(v) {
             st.rare_mut().transform_origin = Some(origin);
@@ -11847,9 +11915,10 @@ fn individual_transforms(p: &HashMap<String, String>, transform: Option<Transfor
     let mut m: Transform = [1.0, 0.0, 0.0, 1.0, 0.0, 0.0];
     let mut any = transform.is_some();
     if let Some(v) = value("translate") {
+        // A percentage in either half makes it `translate_pct`'s.
         let parts = split_top_level(v);
-        if let Some(tx) = parts.first().and_then(|s| parse_px(s)) {
-            let ty = parts.get(1).and_then(|s| parse_px(s)).unwrap_or(0.0);
+        if let Some(px) = parts.iter().map(|s| parse_px(s)).collect::<Option<Vec<f32>>>() {
+            let (tx, ty) = (px.first().copied().unwrap_or(0.0), px.get(1).copied().unwrap_or(0.0));
             m = mat_mul(m, [1.0, 0.0, 0.0, 1.0, tx, ty]);
             any = true;
         }
@@ -11890,9 +11959,13 @@ fn transform_fn(name: &str, args: &str) -> Option<Transform> {
     let nums: Vec<&str> = args.split(',').map(str::trim).filter(|s| !s.is_empty()).collect();
     let num = |i: usize| nums.get(i).and_then(|s| s.parse::<f32>().ok());
     match name {
+        // Not when either half is a percentage: that is `translate_pct`'s.
         "translate" => {
             let tx = parse_px(nums.first()?)?;
-            let ty = nums.get(1).and_then(|s| parse_px(s)).unwrap_or(0.0);
+            let ty = match nums.get(1) {
+                Some(s) => parse_px(s)?,
+                None => 0.0,
+            };
             Some([1.0, 0.0, 0.0, 1.0, tx, ty])
         }
         "translatex" => Some([1.0, 0.0, 0.0, 1.0, parse_px(nums.first()?)?, 0.0]),
@@ -18062,6 +18135,24 @@ mod tailwind_property_tests {
         assert_eq!(a.fill, rux_layout::AnimationFill::Both);
         assert!(first(".a { animation: nothing-here 1s; }").style.animations().is_none());
         assert!(first(".a { animation: none; }").style.animations().is_none());
+    }
+
+    /// A translation in a percentage of the box: the property, a leading
+    /// `translate()`, and Tailwind's `-translate-x-1/2`; px stays in the
+    /// matrix.
+    #[test]
+    fn a_percentage_translation_is_kept_for_the_layout() {
+        let pct = |css: &str| first(css).style.translate_pct();
+        let size = |l: [Len; 2]| (l[0].px(200.0, (0.0, 0.0)), l[1].px(100.0, (0.0, 0.0)));
+        assert_eq!(pct(".a { translate: -50% -50%; }").map(size), Some((-100.0, -50.0)));
+        assert_eq!(pct(".a { translate: 10px 50%; }").map(size), Some((10.0, 50.0)));
+        assert!(first(".a { translate: 10px 50%; }").style.transform.is_none(), "not counted twice");
+        let n = first(".a { transform: translate(-50%, 0) rotate(90deg); }");
+        assert_eq!(n.style.translate_pct().map(size), Some((-100.0, 0.0)));
+        assert!(n.style.transform.is_some_and(|m| m[0].abs() < 1e-4), "the rotation is still in the matrix");
+        let n = first(".a { --tw-translate-x: calc(calc(1/2 * 100%) * -1); --tw-translate-y: 0; translate: var(--tw-translate-x) var(--tw-translate-y); }");
+        assert_eq!(n.style.translate_pct().map(size), Some((-100.0, 0.0)));
+        assert!(pct(".a { translate: 10px 4px; }").is_none());
     }
 
     /// `transform-origin`: keywords either way round, lengths, and a single

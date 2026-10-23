@@ -352,7 +352,61 @@ fn keyframe_frame(node: &mut Node, list: &[KeyframeAnimation], tracks: &mut Vec<
             write(node, prop, value.clone());
             track.base.insert(prop, base);
             track.written.insert(prop, value);
+            if prop == AnimProp::Transform {
+                let shift = match at {
+                    Some(g) => translate_at(a, g),
+                    None => a.base_translate,
+                };
+                if shift.is_some() || node.style.translate_pct().is_some() {
+                    node.style.rare_mut().translate = shift;
+                }
+            }
         }
+    }
+}
+
+/// The translation in a percentage of the box at `g`, between the keyframes
+/// that set the transform, as [`value_at`] walks them. `none` is no move in
+/// the unit of the other end, so `translateY(-25%)` to `none` walks to 0%.
+fn translate_at(a: &KeyframeAnimation, g: f32) -> Option<[Len; 2]> {
+    let mut points: Vec<(f32, Option<Easing>, Option<[Len; 2]>)> = a
+        .steps
+        .iter()
+        .filter(|s| s.props.contains(&AnimProp::Transform))
+        .map(|s| (s.offset, s.easing, s.translate))
+        .collect();
+    if points.iter().all(|p| p.2.is_none()) && a.base_translate.is_none() {
+        return None;
+    }
+    if points.first().is_none_or(|p| p.0 > 0.0) {
+        points.insert(0, (0.0, None, a.base_translate));
+    }
+    if points.last().is_some_and(|p| p.0 < 1.0) {
+        points.push((1.0, None, a.base_translate));
+    }
+    let i = points.iter().rposition(|p| p.0 <= g).unwrap_or(0);
+    let here = &points[i];
+    let Some(next) = points.get(i + 1) else { return here.2 };
+    let span = next.0 - here.0;
+    let local = if span > 0.0 { ((g - here.0) / span).clamp(0.0, 1.0) } else { 1.0 };
+    let t = here.1.unwrap_or(a.easing).eval(local);
+    let zero = |l: Len| match l {
+        Len::Pct(_) => Len::Pct(0.0),
+        _ => Len::Px(0.0),
+    };
+    let axis = |i: usize| -> Option<Len> {
+        let (x, y) = (here.2.map(|v| v[i]), next.2.map(|v| v[i]));
+        let (x, y) = match (x, y) {
+            (Some(x), Some(y)) => (x, y),
+            (Some(x), None) => (x, zero(x)),
+            (None, Some(y)) => (zero(y), y),
+            (None, None) => return None,
+        };
+        Some(lerp_len(x, y, t).unwrap_or(if t < 0.5 { x } else { y }))
+    };
+    match (axis(0), axis(1)) {
+        (None, None) => None,
+        (x, y) => Some([x.unwrap_or(Len::Px(0.0)), y.unwrap_or(Len::Px(0.0))]),
     }
 }
 
@@ -1402,8 +1456,10 @@ mod tests {
                 color: None,
                 font_size: None,
                 transform: vec![TransformFn { name: "rotate".into(), args: vec![std::f32::consts::TAU] }],
+                translate: None,
             }],
             base_transform: Vec::new(),
+            base_translate: None,
         }
     }
 
@@ -1439,6 +1495,7 @@ mod tests {
                     color: None,
                     font_size: None,
                     transform: Vec::new(),
+                    translate: None,
                 }],
                 ..spin(fill, 1.0)
             };

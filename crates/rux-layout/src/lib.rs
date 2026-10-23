@@ -1130,6 +1130,11 @@ pub struct Rare {
     /// `animation`: each one named, with its `@keyframes` already worked out
     /// against this box. Empty for almost every box.
     pub animations: Option<std::sync::Arc<[KeyframeAnimation]>>,
+    /// A translation in a percentage of the box's own size, or maths with
+    /// one in it, x then y: `translate: -50%`, Tailwind's `-translate-x-1/2`.
+    /// Only the layout knows the size, so it is kept apart from `transform`
+    /// and put in front of it at paint, where CSS applies it.
+    pub translate: Option<[Len; 2]>,
 }
 
 /// One `animation` on a box, as the build worked it out: its timing, and its
@@ -1153,6 +1158,8 @@ pub struct KeyframeAnimation {
     /// The box's own transform, as its functions, for the keyframes that
     /// leave the transform to it: `none` is empty.
     pub base_transform: Vec<TransformFn>,
+    /// And its translation in a percentage of its size. See [`Rare::translate`].
+    pub base_translate: Option<[Len; 2]>,
 }
 
 /// One keyframe: where it sits, from 0 to 1, the properties it sets, and the
@@ -1172,6 +1179,9 @@ pub struct KeyframeStep {
     /// turns all the way round rather than standing still between two
     /// identical matrices.
     pub transform: Vec<TransformFn>,
+    /// Its translation in a percentage of the box's size, as
+    /// [`Rare::translate`]: `animate-bounce`'s `translateY(-25%)`.
+    pub translate: Option<[Len; 2]>,
 }
 
 /// A transform function and its arguments in px, radians or plain numbers.
@@ -1216,6 +1226,11 @@ impl Style {
     /// The box's `animation`s, none for almost every box.
     pub fn animations(&self) -> Option<&std::sync::Arc<[KeyframeAnimation]>> {
         self.rare.as_ref().and_then(|r| r.animations.as_ref())
+    }
+
+    /// The translation in a percentage of the box's size, `None` for none.
+    pub fn translate_pct(&self) -> Option<[Len; 2]> {
+        self.rare.as_ref().and_then(|r| r.translate)
     }
 
     /// The rarely set properties, made to write into.
@@ -4163,7 +4178,7 @@ struct Built<'a> {
     handlers: &'a [Handler],
     models: &'a [Bound],
     focus_labels: &'a [(NodeId, String, Option<String>)],
-    transforms: &'a [(NodeId, Transform, [Len; 2])],
+    transforms: &'a [(NodeId, Transform, [Len; 2], Option<[Len; 2]>)],
     opacities: &'a [(NodeId, f32, BlendMode)],
     states: &'a [(NodeId, Vec<usize>)],
     access: &'a [(NodeId, Access, Option<String>)],
@@ -4197,7 +4212,7 @@ fn index(
     hidden: &[(NodeId, bool)],
     opacities: &[(NodeId, f32, BlendMode)],
     scrolls: &[ScrollFacts],
-    transforms: &[(NodeId, Transform, [Len; 2])],
+    transforms: &[(NodeId, Transform, [Len; 2], Option<[Len; 2]>)],
     states: &[(NodeId, Vec<usize>)],
     access: &[(NodeId, Access, Option<String>)],
     paths: &[(NodeId, Vec<usize>)],
@@ -4420,7 +4435,7 @@ fn build(
     // `opacity` below 1 or a `mix-blend-mode`: the box is drawn as a layer.
     opacities: &mut Vec<(NodeId, f32, BlendMode)>,
     scrolls: &mut Vec<ScrollFacts>,
-    transforms: &mut Vec<(NodeId, Transform, [Len; 2])>,
+    transforms: &mut Vec<(NodeId, Transform, [Len; 2], Option<[Len; 2]>)>,
     states: &mut Vec<(NodeId, Vec<usize>)>,
     access: &mut Vec<(NodeId, Access, Option<String>)>,
     // Where this node sits, and where every node's path is collected.
@@ -4806,9 +4821,10 @@ fn build(
     {
         opacities.push((id, node.style.opacity.max(0.0), node.style.blend));
     }
-    if let Some(tf) = node.style.transform {
+    if node.style.transform.is_some() || node.style.translate_pct().is_some() {
+        let tf = node.style.transform.unwrap_or([1.0, 0.0, 0.0, 1.0, 0.0, 0.0]);
         let origin = node.style.transform_origin().unwrap_or([Len::Pct(0.5); 2]);
-        transforms.push((id, tf, origin));
+        transforms.push((id, tf, origin, node.style.translate_pct()));
     }
     if node.style.overflow == Overflow::Scroll {
         scrolls.push(ScrollFacts {
@@ -5713,7 +5729,19 @@ fn collect(
     // `transform` wraps the box and its subtree. The parsed matrix is in local
     // coords; bake in the origin (CSS default: the box centre) so it applies to
     // absolute coordinates directly.
-    let transform = at.transform.map(|i| (b.transforms[i as usize].1, b.transforms[i as usize].2));
+    let transform = at.transform.map(|i| {
+        let (_, m, origin, pct) = b.transforms[i as usize];
+        // A translation in a percentage of the box goes in front of the rest,
+        // where CSS applies it, now that the box has a size.
+        let m = match pct {
+            Some([tx, ty]) => {
+                let [a, b2, c, d, e, f] = m;
+                [a, b2, c, d, e + tx.px(layout.size.width, vp), f + ty.px(layout.size.height, vp)]
+            }
+            None => m,
+        };
+        (m, origin)
+    });
     // What the subtree, and anything drawn on its behalf outside the paint
     // list, is seen through.
     let mut child_xform = xform;
