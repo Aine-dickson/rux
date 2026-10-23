@@ -142,11 +142,41 @@ pub fn set_notify(f: impl Fn() + Send + Sync + 'static) {
     *NOTIFY.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
 }
 
+static QUIET: Mutex<Option<Notify>> = Mutex::new(None);
+
+/// Call `f` when the last sound playing stops by itself: it ended, or
+/// reading it failed. From the audio thread, so `f` must not wait on it:
+/// hand anything slow to another thread.
+pub fn set_quiet(f: impl Fn() + Send + Sync + 'static) {
+    *QUIET.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
+}
+
+pub(crate) fn quiet() {
+    let f = QUIET.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(f) = f {
+        f();
+    }
+}
+
 pub(crate) fn notify() {
     let f = NOTIFY.lock().unwrap_or_else(|e| e.into_inner()).clone();
     if let Some(f) = f {
         f();
     }
+}
+
+/// Pause every sound and let the output device go, as when the app is put
+/// away or another app takes the sound. Nothing starts again by itself; the
+/// next [`Sound::play`] opens the output again.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn pause_all() {
+    output::pause_all();
+}
+
+/// Whether any sound is playing.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn any_playing() -> bool {
+    output::any_playing()
 }
 
 impl Sound {
@@ -177,6 +207,12 @@ impl Sound {
             duration,
             state: Mutex::new(State::new()),
         })))
+    }
+
+    /// Whether it is short enough to have been decoded whole (under ten
+    /// seconds): a tap's click, not a song.
+    pub fn is_short(&self) -> bool {
+        matches!(self.0.source, Source::Whole(_))
     }
 
     /// Its length in seconds, when the file says.

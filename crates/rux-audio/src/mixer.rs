@@ -19,6 +19,9 @@ pub struct Mixer {
     voices: Vec<Voice>,
     /// Frames played since the sounds' readers were last told.
     since_notify: usize,
+    /// Whether a sound played in the last [`Mixer::mix`], to tell when the
+    /// last one stops.
+    was_playing: bool,
 }
 
 /// A sound the mixer knows, and where its samples come from.
@@ -86,6 +89,14 @@ impl Voice {
             }
             Source::Stream(input) => Feed::Stream(stream(input.clone(), Arc::downgrade(shared), rate)?),
         };
+        let mut feed = feed;
+        // Made again for a sound part way through (a new output, or one
+        // opened again after the app was put away): from where it is.
+        let st = shared.state();
+        if st.current > 0.0 && !st.at_end {
+            feed.seek(st.current, rate);
+        }
+        drop(st);
         Ok(Voice { id: shared.id, sound: Arc::downgrade(shared), feed })
     }
 }
@@ -266,7 +277,7 @@ fn add(src: &[f32], sch: usize, out: &mut [f32], och: usize, volume: f32) {
 
 impl Mixer {
     pub fn new(rate: u32, channels: usize) -> Self {
-        Mixer { rate, channels: channels.max(1), voices: Vec::new(), since_notify: 0 }
+        Mixer { rate, channels: channels.max(1), voices: Vec::new(), since_notify: 0, was_playing: false }
     }
 
     pub(crate) fn has(&self, id: u64) -> bool {
@@ -275,6 +286,15 @@ impl Mixer {
 
     pub(crate) fn add(&mut self, v: Voice) {
         self.voices.push(v);
+    }
+
+    /// Every sound it knows that someone still holds.
+    pub(crate) fn sounds(&self) -> Vec<Arc<Shared>> {
+        self.voices.iter().filter_map(|v| v.sound.upgrade()).collect()
+    }
+
+    pub(crate) fn any_playing(&self) -> bool {
+        self.voices.iter().filter_map(|v| v.sound.upgrade()).any(|s| s.state().playing)
     }
 
     /// Fill `out`, interleaved at the output's channels, with every playing
@@ -343,6 +363,13 @@ impl Mixer {
         if any_playing {
             self.since_notify += frames;
         }
+        // Playing at the start of this mix is not playing at its end when
+        // the last sound just ended or failed.
+        let still = self.voices.iter().filter_map(|v| v.sound.upgrade()).any(|s| s.state().playing);
+        if self.was_playing && !still {
+            crate::quiet();
+        }
+        self.was_playing = still;
         if moved || self.since_notify >= (rate / 10).max(1) as usize {
             self.since_notify = 0;
             crate::notify();
@@ -441,5 +468,28 @@ mod tests {
         a.play_on(&m, 1_000).unwrap();
         m.lock().unwrap().mix(&mut out);
         assert_eq!(out, [0.0, 1.0]);
+    }
+
+    #[test]
+    fn a_new_output_picks_up_where_the_sound_was() {
+        // The output opened again, after the app was away or the device
+        // changed: the same sound, a new mixer, at another rate.
+        let a = of((0..1_000).map(|i| i as f32).collect(), 1, 1_000);
+        let first = Mutex::new(Mixer::new(1_000, 1));
+        a.play_on(&first, 1_000).unwrap();
+        let mut out = vec![0.0; 300];
+        first.lock().unwrap().mix(&mut out);
+        a.pause();
+        assert!(!first.lock().unwrap().any_playing());
+        assert_eq!(first.lock().unwrap().sounds().len(), 1);
+        let second = Mutex::new(Mixer::new(1_000, 1));
+        a.play_on(&second, 1_000).unwrap();
+        let mut out = vec![0.0; 2];
+        second.lock().unwrap().mix(&mut out);
+        assert_eq!(out, [300.0, 301.0]);
+        let twice = Mutex::new(Mixer::new(2_000, 1));
+        a.play_on(&twice, 2_000).unwrap();
+        twice.lock().unwrap().mix(&mut out);
+        assert!((out[0] - 302.0).abs() < 1.0, "{out:?}");
     }
 }

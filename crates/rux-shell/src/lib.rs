@@ -7730,8 +7730,14 @@ impl ApplicationHandler<RuxEvent> for App {
     /// showed up to three seconds of black on every return. It is tied to the
     /// device, not to the surface, and the device survives, so it is set aside
     /// here and picked up again in `resumed`.
+    ///
+    /// **Every sound pauses**, the output device is let go and the audio
+    /// focus given back; nothing starts again on the way back.
     #[cfg(target_os = "android")]
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
+        rux_audio::pause_all();
+        android_audio_focus(0);
+        rux_runtime::native::notify();
         if let Some(state) = self.state.take() {
             self.spare_renderer = Some((state.surface.dev_id, state.renderer));
         }
@@ -11930,6 +11936,38 @@ fn android_open_date(value: &str, min: Option<(i32, u32, u32)>, max: Option<(i32
         )?;
         Ok::<(), jni::errors::Error>(())
     });
+}
+
+/// Hold Android's audio focus as a sound plays: `2` for a long one, `1` for
+/// a short one, `0` to give it back (`RuxActivity.ruxAudioFocus`). Lost to
+/// another app, it is answered by `nativeAudioFocusLost`.
+#[cfg(target_os = "android")]
+pub(crate) fn android_audio_focus(kind: i32) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(activity, jni::jni_str!("ruxAudioFocus"), jni::jni_sig!("(I)V"), &[jni::JValue::Int(kind)])?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// Another app took the sound: every sound pauses (B.2 of
+/// `docs/13-file-input-and-media-plan.md`), and the properties say so.
+///
+/// # Safety
+///
+/// As [`Java_dev_ruxlang_shell_RuxActivity_nativeSafeArea`].
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeAudioFocusLost(
+    _env: *mut std::ffi::c_void,
+    _class: *mut std::ffi::c_void,
+) {
+    rux_audio::pause_all();
+    rux_runtime::native::notify();
 }
 
 /// Open the platform's picker for a file input: `mimes` comma-separated,

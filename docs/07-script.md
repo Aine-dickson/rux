@@ -623,6 +623,13 @@ fn toggle() {
   first `play()`: an app that only loads sounds touches no audio device. A
   short sound is decoded whole and plays at once; a long one is read a little
   ahead of where it plays, so a song is never held in memory.
+- **When the app is put away** (Android), every sound pauses and the output
+  is let go; nothing starts again on the way back, and the next `play()`
+  carries on from where it was. A call or another app's music pauses Rux's
+  too: a sound holds Android's audio focus while it plays, a long one the
+  whole of it (another app's music pauses), a short one only enough to lower
+  theirs for its moment. On the desktop, a new output (headphones pulled, or
+  another chosen) is followed, and the sound carries on there.
 - **In a browser** a sound plays through the browser's own audio, so in
   every format the browser plays (Opus too), and the properties follow it as
   the browser reports, about four times a second. A path the build did not

@@ -2147,6 +2147,71 @@ public class RuxActivity extends NativeActivity {
                 });
     }
 
+    /** The audio focus held, if any, and which {@link #ruxAudioFocus} kind. */
+    private android.media.AudioFocusRequest audioFocus;
+
+    private int audioFocusKind;
+
+    /**
+     * Another app took the sound (a call, its own music), for a moment or
+     * for good: every sound pauses, none starts again by itself, and the
+     * focus is given back.
+     */
+    private static native void nativeAudioFocusLost();
+
+    /**
+     * Hold the audio focus while a sound plays, so a call or another app's
+     * music pauses Rux's: {@code 2} for a song, which pauses theirs; {@code 1}
+     * for a short sound (a tap's click), which only lowers theirs for its
+     * moment; {@code 0} to give it back. A song's focus is kept while a
+     * short sound also plays. A loss Android answers by ducking (a
+     * notification's chime) is left to Android, which lowers the sound itself.
+     */
+    void ruxAudioFocus(final int kind) {
+        final android.media.AudioManager audio =
+                (android.media.AudioManager) getSystemService(Context.AUDIO_SERVICE);
+        if (audio == null) {
+            return;
+        }
+        synchronized (this) {
+            if (kind != 0 && kind <= audioFocusKind) {
+                return;
+            }
+            if (audioFocus != null) {
+                audio.abandonAudioFocusRequest(audioFocus);
+                audioFocus = null;
+                audioFocusKind = 0;
+            }
+            if (kind == 0) {
+                return;
+            }
+            audioFocus =
+                    new android.media.AudioFocusRequest.Builder(
+                                    kind == 2
+                                            ? android.media.AudioManager.AUDIOFOCUS_GAIN
+                                            : android.media.AudioManager
+                                                    .AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK)
+                            .setAudioAttributes(
+                                    new android.media.AudioAttributes.Builder()
+                                            .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                                            .build())
+                            .setOnAudioFocusChangeListener(
+                                    change -> {
+                                        if (change == android.media.AudioManager.AUDIOFOCUS_LOSS
+                                                || change
+                                                        == android.media.AudioManager
+                                                                .AUDIOFOCUS_LOSS_TRANSIENT) {
+                                            nativeAudioFocusLost();
+                                            // Paused, so held by nothing.
+                                            ruxAudioFocus(0);
+                                        }
+                                    })
+                            .build();
+            audioFocusKind = kind;
+            audio.requestAudioFocus(audioFocus);
+        }
+    }
+
     /** Hand this activity to the Rust side. See {@link #ruxSetTextInput}. */
     private static native void nativeActivityCreated(RuxActivity activity);
 

@@ -57,12 +57,37 @@ fn input(src: &str) -> Result<rux_audio::Input, Error> {
     Ok(rux_audio::Input::Bytes { bytes: bytes.into(), hint })
 }
 
+/// Android's audio focus: held while a sound plays, so a call or another
+/// app's music pauses Rux's, and given back when none does. `2` for a long
+/// sound, `1` for a short one, `0` for none (`RuxActivity.ruxAudioFocus`).
+fn focus(kind: i32) {
+    #[cfg(target_os = "android")]
+    crate::android_audio_focus(kind);
+    #[cfg(not(target_os = "android"))]
+    let _ = kind;
+}
+
 /// The calls, keyed as the module's are.
 pub(crate) fn calls() -> Vec<(String, Call)> {
     rux_audio::set_notify(rux_runtime::native::notify);
+    // The last sound ended by itself: the focus goes back, from a thread of
+    // its own rather than the audio thread, and only if nothing started
+    // playing in the meantime.
+    #[cfg(target_os = "android")]
+    rux_audio::set_quiet(|| {
+        let _ = std::thread::Builder::new().name("rux-audio-focus".into()).spawn(|| {
+            if !rux_audio::any_playing() {
+                focus(0);
+            }
+        });
+    });
+    // Each of these stops a sound, so the focus may go with it.
     let act = |f: fn(&rux_audio::Sound)| {
         Call::sync(move |args| {
             f(&sound(&args)?.0);
+            if !rux_audio::any_playing() {
+                focus(0);
+            }
             rux_runtime::native::notify();
             Ok(Any::None)
         })
@@ -87,7 +112,9 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
         (
             "Sound.play".into(),
             Call::sync(|args| {
-                sound(&args)?.0.play().map_err(error)?;
+                let s = sound(&args)?;
+                s.0.play().map_err(error)?;
+                focus(if s.0.is_short() { 1 } else { 2 });
                 rux_runtime::native::notify();
                 Ok(Any::None)
             }),

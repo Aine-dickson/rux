@@ -2834,7 +2834,7 @@ desktop window** with clicks injected; heard through the speakers with the
 | A short sound, twice | tap the click's button twice | it plays each time, from the start | desktop: pass, heard |
 | Through the output | `cargo run -p rux-audio --example play -- tone12.mp3` | the time in step with the clock, ended once | desktop: pass, heard |
 | Android | the same page, a dev APK on the `rux_test` emulator (x86_64), taps through `adb shell input` | plays through AAudio (`AAUDIO_OK`, started); play again after the end, half volume, seek to 10, the click twice, the end at 12 of 12, pause: each as on the desktop | Android emulator: pass |
-| Android, the app away | Home while it plays, back after 6 s | today it plays on (2.3 to 8.7 s): pausing on suspend is B.2 | Android emulator: as expected before B.2 |
+| Android, the app away | Home while it plays, back after 6 s | before B.2 it played on (2.3 to 8.7 s) | Android emulator: superseded by B.2 below |
 
 ## `loadSound` and `Sound` in a browser, 2026-10-23
 
@@ -2852,6 +2852,24 @@ element reported, drawn by Rux.
 | Again after the end | tap Play / pause once it has ended | from the start | web: pass |
 | A picked file | `pickFile({})`, `loadSound(f.url)`, `play()` in one tap | the Ogg's `blob:` URL plays to its end, 0.25 of 0.25 | web: pass |
 | Errors | `loadSound("http://...")`, `loadSound` of a `.rux` file | `"io"` (no networking yet, as on the desktop); `"unsupported"`, "is not a sound this browser can play" | web: pass |
+
+## The audio lifecycle, 2026-10-24
+
+Step B.2 of `docs/13-file-input-and-media-plan.md`. Under test in
+`rux-audio` (a sound moved to a new output, at the same rate and at
+another, picks up where it was). **Driven on the `rux_test` emulator**
+with the B.1 page, taps through `adb shell input`, the focus read from
+`dumpsys audio`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The app away | play from the start, Home 1 s in, back after 5 s | paused at 2.36 and still at 2.36 on the way back; the focus given back while away | Android emulator: pass |
+| Back, and play | tap Play / pause | carries on from 2.36 on an output opened again | Android emulator: pass |
+| A call | `adb emu gsm call` while the song plays, then cancel it | `playing false` at 3.8, still paused after the call, no focus held | Android emulator: pass |
+| A song's focus | the song playing; then played to its end | `AUDIOFOCUS_GAIN`; given back at the end | Android emulator: pass |
+| A short sound's focus | tap Click | `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`; given back when it ends | Android emulator: pass |
+| Another app's music | a music app playing, then a Rux song, then the click alone | theirs pauses for the song; only lowers for the click | not driven (no music app on the emulator) |
+| Desktop: a new output | pull headphones (or choose another output) while a song plays | it carries on through the new default from where it was | not driven (needs this machine's output changed by hand) |
 
 ## Standing gaps
 

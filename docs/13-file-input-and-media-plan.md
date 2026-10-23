@@ -229,6 +229,12 @@ Read before planning, because three facts shape the steps:
   call or another app's music pauses Rux's; everything pauses on suspend
   and does not resume by itself.
 - Desktop: a lost output device (headphones pulled) moves to the new default.
+- **Decided while building (2026-10-24), for the owner to confirm:** a short
+  sound (under 10 s, the line between decoded whole and streamed) asks only
+  for `AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK`, so a tap's click lowers the
+  person's music for its moment instead of stopping it; a long one asks for
+  `AUDIOFOCUS_GAIN`. The focus is also given back when the last sound ends
+  by itself, and after it is lost, since nothing is then playing.
 - Background playback (sound with the app away) is **not** in this plan:
   it needs an Android foreground service and is its own proposal.
 
