@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-247 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
+249 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -198,6 +198,8 @@ Every property below is one the runtime interprets, and the list is written by t
 | `inset-block-start` | **the same as `top`.** Always the top.For example `.bar { position: fixed; inset-block-start: 0; }` |  |  |
 | `inset-block-end` | **the same as `bottom`.** Always the bottom.For example `.bar { position: fixed; inset-block-end: 0; }` |  |  |
 | `vertical-align` | **where a box in a line of text sits.** For an `<image>` or `<path>` inside a `<text>`. `baseline` (the default) stands it on the baseline, so an icon as tall as the text sits high; `middle` centres it on the text, which is usually what an icon wants; `text-top` and `text-bottom` line it up with the top or bottom of the text.For example `.icon { vertical-align: middle; }` | `baseline` `middle` `text-top` `text-bottom` |  |
+| `tab-size` | **how wide a kept tab is.** A number of spaces, 8 by default, or a length: the width of a tab that `pre` or `pre-wrap` keeps. Inherited.For example `.code { white-space: pre; tab-size: 4; }` |  |  |
+| `resize` | **a grip that drags the box bigger.** `both`, `horizontal`, `vertical` or `none`, on a scroller: its corner drags its size with a mouse. A textarea is `both` unless it says. Not on Android.For example `.notes { resize: vertical; }` | `none` `both` `horizontal` `vertical` |  |
 | `white-space` | **whether runs of space collapse and lines wrap.** `normal` and `nowrap` turn every run of spaces, tabs and newlines into one space, as CSS does; `pre` and `pre-wrap` keep them all; `pre-line` keeps newlines only, the one for text from data whose line breaks matter. `nowrap` and `pre` keep the text on one line.For example `.label { white-space: nowrap; }` | `normal` `nowrap` `pre` `pre-wrap` `pre-line` |  |
 | `text-decoration` | **lines over, under or through the text.** Its lines (`underline`, `overline`, `line-through`), style, colour and thickness, in any order.For example `.link { text-decoration: underline; }` | `none` `underline` `overline` `line-through` `solid` `double` `dotted` `dashed` `wavy` |  |
 | `text-decoration-line` | **which decoration to draw.** `underline`, `overline` and `line-through`, any of them together.For example `.done { text-decoration-line: line-through; }` | `none` `underline` `overline` `line-through` |  |
@@ -296,4 +298,4 @@ Every property below is one the runtime interprets, and the list is written by t
 
 Real CSS an author reaches for, which the runtime parses, ignores and reports as a pending feature rather than a typo:
 
-`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`.
+`float`, `clear`, `order`, `writing-mode`, `hyphens`, `hyphenate-character`, `perspective`, `perspective-origin`, `column-span`.

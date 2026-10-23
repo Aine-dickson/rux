@@ -54,7 +54,7 @@ use notify::{EventKind, RecursiveMode, Watcher};
 use rux_layout::{
     Background, Cursor, EnterKey, Field, FocusItem, FocusKind, FocusRegion, HitRegion, InputKind,
     Keyboard,
-    Offset, Paint, PaintRect, PaintText, Rgba, ScrollRegion, SelectRegion, Sides, Snap, StateRegion,
+    Offset, Paint, PaintRect, PaintText, ResizeRegion, Rgba, ScrollRegion, SelectRegion, Sides, Snap, StateRegion,
     TextAlign,
     TextContent, TextWrap,
 };
@@ -535,6 +535,83 @@ const BAR_PAGE_DELAY: Duration = Duration::from_millis(400);
 const BAR_PAGE_REPEAT: Duration = Duration::from_millis(60);
 /// How long after a wheel notch the next one still belongs to the same run.
 const WHEEL_LATCH: Duration = Duration::from_millis(300);
+/// The corner of a box with `resize` that a pointer drags it by, and how
+/// small the drag may make it, in logical px.
+const GRIP: f32 = 14.0;
+const RESIZE_MIN: f32 = 16.0;
+
+/// Whether `(px, py)` is on the grip of `r`, its bottom-right corner.
+fn on_grip(r: &ResizeRegion, px: f32, py: f32) -> bool {
+    let (right, bottom) = (r.x + r.width, r.y + r.height);
+    px >= right - GRIP && px <= right && py >= bottom - GRIP && py <= bottom
+}
+
+/// The grip drawn in a resizable box's corner: six dots in a triangle, as
+/// the desktop draws one. Not on Android, where a finger does not resize a
+/// box and a phone's browser draws no grip either.
+fn grip_paints(r: &ResizeRegion) -> Vec<Paint> {
+    if cfg!(target_os = "android") {
+        return Vec::new();
+    }
+    let color = Rgba::new(0.5, 0.5, 0.5, 0.7 * r.alpha);
+    let (right, bottom) = (r.x + r.width, r.y + r.height);
+    [(1.0, 1.0), (2.0, 1.0), (1.0, 2.0), (3.0, 1.0), (2.0, 2.0), (1.0, 3.0)]
+        .into_iter()
+        .map(|(i, j)| {
+            Paint::Rect(PaintRect {
+                x: right - 4.0 * i - 1.0,
+                y: bottom - 4.0 * j - 1.0,
+                width: 2.0,
+                height: 2.0,
+                background: Some(Background::Color(color)),
+                radius: Default::default(),
+                border: Sides::default(),
+                border_color: None,
+            })
+        })
+        .collect()
+}
+
+/// Give each box the size a pointer dragged it to, kept by its path. Every
+/// frame, before the layout: a rebuild makes the tree again from the
+/// document, and the size is the window's, not the document's, so it is
+/// written back each time rather than kept in the tree.
+fn apply_resized(root: &mut rux_layout::Node, resized: &HashMap<Vec<usize>, (Option<f32>, Option<f32>)>) {
+    for (path, (w, h)) in resized {
+        let mut node = &mut *root;
+        let mut found = true;
+        for &i in path {
+            match node.children.get_mut(i) {
+                Some(c) => node = c,
+                None => {
+                    found = false;
+                    break;
+                }
+            }
+        }
+        if !found {
+            continue;
+        }
+        // The size dragged to is the box's outside, padding and border in.
+        node.style.box_sizing = rux_layout::BoxSizing::BorderBox;
+        if let Some(w) = w {
+            node.style.width = Some(rux_layout::Len::Px(*w));
+        }
+        if let Some(h) = h {
+            node.style.height = Some(rux_layout::Len::Px(*h));
+        }
+    }
+}
+
+/// A pointer dragging a box's grip: whose, which way, and where it started.
+#[derive(Clone, Debug)]
+struct ResizeDrag {
+    path: Vec<usize>,
+    axes: (bool, bool),
+    from: (f32, f32),
+    size: (f32, f32),
+}
+
 /// How long the wheel stays still before a scroller that snaps comes to rest
 /// on its snap point: a run of notches is one scroll, not several.
 const WHEEL_SETTLE: Duration = Duration::from_millis(150);
@@ -1803,6 +1880,12 @@ struct App {
     replaying_history: bool,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
+    /// Boxes with `resize`, from the most recent layout.
+    resizes: Vec<ResizeRegion>,
+    /// A grip being dragged. See [`ResizeDrag`].
+    resize_drag: Option<ResizeDrag>,
+    /// The sizes boxes were dragged to, by path. See [`apply_resized`].
+    resized: HashMap<Vec<usize>, (Option<f32>, Option<f32>)>,
     /// Boxes styled by `:hover`/`:active`, from the most recent layout. Empty
     /// unless the document actually uses a pointer-state rule.
     states: Vec<StateRegion>,
@@ -2104,6 +2187,9 @@ impl App {
             field_history: FieldHistory::default(),
             replaying_history: false,
             scrolls: Vec::new(),
+            resizes: Vec::new(),
+            resize_drag: None,
+            resized: HashMap::new(),
             offsets: Vec::new(),
             layout_state: rux_layout::LayoutState::new(),
             bar_drag: None,
@@ -2667,6 +2753,28 @@ impl App {
             .rev()
             .find(|s| s.contains(at.0, at.1) && s.scrollable())
             .is_some_and(|s| if vertical { s.max.y > 0.0 } else { s.max.x > 0.0 })
+    }
+
+    /// Start dragging a box bigger if the press landed on its grip. The
+    /// topmost box wins, as a tap's target does.
+    fn press_resize(&mut self, pointer: (f64, f64)) -> bool {
+        if cfg!(target_os = "android") {
+            return false;
+        }
+        let (px, py) = self.logical(pointer);
+        let Some(r) = self.resizes.iter().rev().find(|r| on_grip(r, px, py)) else { return false };
+        self.resize_drag = Some(ResizeDrag { path: r.path.clone(), axes: r.axes, from: (px, py), size: (r.width, r.height) });
+        true
+    }
+
+    /// Follow a grip being dragged: the box's size, kept by its path.
+    fn drag_resize(&mut self, pointer: (f64, f64)) {
+        let Some(d) = self.resize_drag.clone() else { return };
+        let (px, py) = self.logical(pointer);
+        let w = d.axes.0.then(|| (d.size.0 + px - d.from.0).max(RESIZE_MIN));
+        let h = d.axes.1.then(|| (d.size.1 + py - d.from.1).max(RESIZE_MIN));
+        self.resized.insert(d.path, (w, h));
+        self.request_redraw();
     }
 
     /// Start a scrollbar drag if the press landed on a thumb. Returns whether it
@@ -3665,9 +3773,15 @@ impl App {
     fn update_cursor(&mut self) {
         let scale = self.scale();
         let (px, py) = ((self.pointer.0 / scale) as f32, (self.pointer.1 / scale) as f32);
-        let want = match rux_layout::cursor_at(&self.hits, px, py) {
-            Cursor::Pointer => CursorIcon::Pointer,
-            Cursor::Default => CursorIcon::Default,
+        let grip = self.resize_drag.as_ref().map(|d| d.axes).or_else(|| {
+            self.resizes.iter().rev().find(|r| on_grip(r, px, py)).map(|r| r.axes)
+        });
+        let want = match (grip, rux_layout::cursor_at(&self.hits, px, py)) {
+            (Some((true, true)), _) if !cfg!(target_os = "android") => CursorIcon::SeResize,
+            (Some((true, false)), _) if !cfg!(target_os = "android") => CursorIcon::EwResize,
+            (Some((false, true)), _) if !cfg!(target_os = "android") => CursorIcon::NsResize,
+            (_, Cursor::Pointer) => CursorIcon::Pointer,
+            (_, Cursor::Default) => CursorIcon::Default,
         };
         if want != self.cursor {
             self.cursor = want;
@@ -6837,6 +6951,9 @@ impl App {
         } else {
             (sel_start, sel_end)
         };
+        if !self.resized.is_empty() {
+            apply_resized(&mut self.document.root, &self.resized);
+        }
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
         let App {
@@ -6853,6 +6970,7 @@ impl App {
             focus_index,
             open_select,
             scrolls,
+            resizes,
             offsets,
             layout_state,
             states,
@@ -7129,6 +7247,15 @@ impl App {
             let scene = rux_paint::build_scene(&bars, text, images, false);
             state.scene.append(&scene, Some(Affine::scale(scale) * to_affine(region.transform)));
         }
+        // `resize`: the grip in each such box's corner, drawn as a bar is.
+        for region in &layout.resizes {
+            let grip = grip_paints(region);
+            if grip.is_empty() || region.alpha <= 0.001 {
+                continue;
+            }
+            let scene = rux_paint::build_scene(&grip, text, images, false);
+            state.scene.append(&scene, Some(Affine::scale(scale) * to_affine(region.transform)));
+        }
 
         // The selection toolbar, over the content while something is selected.
         // It is the only route to copy and paste on a phone, and on the web at
@@ -7275,6 +7402,7 @@ impl App {
         }
         *focusables = layout.focusables;
         *scrolls = layout.scrolls;
+        *resizes = layout.resizes;
         *states = layout.states;
 
         let device_handle = &context.devices[state.surface.dev_id];
@@ -7903,7 +8031,9 @@ impl ApplicationHandler<RuxEvent> for App {
                     p.1 = here;
                 }
                 self.move_gesture(here.0, here.1);
-                if self.bar_drag.is_some() {
+                if self.resize_drag.is_some() {
+                    self.drag_resize(self.pointer);
+                } else if self.bar_drag.is_some() {
                     self.drag_scrollbar(self.pointer);
                 } else if self.text_dnd.is_some() {
                     self.drag_selection(self.pointer);
@@ -8199,7 +8329,10 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.handles = false;
                 if self.overlay_covers_physical(self.pointer) {
                     self.press = Some(self.pointer);
-                } else if !self.press_scrollbar(self.pointer) && !self.press_text_mouse(self.pointer) {
+                } else if !self.press_resize(self.pointer)
+                    && !self.press_scrollbar(self.pointer)
+                    && !self.press_text_mouse(self.pointer)
+                {
                     self.press = Some(self.pointer);
                     // `:active` holds from press to release.
                     self.update_pointer_state();
@@ -8210,7 +8343,10 @@ impl ApplicationHandler<RuxEvent> for App {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.bar_drag.take().is_some() || self.bar_paging.take().is_some() {
+                if self.resize_drag.take().is_some()
+                    || self.bar_drag.take().is_some()
+                    || self.bar_paging.take().is_some()
+                {
                     self.update_cursor();
                     self.request_redraw();
                     return;
@@ -9783,6 +9919,38 @@ mod snapping {
         // No x points: x goes where it was going.
         let moved = snap_target(&rows(true, None), view, Offset { x: 0.0, y: 0.0 }, Offset { x: 37.0, y: 90.0 });
         assert_eq!(moved, Some(Offset { x: 37.0, y: 100.0 }));
+    }
+}
+
+#[cfg(test)]
+mod resizing {
+    use super::{apply_resized, on_grip, HashMap, ResizeRegion, GRIP};
+
+    /// The grip is the box's bottom-right corner, and a size dragged to is
+    /// written onto the box at that path, as its outside.
+    #[test]
+    fn a_dragged_size_lands_on_its_box() {
+        let r = ResizeRegion {
+            path: vec![0, 1],
+            x: 10.0,
+            y: 20.0,
+            width: 100.0,
+            height: 50.0,
+            axes: (true, true),
+            transform: None,
+            alpha: 1.0,
+        };
+        assert!(on_grip(&r, 109.0, 69.0));
+        assert!(!on_grip(&r, 110.0 - GRIP - 1.0, 69.0));
+        let mut root = rux_layout::Node::new(Default::default());
+        let mut parent = rux_layout::Node::new(Default::default());
+        parent.children = vec![rux_layout::Node::new(Default::default()), rux_layout::Node::new(Default::default())];
+        root.children = vec![parent];
+        let resized = HashMap::from([(vec![0, 1], (None, Some(120.0))), (vec![5], (Some(1.0), None))]);
+        apply_resized(&mut root, &resized);
+        let s = &root.children[0].children[1].style;
+        assert_eq!((s.width, s.height), (None, Some(rux_layout::Len::Px(120.0))));
+        assert_eq!(s.box_sizing, rux_layout::BoxSizing::BorderBox);
     }
 }
 

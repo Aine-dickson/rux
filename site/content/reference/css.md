@@ -110,6 +110,19 @@ font (shorthand: `italic 600 1rem/1.5 Inter, sans-serif`; what is left out is
                        `normal`, as in CSS; system fonts are not read)
 letter-spacing, word-spacing, line-height
 white-space (normal|nowrap|pre|pre-wrap|pre-line)
+tab-size (2026-10-23: a number of spaces, 8 by default as in CSS, or a
+                       length; how wide a tab kept by pre or pre-wrap is.
+                       Each tab is that wide, not to the next tab stop as in
+                       CSS, so columns of tabs line up only in a monospace
+                       font; inherited)
+resize (2026-10-23: none|both|horizontal|vertical, and block and inline as
+                       vertical and horizontal; on a scroller, as CSS has it
+                       on a box whose overflow is not visible, which in Rux is
+                       auto or scroll, not hidden. A grip in the corner drags
+                       the box bigger or smaller with a mouse, the size kept
+                       until the window closes. A textarea is `both` unless it
+                       says, as in a browser. Not on Android, where a finger
+                       does not resize and a phone's browser draws no grip)
 text-wrap, text-wrap-mode, text-wrap-style (nowrap and wrap set whether lines
                        wrap, over white-space; balance evens out the lines,
                        as many as wrapping makes, set where text-align puts

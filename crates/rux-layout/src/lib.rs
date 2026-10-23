@@ -461,6 +461,7 @@ struct ScrollFacts {
     bar: Scrollbar,
     smooth: bool,
     snap: Option<(SnapType, [Len; 4])>,
+    resize: Option<(bool, bool)>,
 }
 
 impl Style {
@@ -1183,6 +1184,9 @@ pub struct Rare {
     pub generated: Option<Generated>,
     /// `column-count` / `column-width`: a multi-column box. See [`Columns`].
     pub columns: Option<Columns>,
+    /// `resize`, as the axes it may be dragged along (x, y). On a scroller
+    /// alone, as CSS has it on a box whose overflow is not `visible`.
+    pub resize: Option<(bool, bool)>,
     /// On the root alone: its used `color-scheme` is dark, so what Rux
     /// draws itself (a dropdown, the selection toolbar) is drawn dark too.
     pub dark: bool,
@@ -1925,6 +1929,8 @@ pub struct TextLook {
     /// `text-wrap: balance`: lines of even length, as many as wrapping makes.
     /// Inherits.
     pub balance: bool,
+    /// `tab-size`; `None` is CSS's 8 spaces. Inherits.
+    pub tab_size: Option<TabSize>,
     /// The OpenType features `font-variant` and its longhands ask for, in
     /// `font-feature-settings` form. Inherits.
     pub variant: Option<String>,
@@ -1939,6 +1945,23 @@ pub struct TextLook {
     pub caret_color: Option<Rgba>,
 }
 
+/// `tab-size`: how wide a tab in kept white space is, as a number of spaces
+/// or a length.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TabSize {
+    Spaces(f32),
+    Px(f32),
+}
+
+impl TabSize {
+    fn bits(self) -> (bool, u32) {
+        match self {
+            TabSize::Spaces(n) => (true, n.to_bits()),
+            TabSize::Px(px) => (false, px.to_bits()),
+        }
+    }
+}
+
 impl TextLook {
     /// Every field, floats by their bits, for equality and hashing.
     #[allow(clippy::type_complexity)]
@@ -1948,7 +1971,7 @@ impl TextLook {
         (
             (c(self.decoration_color), self.decoration_style, f(self.decoration_thickness), f(self.underline_offset)),
             (self.overline, self.transform, self.indent.to_bits(), f(self.indent_pct), self.indent_each_line, self.indent_hanging),
-            (self.ellipsis, self.line_clamp, self.balance),
+            (self.ellipsis, self.line_clamp, self.balance, self.tab_size.map(TabSize::bits)),
             (&self.variant, &self.feature_settings, &self.variation_settings, f(self.stretch), c(self.caret_color)),
         )
     }
@@ -3186,6 +3209,21 @@ impl Offset {
     }
 }
 
+/// A box with `resize`: where it is, which way it may be dragged, and its
+/// path, by which the shell keeps the size it was dragged to. Drawn through
+/// its box's transform and opacity, as a scrollbar is.
+#[derive(Clone, Debug)]
+pub struct ResizeRegion {
+    pub path: Vec<usize>,
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub axes: (bool, bool),
+    pub transform: Option<Transform>,
+    pub alpha: f32,
+}
+
 /// A scrollable box. `id` is its index in tree order, stable across rebuilds
 /// as long as the tree's shape is, which is what the shell keys offsets by.
 #[derive(Clone, Debug)]
@@ -3654,6 +3692,9 @@ pub struct Layout {
     /// Keyboard-focusable elements in document (Tab) order.
     pub focusables: Vec<FocusItem>,
     pub scrolls: Vec<ScrollRegion>,
+    /// Boxes a pointer can resize by their corner (`resize`). See
+    /// [`ResizeRegion`].
+    pub resizes: Vec<ResizeRegion>,
     /// Boxes with `:hover`/`:active` styling, in painter's order (topmost last).
     pub states: Vec<StateRegion>,
     /// Elements exposed to assistive technology, in document order.
@@ -4461,6 +4502,7 @@ struct At {
     scroll_bar: Scrollbar,
     scroll_smooth: bool,
     scroll_snap: Option<(SnapType, [Len; 4])>,
+    scroll_resize: Option<(bool, bool)>,
     /// Into `Built::snaps`, when a scroller can snap to this box.
     snap: Option<u32>,
     stack: Stack,
@@ -4570,6 +4612,7 @@ fn index(
         a.scroll_bar = f.bar;
         a.scroll_smooth = f.smooth;
         a.scroll_snap = f.snap;
+        a.scroll_resize = f.resize;
     }
     first(&mut at, snaps.iter().map(|s| s.0), |a| &mut a.snap);
     for (id, stack) in stacks {
@@ -5166,6 +5209,7 @@ fn build(
             },
             smooth: node.style.scroll_smooth,
             snap: node.style.rare.as_ref().and_then(|r| r.snap_type),
+            resize: node.style.rare.as_ref().and_then(|r| r.resize),
         });
     }
     if let Some(area) = node.style.rare.as_ref().and_then(|r| r.snap) {
@@ -6660,6 +6704,20 @@ fn collect(
             smooth: at.scroll_smooth,
             snap: at.scroll_snap.and_then(|(kind, pad)| snap_points(tree, id, layout, b, kind, pad, max, at.scroll_rtl, vp)),
         });
+        if let (false, Some(axes), Some((_, path))) =
+            (walk.dry, at.scroll_resize, at.path.map(|i| &b.paths[i as usize]))
+        {
+            out.resizes.push(ResizeRegion {
+                path: path.clone(),
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+                axes,
+                transform: child_xform,
+                alpha: child_dim,
+            });
+        }
     }
 
     // **Positioned children are held back**, along with anything that makes a

@@ -527,10 +527,21 @@ The middle case is the one worth having. Until v0.7.1 a typo got the same "not
 yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
-Real CSS Rux has not built includes `hyphens: auto`, `tab-size`,
-`writing-mode`, `column-span`, the table properties (Rux has no tables),
-`list-style`. Scroll snapping, multi-column layout and `content` with
-`::before` and `::after` were on it until 2026-10-23. `line-height`, `box-shadow`, `outline`,
+Real CSS Rux has not built includes `hyphens: auto`, `writing-mode`,
+`column-span` and `::first-letter` / `::first-line`. Scroll snapping,
+multi-column layout, `tab-size`, `resize` and `content` with `::before` and
+`::after` were on it until 2026-10-23.
+
+**CSS for things Rux has none of passes quietly** (2026-10-23): the table
+properties (`border-collapse`, `border-spacing`, `table-layout`,
+`caption-side`, `empty-cells`), the list properties (`list-style` and its
+longhands), `::backdrop` (a modal dialog's or a fullscreen box's) and
+`::file-selector-button` (a file input's). They are real, and there is
+nothing in Rux for them to act on, as there is nothing on a page without a
+table for `border-collapse` to act on. Every reset sheet sets them,
+Tailwind's among them, and a warning each opened every Tailwind app under a
+panel of things its author never wrote. If Rux grows one of these things,
+its CSS is built and is no longer quiet. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.
 

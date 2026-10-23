@@ -713,6 +713,19 @@ font (shorthand: `italic 600 1rem/1.5 Inter, sans-serif`; what is left out is
                        `normal`, as in CSS; system fonts are not read)
 letter-spacing, word-spacing, line-height
 white-space (normal|nowrap|pre|pre-wrap|pre-line)
+tab-size (2026-10-23: a number of spaces, 8 by default as in CSS, or a
+                       length; how wide a tab kept by pre or pre-wrap is.
+                       Each tab is that wide, not to the next tab stop as in
+                       CSS, so columns of tabs line up only in a monospace
+                       font; inherited)
+resize (2026-10-23: none|both|horizontal|vertical, and block and inline as
+                       vertical and horizontal; on a scroller, as CSS has it
+                       on a box whose overflow is not visible, which in Rux is
+                       auto or scroll, not hidden. A grip in the corner drags
+                       the box bigger or smaller with a mouse, the size kept
+                       until the window closes. A textarea is `both` unless it
+                       says, as in a browser. Not on Android, where a finger
+                       does not resize and a phone's browser draws no grip)
 text-wrap, text-wrap-mode, text-wrap-style (nowrap and wrap set whether lines
                        wrap, over white-space; balance evens out the lines,
                        as many as wrapping makes, set where text-align puts
@@ -1561,10 +1574,21 @@ The middle case is the one worth having. Until v0.7.1 a typo got the same "not
 yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
 
-Real CSS Rux has not built includes `hyphens: auto`, `tab-size`,
-`writing-mode`, `column-span`, the table properties (Rux has no tables),
-`list-style`. Scroll snapping, multi-column layout and `content` with
-`::before` and `::after` were on it until 2026-10-23. `line-height`, `box-shadow`, `outline`,
+Real CSS Rux has not built includes `hyphens: auto`, `writing-mode`,
+`column-span` and `::first-letter` / `::first-line`. Scroll snapping,
+multi-column layout, `tab-size`, `resize` and `content` with `::before` and
+`::after` were on it until 2026-10-23.
+
+**CSS for things Rux has none of passes quietly** (2026-10-23): the table
+properties (`border-collapse`, `border-spacing`, `table-layout`,
+`caption-side`, `empty-cells`), the list properties (`list-style` and its
+longhands), `::backdrop` (a modal dialog's or a fullscreen box's) and
+`::file-selector-button` (a file input's). They are real, and there is
+nothing in Rux for them to act on, as there is nothing on a page without a
+table for `border-collapse` to act on. Every reset sheet sets them,
+Tailwind's among them, and a warning each opened every Tailwind app under a
+panel of things its author never wrote. If Rux grows one of these things,
+its CSS is built and is no longer quiet. `line-height`, `box-shadow`, `outline`,
 gradients, `transform`, CSS variables, all five `position` values, `z-index`,
 `isolation`, `visibility` and `filter` used to be on that list and are honored now.
 

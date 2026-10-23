@@ -31,7 +31,7 @@ use parley::{
     TextWrapMode, IndentOptions,
 };
 use parley::style::{FontFamily, FontFeatures, FontStyle, FontVariations, FontWidth};
-use rux_layout::{DecorationStyle, Direction, InlineGeometry, RichText, RunStyle, TextLook, TextTransform};
+use rux_layout::{DecorationStyle, Direction, InlineGeometry, RichText, RunStyle, TabSize, TextLook, TextTransform};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 use vello::{Glyph, Scene};
@@ -531,7 +531,14 @@ impl TextEngine {
             None => Cow::Borrowed(text),
         };
         let off = marked.len() - text.len();
+        // A tab is shaped as a space, one byte for one, so every index still
+        // holds: fonts have no glyph for a tab, and drew a box where one was.
+        // Its width is `tab-size`'s, below.
+        let tabs: Vec<usize> = marked.match_indices('\t').map(|(i, _)| i).collect();
+        let marked: Cow<str> = if tabs.is_empty() { marked } else { Cow::Owned(marked.replace('\t', " ")) };
         let text = &*marked;
+        // `tab-size`, worked out before the builder holds the contexts.
+        let tab = (!tabs.is_empty()).then(|| self.tab_spacing(style));
         let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontSize(style.font_size));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
@@ -564,6 +571,16 @@ impl TextEngine {
                 let range = run.range.start + off..run.range.end + off;
                 Self::push_run(&mut builder, i as RunId + 1, range, &run.style, style);
             }
+        }
+        // Each tab as wide as `tab-size` says, by the space after it: shaping
+        // gives a tab no width of its own worth keeping, and turning it into
+        // spaces would move every index a caret or a selection is kept by.
+        if let Some(spacing) = tab {
+            for &i in &tabs {
+                builder.push(StyleProperty::LetterSpacing(spacing), i..i + 1);
+            }
+        }
+        if let Some(rich) = style.rich {
             // The height is what parley stands on the baseline, which matters
             // to nothing here: lines are measured in `lines`, and parley's
             // own line metrics are never read for a paragraph with runs.
@@ -588,6 +605,33 @@ impl TextEngine {
         }
         layout.break_all_lines(max_width);
         layout
+    }
+
+    /// The letter spacing that makes a tab `tab-size` wide: the size, as
+    /// spaces of this font or a length, less the space it is shaped as.
+    /// Measured between two letters, as a space alone at the end of a line
+    /// hangs and measures nothing.
+    fn tab_spacing(&mut self, style: &TextStyle) -> f32 {
+        let mut width = |s: &str| {
+            let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, s, 1.0, true);
+            b.push_default(StyleProperty::FontSize(style.font_size));
+            b.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
+            if let Some(family) = style.family.filter(|f| !f.trim().is_empty()) {
+                b.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(family.to_string()))));
+            }
+            if style.italic {
+                b.push_default(StyleProperty::FontStyle(FontStyle::Italic));
+            }
+            let mut layout: Layout<RunId> = b.build(s);
+            layout.break_all_lines(None);
+            layout.width()
+        };
+        let space = width("x x") - width("xx");
+        let want = match style.look.and_then(|l| l.tab_size).unwrap_or(TabSize::Spaces(8.0)) {
+            TabSize::Spaces(n) => n * space,
+            TabSize::Px(px) => px,
+        };
+        want - space
     }
 
     /// What a look changes in shaping: font features, variations and width.

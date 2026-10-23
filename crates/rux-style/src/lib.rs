@@ -4595,6 +4595,10 @@ const HONORED_PROPERTIES: &[&str] = &[
     "object-fit", "object-position", "pointer-events", "scroll-behavior",
     // What `::before` and `::after` hold. See `generated_elements`.
     "content",
+    // How wide a tab is in kept white space. See `rux_layout::TabSize`.
+    "tab-size",
+    // Whether a scroller's corner drags it bigger. See `rux_layout::ResizeRegion`.
+    "resize",
     // Multi-column layout. See `rux_layout::Columns`.
     "columns", "column-count", "column-width", "column-fill",
     "column-rule", "column-rule-width", "column-rule-style", "column-rule-color",
@@ -4888,16 +4892,14 @@ const INSETS: [&str; 4] = ["top", "right", "bottom", "left"];
 const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Painting and compositing
     // Boxes
-    "float", "clear", "order", "resize",
+    "float", "clear", "order",
     // Text. Vertical writing is a layout of its own; hyphenation by
-    // dictionary needs the dictionaries; a tab is as wide as its font says.
-    "writing-mode", "hyphens", "hyphenate-character", "tab-size",
-    "list-style", "list-style-type", "list-style-position",
+    // dictionary needs the dictionaries.
+    "writing-mode", "hyphens", "hyphenate-character",
     // Motion. A transform is flat, so it has no depth to look into.
     "perspective", "perspective-origin",
     // Other layout models
-    "column-span", "table-layout",
-    "border-collapse", "border-spacing",
+    "column-span",
 ];
 
 /// Levenshtein distance, for the did-you-mean below.
@@ -4965,6 +4967,22 @@ fn nearest_property(property: &str) -> Option<&'static str> {
 /// this replaced told an author with a typo that their property was "not yet
 /// honored", which sounds like a feature on its way and left them waiting for a
 /// release that was never going to fix it.
+/// Real CSS for things Rux has none of, read and passed over without a
+/// word, as a browser passes over a property for an element a page does not
+/// have: tables, lists, a modal dialog's or fullscreen box's `::backdrop`,
+/// a file input's `::file-selector-button`. Every reset sheet sets them,
+/// Tailwind's among them, and a warning for each opened every such app under
+/// a panel of things nobody wrote. If Rux grows the thing, its CSS moves to
+/// [`HONORED_PROPERTIES`] or the pseudo-elements, and out of here.
+const NOTHING_TO_ACT_ON: &[&str] = &[
+    // Tables.
+    "border-collapse", "border-spacing", "table-layout", "caption-side", "empty-cells",
+    // Lists.
+    "list-style", "list-style-type", "list-style-position", "list-style-image",
+    // Pseudo-elements, as their names are kept without the colons.
+    "backdrop", "file-selector-button",
+];
+
 fn warn_if_unhonored(property: &str) {
     use std::collections::HashSet;
     use std::sync::{Mutex, OnceLock};
@@ -4981,6 +4999,9 @@ fn warn_if_unhonored(property: &str) {
     // [`line_clamp`], and `-webkit-box-orient` beside it says only that the
     // box is the vertical one it already is.
     if property.starts_with("-webkit-") || property.starts_with("-moz-") || property.starts_with("-ms-") {
+        return;
+    }
+    if NOTHING_TO_ACT_ON.contains(&property) {
         return;
     }
     let message = if UNIMPLEMENTED_PROPERTIES.contains(&property) {
@@ -5200,7 +5221,10 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                         // `:-moz-focusring`) belongs to one engine, and every
                         // other engine passes over it without a word. Rux is
                         // another engine. Reset sheets are full of them.
-                        if !n.trim_start_matches(':').starts_with('-') {
+                        // So does one for something Rux has none of: see
+                        // [`NOTHING_TO_ACT_ON`].
+                        let bare = n.trim_start_matches(':');
+                        if !bare.starts_with('-') && !NOTHING_TO_ACT_ON.contains(&bare) {
                             warn_unknown_pseudo(n);
                         }
                     }
@@ -5374,8 +5398,10 @@ fn selector_is_supported(selector: &str) -> bool {
 fn warn_unknown_pseudo(name: &str) {
     use std::sync::{Mutex, OnceLock};
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
-    // A second colon was kept in the name: a pseudo-element.
-    let message = if let Some(element) = name.strip_prefix(':') {
+    // A second colon was kept in the name: a pseudo-element. So are CSS 2's,
+    // written with one, which is how the stylesheet parser writes them back.
+    let legacy = ["first-letter", "first-line"].iter().any(|n| name.eq_ignore_ascii_case(n));
+    let message = if let Some(element) = name.strip_prefix(':').or(legacy.then_some(name)) {
         format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection, ::placeholder, ::before, ::after)")
     } else {
         format!(
@@ -5812,7 +5838,7 @@ fn expand_shorthand(k: &str, v: &str) -> Option<Vec<(&'static str, String)>> {
 const INHERITED_PROPERTIES: &[&str] = &[
     "color", "font-size", "font-weight", "font-family", "font-style", "font-variant",
     "font-variant-caps", "font-variant-numeric", "font-variant-ligatures", "font-variant-position",
-    "font-variant-east-asian", "font-feature-settings", "font-variation-settings", "font-stretch",
+    "font-variant-east-asian", "font-feature-settings", "font-variation-settings", "font-stretch", "tab-size",
     "font-width", "letter-spacing", "word-spacing", "line-height", "text-align", "text-indent",
     "text-transform", "text-shadow", "white-space", "text-wrap", "text-wrap-mode", "text-wrap-style", "word-break", "overflow-wrap", "word-wrap",
     "direction", "visibility", "cursor", "caret-color", "accent-color", "color-scheme",
@@ -7926,6 +7952,11 @@ fn build_node_inner(
         }
         if style.overflow == Overflow::Visible {
             style.overflow = if multiline { Overflow::Scroll } else { Overflow::Clip };
+        }
+        // A textarea can be dragged bigger by its corner unless it says not,
+        // as a browser's own sheet has it (`resize: both`).
+        if multiline && !props.contains_key("resize") {
+            style.rare_mut().resize = Some((true, true));
         }
         // `type="select"`: evaluate the bound `:options` collection to strings so
         // the shell can render a dropdown.
@@ -11330,6 +11361,23 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     }
     scroll_snap(p, &mut st);
     columns(p, &mut st);
+    if let Some(v) = p.get("resize") {
+        let axes = match v.trim().to_ascii_lowercase().as_str() {
+            "none" => None,
+            "both" => Some((true, true)),
+            // `inline` and `block` are `horizontal` and `vertical`: Rux
+            // writes horizontally.
+            "horizontal" | "inline" => Some((true, false)),
+            "vertical" | "block" => Some((false, true)),
+            other => {
+                warn_once(format!("`resize: {other}` is not something Rux knows"));
+                None
+            }
+        };
+        if let Some(axes) = axes {
+            st.rare_mut().resize = Some(axes);
+        }
+    }
     if ["translate", "rotate", "scale"].iter().any(|k| p.contains_key(*k)) {
         st.transform = individual_transforms(p, st.transform);
     }
@@ -13774,6 +13822,7 @@ fn text_look(props: &HashMap<String, String>, parent: Option<&Arc<TextLook>>, in
         stretch: up.stretch,
         caret_color: up.caret_color,
         balance: up.balance,
+        tab_size: up.tab_size,
         ..Default::default()
     };
     // `text-wrap: balance`, or its longhand. Any other style it names is the
@@ -13922,6 +13971,17 @@ fn text_look(props: &HashMap<String, String>, parent: Option<&Arc<TextLook>>, in
         };
     }
     look.line_clamp = line_clamp(props);
+    // `tab-size`: a number of spaces, or a length.
+    if let Some(v) = props.get("tab-size") {
+        let v = v.trim();
+        match v.parse::<f32>() {
+            Ok(n) if n >= 0.0 => look.tab_size = Some(rux_layout::TabSize::Spaces(n)),
+            _ => match parse_px(v) {
+                Some(px) if px >= 0.0 => look.tab_size = Some(rux_layout::TabSize::Px(px)),
+                _ => warn(format!("`tab-size: {v}` is not a number of spaces or a length")),
+            },
+        }
+    }
     (look != TextLook::default()).then(|| Arc::new(look))
 }
 
@@ -18334,6 +18394,30 @@ mod selector_list_tests {
         assert_eq!((canvas.r, canvas.g), (1.0, 0.0));
         let (canvas, _, _) = look("screen { color-scheme: dark; background: rgba(255, 255, 255, 0.5); }");
         assert!((canvas.r - (0.5 + 0.5 * 18.0 / 255.0)).abs() < 0.01, "{canvas:?}");
+    }
+
+    /// `resize`: a textarea is `both` unless it says, as a browser's sheet
+    /// has it; any scroller may say; the layout hands each one's box on.
+    #[test]
+    fn resize_marks_a_scroller_draggable() {
+        let root = built(
+            r#"<template><screen>
+                 <input type="textarea" r-model="a" />
+                 <input type="textarea" class="fixed" r-model="a" />
+                 <view class="pane"><view class="tall" /></view>
+               </screen></template>
+               <script>let a = signal("");</script>
+               <style>.fixed { resize: none; } .pane { overflow: auto; height: 50px; resize: vertical; }
+                      .tall { height: 200px; }</style>"#,
+            None,
+        );
+        let axes: Vec<Option<(bool, bool)>> =
+            root.children.iter().map(|c| c.style.rare.as_ref().and_then(|r| r.resize)).collect();
+        assert_eq!(axes, [Some((true, true)), None, Some((false, true))]);
+        let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
+        let out = rux_layout::layout(&root, 400.0, 600.0, &mut measure);
+        let paths: Vec<Vec<usize>> = out.resizes.iter().map(|r| r.path.clone()).collect();
+        assert_eq!(paths, [vec![0], vec![2]]);
     }
 
     /// Multi-column layout from CSS to boxes: six 50px children in three

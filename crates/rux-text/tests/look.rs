@@ -43,3 +43,18 @@ fn a_transform_is_shaped() {
     assert!(upper > lower, "{lower} then {upper}");
     assert_eq!(upper, te.measure("RUX", &style(None), None).0);
 }
+
+/// `tab-size`: a tab is as wide as that many spaces, 8 with none written as
+/// in CSS, or as the length given; and the text keeps its tab, so a caret's
+/// index is still the one it was.
+#[test]
+fn a_tab_is_tab_size_wide() {
+    let mut te = TextEngine::new();
+    let w = |te: &mut TextEngine, text: &str, look: Option<&TextLook>| te.measure(text, &style(look), None).0;
+    let four = TextLook { tab_size: Some(rux_layout::TabSize::Spaces(4.0)), ..Default::default() };
+    let px = TextLook { tab_size: Some(rux_layout::TabSize::Px(40.0)), ..Default::default() };
+    let near = |a: f32, b: f32| (a - b).abs() <= 2.0;
+    assert!(near(w(&mut te, "a\tb", Some(&four)), w(&mut te, "a    b", None)), "4 spaces");
+    assert!(near(w(&mut te, "a\tb", None), w(&mut te, "a        b", None)), "8 by default");
+    assert!(near(w(&mut te, "a\tb", Some(&px)), w(&mut te, "ab", None) + 40.0), "a length");
+}
