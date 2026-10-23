@@ -75,6 +75,7 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
 
 <style>
   * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
 
   .app {
     display: flex;

@@ -70,6 +70,7 @@
 
 <style>
   * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
 
   /* The example outgrew the window once it had a list in it, so it scrolls.
      Everything below has to be reachable to be driven. */

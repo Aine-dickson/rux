@@ -1169,6 +1169,13 @@ pub struct Rare {
     /// Only the layout knows the size, so it is kept apart from `transform`
     /// and put in front of it at paint, where CSS applies it.
     pub translate: Option<[Len; 2]>,
+    /// On the root alone: CSS's canvas, what the window shows behind and
+    /// around everything. The root's own background colour, which CSS
+    /// propagates there, else its colour scheme's `Canvas`.
+    pub canvas: Option<Rgba>,
+    /// On the root alone: its used `color-scheme` is dark, so what Rux
+    /// draws itself (a dropdown, the selection toolbar) is drawn dark too.
+    pub dark: bool,
 }
 
 /// One `animation` on a box, as the build worked it out: its timing, and its

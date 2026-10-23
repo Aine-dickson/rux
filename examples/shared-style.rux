@@ -23,6 +23,7 @@
 
 <style src="palette.css">
   * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
 
   /* The include lands first, so these rules cascade over it. */
 

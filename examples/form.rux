@@ -39,6 +39,7 @@
 
 <style>
   * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
 
   .screen {
     display: flex;

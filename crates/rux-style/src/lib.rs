@@ -1367,9 +1367,43 @@ fn find_component<'a>(comps: &'a Components, name: &str) -> Option<(&'a str, &'a
     comps.get_key_value(&key).map(|(key, component)| (key.as_str(), component))
 }
 
-/// Default inherited text colour (`#cdd6f4`) and font size, used at the root
-/// before any `color` / `font-size` rule applies. Text properties inherit.
-const DEFAULT_COLOR: Rgba = Rgba::new(0.804, 0.839, 0.957, 1.0);
+/// Default inherited text colour and font size, used at the root before any
+/// `color` / `font-size` rule applies. Text properties inherit. The root's
+/// colour itself comes from its scheme, see [`canvas_colors`]; this is light
+/// `CanvasText`, black, as in CSS. It was `#cdd6f4` on a dark window until
+/// 2026-10-23.
+const DEFAULT_COLOR: Rgba = Rgba::new(0.0, 0.0, 0.0, 1.0);
+
+/// The window behind the root: the root's background colour, which CSS
+/// propagates to the canvas, over its scheme's `Canvas`, so a `screen` with
+/// no background of its own shows the scheme's.
+fn canvas_of(root: &Style, scheme: ColorScheme) -> Rgba {
+    let base = canvas_colors(scheme).0;
+    let top = match &root.background {
+        Some(Background::Color(c)) => Some(*c),
+        Some(Background::Layers(l)) => l.color,
+        _ => None,
+    };
+    match top {
+        Some(c) => Rgba::new(
+            c.r * c.a + base.r * (1.0 - c.a),
+            c.g * c.a + base.g * (1.0 - c.a),
+            c.b * c.a + base.b * (1.0 - c.a),
+            1.0,
+        ),
+        None => base,
+    }
+}
+
+/// CSS's `Canvas` and `CanvasText` for a colour scheme: what the window shows
+/// behind everything, and the root's text. Light is a browser's white and
+/// black; dark is Chrome's, `#121212` and white.
+pub fn canvas_colors(scheme: ColorScheme) -> (Rgba, Rgba) {
+    match scheme {
+        ColorScheme::Dark => (Rgba::new(18.0 / 255.0, 18.0 / 255.0, 18.0 / 255.0, 1.0), Rgba::new(1.0, 1.0, 1.0, 1.0)),
+        ColorScheme::Light => (Rgba::new(1.0, 1.0, 1.0, 1.0), Rgba::new(0.0, 0.0, 0.0, 1.0)),
+    }
+}
 const DEFAULT_FONT_SIZE: f32 = 16.0;
 
 /// The text properties that inherit down the tree: an element uses its own
@@ -5900,7 +5934,7 @@ fn keyframe_animations(
                 }
                 wide_keywords(&mut p);
                 let own_size = resolve_lengths(&mut p, inherited_font_size);
-                resolve_colors(&mut p, inherited_color, scheme);
+                resolve_colors(&mut p, inherited_color, scheme, false);
                 let style = interpreted(&p);
                 KeyframeStep {
                     offset: frame.offset,
@@ -6425,7 +6459,7 @@ fn fold_math(value: &str, basis: Option<f32>) -> Option<String> {
 ///
 /// Its own function, not inline in [`build_node_inner`]: watchlist #41.
 #[inline(never)]
-fn resolve_colors(props: &mut HashMap<String, String>, inherited: Rgba, inherited_scheme: ColorScheme) -> ColorScheme {
+fn resolve_colors(props: &mut HashMap<String, String>, inherited: Rgba, inherited_scheme: ColorScheme, root: bool) -> ColorScheme {
     // `color-scheme` is what `light-dark()` follows. Unset (`normal`) is
     // light whatever the system says, as in CSS; `light dark` follows the
     // system and `dark` alone is dark.
@@ -6443,6 +6477,12 @@ fn resolve_colors(props: &mut HashMap<String, String>, inherited: Rgba, inherite
         }
         None => inherited_scheme,
     };
+    // The root's `color` starts as its scheme's `CanvasText`, as a browser's
+    // own sheet has it, so `color-scheme: dark` on the root is light text
+    // on a dark window with nothing else written.
+    if root && !props.contains_key("color") {
+        props.insert("color".to_string(), color::hex(canvas_colors(scheme).1));
+    }
     let own = match props.get_mut("color") {
         Some(v) => {
             if let Some(out) = rewrite_colors(v, inherited, scheme) {
@@ -7103,7 +7143,8 @@ fn build_node_inner(
     // is what `em` means on the property that defines it: `font-size: 1.5em` is
     // one and a half times the parent's, not its own.
     let own_font_size = resolve_lengths(&mut props, inherited.font_size);
-    let scheme = resolve_colors(&mut props, inherited.color, inherited.text.scheme);
+    let root = ancestors.is_empty();
+    let scheme = resolve_colors(&mut props, inherited.color, inherited.text.scheme, root);
     // After `var()` and `em` are resolved, so a variable holding a bad length is
     // reported as the length it turned out to be rather than as `var(--x)`.
     warn_unparseable_lengths(&props);
@@ -7121,6 +7162,12 @@ fn build_node_inner(
 
     let mut style = screen_fills_the_display(interpreted(&props), el, path, &props);
     style.direction = direction;
+    if root {
+        let canvas = canvas_of(&style, scheme);
+        let rare = style.rare_mut();
+        rare.canvas = Some(canvas);
+        rare.dark = scheme == ColorScheme::Dark;
+    }
     // Form controls are `border-box` unless the author says, as browsers'
     // own sheets make buttons, checkboxes, radios and selects. A text field
     // joins them because its width is Rux's `100%`, which a padded field
@@ -16453,7 +16500,7 @@ mod tests {
     fn child_combinator_styles_the_right_element_end_to_end() {
         // `> text` must reach the direct child, not the grandchild. Before the
         // fix both were colored; now only the direct child is.
-        // `#080808` is used because lightningcss minifies e.g. `#ff0000` to the
+        // `#f8f8f8` is used because lightningcss minifies e.g. `#ff0000` to the
         // keyword `red`, which `parse_color` doesn't (yet) resolve; this hex has
         // no shorter form and survives serialization unchanged.
         let src = r#"
@@ -16464,7 +16511,7 @@ mod tests {
               </screen>
             </template>
             <style>
-              screen > text { color: #080808 }
+              screen > text { color: #f8f8f8 }
             </style>
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
@@ -16473,8 +16520,8 @@ mod tests {
 
         let direct = root.children[0].text.as_ref().unwrap();
         let nested = root.children[1].children[0].text.as_ref().unwrap();
-        assert!(direct.color.r < 0.1, "direct child of screen got the #080808 color");
-        assert!(nested.color.r > 0.5, "grandchild is NOT matched by `screen > text`");
+        assert!(direct.color.r > 0.9, "direct child of screen got the #f8f8f8 color");
+        assert!(nested.color.r < 0.1, "grandchild is NOT matched by `screen > text`");
     }
 
     #[test]
@@ -16577,7 +16624,7 @@ mod tests {
               </screen>
             </template>
             <style>
-              .a ~ .b .c { color: #080808 }
+              .a ~ .b .c { color: #f8f8f8 }
             </style>
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
@@ -16585,7 +16632,7 @@ mod tests {
         let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         for i in [1, 2] {
             let text = root.children[i].children[0].text.as_ref().unwrap();
-            assert!(text.color.r < 0.1, "row {i} follows `.a`, so `.a ~ .b .c` colors it");
+            assert!(text.color.r > 0.9, "row {i} follows `.a`, so `.a ~ .b .c` colors it");
         }
 
         let src = r#"
@@ -16596,13 +16643,13 @@ mod tests {
               </screen>
             </template>
             <style>
-              .a ~ .b .c { color: #080808 }
+              .a ~ .b .c { color: #f8f8f8 }
             </style>
         "#;
         let sfc = rux_parser::parse_sfc(src).unwrap();
         let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut engine).unwrap();
         let text = root.children[0].children[0].text.as_ref().unwrap();
-        assert!(text.color.r > 0.5, "nothing `.a` precedes this `.b`");
+        assert!(text.color.r < 0.1, "nothing `.a` precedes this `.b`");
     }
 
     // ── The element index ───────────────────────────────────────────────────
@@ -17897,6 +17944,32 @@ mod selector_list_tests {
             None,
         );
         assert!(red(&root.children[0]));
+    }
+
+    /// CSS's defaults: black text on a white window; `color-scheme: dark` on
+    /// the root is white text on `#121212`; and a root background is the
+    /// window's, as CSS propagates it to the canvas.
+    #[test]
+    fn the_root_takes_its_schemes_canvas_and_text() {
+        let look = |css: &str| {
+            let root = built(
+                &format!(r#"<template><screen><text>hi</text></screen></template><style>{css}</style>"#),
+                None,
+            );
+            let rare = root.style.rare.as_ref().expect("the root carries its canvas");
+            let ink = root.children[0].text.as_ref().unwrap().color;
+            (rare.canvas.unwrap(), ink, rare.dark)
+        };
+        let (canvas, ink, dark) = look("");
+        assert_eq!((canvas.r, ink.r, dark), (1.0, 0.0, false));
+        let (canvas, ink, dark) = look("screen { color-scheme: dark; }");
+        assert!((canvas.r - 18.0 / 255.0).abs() < 1e-3 && ink.r == 1.0 && dark);
+        let (canvas, ink, _) = look("screen { color-scheme: dark; color: #00ff00; } text { }");
+        assert_eq!((ink.r, ink.g), (0.0, 1.0), "a written colour wins: {canvas:?}");
+        let (canvas, _, _) = look("screen { background: #ff0000; }");
+        assert_eq!((canvas.r, canvas.g), (1.0, 0.0));
+        let (canvas, _, _) = look("screen { color-scheme: dark; background: rgba(255, 255, 255, 0.5); }");
+        assert!((canvas.r - (0.5 + 0.5 * 18.0 / 255.0)).abs() < 0.01, "{canvas:?}");
     }
 
     /// `content-box` is the default, as in CSS; `<input>` and `<button>` are

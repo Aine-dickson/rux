@@ -175,6 +175,7 @@ the last message.
 
 <style>
   * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
 
   .app {
     display: flex;

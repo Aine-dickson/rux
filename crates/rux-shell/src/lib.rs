@@ -495,8 +495,14 @@ enum TextUnit {
     Line,
 }
 
-/// Rux screen background `#11111b`.
-const BG: Color = Color::from_rgb8(0x11, 0x11, 0x1b);
+/// CSS's canvas, what the window shows behind and around the root: the
+/// root carries it (see `rux_layout::Rare::canvas`), the root's background
+/// colour else its colour scheme's `Canvas`. White, a light scheme's, for a
+/// root that has none. It was a fixed `#11111b` until 2026-10-23.
+fn canvas(root: &rux_layout::Node) -> Color {
+    let c = root.style.rare.as_ref().and_then(|r| r.canvas).unwrap_or(Rgba::new(1.0, 1.0, 1.0, 1.0));
+    Color::new([c.r, c.g, c.b, c.a])
+}
 
 /// Height of one option row in an open `select` dropdown, in logical px.
 const DROPDOWN_ROW_H: f32 = 30.0;
@@ -802,11 +808,9 @@ fn toolbar_paints(
     viewport: (f32, f32),
     ceiling: f32,
     offered: &[TextAction],
+    dark: bool,
 ) -> Vec<Paint> {
-    let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
-    let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
-    let ink = Rgba::new(0.80, 0.84, 0.96, 1.0); // #cdd6f4
-    let divider = Rgba::new(0.35, 0.36, 0.44, 1.0); // #585b70
+    let Popup { panel_bg, border, selected: divider, ink, shadow } = Popup::of(dark);
 
     let ((x, y, w, h), buttons) = toolbar_layout(field, viewport, ceiling, offered);
     let mut out = Vec::with_capacity(buttons.len() * 2 + 2);
@@ -817,7 +821,7 @@ fn toolbar_paints(
         height: h,
         radius: 8.0,
         blur: 16.0,
-        color: Rgba::new(0.0, 0.0, 0.0, 0.45),
+        color: shadow,
     });
     out.push(Paint::Rect(PaintRect {
         x,
@@ -1117,11 +1121,46 @@ struct HandleDrag {
     moved: bool,
 }
 
-fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
-    let panel_bg = Rgba::new(0.19, 0.20, 0.27, 1.0); // #313244
-    let border = Rgba::new(0.27, 0.28, 0.35, 1.0); // #45475a
-    let selected = Rgba::new(0.35, 0.36, 0.44, 1.0); // #585b70
-    let ink = Rgba::new(0.80, 0.84, 0.96, 1.0); // #cdd6f4
+/// What Rux draws for itself over the page (a dropdown, the selection
+/// toolbar), in the root's colour scheme, as a browser draws its own pickers.
+struct Popup {
+    panel_bg: Rgba,
+    border: Rgba,
+    /// The picked option, and the toolbar's dividers.
+    selected: Rgba,
+    ink: Rgba,
+    shadow: Rgba,
+}
+
+impl Popup {
+    fn of(dark: bool) -> Self {
+        if dark {
+            Self {
+                panel_bg: Rgba::new(0.19, 0.20, 0.27, 1.0), // #313244
+                border: Rgba::new(0.27, 0.28, 0.35, 1.0),   // #45475a
+                selected: Rgba::new(0.35, 0.36, 0.44, 1.0), // #585b70
+                ink: Rgba::new(0.80, 0.84, 0.96, 1.0),      // #cdd6f4
+                shadow: Rgba::new(0.0, 0.0, 0.0, 0.45),
+            }
+        } else {
+            Self {
+                panel_bg: Rgba::new(1.0, 1.0, 1.0, 1.0),
+                border: Rgba::new(0.82, 0.82, 0.85, 1.0),   // #d1d1d9
+                selected: Rgba::new(0.91, 0.91, 0.94, 1.0), // #e8e8f0
+                ink: Rgba::new(0.11, 0.11, 0.13, 1.0),      // #1c1c21
+                shadow: Rgba::new(0.0, 0.0, 0.0, 0.2),
+            }
+        }
+    }
+}
+
+/// Whether the root's colour scheme is dark. See [`canvas`].
+fn dark(root: &rux_layout::Node) -> bool {
+    root.style.rare.as_ref().is_some_and(|r| r.dark)
+}
+
+fn dropdown_paints(sel: &SelectRegion, value: &str, dark: bool) -> Vec<Paint> {
+    let Popup { panel_bg, border, selected, ink, shadow } = Popup::of(dark);
 
     let (px, py, pw, _) = dropdown_row(sel, 0);
     let ph = sel.options.len() as f32 * DROPDOWN_ROW_H;
@@ -1135,7 +1174,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str) -> Vec<Paint> {
         height: ph,
         radius: 8.0,
         blur: 16.0,
-        color: Rgba::new(0.0, 0.0, 0.0, 0.45),
+        color: shadow,
     });
     // The panel itself: one rounded rect behind all the rows.
     out.push(Paint::Rect(PaintRect {
@@ -7033,6 +7072,7 @@ impl App {
                     (logical.0 as f32, logical.1 as f32),
                     safe_top,
                     &toolbar_actions,
+                    dark(&document.root),
                 );
                 let scene = rux_paint::build_scene(&strip, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
@@ -7081,7 +7121,7 @@ impl App {
                 .find(|s| s.model == model && s.row == row && s.instance == instance)
             {
                 let value = document.value_in(&model, row.as_deref(), instance.as_deref());
-                let overlay = dropdown_paints(sel, &value);
+                let overlay = dropdown_paints(sel, &value, dark(&document.root));
                 let scene = rux_paint::build_scene(&overlay, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
             }
@@ -7161,6 +7201,7 @@ impl App {
         *states = layout.states;
 
         let device_handle = &context.devices[state.surface.dev_id];
+        let bg = canvas(&document.root);
         let gpu_start = profile::active().then(Instant::now);
         // wgpu 29 reports acquisition as a status enum. A timeout/occluded frame
         // is normal (minimized window, compositor hiccup), skip it and repaint
@@ -7175,7 +7216,7 @@ impl App {
         if !apart.is_empty() {
             let device = &device_handle.device;
             let filters = state.filters.get_or_insert_with(|| filter::GpuFilters::new(device));
-            filters.run(device, &device_handle.queue, &mut state.renderer, &apart, scale, BG);
+            filters.run(device, &device_handle.queue, &mut state.renderer, &apart, scale, bg);
         }
         // vello renders with a compute shader, so it can't write the surface
         // texture directly (the surface is Bgra8, the storage target Rgba8).
@@ -7189,7 +7230,7 @@ impl App {
                 &state.scene,
                 &state.surface.target_view,
                 &RenderParams {
-                    base_color: BG,
+                    base_color: bg,
                     width,
                     height,
                     antialiasing_method: AaConfig::Area,

@@ -1561,6 +1561,17 @@ again when it changes, `dark` is always dark, and with no `color-scheme` at
 all it is **light**, whatever the system says. That is CSS's rule: write
 `:root`'s equivalent, `screen { color-scheme: light dark; }`, to opt in.
 
+**The default colours are CSS's** (2026-10-23, the owner's call). The window
+is white and text is black, as a browser's page is. The root's `color-scheme`
+picks both, as CSS's `Canvas` and `CanvasText`: `:root { color-scheme: dark; }`
+is white text on `#121212`, Chrome's dark canvas, and `light dark` follows the
+system. A root `background` colour is what the window shows behind and around
+everything, as CSS propagates it to the canvas, and Rux's own dropdown and
+selection toolbar are drawn in the root's scheme. Until this date Rux's window
+was a fixed `#11111b` with `#cdd6f4` text, which nobody chose against CSS's,
+and text Tailwind leaves uncoloured came out faint. The examples are designed
+dark, so they say `:root { color-scheme: dark; }`.
+
 ### `z-index`, and what is drawn over what
 
 Paint order is CSS's (CSS 2, appendix E), and so is what a tap finds, since the

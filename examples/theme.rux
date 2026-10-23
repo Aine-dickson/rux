@@ -29,6 +29,7 @@
 
 <style>
   * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
 
   /* The palette. Declared once; everything below reads it through var(). */
   .app {
