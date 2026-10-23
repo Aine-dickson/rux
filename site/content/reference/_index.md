@@ -841,8 +841,8 @@ had. `required` is not met by `none` or an empty list.
 
 **Desktop only so far.** On the web and on Android a tap prints that the picker
 is not built there yet and fires nothing; both are the next steps of
-`docs/13-file-input-and-media-plan.md`, as are `pickFile` returning a `File`
-and drag and drop onto the input (later still).
+`docs/13-file-input-and-media-plan.md`. Drag and drop onto the input is later
+still. `pickFile` and `pickFiles` give the same `File` (see `docs/07-script.md`).
 
 Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
 between the switch's two ends, and a drawn date picker on desktop or in a

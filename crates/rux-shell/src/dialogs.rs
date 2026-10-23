@@ -1,5 +1,6 @@
 //! The file dialogs a script awaits: `pickFile`, `pickFiles`,
-//! `pickSaveFile` (Mava Studio's MS-005).
+//! `pickSaveFile` (Mava Studio's MS-005). The first two give `File`s, as a
+//! file input does (`crate::files`); a save dialog gives a path.
 //!
 //! Installed as Rux's own native module, [`rux_runtime::builtins`]'s
 //! interface with code behind it, so a script calls them by bare name and
@@ -101,9 +102,10 @@ async fn pick(kind: Pick, given: Any) -> Result<Any, Error> {
         d = d.set_directory(f);
     }
     let path = |h: &rfd::FileHandle| Any::Str(h.path().to_string_lossy().into_owned());
+    let file = |h: &rfd::FileHandle| crate::files::from_path(h.path());
     Ok(match kind {
-        Pick::File => d.pick_file().await.map_or(Any::None, |h| path(&h)),
-        Pick::Files => Any::Array(d.pick_files().await.unwrap_or_default().iter().map(path).collect()),
+        Pick::File => d.pick_file().await.and_then(|h| file(&h)).unwrap_or(Any::None),
+        Pick::Files => Any::Array(d.pick_files().await.unwrap_or_default().iter().filter_map(file).collect()),
         Pick::Save => {
             if let Some(n) = &o.name {
                 d = d.set_file_name(n);
@@ -121,5 +123,5 @@ async fn pick(kind: Pick, _given: Any) -> Result<Any, Error> {
         Pick::Save => "pickSaveFile",
     };
     let here = if cfg!(target_os = "android") { "on Android" } else { "on the web" };
-    Err(Error::new("unsupported", format!("`{name}` is not built {here} yet: it gives a path, and a path is a desktop's")))
+    Err(Error::new("unsupported", format!("`{name}` is not built {here} yet")))
 }

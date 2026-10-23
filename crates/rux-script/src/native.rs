@@ -68,8 +68,12 @@ pub fn builtin_interface() -> rux_native::Interface {
                     sig: Sig { params: Vec::new(), result: "string".into(), is_async: true },
                 },
             },
-            dialog("pickFile", "string?"),
-            dialog("pickFiles", "string[]"),
+            // What was picked is a `File`, as an `<input type="file">` binds,
+            // so one way to pick works everywhere (decision 3 of the file
+            // input proposal). A save dialog names a file not there yet, so
+            // it is still a path.
+            dialog("pickFile", "File?"),
+            dialog("pickFiles", "File[]"),
             dialog("pickSaveFile", "string?"),
         ],
     }

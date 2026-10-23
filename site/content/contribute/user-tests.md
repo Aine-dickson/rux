@@ -2799,6 +2799,8 @@ typed into the dialog's name box. Tests cannot open the dialog; the drive can.
 | A path with a space and an accent | `<image src="file:///…/img%20dir/pic%20%C3%A9.png">`, static and bound | both drawn at their natural size | desktop: pass |
 | Filter | `accept="image/*"` | the dialog's filter offers images | not looked at (the path was typed) |
 | Disabled, required | `disabled`; `required` with nothing chosen | no dialog; `:invalid` until a pick | under test only |
+| `pickFile` gives a `File` | a button awaiting `pickFile` with a `txt` filter, then `f.name`, `f.type`, `f.path`, `await f.text()` | `note.txt (text/plain) at C:\…
+ote.txt: Hello…`, accents intact | desktop: pass |
 | Web, Android | the same page | prints that the picker is not built there | not driven |
 
 ## Standing gaps

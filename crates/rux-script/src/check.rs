@@ -4335,6 +4335,14 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         assert!(f.iter().any(|f| f.is_error && f.message.contains("nope")), "{f:?}");
         let f = built_findings("fn f(x: File) { x.text(); }");
         assert!(f.iter().any(|f| f.is_error && f.message.contains("async")), "{f:?}");
+        // The dialogs give `File`s, so code that took the result for a path
+        // is pointed at, and `file.path` is the path.
+        let f = built_findings("async fn g(): string { let f = await pickFile({}); if f != none { return f.name; } \"\" }");
+        assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+        let f = built_findings("async fn g() { let p: string? = await pickFile({}); }");
+        assert!(f.iter().any(|f| f.is_error), "a File is not a path: {f:?}");
+        let f = built_findings("async fn g(): int { let fs = await pickFiles({}); fs.length }");
+        assert!(f.iter().all(|f| !f.is_error), "{f:?}");
         // A file's own `File` is its own, and is not declared twice.
         let f = built_findings("type File = { id: int };\nfn f(x: File): int { x.id }");
         assert!(f.iter().all(|f| !f.is_error), "{f:?}");

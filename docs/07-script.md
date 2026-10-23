@@ -542,11 +542,11 @@ own, so nothing is imported:
 
 ```rux
 async fn openProject() {
-  let path = await pickFile({
+  let file = await pickFile({
     title: "Open project",
     filters: [{ name: "Mava project", extensions: ["mava"] }],
   });
-  if path != none { await project.open(path); }
+  if file != none { await project.open(file.path); }
 }
 
 async fn saveAs() {
@@ -555,8 +555,12 @@ async fn saveAs() {
 }
 ```
 
-- **`pickFile(options): string?`**, **`pickFiles(options): string[]`**,
+- **`pickFile(options): File?`**, **`pickFiles(options): File[]`**,
   **`pickSaveFile(options): string?`**. Cancelling gives `none`, or `[]`.
+  A `File` is what an `<input type="file">` binds: `name`, `size`, `type`,
+  `url`, `path`, and `await file.text()`. A save dialog names a file that is
+  not there yet, so it gives a path. **Changed 2026-10-23**: `pickFile` and
+  `pickFiles` gave paths before; write `file.path` where the path was.
 - **The options** are all optional: `title`, `filters` (each a `name` and its
   `extensions`, with or without the dot), `folder` to open in, and `name`, the
   file name a save dialog suggests. A field the dialogs do not have is an
@@ -564,9 +568,10 @@ async fn saveAs() {
 - **The window keeps going while the dialog is open**: it is the platform's
   dialog run off the window's thread, and the path comes back as an `await`'s
   answer does. On Linux it is the desktop portal's dialog, not GTK's.
-- **They give a path**, for the app's Rust to open. On the web and on Android,
-  where a dialog gives no path, each throws an `Error` of `kind`
-  `"unsupported"` until those are built.
+- **`file.path` is the desktop's**, for the app's Rust to open; `file.text()`
+  reads it from script. On the web and on Android each dialog throws an
+  `Error` of `kind` `"unsupported"` until those are built, and there a `File`
+  will carry no `path`.
 - Written out, they are `use native::rux::{pickFile};`, which is what a script
   that calls one gets without writing it.
 
