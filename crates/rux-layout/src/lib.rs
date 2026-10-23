@@ -1022,7 +1022,12 @@ pub(crate) fn shadow_paints(
                 height: h + 2.0 * sh.spread,
                 // vello's blurred rect takes one radius; use the largest
                 // corner as a stand-in (per-corner blur isn't supported).
-                radius: radius.iter().copied().fold(0.0, f32::max),
+                // The spread grows a round corner by as much, as CSS has it;
+                // a square one stays square.
+                radius: match radius.iter().copied().fold(0.0, f32::max) {
+                    r if r > 0.0 => (r + sh.spread).max(0.0),
+                    _ => 0.0,
+                },
                 blur: sh.blur,
                 color: sh.color,
             });

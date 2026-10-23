@@ -1216,9 +1216,21 @@ fn build(
                     (*x + *width) as f64,
                     (*y + *height) as f64,
                 );
-                // CSS blur radius is ~2σ of the gaussian; vello wants σ.
-                let std_dev = (*blur as f64 / 2.0).max(0.0);
-                scene.draw_blurred_rounded_rect(cur, rect, to_color(*color), *radius as f64, std_dev);
+                // No more round than the box can be: `border-radius: 9999px`
+                // is a circle, and the shader takes the radius as written.
+                let radius = radius.min(width.min(*height) / 2.0).max(0.0);
+                if *blur <= 0.0 {
+                    // A hard edge is a fill. The blurred-rect shader at a
+                    // deviation of zero drew a round shadow in a colour of
+                    // its own over whatever was under it: a white ring on an
+                    // avatar came out a darker copy of the avatar beneath.
+                    let shape = rounded_rect(*x, *y, *width, *height, [radius; 4], 0.0);
+                    scene.fill(Fill::NonZero, cur, to_color(*color), None, &shape);
+                } else {
+                    // CSS blur radius is ~2σ of the gaussian; vello wants σ.
+                    let std_dev = (*blur as f64 / 2.0).max(0.0);
+                    scene.draw_blurred_rounded_rect(cur, rect, to_color(*color), radius as f64, std_dev);
+                }
             }
             // The colour fills the padding box, and a blurred hole is cut
             // out of it: a layer clipped to the box, then the hole drawn

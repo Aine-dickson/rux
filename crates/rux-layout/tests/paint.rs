@@ -361,10 +361,11 @@ fn shadows_go_under_and_inset_ones_over_the_background() {
         .collect();
     assert_eq!(kinds, ["shadow", "shadow", "rect", "inset"]);
     // The last written first: its spread grows it by 3 on each side.
-    let Paint::Shadow { x, width, .. } = items[0] else { unreachable!() };
-    assert_eq!((x, width), (2.0 - 3.0, 106.0));
-    let Paint::Shadow { x, .. } = items[1] else { unreachable!() };
-    assert_eq!(x, 1.0);
+    // Its round corners grow by the spread too, as CSS's do.
+    let Paint::Shadow { x, width, radius, .. } = items[0] else { unreachable!() };
+    assert_eq!((x, width, radius), (2.0 - 3.0, 106.0, 13.0));
+    let Paint::Shadow { x, radius, .. } = items[1] else { unreachable!() };
+    assert_eq!((x, radius), (1.0, 10.0));
     let Paint::InsetShadow { x, y, width, height, radius, hole, .. } = items[3] else { unreachable!() };
     assert_eq!((x, y, width, height), (2.0, 2.0, 96.0, 46.0));
     assert_eq!(radius, [8.0; 4]);
