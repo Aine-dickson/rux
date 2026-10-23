@@ -77,3 +77,11 @@ letter), a dot for a radio. Keep the checked `border` a shade apart from the
 checked `background`, or the ring dissolves into the fill. A radio is **round** unless you give it a `border-radius` (and a
 huge radius like `9999px` is clamped to a circle, so that's how you re-round one
 that inherited a radius from another class).
+
+**`appearance: none`** (2026-10-23), as in CSS, takes the control's own drawing
+away: a checkbox loses its tick, a radio its dot and its round shape, a switch
+its thumb, its size and its colours. What is left is a box that still toggles
+and still matches `:checked`, for the author to draw. `-webkit-appearance` is
+the same property, and any other value (`auto`, Tailwind's `button`) leaves
+the control as Rux draws it. A slider and a select are drawn either way: a
+browser draws a range's thumb as a pseudo-element, which Rux does not have.

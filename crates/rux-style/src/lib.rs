@@ -4562,8 +4562,9 @@ fn rule_decls(
 /// a new property is honored in `interpret` (or the text/border helpers), add it
 /// here too, or authors will be told a working property does nothing.
 const HONORED_PROPERTIES: &[&str] = &[
-    // Controls: the colour a switch and a slider are drawn in.
-    "accent-color",
+    // Controls: the colour a switch and a slider are drawn in, and whether
+    // Rux draws a checkbox's, radio's or switch's mark at all.
+    "accent-color", "appearance",
     // Box / display
     "display", "width", "height", "gap",
     "min-width", "max-width", "min-height", "max-height",
@@ -4873,7 +4874,7 @@ const UNIMPLEMENTED_PROPERTIES: &[&str] = &[
     // Text. Vertical writing is a layout of its own; hyphenation by
     // dictionary needs the dictionaries; a tab is as wide as its font says.
     "writing-mode", "hyphens", "hyphenate-character", "tab-size",
-    "appearance", "list-style", "list-style-type", "list-style-position",
+    "list-style", "list-style-type", "list-style-position",
     // Motion. A transform is flat, so it has no depth to look into.
     "perspective", "perspective-origin",
     // Scrolling: a scroller comes to rest where the fling leaves it.
@@ -7454,6 +7455,10 @@ fn build_node_inner(
         let value = el.attr("value").unwrap_or_default().to_string();
 
         let mut style = style;
+        // `appearance: none`, as in CSS: the control's own drawing goes, and
+        // what is left is a box the author styles, `:checked` and all. No
+        // mark, no thumb, no round radio, no switch size or colours.
+        let bare = props.get("appearance").is_some_and(|v| v.trim().eq_ignore_ascii_case("none"));
         // Centre the mark inside the box unless the author says otherwise.
         if style.display == Display::Block {
             style.display = Display::Flex;
@@ -7461,7 +7466,7 @@ fn build_node_inner(
         style.justify.get_or_insert(Justify::Center);
         style.align.get_or_insert(Align::Center);
         // A radio is round unless it was given its own radius.
-        if radio && style.radius == [0.0; 4] {
+        if radio && !bare && style.radius == [0.0; 4] {
             style.radius = [CIRCLE; 4];
         }
 
@@ -7470,7 +7475,7 @@ fn build_node_inner(
         // from the defaults below, so an unstyled switch is still a switch
         // rather than a box with nothing in it.
         let mut thumb = color;
-        if switch {
+        if switch && !bare {
             if !props.contains_key("width") {
                 style.width = Some(Len::Px(44.0));
             }
@@ -7497,7 +7502,9 @@ fn build_node_inner(
         }
 
         let mut node = LayoutNode::new(style);
-        if switch {
+        if bare {
+            // Nothing of Rux's drawn inside: see `bare` above.
+        } else if switch {
             // The thumb: as tall as the track's content box, and round.
             node.children.push(LayoutNode::new(Style {
                 display: Display::Flex,
@@ -17970,6 +17977,28 @@ mod selector_list_tests {
         assert_eq!((canvas.r, canvas.g), (1.0, 0.0));
         let (canvas, _, _) = look("screen { color-scheme: dark; background: rgba(255, 255, 255, 0.5); }");
         assert!((canvas.r - (0.5 + 0.5 * 18.0 / 255.0)).abs() < 0.01, "{canvas:?}");
+    }
+
+    /// `appearance: none` (and `-webkit-appearance`) takes away what Rux
+    /// draws in a checkbox, radio or switch, leaving a box to style.
+    #[test]
+    fn appearance_none_leaves_a_bare_box() {
+        let root = built(
+            r#"<template><screen>
+                 <input type="checkbox" r-model="on" />
+                 <input type="checkbox" class="n" r-model="on" />
+                 <input type="switch" class="w" r-model="on" />
+                 <input type="radio" class="n" r-model="pick" value="a" />
+                 <input type="checkbox" class="a" r-model="on" />
+               </screen></template>
+               <script>let on = signal(true); let pick = signal("a");</script>
+               <style>.n { appearance: none; } .w { -webkit-appearance: none; } .a { appearance: auto; }</style>"#,
+            None,
+        );
+        let marks: Vec<usize> = root.children.iter().map(|c| c.children.len()).collect();
+        assert_eq!(marks, [1, 0, 0, 0, 1]);
+        assert!(root.children[2].style.background.is_none(), "no switch colours");
+        assert_eq!(root.children[3].style.radius, [0.0; 4], "a bare radio is square");
     }
 
     /// `content-box` is the default, as in CSS; `<input>` and `<button>` are

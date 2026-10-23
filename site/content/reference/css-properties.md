@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places it does not answer as a browser would.
 
-224 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
+225 properties and 25 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -130,7 +130,7 @@ Every property below is one the runtime interprets, and the list is written by t
 | `left` | **distance from the left edge.** An offset, or a sticky threshold.For example `.badge { position: absolute; left: 8px; }` |  |  |
 | `inset` | **`top`, `right`, `bottom` and `left` at once.** One to four values, as `margin` takes them. `inset: 0` on an `absolute` box fills its containing block.For example `.scrim { position: absolute; inset: 0; }` |  | yes |
 | `aspect-ratio` | **width-to-height ratio to keep.** `16 / 9`. Gives a box a height derived from its width, so a media box keeps its shape as it resizes.For example `.cover { width: 100%; aspect-ratio: 16 / 9; }` |  |  |
-| `box-sizing` | **what `width` and `height` measure.** `content-box` (the default, as in CSS): the padding and border are added to the width. `border-box`: they are inside it, which is what `<input>` and `<button>` use unless told otherwise.For example `* { box-sizing: border-box; }` | `border-box` `content-box` |  |
+| `box-sizing` | **what `width` and `height` measure.** `content-box` (the default, as in CSS): the padding and border are added to the width. `border-box`: they are inside it, which is what `<input>` and `<button>` use unless told otherwise.For example `* { box-sizing: border-box; }` | `content-box` `border-box` |  |
 | `z-index` | **which box is drawn over which.** `auto` or a whole number. Counts on a positioned box and on a flex or grid item; higher is drawn over lower, inside the same stacking context. A `fixed` box is **not** on top by itself: give it a `z-index`. Animates in whole steps.For example `.menu { position: absolute; z-index: 10; }` |  | yes |
 | `isolation` | **start a stacking context.** `isolate` makes this box a stacking context and does nothing else, so a `z-index` inside it, negative ones included, is sorted inside it and never escapes.For example `.card { position: relative; isolation: isolate; }` | `auto` `isolate` |  |
 | `anchor-name` | **name this box as an anchor.** `--menu-button`. Another box can then be placed against it with `position-anchor` and `anchor()`. Names are document-wide, so a component can anchor to a box anywhere; when two boxes share a name the later one is the anchor.For example `.more { anchor-name: --row-menu; }` |  |  |
@@ -156,6 +156,7 @@ Every property below is one the runtime interprets, and the list is written by t
 | `background-origin` | **which box a background is placed in.** `padding-box` (the default), `border-box` or `content-box`.For example `.card { background-origin: content-box; }` | `padding-box` `border-box` `content-box` |  |
 | `background-attachment` | **what a background moves with.** `scroll` (the box), `fixed` (the window) or `local` (the box's scrolled content).For example `.page { background-attachment: fixed; }` | `scroll` `fixed` `local` |  |
 | `accent-color` | **the colour a control is drawn in.** A switch's track when on, and a slider's fill and thumb. Not inherited.For example `.volume { accent-color: #f38ba8; }` |  |  |
+| `appearance` | **whether a control is drawn as one.** `none`: a checkbox, radio or switch loses the mark, dot or thumb Rux draws in it, and its default shape and colours, leaving a box to style with `:checked`. Any other value draws the control. A slider and a select are drawn either way.For example `.tick { appearance: none; } .tick:checked { background: #89b4fa; }` | `none` `auto` |  |
 | `color` | **the colour of the text.** Inherited, so setting it on a container covers the text inside. Animatable.For example `.label { color: #cdd6f4; }` |  | yes |
 | `font-size` | **how large the text is.** Also the reference for `em` on this box, so changing it moves anything sized in `em`.For example `.title { font-size: 22px; }` |  | yes |
 | `font-weight` | **how heavy the text is.** `normal`, `bold`, `lighter`, `bolder`, or a number from 100 to 900.For example `.title { font-weight: 700; }` | `normal` `bold` `lighter` `bolder` `100` `200` `300` `400` `500` `600` `700` `800` `900` |  |
@@ -273,4 +274,4 @@ Every property below is one the runtime interprets, and the list is written by t
 
 Real CSS an author reaches for, which the runtime parses, ignores and reports as a pending feature rather than a typo:
 
-`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `appearance`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `scroll-snap-type`, `scroll-snap-align`, `scroll-snap-stop`, `scroll-padding`, `scroll-padding-top`, `scroll-padding-right`, `scroll-padding-bottom`, `scroll-padding-left`, `scroll-margin`, `scroll-margin-top`, `scroll-margin-right`, `scroll-margin-bottom`, `scroll-margin-left`, `columns`, `column-count`, `column-width`, `column-fill`, `column-rule`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`, `content`.
+`float`, `clear`, `order`, `resize`, `writing-mode`, `hyphens`, `hyphenate-character`, `tab-size`, `list-style`, `list-style-type`, `list-style-position`, `perspective`, `perspective-origin`, `scroll-snap-type`, `scroll-snap-align`, `scroll-snap-stop`, `scroll-padding`, `scroll-padding-top`, `scroll-padding-right`, `scroll-padding-bottom`, `scroll-padding-left`, `scroll-margin`, `scroll-margin-top`, `scroll-margin-right`, `scroll-margin-bottom`, `scroll-margin-left`, `columns`, `column-count`, `column-width`, `column-fill`, `column-rule`, `column-span`, `table-layout`, `border-collapse`, `border-spacing`, `content`.
