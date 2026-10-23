@@ -274,6 +274,13 @@ never matches, with a warning. A rule that reads a place stops a list from
 reusing its built rows, as `+` and `~` already do. `query()` answers all of
 them from the tree as built.
 
+**Nesting** (2026-10-23), as CSS has it: a rule inside a rule is read against
+its parent, `&` standing for the parent (`.card { &:hover { … } }`), a selector
+without one a descendant of it (`.card { .title { … } }`, `> .row` a child), and
+a `@media` or `@supports` inside a rule holds declarations that are the rule's
+own. A parent list of more than one selector stands in as `:is()`, which is
+what CSS defines `&` to mean.
+
 **`:is()`, `:where()` and `:root`** (2026-10-23). `:is(a, b)` matches any of its
 selectors, combinators included, so `.x:is(.group:hover *)` styles `.x` while
 an ancestor `.group` is hovered, and counts as specific as its most specific

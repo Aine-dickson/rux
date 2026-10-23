@@ -877,6 +877,13 @@ never matches, with a warning. A rule that reads a place stops a list from
 reusing its built rows, as `+` and `~` already do. `query()` answers all of
 them from the tree as built.
 
+**Nesting** (2026-10-23), as CSS has it: a rule inside a rule is read against
+its parent, `&` standing for the parent (`.card { &:hover { … } }`), a selector
+without one a descendant of it (`.card { .title { … } }`, `> .row` a child), and
+a `@media` or `@supports` inside a rule holds declarations that are the rule's
+own. A parent list of more than one selector stands in as `:is()`, which is
+what CSS defines `&` to mean.
+
 **`:is()`, `:where()` and `:root`** (2026-10-23). `:is(a, b)` matches any of its
 selectors, combinators included, so `.x:is(.group:hover *)` styles `.x` while
 an ancestor `.group` is hovered, and counts as specific as its most specific
@@ -1338,8 +1345,9 @@ the layer order round, so an important rule in the first layer wins. `@supports`
 asks whether Rux honors the property, or with `selector()` the pseudo-class, and
 takes `not`, `and` and `or`. `@property --x { initial-value: 0; inherits: false; }`
 gives a custom property its starting value, and with `inherits: false` a child
-starts again from it instead of taking its parent's. Any other at-rule, and a
-rule nested inside a rule, warns instead of vanishing.
+starts again from it instead of taking its parent's. Any other at-rule warns
+instead of vanishing. A rule nested inside a rule is read: see Nesting, under
+the selectors.
 
 **`orientation` and `resolution` are answered by the device**, and both were
 driven on one: rotating a phone re-cascades live, and a Pixel 6 reports 2.625,
@@ -2352,6 +2360,13 @@ time. `color` is drawn by painting the glyphs a second time, clipped to the
 highlight, so a glyph cut by the selection's edge is two colours as it is in a
 browser. `::selection` anywhere but the end of a selector matches nothing.
 Under test in `crates/rux-runtime/tests/selection_style.rs`.
+
+**`::placeholder`** (2026-10-23) colours an empty input's placeholder:
+`color`, with `var()` and `currentcolor` read as the input reads them, and
+`opacity`, which fades it. Anything else written there warns. Only the input's
+own rules count, as in CSS: a placeholder is part of its input, so a rule on an
+ancestor does not reach it the way `::selection` does. With no rule it is Rux's
+own dim grey.
 
 **Selection handles.** A finger that selects gets Android's teardrops: one
 hanging left of the selection's start, one right of its end, drawn by Rux on

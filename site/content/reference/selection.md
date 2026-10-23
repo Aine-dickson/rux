@@ -79,6 +79,13 @@ highlight, so a glyph cut by the selection's edge is two colours as it is in a
 browser. `::selection` anywhere but the end of a selector matches nothing.
 Under test in `crates/rux-runtime/tests/selection_style.rs`.
 
+**`::placeholder`** (2026-10-23) colours an empty input's placeholder:
+`color`, with `var()` and `currentcolor` read as the input reads them, and
+`opacity`, which fades it. Anything else written there warns. Only the input's
+own rules count, as in CSS: a placeholder is part of its input, so a rule on an
+ancestor does not reach it the way `::selection` does. With no rule it is Rux's
+own dim grey.
+
 **Selection handles.** A finger that selects gets Android's teardrops: one
 hanging left of the selection's start, one right of its end, drawn by Rux on
 every platform, because the platform's belong to `TextView` and are offered to

@@ -2758,6 +2758,8 @@ struct Compound {
     /// styles. Legal only on the last compound; anywhere else the selector
     /// matches nothing, as a browser drops it.
     selection: bool,
+    /// Ends in `::placeholder`: as `selection`, for an input's placeholder.
+    placeholder: bool,
 }
 
 /// A pseudo-class in a compound selector. Each one tests a bit of interaction
@@ -3099,6 +3101,9 @@ struct Rule {
     /// A `::selection` rule: its chain picks the element, and its
     /// declarations style that element's selected text, not the element.
     selection: bool,
+    /// A `::placeholder` rule, the same way: its declarations style the
+    /// placeholder of the input its chain picks. See [`matched_placeholder`].
+    placeholder: bool,
     /// The cascade layer it was written in, empty for none. See [`layer`].
     layer: Vec<u32>,
     /// Its declarations were the `!important` ones of what was written. A
@@ -3969,6 +3974,8 @@ fn collect_media_matches(rules: &[CssRule], env: Environment, out: &mut Vec<bool
             // A `@media` inside a layer or a `@supports` is one too.
             CssRule::LayerBlock(block) => collect_media_matches(&block.rules.0, env, out),
             CssRule::Supports(sup) => collect_media_matches(&sup.rules.0, env, out),
+            // And one nested in a rule.
+            CssRule::Style(style) => collect_media_matches(&style.rules.0, env, out),
             _ => {}
         }
     }
@@ -4130,7 +4137,7 @@ fn parse_rules_at(
 
     let mut rules = Vec::new();
     let mut order = 0usize;
-    let mut at = Collecting { env, base, css, tries, layers, layer: Vec::new(), key: Vec::new() };
+    let mut at = Collecting { env, base, css, tries, layers, layer: Vec::new(), key: Vec::new(), parent: Vec::new() };
     collect_rules(&sheet.rules.0, &mut at, &mut rules, &mut order);
     rules
 }
@@ -4147,6 +4154,9 @@ struct Collecting<'a> {
     layer: Vec<String>,
     /// Its key in `layers`.
     key: Vec<u32>,
+    /// The selectors of the rule being read inside, when a rule is nested in
+    /// another, with its own parent's already put in. Empty at the top.
+    parent: Vec<String>,
 }
 
 impl Collecting<'_> {
@@ -4183,6 +4193,18 @@ fn collect_rules(rules: &[CssRule], at: &mut Collecting, out: &mut Vec<Rule>, or
                 }
             }
             CssRule::Style(style) => collect_style_rule(style, at, out, order),
+            // Declarations after a nested rule, or inside a `@media` or
+            // `@supports` nested in a rule: the parent's, for the same
+            // elements, in the order they were written.
+            CssRule::NestedDeclarations(nested) if !at.parent.is_empty() => {
+                let selectors = at.parent.clone();
+                let line = nested.loc.line;
+                located(file_line(at.base, line), || {
+                    let normal = rule_decls(&nested.declarations.declarations, line, at.base, at.css, at.tries);
+                    let important = rule_decls(&nested.declarations.important_declarations, line, at.base, at.css, at.tries);
+                    push_rules(&selectors, &normal, &important, at, out, order);
+                });
+            }
             CssRule::LayerStatement(statement) => {
                 for name in &statement.names {
                     let path = at.path_of(name);
@@ -4312,54 +4334,92 @@ fn collect_style_rule(
     order: &mut usize,
 ) {
     let (base, css, tries) = (at.base, at.css, at.tries);
-    located(file_line(base, style.loc.line), || {
-        if !style.rules.0.is_empty() {
-            warn_once(
-                "a rule nested inside another rule is not supported yet, so it does nothing; \
-                 write it out at the top level"
-                    .to_string(),
-            );
-        }
+    let line = style.loc.line;
+    let selectors: Vec<String> = style
+        .selectors
+        .0
+        .iter()
+        .filter_map(|selector| selector.to_css_string(PrinterOptions::default()).ok())
+        .map(|text| nest(&at.parent, &text))
+        .collect();
+    located(file_line(base, line), || {
         // The declarations as written, and the `!important` ones, which the
         // cascade sorts apart: one Rule each.
-        let normal = rule_decls(&style.declarations.declarations, style, base, css, tries);
-        let important = rule_decls(&style.declarations.important_declarations, style, base, css, tries);
-
-        // One Rule per selector in the list (they share the declarations).
-        for selector in &style.selectors.0 {
-            if let Ok(text) = selector.to_css_string(PrinterOptions::default()) {
-                if let Some((mut chain, combs, specificity)) = parse_selector(&text) {
-                    // The flag moves from the last compound onto the rule, so
-                    // the chain can match the element the highlight belongs to.
-                    let selection =
-                        chain.last_mut().is_some_and(|last| std::mem::take(&mut last.selection));
-                    for (decls, important) in [(&normal, false), (&important, true)] {
-                        if decls.is_empty() && important {
-                            continue;
-                        }
-                        out.push(Rule {
-                            chain: chain.clone(),
-                            combs: combs.clone(),
-                            specificity,
-                            order: *order,
-                            decls: decls.clone(),
-                            selection,
-                            layer: at.key.clone(),
-                            important,
-                        });
-                    }
-                }
-            }
-            *order += 1;
-        }
+        let normal = rule_decls(&style.declarations.declarations, line, base, css, tries);
+        let important = rule_decls(&style.declarations.important_declarations, line, base, css, tries);
+        push_rules(&selectors, &normal, &important, at, out, order);
     });
+    // Rules nested inside, CSS nesting's: read against these selectors.
+    if !style.rules.0.is_empty() {
+        let outer = std::mem::replace(&mut at.parent, selectors);
+        collect_rules(&style.rules.0, at, out, order);
+        at.parent = outer;
+    }
+}
+
+/// A nested selector with its parent put in, as CSS nesting reads it: `&` is
+/// the parent, and a selector without one is a descendant of it (`> .b` a
+/// child). A parent of more than one selector, or of more than one compound,
+/// stands in as `:is(…)`, which is what CSS defines `&` to be; a single
+/// compound is put in as written, which means the same and keeps a
+/// pseudo-element (`::placeholder`) where `:is()` could not hold one.
+fn nest(parent: &[String], text: &str) -> String {
+    if parent.is_empty() {
+        return text.to_string();
+    }
+    let simple = parent.len() == 1
+        && !parent[0].contains(|c: char| c.is_whitespace() || matches!(c, '>' | '+' | '~'));
+    let amp = if simple { parent[0].clone() } else { format!(":is({})", parent.join(", ")) };
+    let text = text.trim();
+    if text.contains('&') {
+        text.replace('&', &amp)
+    } else {
+        format!("{amp} {text}")
+    }
+}
+
+/// One Rule per selector in the list, which share the declarations, and a
+/// second for each when some were `!important`.
+fn push_rules(
+    selectors: &[String],
+    normal: &[(String, String)],
+    important: &[(String, String)],
+    at: &Collecting,
+    out: &mut Vec<Rule>,
+    order: &mut usize,
+) {
+    for text in selectors {
+        if let Some((mut chain, combs, specificity)) = parse_selector(text) {
+            // The flag moves from the last compound onto the rule, so
+            // the chain can match the element the highlight belongs to.
+            let selection = chain.last_mut().is_some_and(|last| std::mem::take(&mut last.selection));
+            let placeholder = chain.last_mut().is_some_and(|last| std::mem::take(&mut last.placeholder));
+            for (decls, important) in [(normal, false), (important, true)] {
+                if decls.is_empty() && important {
+                    continue;
+                }
+                out.push(Rule {
+                    chain: chain.clone(),
+                    combs: combs.clone(),
+                    specificity,
+                    order: *order,
+                    decls: decls.to_vec(),
+                    selection,
+                    placeholder,
+                    layer: at.key.clone(),
+                    important,
+                });
+            }
+        }
+        *order += 1;
+    }
 }
 
 /// One rule's declarations as `(property, value)`, warning about any
 /// property that does nothing.
 fn rule_decls(
     props: &[lightningcss::properties::Property],
-    style: &lightningcss::rules::style::StyleRule,
+    line: u32,
     base: Option<usize>,
     css: &str,
     tries: &HashMap<String, String>,
@@ -4378,7 +4438,7 @@ fn rule_decls(
                     // selector and the property under it can be many lines
                     // apart, and a warning that points at the selector sends
                     // the reader somewhere the named property does not appear.
-                    let at = decl_line(css, style.loc.line, &key).unwrap_or(style.loc.line);
+                    let at = decl_line(css, line, &key).unwrap_or(line);
                     located(file_line(base, at), || warn_if_unhonored(&key));
                     let mut v = v.trim().trim_end_matches(';').trim().to_string();
                     if key == "position-try-fallbacks" || key == "position-try" {
@@ -4993,6 +5053,11 @@ fn parse_compound(token: &str, spec: &mut (u32, u32, u32)) -> Option<Compound> {
                     spec.2 += 1;
                     continue;
                 }
+                if name.eq_ignore_ascii_case(":placeholder") {
+                    c.placeholder = true;
+                    spec.2 += 1;
+                    continue;
+                }
                 if !name.is_empty() {
                     let pseudo = Pseudo::parse(&name);
                     if let Pseudo::Unknown(n) = &pseudo {
@@ -5101,7 +5166,7 @@ fn specificity_of(c: &Compound) -> (u32, u32, u32) {
     (
         c.id.is_some() as u32 + pseudos.0,
         (c.classes.len() + c.attrs.len()) as u32 + pseudos.1,
-        (c.tag.is_some() || c.selection) as u32 + pseudos.2,
+        (c.tag.is_some() as u32 + c.selection as u32 + c.placeholder as u32) + pseudos.2,
     )
 }
 
@@ -5145,9 +5210,10 @@ fn selector_is_supported(selector: &str) -> bool {
     while let Some(at) = rest.find(':') {
         rest = &rest[at + 1..];
         if let Some(element) = rest.strip_prefix(':') {
-            // A pseudo-element: `::selection` is the one Rux styles.
+            // A pseudo-element: `::selection` and `::placeholder` are the
+            // ones Rux styles.
             let name: String = element.chars().take_while(|c| c.is_alphanumeric() || *c == '-').collect();
-            if !name.eq_ignore_ascii_case("selection") {
+            if !name.eq_ignore_ascii_case("selection") && !name.eq_ignore_ascii_case("placeholder") {
                 return false;
             }
             rest = element;
@@ -5176,7 +5242,7 @@ fn warn_unknown_pseudo(name: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     // A second colon was kept in the name: a pseudo-element.
     let message = if let Some(element) = name.strip_prefix(':') {
-        format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection)")
+        format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection, ::placeholder)")
     } else {
         format!(
             "pseudo-class `:{name}` is not supported, rules using it will never match \
@@ -5209,7 +5275,7 @@ fn matches_compound(c: &Compound, el: &ElemDesc, at: Option<Site>) -> bool {
         (Some(_), None) => false,
     };
     // A highlight is not an element. See `Compound::selection`.
-    if c.selection {
+    if c.selection || c.placeholder {
         return false;
     }
     if let Some(t) = &c.tag {
@@ -5372,7 +5438,7 @@ fn pointer_state_sensitive(desc: &ElemDesc, rules: &[Rule]) -> bool {
 fn matched_rules<'r>(desc: &ElemDesc, ancestors: &[AncNode], prev: &[ElemDesc], rules: &'r [Rule]) -> Vec<&'r Rule> {
     let mut matched: Vec<&Rule> = rules
         .iter()
-        .filter(|r| !r.selection && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
+        .filter(|r| !r.selection && !r.placeholder && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
         .collect();
     matched.sort_by(|a, b| layer::cascade(a, b));
     matched
@@ -5641,6 +5707,59 @@ fn matched_selection(
     }
     out
 }
+
+/// The colour an input's placeholder is drawn in, by its `::placeholder`
+/// rules: their `color`, faded by their `opacity`, with `var()` and
+/// `currentcolor` read as the input reads them. `None` when no rule says,
+/// and Rux's own dim colour stands.
+///
+/// Only the input's own rules count. A placeholder is part of the input, so
+/// `::placeholder` does not reach down from an ancestor as `::selection` does.
+fn matched_placeholder(
+    desc: &ElemDesc,
+    ancestors: &[AncNode],
+    prev: &[ElemDesc],
+    rules: &[Rule],
+    vars: &HashMap<String, String>,
+    current: Rgba,
+    scheme: ColorScheme,
+) -> Option<Rgba> {
+    let mut matched: Vec<&Rule> = rules
+        .iter()
+        .filter(|r| r.placeholder && matches_chain(&r.chain, &r.combs, desc, ancestors, prev))
+        .collect();
+    if matched.is_empty() {
+        return None;
+    }
+    matched.sort_by(|a, b| layer::cascade(a, b));
+    let (mut color, mut opacity) = (None, 1.0f32);
+    for rule in matched {
+        for (k, v) in &rule.decls {
+            let v = resolve_vars(v, vars, 0);
+            let v = rewrite_colors(&v, current, scheme).unwrap_or(v);
+            match k.as_str() {
+                "color" => {
+                    if let Some(c) = parse_color(&v) {
+                        color = Some(c);
+                    }
+                }
+                "opacity" => {
+                    if let Ok(o) = v.trim().parse::<f32>() {
+                        opacity = o.clamp(0.0, 1.0);
+                    }
+                }
+                other => warn_once(format!(
+                    "`{other}` does nothing in `::placeholder`; a placeholder honours `color` and `opacity` only"
+                )),
+            }
+        }
+    }
+    let c = color.unwrap_or(PLACEHOLDER_COLOR);
+    Some(Rgba { a: c.a * opacity, ..c })
+}
+
+/// The placeholder's colour when no `::placeholder` rule gives one.
+const PLACEHOLDER_COLOR: Rgba = Rgba::new(0.42, 0.44, 0.52, 1.0); // #6c7086
 
 /// Build one element into a layout node. Structural directives on the element
 /// itself (`r-for`, `r-if`, `r-elif`, `r-else`) are handled by the parent in
@@ -6573,6 +6692,11 @@ fn build_node_inner(
         style.border_color = Some(color);
     }
     let selection = matched_selection(&desc, ancestors, prev, rules, inherited.selection);
+    let placeholder_color = if el.tag == "input" {
+        matched_placeholder(&desc, ancestors, prev, rules, &vars, color, scheme).unwrap_or(PLACEHOLDER_COLOR)
+    } else {
+        PLACEHOLDER_COLOR
+    };
     // Already resolved above, against the inherited size, so that the `em` pass
     // had something to resolve against.
     let font_size = own_font_size;
@@ -7048,7 +7172,6 @@ fn build_node_inner(
         let model = el.attr("r-model").map(str::to_string);
         let secret = kind.secret();
         let placeholder = el.attr("placeholder").unwrap_or_default().to_string();
-        const PLACEHOLDER_COLOR: Rgba = Rgba::new(0.42, 0.44, 0.52, 1.0); // #6c7086
         // The value display is patchable: record where it lives and how to render
         // it, so a keystroke rewrites this input's text in place instead of
         // rebuilding. (If `model` is *also* read structurally, e.g. by an `r-if`,
@@ -7064,7 +7187,7 @@ fn build_node_inner(
                     instance: instance.map(str::to_string),
                     placeholder: placeholder.clone(),
                     color,
-                    placeholder_color: PLACEHOLDER_COLOR,
+                    placeholder_color,
                     locals: locals.clone(),
                     deps,
                     secret,
@@ -7077,7 +7200,7 @@ fn build_node_inner(
         // build has the colours to hand and the patch has the binding; they must
         // agree, and a password shown in full for one frame is a real leak.
         let (shown, shown_color) = if value.is_empty() {
-            (placeholder.clone(), PLACEHOLDER_COLOR)
+            (placeholder.clone(), placeholder_color)
         } else if secret {
             (mask(&value), color)
         } else {
@@ -17159,6 +17282,73 @@ mod selector_list_tests {
         assert_eq!(red_for("input:where([type='button'], [type='checkbox'])"), (false, true));
         assert_eq!(red_for("[data-state]"), (false, false), "no Rux element carries it");
         assert_eq!(red_for("[type=text"), (false, false), "an unclosed bracket is no selector");
+    }
+
+    /// CSS nesting: `&`, a selector with none (a descendant), `> .b`, and a
+    /// `@media` or `@supports` inside a rule, whose declarations are the
+    /// rule's own.
+    #[test]
+    fn nested_rules_read_against_their_parent() {
+        let red_for = |css: &str| {
+            let root = built(
+                &format!(
+                    r#"<template><screen>
+                         <view class="a b"><view class="c" /></view>
+                         <view class="d"><view><view class="c" /></view></view>
+                       </screen></template>
+                       <style>{css}</style>"#
+                ),
+                None,
+            );
+            (red(&root.children[0]), red(&root.children[0].children[0]), red(&root.children[1].children[0].children[0]))
+        };
+        let on = "{ background: #ff0000; }";
+        assert_eq!(red_for(&format!(".a {{ &.b {on} }}")), (true, false, false));
+        assert_eq!(red_for(&format!(".a {{ .c {on} }}")), (false, true, false));
+        assert_eq!(red_for(&format!(".a, .d {{ .c {on} }}")), (false, true, true));
+        assert_eq!(red_for(&format!(".d {{ > .c {on} }}")), (false, false, false), "the .c under .d is a grandchild");
+        assert_eq!(red_for(&format!(".a {{ @media (min-width: 1px) {{ background: #ff0000; }} }}")), (true, false, false));
+        assert_eq!(red_for(&format!(".a {{ @media (max-width: 1px) {{ background: #ff0000; }} }}")), (false, false, false));
+        assert_eq!(red_for(&format!(".a {{ @supports (display: grid) {{ .c {on} }} }}")), (false, true, false));
+        // Declarations after a nested rule are still the parent's, and come
+        // later than it, so they win over what came before.
+        assert_eq!(red_for(".a { background: #0000ff; .c { color: red; } background: #ff0000; }"), (true, false, false));
+    }
+
+    /// `::placeholder` colours an empty input's placeholder, with `var()`,
+    /// `currentcolor` and `opacity` read, and leaves the input itself alone.
+    /// Tailwind's preflight is the case: `currentcolor` mixed to half, inside
+    /// an `@supports` nested in the rule.
+    #[test]
+    fn placeholder_rules_colour_the_placeholder() {
+        let shown = |css: &str| {
+            let root = built(
+                &format!(
+                    r#"<template><screen><input class="f" placeholder="Search" r-model="q" /></screen></template>
+                       <script>let q = signal("");</script>
+                       <style>.f {{ color: #0000ff; }} {css}</style>"#
+                ),
+                None,
+            );
+            let input = &root.children[0];
+            fn text(n: &Node) -> Option<rux_layout::Rgba> {
+                n.text.as_ref().map(|t| t.color).or_else(|| n.children.iter().find_map(text))
+            }
+            (text(input).expect("the placeholder is drawn"), red(input))
+        };
+        let (dim, _) = shown("");
+        assert!((dim.r - 0.42).abs() < 0.01, "Rux's own placeholder colour with no rule: {dim:?}");
+        let (c, input_red) = shown(".f::placeholder { color: #ff0000; background: #ff0000; }");
+        assert_eq!((c.r, c.b), (1.0, 0.0));
+        assert!(!input_red, "a ::placeholder rule styled the input");
+        let (c, _) = shown(":root { --p: #00ff00; } .f::placeholder { color: var(--p); opacity: 0.5; }");
+        assert_eq!((c.g, c.a), (1.0, 0.5));
+        let (c, _) = shown(
+            "::placeholder { opacity: 1; } \
+             @supports (display: grid) { ::placeholder { color: currentcolor; \
+               @supports (color: color-mix(in lab, red, red)) { color: color-mix(in srgb, currentcolor 50%, transparent); } } }",
+        );
+        assert!(c.b > 0.99 && (c.a - 0.5).abs() < 0.02, "half the input's own blue: {c:?}");
     }
 
     /// `[lang|=en]` is `en` and `en-` anything; `[dir=rtl]` reads the

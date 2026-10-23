@@ -416,8 +416,9 @@ the layer order round, so an important rule in the first layer wins. `@supports`
 asks whether Rux honors the property, or with `selector()` the pseudo-class, and
 takes `not`, `and` and `or`. `@property --x { initial-value: 0; inherits: false; }`
 gives a custom property its starting value, and with `inherits: false` a child
-starts again from it instead of taking its parent's. Any other at-rule, and a
-rule nested inside a rule, warns instead of vanishing.
+starts again from it instead of taking its parent's. Any other at-rule warns
+instead of vanishing. A rule nested inside a rule is read: see Nesting, under
+the selectors.
 
 **`orientation` and `resolution` are answered by the device**, and both were
 driven on one: rotating a phone re-cascades live, and a Pixel 6 reports 2.625,
