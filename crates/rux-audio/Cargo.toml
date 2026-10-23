@@ -1,0 +1,14 @@
+[package]
+name = "rux-audio"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Rux audio: decoding and a mixer for sounds a document plays. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
+keywords = ["ui", "audio"]
+categories = ["gui", "multimedia::audio"]
+
+[dependencies]
+cpal = "0.18"
+symphonia = { version = "0.6", default-features = false, features = ["opt-simd", "id3v2", "wav", "pcm", "mp3", "isomp4", "aac", "flac", "ogg", "vorbis"] }
