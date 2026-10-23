@@ -29,6 +29,8 @@
 mod dialogs;
 #[cfg(not(target_arch = "wasm32"))]
 mod sound;
+#[cfg(target_arch = "wasm32")]
+mod web_sound;
 mod files;
 /// `filter` and `backdrop-filter`, as compute passes. See [`filter::GpuFilters`].
 mod filter;

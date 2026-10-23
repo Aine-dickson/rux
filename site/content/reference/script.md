@@ -630,9 +630,13 @@ fn toggle() {
   first `play()`: an app that only loads sounds touches no audio device. A
   short sound is decoded whole and plays at once; a long one is read a little
   ahead of where it plays, so a song is never held in memory.
-- **Not yet in a browser**, where `loadSound` throws `"unsupported"`; the web
-  will play through the browser's own audio. `<audio>` with drawn controls
-  comes next (`docs/13-file-input-and-media-plan.md`, B.3).
+- **In a browser** a sound plays through the browser's own audio, so in
+  every format the browser plays (Opus too), and the properties follow it as
+  the browser reports, about four times a second. A path the build did not
+  embed is fetched relative to the page. **A browser plays only after a
+  tap**: a `play()` before the person has touched the page does nothing, and
+  says so on the console. `<audio>` with drawn controls comes next
+  (`docs/13-file-input-and-media-plan.md`, B.3).
 
 ## Settings
 

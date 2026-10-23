@@ -68,7 +68,7 @@ impl Slot {
         slot
     }
 
-    fn set(&self, answer: Result<Any, Error>) {
+    pub(crate) fn set(&self, answer: Result<Any, Error>) {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         s.0 = Some(answer);
         if let Some(w) = s.1.take() {

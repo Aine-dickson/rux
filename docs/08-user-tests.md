@@ -2826,7 +2826,24 @@ desktop window** with clicks injected; heard through the speakers with the
 | Seek and volume | `s.currentTime = 10`, `s.volume = 0.5` from template handlers | time 10, volume 0.5 shown at once | desktop: pass |
 | A short sound, twice | tap the click's button twice | it plays each time, from the start | desktop: pass, heard |
 | Through the output | `cargo run -p rux-audio --example play -- tone12.mp3` | the time in step with the clock, ended once | desktop: pass, heard |
-| Android, web | the same page | Android plays through AAudio; the web says `loadSound` is not built there | not driven |
+| Android | the same page | plays through AAudio | not driven |
+
+## `loadSound` and `Sound` in a browser, 2026-10-23
+
+The web half of B.1: the browser's own audio, an `HTMLAudioElement` per
+sound. **Driven in Edge** over CDP (`rux-web` release wasm, the same page
+as the desktop's, served by a test server that answers Range requests, and a
+second page for errors and a picked file). Not heard: the times are what the
+element reported, drawn by Rux.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Load | the desktop page, `play()` in `mounted` | "loaded", `duration` 12; the browser refuses the untapped `play()`, said on the console as a warning | web: pass |
+| Play, pause, volume | tap Play / pause, Half volume, Play / pause twice | time counting, `playing` following, volume 0.5 | web: pass |
+| Seek | tap Seek to 10 s while it plays | time 10, then 12 of 12 and `playing false` at the end | web: pass (fails on a server with no Range support: the browser cannot seek a fetched file) |
+| Again after the end | tap Play / pause once it has ended | from the start | web: pass |
+| A picked file | `pickFile({})`, `loadSound(f.url)`, `play()` in one tap | the Ogg's `blob:` URL plays to its end, 0.25 of 0.25 | web: pass |
+| Errors | `loadSound("http://...")`, `loadSound` of a `.rux` file | `"io"` (no networking yet, as on the desktop); `"unsupported"`, "is not a sound this browser can play" | web: pass |
 
 ## Standing gaps
 
