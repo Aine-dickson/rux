@@ -16,9 +16,103 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
 /// `await file.text()`: the whole file, as UTF-8, with what is not UTF-8
 /// replaced, as a browser's `File.text()` does. An async native runs on a
 /// thread of its own, so the read here does not stall a frame.
+#[cfg(not(target_arch = "wasm32"))]
 async fn text(file: Any) -> Result<Any, Error> {
     let bytes = read(&file)?;
     Ok(Any::Str(String::from_utf8_lossy(&bytes).into_owned()))
+}
+
+/// The same in a browser, which reads a file only by a promise: started
+/// here, on the page's one thread, and answered through a [`Slot`], since
+/// a native call's future must be `Send` and a promise is not.
+#[cfg(target_arch = "wasm32")]
+fn text(file: Any) -> Slot {
+    let slot = Slot::default();
+    let Some(dom) = url_of(&file).and_then(|u| WEB_FILES.with(|m| m.borrow().get(&u).cloned())) else {
+        slot.set(Err(Error::new("type", "this `File` was not picked in this page")));
+        return slot;
+    };
+    let answer = slot.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let read = wasm_bindgen_futures::JsFuture::from(dom.text()).await;
+        answer.set(match read.ok().and_then(|t| t.as_string()) {
+            Some(t) => Ok(Any::Str(t)),
+            None => Err(Error::new("io", format!("cannot read {}", dom.name()))),
+        });
+    });
+    slot
+}
+
+#[cfg(target_arch = "wasm32")]
+fn url_of(file: &Any) -> Option<String> {
+    match file {
+        Any::Map(m) => match m.get("url") {
+            Some(Any::Str(u)) => Some(u.clone()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// An answer that arrives from elsewhere: a one-shot channel, as a future.
+#[cfg(target_arch = "wasm32")]
+#[derive(Clone, Default)]
+struct Slot(std::sync::Arc<std::sync::Mutex<(Option<Result<Any, Error>>, Option<std::task::Waker>)>>);
+
+#[cfg(target_arch = "wasm32")]
+impl Slot {
+    fn set(&self, answer: Result<Any, Error>) {
+        let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        s.0 = Some(answer);
+        if let Some(w) = s.1.take() {
+            w.wake();
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+impl std::future::Future for Slot {
+    type Output = Result<Any, Error>;
+    fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        match s.0.take() {
+            Some(answer) => std::task::Poll::Ready(answer),
+            None => {
+                s.1 = Some(cx.waker().clone());
+                std::task::Poll::Pending
+            }
+        }
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+thread_local! {
+    /// The browser's own file behind each picked file's `blob:` URL, which
+    /// `text()` reads. Kept for the page's life, as the URL is: a `File`
+    /// value can be copied anywhere, so nothing says when the last one goes.
+    static WEB_FILES: std::cell::RefCell<std::collections::HashMap<String, web_sys::File>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+/// The `File` for a file the browser's picker gave: its `url` an object URL,
+/// and no `path`, which a browser never tells a page. An image's bytes are
+/// read now, so the painter, which reads at once, can draw its `url`.
+#[cfg(target_arch = "wasm32")]
+pub(crate) async fn from_web_file(file: web_sys::File) -> Option<Any> {
+    let url = web_sys::Url::create_object_url_with_blob(&file).ok()?;
+    if file.type_().starts_with("image/") {
+        if let Ok(buffer) = wasm_bindgen_futures::JsFuture::from(file.array_buffer()).await {
+            rux_runtime::remember_url_bytes(&url, js_sys::Uint8Array::new(&buffer).to_vec());
+        }
+    }
+    let mut m = std::collections::BTreeMap::new();
+    m.insert("name".to_string(), Any::Str(file.name()));
+    m.insert("size".to_string(), Any::Int(file.size() as i64));
+    m.insert("type".to_string(), Any::Str(file.type_()));
+    m.insert("url".to_string(), Any::Str(url.clone()));
+    m.insert("path".to_string(), Any::None);
+    WEB_FILES.with(|f| f.borrow_mut().insert(url, file));
+    Some(Any::Map(m))
 }
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -30,10 +124,9 @@ fn read(file: &Any) -> Result<Vec<u8>, Error> {
     std::fs::read(path).map_err(|e| Error::new("io", format!("cannot read {path}: {e}")))
 }
 
-#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+#[cfg(target_os = "android")]
 fn read(_file: &Any) -> Result<Vec<u8>, Error> {
-    let here = if cfg!(target_os = "android") { "on Android" } else { "on the web" };
-    Err(Error::new("unsupported", format!("reading a `File` is not built {here} yet")))
+    Err(Error::new("unsupported", "reading a `File` is not built on Android yet"))
 }
 
 /// The file input whose picker is open: where its answer goes, and what

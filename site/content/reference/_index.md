@@ -841,10 +841,19 @@ had. `required` is not met by `none` or an empty list.
   what `<image :src>` shows: a `file:` URL on the desktop. `path` is the
   desktop's alone. A script's own `type File` replaces the built-in one.
 
-**Desktop only so far.** On the web and on Android a tap prints that the picker
-is not built there yet and fires nothing; both are the next steps of
-`docs/13-file-input-and-media-plan.md`. Drag and drop onto the input is later
-still. `pickFile` and `pickFiles` give the same `File` (see `docs/07-script.md`).
+**On the web** the tap opens the browser's own picker, through a hidden
+`<input type="file">` clicked inside the tap itself, since a browser opens a
+picker only during a person's gesture. `accept`, `multiple` and `capture` are
+handed to it as written. The `File` has no `path` (a browser never tells a
+page one); its `url` is an object URL (`blob:`), drawn by `<image :src>` from
+the bytes read when an image is picked, and `text()` is the browser's own.
+Object URLs are kept for the page's life: a `File` can be copied anywhere,
+so nothing says when the last one goes.
+
+**Not yet on Android**, where a tap prints that the picker is not built there;
+that is the next step of `docs/13-file-input-and-media-plan.md`. Drag and drop
+onto the input is later still. `pickFile` and `pickFiles` give the same `File`
+on the desktop (see `docs/07-script.md`).
 
 Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
 between the switch's two ends, and a drawn date picker on desktop or in a

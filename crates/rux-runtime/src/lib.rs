@@ -2019,10 +2019,27 @@ fn file_url_path(src: &str) -> Option<PathBuf> {
     Some(PathBuf::from(String::from_utf8(out).ok()?))
 }
 
-/// An image's bytes by its resolved `src`: a `file:` URL from the disk, as
-/// it names a file outside the project, and anything else through the
-/// source, as a component or a stylesheet is read.
+thread_local! {
+    /// The bytes behind URLs no reader can open by itself: a picked file's
+    /// `blob:` URL in a browser, its `content://` one on Android. The shell
+    /// puts them here when the file is picked, since the painter reads an
+    /// image at once and neither is a file on a disk.
+    static URL_BYTES: std::cell::RefCell<HashMap<String, std::rc::Rc<[u8]>>> = std::cell::RefCell::new(HashMap::new());
+}
+
+/// Hold `bytes` as what `url` names, for `<image :src="file.url">`.
+pub fn remember_url_bytes(url: &str, bytes: Vec<u8>) {
+    URL_BYTES.with(|m| m.borrow_mut().insert(url.to_string(), bytes.into()));
+}
+
+/// An image's bytes by its resolved `src`: what the shell holds for a
+/// picked file's URL, a `file:` URL from the disk, as it names a file
+/// outside the project, and anything else through the source, as a
+/// component or a stylesheet is read.
 fn image_bytes(src: &str) -> std::io::Result<Vec<u8>> {
+    if let Some(bytes) = URL_BYTES.with(|m| m.borrow().get(src).cloned()) {
+        return Ok(bytes.to_vec());
+    }
     match file_url_path(src) {
         Some(path) => std::fs::read(path),
         None => source::read_bytes(Path::new(src)),
@@ -2853,6 +2870,11 @@ impl Document {
     /// with no line was all it could ever show, and "something is wrong
     /// somewhere" is not much of an editor.
     pub fn from_source_checked(src: &str) -> Result<Self, LoadError> {
+        // The painter's reader, as `load_checked` installs it: a picked
+        // file's URL is all an `<image>` here can show beyond what is
+        // embedded, and without it the painter tried the disk, which a
+        // browser does not have.
+        rux_layout::set_image_reader(std::rc::Rc::new(|src: &str| image_bytes(src).ok()));
         let sfc = rux_parser::parse_sfc(src).map_err(|e| LoadError::parse(e, None))?;
         // There is no file here, so there is nothing for `src` to be relative
         // to and nothing to read it from. Warn rather than fail: the document

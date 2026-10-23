@@ -153,3 +153,21 @@ fn a_file_input_is_checked() {
     let d = doc(r#"<input r-model="t" @cancel="t = ''" />"#, "let t = signal(\"\");", "");
     assert!(problems(&d).contains("belongs on an `<input type=\"file\">`"), "{}", problems(&d));
 }
+
+/// A picked file's `blob:` URL (the web's) or `content://` one (Android's)
+/// is drawn from the bytes the shell remembered for it, for its size and
+/// for the painter alike, in a document loaded from source as the web's is.
+#[test]
+fn a_remembered_url_is_an_image() {
+    let mut png = Vec::new();
+    image::RgbaImage::from_pixel(5, 3, image::Rgba([0, 255, 0, 255]))
+        .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+        .unwrap();
+    let url = "blob:http://127.0.0.1/6f1c";
+    rux_runtime::remember_url_bytes(url, png);
+    let d = doc(&format!(r#"<image src="{url}" />"#), "", "");
+    let img = d.root.children[0].image.as_ref().expect("an image");
+    assert_eq!(img.intrinsic, (5.0, 3.0));
+    assert_eq!(img.src, url, "kept as written");
+    assert!(rux_layout::read_image_bytes(url).is_some(), "the painter reads it too");
+}

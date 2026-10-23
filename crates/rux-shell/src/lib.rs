@@ -89,9 +89,9 @@ enum RuxEvent {
     Answered,
     /// A file input's picker closed: the `File`s chosen, or `None` when it
     /// was dismissed. The input is in [`App::pending_file`], for the reason
-    /// a select's is in `pending_select`. Sent only by the desktop's picker
-    /// until the web's and Android's are built.
-    #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code))]
+    /// a select's is in `pending_select`. Sent by the desktop's and the
+    /// web's pickers; Android's is not built yet.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
     PickedFiles { files: Option<Vec<rux_runtime::native::Any>> },
     /// The `.rux` file changed on disk.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -5634,10 +5634,11 @@ impl App {
         });
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         files::open_picker(self.proxy.clone(), &file.accept, file.multiple);
-        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        #[cfg(target_arch = "wasm32")]
+        web_open_files(&file.accept, file.multiple, file.capture.as_deref());
+        #[cfg(target_os = "android")]
         {
-            let here = if cfg!(target_os = "android") { "on Android" } else { "on the web" };
-            eprintln!("rux: `<input type=\"file\">` cannot open a picker {here} yet");
+            eprintln!("rux: `<input type=\"file\">` cannot open a picker on Android yet");
             self.pending_file = None;
         }
     }
@@ -9229,6 +9230,84 @@ thread_local! {
     static WEB_SELECT: RefCell<Option<web_sys::HtmlSelectElement>> = const { RefCell::new(None) };
     /// The hidden `<input type="date">`, the same for a day.
     static WEB_DATE: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
+    /// The hidden `<input type="file">` a file input opens. See
+    /// [`web_open_files`].
+    static WEB_FILE: RefCell<Option<web_sys::HtmlInputElement>> = const { RefCell::new(None) };
+}
+
+#[cfg(target_arch = "wasm32")]
+fn web_send(event: RuxEvent) {
+    WEB_PROXY.with(|p| {
+        if let Some(proxy) = p.borrow().as_ref() {
+            let _ = proxy.send_event(event);
+        }
+    });
+}
+
+/// The browser's own file picker, for an `<input type="file">` Rux drew.
+///
+/// **Opened from inside the tap.** A browser opens a picker only while the
+/// page holds a user activation, which a tap gives it for a moment; this
+/// runs in the shell's handling of that tap, before anything is awaited.
+/// Answered by [`RuxEvent::PickedFiles`]: the files, once each is a `File`
+/// (an image's bytes read first), or `None` from the input's `cancel`
+/// event.
+#[cfg(target_arch = "wasm32")]
+fn web_open_files(accept: &str, multiple: bool, capture: Option<&str>) {
+    use wasm_bindgen::prelude::Closure;
+    use wasm_bindgen::JsCast;
+
+    let el = WEB_FILE.with(|c| c.borrow().clone()).or_else(|| {
+        let canvas = WEB_CANVAS.with(|c| c.borrow().clone())?;
+        let document = web_sys::window()?.document()?;
+        let el: web_sys::HtmlInputElement = document.create_element("input").ok()?.dyn_into().ok()?;
+        el.set_type("file");
+        let _ = el.set_attribute("aria-hidden", "true");
+        let _ = el.set_attribute("tabindex", "-1");
+        let _ = el.set_attribute("style", "position: absolute; opacity: 0; pointer-events: none; width: 1px; height: 1px; left: 0; top: 0;");
+        canvas.parent_element()?.append_child(&el).ok()?;
+        let on_change = Closure::<dyn FnMut(web_sys::Event)>::new(move |event: web_sys::Event| {
+            let Some(input) = event.target().and_then(|t| t.dyn_into::<web_sys::HtmlInputElement>().ok()) else {
+                return;
+            };
+            let picked: Vec<web_sys::File> = input
+                .files()
+                .map(|list| (0..list.length()).filter_map(|i| list.get(i)).collect())
+                .unwrap_or_default();
+            // Emptied, so the same file chosen again is a change again.
+            input.set_value("");
+            wasm_bindgen_futures::spawn_local(async move {
+                let mut files = Vec::new();
+                for file in picked {
+                    if let Some(f) = files::from_web_file(file).await {
+                        files.push(f);
+                    }
+                }
+                web_send(RuxEvent::PickedFiles { files: Some(files) });
+            });
+        });
+        let _ = el.add_event_listener_with_callback("change", on_change.as_ref().unchecked_ref());
+        on_change.forget();
+        let on_cancel = Closure::<dyn FnMut(web_sys::Event)>::new(move |_: web_sys::Event| {
+            web_send(RuxEvent::PickedFiles { files: None });
+        });
+        let _ = el.add_event_listener_with_callback("cancel", on_cancel.as_ref().unchecked_ref());
+        on_cancel.forget();
+        WEB_FILE.with(|c| *c.borrow_mut() = Some(el.clone()));
+        Some(el)
+    });
+    let Some(el) = el else { return };
+    el.set_accept(accept);
+    el.set_multiple(multiple);
+    match capture {
+        Some(c) => {
+            let _ = el.set_attribute("capture", c);
+        }
+        None => {
+            let _ = el.remove_attribute("capture");
+        }
+    }
+    el.click();
 }
 
 /// A hidden control beside the canvas, laid over the field it stands in for
@@ -10671,6 +10750,10 @@ fn wake_on_answers(event_loop: &EventLoop<RuxEvent>) {
     // functions (the file dialogs) are put in place for every document.
     dialogs::install_builtins();
     settings::install_settings();
+    // A browser has no thread to run a native call's future on: it runs on
+    // the page's own, between frames, as every promise does.
+    #[cfg(target_arch = "wasm32")]
+    rux_runtime::native::set_spawner(|task| wasm_bindgen_futures::spawn_local(task));
     let proxy = event_loop.create_proxy();
     rux_runtime::host::set_waker(move || {
         let _ = proxy.send_event(RuxEvent::Answered);

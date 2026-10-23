@@ -131,4 +131,10 @@ web-sys = { version = "0.3", features = [
     "HtmlSelectElement",
     "HtmlTextAreaElement",
     "Storage",
+    # `<input type="file">`: the browser's picker, the files it gives, an
+    # object URL to show one by, and reading one.
+    "Blob",
+    "File",
+    "FileList",
+    "Url",
 ] }

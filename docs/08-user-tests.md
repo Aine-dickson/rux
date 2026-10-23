@@ -2770,7 +2770,7 @@ flung.
 | The `<select>` dropdown, light | open one on a light screen | a white panel | not driven |
 | Web, Android | the same pages | the same | not driven |
 
-## `<input type="file">` and `File`, desktop, 2026-10-23
+## `<input type="file">` and `File`, desktop and web, 2026-10-23
 
 Steps A.1 to A.4 of `docs/13-file-input-and-media-plan.md`. Under test in
 `rux-runtime` (`tests/file_input.rs`: the build, the layout's region, the
@@ -2794,7 +2794,11 @@ typed into the dialog's name box. Tests cannot open the dialog; the drive can.
 | Disabled, required | `disabled`; `required` with nothing chosen | no dialog; `:invalid` until a pick | under test only |
 | `pickFile` gives a `File` | a button awaiting `pickFile` with a `txt` filter, then `f.name`, `f.type`, `f.path`, `await f.text()` | `note.txt (text/plain) at C:\…
 ote.txt: Hello…`, accents intact | desktop: pass |
-| Web, Android | the same page | prints that the picker is not built there | not driven |
+| Web: pick, cancel, several, read | the same page in Brave, the file chooser intercepted over CDP and answered with files | the chooser opens from the tap (`selectSingle` with `image/*`, `selectMultiple`); the image drawn from its `blob:` URL; "2 files"; `await other.text()` reads it | web (Brave): pass |
+| Web: cancel | the chooser opened, then the input's `cancel` event | `@cancel` once, the file kept | web (Brave): pass, the event dispatched by the driver |
+| Web: a finger | touch emulation (`pointer: coarse`), a touch on the button | the chooser opens; the image drawn | web (Brave): pass |
+| Web: the real cancel, `capture` | close a real chooser; a phone browser's camera | `@cancel`; the camera | not driven |
+| Android | the same page | prints that the picker is not built there | not driven |
 
 ## Standing gaps
 
