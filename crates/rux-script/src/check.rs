@@ -667,6 +667,12 @@ impl<'a> Checker<'a> {
             }
         }
         for (name, text, path) in &self.cx.support_types {
+            // Rux's own module's types arrive here too once a script calls
+            // `pickFile`, and a built-in one is nameable bare all the same:
+            // hiding it made `let f: File?` an error beside the call.
+            if self.prelude.contains(name) && *path == format!("native::rux::{name}") {
+                continue;
+            }
             if let Ok((params, ty)) = parse_decl(text) {
                 self.types.insert(name.clone(), ty);
                 self.type_params.insert(name.clone(), params);
@@ -4342,6 +4348,10 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         let f = built_findings("async fn g() { let p: string? = await pickFile({}); }");
         assert!(f.iter().any(|f| f.is_error), "a File is not a path: {f:?}");
         let f = built_findings("async fn g(): int { let fs = await pickFiles({}); fs.length }");
+        assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+        // Calling a dialog brings Rux's module in, which once hid `File`
+        // from the same file's annotations.
+        let f = built_findings("let a: File? = signal(none);\nasync fn g() { a = await pickFile({}); }");
         assert!(f.iter().all(|f| !f.is_error), "{f:?}");
         // A file's own `File` is its own, and is not declared twice.
         let f = built_findings("type File = { id: int };\nfn f(x: File): int { x.id }");
