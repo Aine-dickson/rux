@@ -285,6 +285,9 @@ Read before planning, because three facts shape the steps:
 
 ## Part C: video
 
+**Paused 2026-10-26 by the owner**, after C.0's numbers (below). Nothing
+past C.0 is built until it is taken up again.
+
 ### C.0 Spike: one frame path, measured
 
 Before any element, prove frames can reach the screen fast enough:
