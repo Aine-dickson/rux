@@ -233,7 +233,7 @@ nothing.
 colours the splash screen that comes with it; all three are below. `[signing]`
 names the key a release is signed with, below as well. `scheme` and
 `link-hosts` let a link open the app, also below. `[window]` sizes the desktop
-window, below too.
+window, below too, and `[dev]` and `[build]` run other tools for you.
 
 ## The desktop window
 
@@ -254,6 +254,50 @@ in is the one a build opens; `--preview` still sizes it as the device it
 names. A key that is not one of these, or `min_width` spelled with an
 underscore, is refused rather than ignored. Android and the web ignore the
 table: an app there gets the screen or the element it is given.
+
+## Other tools: `[dev]` and `[build]`
+
+Some tools write files the app reads, and have to run beside it. Tailwind is
+the usual one: it turns the classes in your `.rux` files into a stylesheet.
+Name them in `rux.toml` and `rux` runs them, so there is no second terminal:
+
+```toml
+[dev]
+watch = ["tailwindcss -i app.in.css -o app.css --watch"]
+
+[build]
+before = ["tailwindcss -i app.in.css -o app.css --minify"]
+```
+
+- `before` runs to completion, in order, before `rux build` gathers the
+  project, so a release embeds what it wrote. `rux run` runs it too, before
+  the window opens: a `<style src>` naming a file that is not there yet is an
+  error, not an empty stylesheet. A command that fails stops the build.
+- `watch` starts with `rux run`, and with `rux run --device` while it hot
+  reloads, and stops when they do. Whatever it writes reloads like a save.
+
+Each command runs in the directory holding `rux.toml`, through the platform's
+shell, and its output goes to your terminal. **The first word is a program**:
+a name on `PATH`, or a path relative to `rux.toml` such as
+`./tools/tailwindcss`. It is looked up before anything starts, and one that is
+not there is reported by name. `rux` never downloads a tool.
+
+Keep a tool's binary outside the project folder, or on `PATH`: a release
+build embeds every file in the project, and Tailwind's CLI is 30 MB. Its input
+file (`app.in.css` above) is not loaded by any document, and is only bytes.
+
+For Tailwind, the standalone CLI needs no Node:
+[github.com/tailwindlabs/tailwindcss/releases](https://github.com/tailwindlabs/tailwindcss/releases).
+`app.in.css` holds two lines, and the document loads what it writes:
+
+```css
+@import "tailwindcss";
+@source "./**/*.rux";
+```
+
+```html
+<style src="app.css"></style>
+```
 
 ## The icon is two layers, not one image
 

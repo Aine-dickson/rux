@@ -47,6 +47,10 @@
 //! `min-width`, `min-height` and `maximized`, every one optional. The title
 //! needs no key, it is `name`. Android and the web ignore the table.
 //!
+//! `[dev] watch` and `[build] before` do as of Tailwind, which asked to run
+//! beside `rux run` instead of in a second terminal: commands Rux starts and
+//! stops, knowing nothing about what they do. See `commands.rs`.
+//!
 //! **Deliberately absent, and each for the same reason.** `splash` names an
 //! asset nothing yet draws. `permissions` would be a list the runtime cannot
 //! request, since no Rux API needs one. Both are scheduled, and each lands in
@@ -93,6 +97,11 @@ pub struct Manifest {
     pub link_hosts: Vec<String>,
     /// The desktop window, from `[window]`. Default when there is none.
     pub window: Window,
+    /// `[dev] watch`: commands kept running beside `rux run`.
+    pub dev_watch: Vec<String>,
+    /// `[build] before`: commands run to completion before a build, and before
+    /// `rux run` opens the window.
+    pub build_before: Vec<String>,
 }
 
 /// `[window]`: the desktop window's opening size, its smallest, and whether
@@ -375,7 +384,23 @@ impl Manifest {
             Some(_) => return Err("[window] must be a table".into()),
         };
 
-        Ok(Manifest { root, name, id, version, entry, signing, icon, scheme, link_hosts, window })
+        let dev_watch = read_commands(&value, "dev", "watch")?;
+        let build_before = read_commands(&value, "build", "before")?;
+
+        Ok(Manifest {
+            root,
+            name,
+            id,
+            version,
+            entry,
+            signing,
+            icon,
+            scheme,
+            link_hosts,
+            window,
+            dev_watch,
+            build_before,
+        })
     }
 
     /// What the shell is handed to open the window: the app's name as its
@@ -548,6 +573,35 @@ fn read_window(table: &toml::Table) -> Result<Window, String> {
     Ok(window)
 }
 
+/// `[table] key = ["command", ...]`, the one key each of `[dev]` and `[build]`
+/// takes. Any other key is refused by name, as `[window]`'s are.
+fn read_commands(value: &toml::Table, table: &str, key: &str) -> Result<Vec<String>, String> {
+    let entries = match value.get(table) {
+        None => return Ok(Vec::new()),
+        Some(toml::Value::Table(entries)) => entries,
+        Some(_) => return Err(format!("[{table}] must be a table")),
+    };
+    if let Some(other) = entries.keys().find(|k| k.as_str() != key) {
+        return Err(format!("[{table}] has no `{other}`. It takes `{key}`, a list of commands"));
+    }
+    match entries.get(key) {
+        None => Ok(Vec::new()),
+        Some(toml::Value::Array(items)) => items
+            .iter()
+            .map(|item| match item {
+                toml::Value::String(s) if !s.trim().is_empty() => Ok(s.clone()),
+                toml::Value::String(_) => Err(format!("[{table}] `{key}` has an empty command")),
+                _ => Err(format!("[{table}] `{key}` must be a list of strings")),
+            })
+            .collect(),
+        // One command written bare is the likeliest slip, as with `link-hosts`.
+        Some(toml::Value::String(s)) => {
+            Err(format!("[{table}] `{key}` is a list, even of one: `{key} = [\"{s}\"]`"))
+        }
+        Some(_) => Err(format!("[{table}] `{key}` must be a list of strings")),
+    }
+}
+
 fn check_scheme(text: &str) -> Result<String, String> {
     let bare = text.trim_end_matches("://").trim_end_matches(':');
     if bare != text {
@@ -709,6 +763,33 @@ entry = "Cargo.toml"
             let text = format!("{MINIMAL}\n[window]\n{key}\n");
             let error = parse(&text).expect_err(key);
             assert!(error.contains(says), "{key}: {error}");
+        }
+    }
+
+    #[test]
+    fn dev_and_build_commands_read_and_are_optional() {
+        let m = parse(MINIMAL).unwrap();
+        assert!(m.dev_watch.is_empty() && m.build_before.is_empty());
+        let text = format!(
+            "{MINIMAL}\n[dev]\nwatch = [\"tw -i a.css -o b.css --watch\"]\n\
+             [build]\nbefore = [\"tw -i a.css -o b.css\", \"other\"]\n"
+        );
+        let m = parse(&text).unwrap();
+        assert_eq!(m.dev_watch, ["tw -i a.css -o b.css --watch"]);
+        assert_eq!(m.build_before, ["tw -i a.css -o b.css", "other"]);
+    }
+
+    #[test]
+    fn a_command_key_that_is_not_one_is_refused_by_name() {
+        for (text, says) in [
+            ("[dev]\nwatch = \"tw\"\n", "[\"tw\"]"),
+            ("[dev]\nbefore = [\"tw\"]\n", "`before`"),
+            ("[build]\nwatch = [\"tw\"]\n", "`watch`"),
+            ("[build]\nbefore = [1]\n", "list of strings"),
+            ("[build]\nbefore = [\" \"]\n", "empty"),
+        ] {
+            let error = parse(&format!("{MINIMAL}\n{text}")).expect_err(text);
+            assert!(error.contains(says), "{text}: {error}");
         }
     }
 

@@ -670,6 +670,8 @@ mod tests {
             scheme: None,
             link_hosts: Vec::new(),
             window: Default::default(),
+            dev_watch: Vec::new(),
+            build_before: Vec::new(),
         }
     }
 

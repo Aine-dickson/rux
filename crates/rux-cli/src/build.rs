@@ -62,6 +62,10 @@ pub struct Options {
     /// plugging in a real phone builds for the phone rather than for the
     /// emulator this all started on.
     pub abis: Option<Vec<crate::android::Abi>>,
+    /// Whether `[build] before` runs. Only `rux run` for a native app says no:
+    /// it has run them once already, and its watchers are writing the same
+    /// files while it rebuilds.
+    pub before: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -596,6 +600,12 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
         return Err(message);
     }
 
+    // After every check that costs nothing and before the walk, so what these
+    // write (Tailwind's stylesheet, say) is collected like anything else.
+    if options.before {
+        crate::commands::run_before(&manifest.build_before, &manifest.root)?;
+    }
+
     let files = collect(&manifest.root)?;
     if files.is_empty() {
         return Err(format!("{} holds no files to build", manifest.root.display()));
@@ -788,13 +798,15 @@ mod tests {
             scheme: None,
             link_hosts: Vec::new(),
             window: Default::default(),
+            dev_watch: Vec::new(),
+            build_before: Vec::new(),
         }
     }
 
     #[test]
     fn a_release_wrapper_embeds_every_file_and_installs_the_memory_source() {
         let files = vec![PathBuf::from("app.rux"), PathBuf::from("components/task.rux")];
-        let options = Options { release: true, target: Target::Desktop, rux_source: None, abis: None };
+        let options = Options { release: true, target: Target::Desktop, rux_source: None, abis: None, before: true };
         let main = wrapper_main(&manifest(), &files, &options);
         assert!(main.contains("MemorySource"), "{main}");
         assert!(main.contains("include_bytes!"), "{main}");
@@ -806,7 +818,7 @@ mod tests {
 
     #[test]
     fn a_dev_wrapper_embeds_nothing_and_keeps_hot_reload() {
-        let options = Options { release: false, target: Target::Desktop, rux_source: None, abis: None };
+        let options = Options { release: false, target: Target::Desktop, rux_source: None, abis: None, before: true };
         let main = wrapper_main(&manifest(), &[PathBuf::from("app.rux")], &options);
         assert!(!main.contains("include_bytes!"), "a dev build must not embed: {main}");
         assert!(!main.contains("MemorySource"), "a dev build reads the disk: {main}");
@@ -819,7 +831,7 @@ mod tests {
         m.window.width = Some(1280.0);
         m.window.maximized = true;
         for release in [false, true] {
-            let options = Options { release, target: Target::Desktop, rux_source: None, abis: None };
+            let options = Options { release, target: Target::Desktop, rux_source: None, abis: None, before: true };
             let main = wrapper_main(&m, &[PathBuf::from("app.rux")], &options);
             assert!(main.contains("rux_shell::run_windowed("), "{main}");
             assert!(main.contains(&format!("title: Some({}.into())", literal(&m.name))), "{main}");
@@ -853,6 +865,7 @@ mod tests {
             target: Target::Desktop,
             rux_source: Some(PathBuf::from("C:/rux")),
             abis: None,
+            before: true,
         };
         let toml = wrapper_manifest(&manifest(), &options, None, None);
         assert!(toml.contains("C:/rux/crates/rux-shell"), "{toml}");

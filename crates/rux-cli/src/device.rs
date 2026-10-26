@@ -138,6 +138,7 @@ pub fn run(args: &[String]) -> i32 {
         target: Target::Android,
         rux_source,
         abis,
+        before: true,
     }) {
         Ok(apk) => apk,
         Err(why) => {
@@ -164,6 +165,14 @@ pub fn run(args: &[String]) -> i32 {
     if release || !watch {
         return 0;
     }
+    // For as long as hot reload is: what they write is sent on like a save.
+    let _watching = match crate::commands::start_watch(&manifest.dev_watch, &manifest.root) {
+        Ok(watching) => watching,
+        Err(why) => {
+            eprintln!("rux: {why}");
+            return 2;
+        }
+    };
     match serve(&toolchain, &serial, &manifest) {
         Ok(()) => 0,
         Err(why) => {

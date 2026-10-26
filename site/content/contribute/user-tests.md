@@ -2915,6 +2915,24 @@ input tap`, focus read from `dumpsys audio`). Not judged by ear.
 | A call | Android: `adb emu gsm call` while the song plays, then cancel | telecom takes `GAIN_TRANSIENT`, the song pauses (`@pause`) and stays paused after | Android: pass |
 | The app away | Android: Home while it plays, back after 3 s | paused, `@pause`, not playing again on return | Android: pass |
 
+## `[dev] watch` and `[build] before`: Tailwind beside `rux run`, 2026-10-26
+
+A scratch project: `app.rux` in Tailwind classes, `<style src="app.css">`, and
+a `rux.toml` running the Tailwind v4.3.3 standalone CLI from a directory
+beside the project (`../tw-bin/tailwindcss`). Desktop, Windows 11, `rux run`
+started in a console of its own so stdin is a terminal.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| First run | no `app.css`; `rux run app.rux` | `before` writes it, then the window opens styled, then `watch` starts | pass: card, shadow, indigo text, screenshot |
+| Edit a class | `text-indigo-600` to `text-rose-600` in `app.rux` | Tailwind rewrites `app.css`, the window reloads rose | pass |
+| Close | close the window | `rux` and Tailwind both gone | pass |
+| Not installed | `before = ["tailwindcss ..."]` with none on PATH | refused before the window, names PATH and where the CLI comes from, exit 1 | pass |
+| `--watch` with stdin closed | first try ran it with a null stdin | | **found**: Tailwind's `--watch` ends when stdin closes, so it stopped at once. Fixed: commands get the terminal's stdin |
+
+Not driven: `rux build` (desktop, web, Android) running `before`, and
+`rux run --device` with `watch`; a native/ app's loop.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

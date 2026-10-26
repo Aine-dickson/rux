@@ -29,6 +29,7 @@ mod aot;
 mod apk;
 mod build;
 mod check;
+mod commands;
 mod device;
 mod files;
 mod fmt;
@@ -200,6 +201,7 @@ fn build_command(args: &[String]) -> ExitCode {
         // As `rux run` does, so the two agree on where Rux comes from.
         rux_source: crate::native::default_rux_source(),
         abis: None,
+        before: true,
     };
     let mut i = 0;
     while i < args.len() {
@@ -373,6 +375,37 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
             profile.safe_area.left,
         );
     }
+    // The window a build of this project opens, so `rux run` and `rux build`
+    // agree on it. A bare file with no rux.toml above it keeps today's window.
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let manifest = match manifest::Manifest::find(dir) {
+        Ok(m) => Some(m),
+        Err(e) if dir.ancestors().any(|d| d.join(manifest::MANIFEST).is_file()) => {
+            eprintln!("rux: {e}");
+            return ExitCode::from(2);
+        }
+        Err(_) => None,
+    };
+    // Before the window, because a `<style src>` naming a file that `before`
+    // writes is a load failure until it has run once. Before the watchers too,
+    // so the two are not writing the same file at once.
+    if let Some(m) = &manifest {
+        if let Err(e) = commands::run_before(&m.build_before, &m.root) {
+            eprintln!("rux: {e}");
+            return ExitCode::from(1);
+        }
+    }
+    // Held until the window closes; dropping it stops the commands.
+    let _watching = match &manifest {
+        Some(m) => match commands::start_watch(&m.dev_watch, &m.root) {
+            Ok(watching) => Some(watching),
+            Err(e) => {
+                eprintln!("rux: {e}");
+                return ExitCode::from(2);
+            }
+        },
+        None => None,
+    };
     // An app with Rust of its own runs as a build of itself, since the Rust
     // has to be compiled in; its documents still hot reload from disk.
     if let Some(native) = native::find_above(&path) {
@@ -381,20 +414,13 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
         }
         return native::run(&path, &native);
     }
-    // The window a build of this project opens, so `rux run` and `rux build`
-    // agree on it. A bare file with no rux.toml above it keeps today's window.
-    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let window = match manifest::Manifest::find(dir) {
-        Ok(m) => {
+    let window = match &manifest {
+        Some(m) => {
             // Where `settings.set` keeps this app's values.
             rux_shell::set_app_id(&m.id);
             m.window_settings()
         }
-        Err(e) if dir.ancestors().any(|d| d.join(manifest::MANIFEST).is_file()) => {
-            eprintln!("rux: {e}");
-            return ExitCode::from(2);
-        }
-        Err(_) => rux_shell::WindowSettings::default(),
+        None => rux_shell::WindowSettings::default(),
     };
     rux_shell::run_windowed(path, route, preview, window);
     ExitCode::SUCCESS
