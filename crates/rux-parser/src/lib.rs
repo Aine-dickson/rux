@@ -466,19 +466,33 @@ pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
             }
         }
     }
-    let (style, style_line) = trimmed_section(src, "style");
+    let blocks = style_blocks(src).map_err(|why| section_error(src, "style", why))?;
+    let (style, style_line) = joined_styles(src, &blocks);
     let (script, script_line) = trimmed_section(src, "script");
-    let style_open = section_with_open(src, "style").map(|(_, _, open)| open);
-    let style_src = style_open
-        .as_deref()
-        .and_then(|open| open_tag_attr(open, "src"))
-        .map(|v| split_src(&v))
-        .unwrap_or_default();
+    // From every block, so `<style src="tailwind.css"></style>` followed by a
+    // `<style>` of the file's own rules includes the sheet and keeps the rules.
+    let style_src = blocks
+        .iter()
+        .filter_map(|(_, _, open)| open_tag_attr(open, "src"))
+        .flat_map(|v| split_src(&v))
+        .collect();
     // `<style scoped>` keeps a document's rules to its own markup. Without it
     // they reach the components it uses, which is the default because a shared
     // look is the common case and repeating an import in every component was
-    // the thing people actually hit.
-    let style_scoped = style_open.as_deref().is_some_and(|open| open_tag_flag(open, "scoped"));
+    // the thing people actually hit. It is one answer for the whole file, so
+    // blocks that disagree are refused rather than one of them quietly taking
+    // the other's.
+    let scoped: Vec<bool> = blocks.iter().map(|(_, _, open)| open_tag_flag(open, "scoped")).collect();
+    if let Some(i) = scoped.windows(2).position(|w| w[0] != w[1]) {
+        let at = blocks[i + 1].1;
+        return Err(ParseError::at(
+            "this <style> is scoped and another in the file is not, or the other way round: \
+             `scoped` covers every rule a file has, so write it on all of its <style> blocks or none",
+            src[..at].matches('\n').count() + 1,
+            1,
+        ));
+    }
+    let style_scoped = scoped.first().copied().unwrap_or(false);
 
     // Positions inside the template are relative to the section; shift them onto
     // the file's lines so a reported line matches the editor's gutter.
@@ -727,6 +741,56 @@ fn find_section(src: &str, name: &str) -> Result<(String, usize, String), Sectio
         after_open,
         src[start..open_end].to_string(),
     ))
+}
+
+/// Every top-level `<style>` block, in the order written, each as
+/// [`find_section`] gives one.
+///
+/// Only the first was read until 2026-10-26, and a second block was dropped
+/// without a word: `<style src="assets/tailwind.css"></style>` and then a
+/// `<style>` of the file's own rules, the shape the Tailwind page teaches,
+/// lost every rule in the second. A `<style` inside the template or the
+/// script is text there, not a block.
+fn style_blocks(src: &str) -> Result<Vec<(String, usize, String)>, SectionProblem> {
+    let inside: Vec<std::ops::Range<usize>> = ["template", "script"]
+        .iter()
+        .filter_map(|name| find_section(src, name).ok().map(|(body, at, _)| at..at + body.len()))
+        .collect();
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(found) = src[from..].find("<style") {
+        let start = from + found;
+        if in_html_comment(src, start) || inside.iter().any(|r| r.contains(&start)) {
+            from = start + "<style".len();
+            continue;
+        }
+        let open_end = start + src[start..].find('>').ok_or(SectionProblem::UnterminatedOpenTag { at: start })?;
+        let after_open = open_end + 1;
+        let end = src[after_open..].find("</style>").ok_or(SectionProblem::Unclosed { at: start })? + after_open;
+        out.push((src[after_open..end].to_string(), after_open, src[start..open_end].to_string()));
+        from = end + "</style>".len();
+    }
+    Ok(out)
+}
+
+/// The blocks' CSS as one sheet, in the order written, and the file line its
+/// first line is on. Each later block is padded down to its own line, so a
+/// position the later stages report from the joined text is still the file's.
+fn joined_styles(src: &str, blocks: &[(String, usize, String)]) -> (String, usize) {
+    let mut style = String::new();
+    let mut first = 1;
+    for (i, (body, at, _)) in blocks.iter().enumerate() {
+        let leading = body.len() - body.trim_start().len();
+        let line = src[..at + leading].matches('\n').count() + 1;
+        if i == 0 {
+            first = line;
+        } else {
+            let last = first + style.matches('\n').count();
+            style.push_str(&"\n".repeat(line.saturating_sub(last).max(1)));
+        }
+        style.push_str(body.trim());
+    }
+    (style, first)
 }
 
 /// Whether byte `at` of `src` is inside an `<!-- … -->` at the top level.
@@ -1184,6 +1248,39 @@ mod tests {
         assert_eq!(sfc.style_line, 6, "the body still starts on line 6");
         // Parsing does no IO, so nothing is resolved yet.
         assert!(sfc.style_includes.is_empty());
+    }
+
+    /// An include in one `<style>` and the file's own rules in a second, the
+    /// shape the Tailwind page teaches. The second block was dropped without
+    /// a word. Its rules land on their own file lines, for warnings.
+    #[test]
+    fn every_style_block_is_read() {
+        let src = "<template>\n  <screen></screen>\n</template>\n\n<style src=\"tailwind.css\"></style>\n<style>\n  .a { color: red; }\n</style>\n<style>.b { color: blue; }</style>\n";
+        let sfc = parse_sfc(src).expect("parses");
+        assert_eq!(sfc.style_src, vec!["tailwind.css"]);
+        assert!(!sfc.style_scoped);
+        let lines: Vec<&str> = sfc.style.lines().collect();
+        let line_of = |needle: &str| sfc.style_line + lines.iter().position(|l| l.contains(needle)).expect(needle);
+        assert_eq!(line_of(".a"), 7);
+        assert_eq!(line_of(".b"), 9);
+    }
+
+    /// `scoped` is one answer per file, so blocks that disagree are refused.
+    #[test]
+    fn style_blocks_that_disagree_on_scoped_are_refused() {
+        let src = "<template><screen></screen></template>\n<style scoped>.a{color:red}</style>\n<style>.b{color:blue}</style>";
+        let err = parse_sfc(src).expect_err("refused");
+        assert!(err.to_string().contains("scoped"), "{err}");
+        let both = "<template><screen></screen></template>\n<style scoped>.a{}</style>\n<style scoped>.b{}</style>";
+        assert!(parse_sfc(both).expect("parses").style_scoped);
+    }
+
+    /// A `<style` in the script is a string there, not a block.
+    #[test]
+    fn a_style_tag_inside_the_script_is_not_a_block() {
+        let src = "<template><screen></screen></template>\n<style>.a{color:red}</style>\n<script>\n  let s = \"<style>\";\n</script>";
+        let sfc = parse_sfc(src).expect("parses");
+        assert_eq!(sfc.style, ".a{color:red}");
     }
 
     #[test]
