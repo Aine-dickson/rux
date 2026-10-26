@@ -2871,6 +2871,28 @@ with the B.1 page, taps through `adb shell input`, the focus read from
 | Another app's music | a music app playing, then a Rux song, then the click alone | theirs pauses for the song; only lowers for the click | not driven (no music app on the emulator) |
 | Desktop: a new output | pull headphones (or choose another output) while a song plays | it carries on through the new default from where it was | not driven (needs this machine's output changed by hand) |
 
+## `<audio>`, desktop, 2026-10-26
+
+Step B.3 of `docs/13-file-input-and-media-plan.md`. Under test in
+`rux-runtime` (the controls follow a sound reached by key, their buttons ask
+the shell, `query().play()` and `.pause()`, the events belong to `<audio>`).
+**Driven in the window** on Windows: a page with `<audio controls>` on a
+12 s MP3 logging `@play`, `@pause`, `@ended` and counting `@timeupdate`, an
+`<audio>` on a missing file, a muted `autoplay` one, and two buttons calling
+`play()` and `pause()` through `query()`. Clicks by `SetCursorPos`, read from
+screenshots. The web and Android are B.4.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Loaded | open the page | play icon, `0:00 / 0:12`, the thumb at the start; `@error` with `kind` `"io"` for the missing file | desktop: pass |
+| `autoplay` | an unmuted `autoplay` on the page, then the same `muted` | the first waits and says why on stderr, and does not start at the first click; the muted one plays at once (`@play` logged) | desktop: pass |
+| Play | click the play button | pause icon, the time counting, `@play` once, `@timeupdate` about four a second | desktop: pass |
+| Mute | click the speaker | the crossed speaker; click again, the speaker | desktop: pass |
+| Seek to near the end | click the bar at 90% | `0:12 / 0:12`, play icon, `@pause` then `@ended` | desktop: pass |
+| Script | `query("#song")[0].play()`, a second later `.pause()` | from the start (it had ended), then paused: `@play`, `@pause` | desktop: pass |
+| Drag | press the thumb, drag to the middle, let go | `0:05 / 0:12`; `@timeupdate` for each seek while paused | desktop: pass |
+| Heard | all of the above | the tone, silent while muted | not judged by ear (driven headless) |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

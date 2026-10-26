@@ -1241,7 +1241,34 @@ pub enum ElementAction {
     /// its `@submit` or its `@invalid`. Asked for by a `<button type="submit">`,
     /// whose tap the build ends with a call to [`SUBMIT_FN`].
     Submit(Vec<usize>),
+    /// Play the `<audio>` at this tree path, as its own play button would.
+    /// The shell holds the sound, so it is the shell that plays it.
+    Play(Vec<usize>),
+    /// Pause the `<audio>` at this tree path.
+    Pause(Vec<usize>),
+    /// What an `<audio>`'s own play button asks, by the element's key
+    /// ([`MEDIA_ASK_FN`]): asked rather than done, since a sound not loaded
+    /// yet (`preload="none"`) has nothing to call.
+    Media(String, MediaAsk),
 }
+
+/// What is asked of an `<audio>`'s sound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaAsk {
+    Play,
+    Pause,
+    /// Play it if it is paused, else pause it: its play button.
+    Toggle,
+}
+
+/// The function an `<audio>`'s drawn controls read its sound through, by the
+/// element's key: its `Sound`, or `none` while it loads or when it could not
+/// be. Not for authors.
+pub const MEDIA_FN: &str = "__rux_media";
+
+/// The function an `<audio>`'s play button calls, with the element's key and
+/// `"toggle"` (or `"play"`, `"pause"`). Not for authors.
+pub const MEDIA_ASK_FN: &str = "__rux_media_ask";
 
 /// The function a submit button's tap calls, with its form's tree path
 /// written as `"0.2.1"`. Not for authors: a form is submitted by a

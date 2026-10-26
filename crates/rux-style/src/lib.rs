@@ -1987,6 +1987,86 @@ impl SliderRange {
 const SWITCH_OFF: Rgba = Rgba::new(0.61, 0.64, 0.69, 1.0); // #9ca3af
 const SWITCH_ON: Rgba = Rgba::new(0.15, 0.39, 0.92, 1.0); // #2563eb
 
+/// An `<audio>`'s drawn controls: Tabler's `player-play`, `player-pause`,
+/// `volume` and `volume-3` (MIT), on their 24px grid at stroke 2.
+const AUDIO_PLAY: &str = "M7 4v16l13 -8z";
+const AUDIO_PAUSE: &str = "M6 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z \
+    M14 6a1 1 0 0 1 1 -1h2a1 1 0 0 1 1 1v12a1 1 0 0 1 -1 1h-2a1 1 0 0 1 -1 -1z";
+const AUDIO_VOLUME: &str = "M15 8a5 5 0 0 1 0 8 M17.7 5a9 9 0 0 1 0 14 \
+    M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5";
+const AUDIO_MUTED: &str = "M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5 \
+    M16 10l4 4m0 -4l-4 4";
+/// The seek bar's thumb, smaller than a slider's: it shares a row.
+const AUDIO_THUMB: f32 = 12.0;
+
+/// Which `<audio>` this is from one build to the next: the instance it is
+/// in, where it is written, and the `r-for` row it is in. Hashed, so it can
+/// be written into a line of script as it is.
+fn media_key(instance: Option<&str>, tpl_path: &[usize], row: Option<&str>) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut eat = |bytes: &[u8]| {
+        for b in bytes {
+            h ^= u64::from(*b);
+            h = h.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    eat(instance.unwrap_or_default().as_bytes());
+    eat(&[0xff]);
+    for i in tpl_path {
+        eat(&i.to_le_bytes());
+    }
+    eat(&[0xff]);
+    if let Some(r) = row {
+        eat(&[1]);
+        eat(r.as_bytes());
+    }
+    format!("{h:016x}")
+}
+
+/// Seconds as a player shows them: `1:05`, or `1:02:05` past an hour.
+fn clock(secs: f64) -> String {
+    let s = if secs.is_finite() { secs.max(0.0) as u64 } else { 0 };
+    match s / 3600 {
+        0 => format!("{}:{:02}", s / 60, s % 60),
+        h => format!("{h}:{:02}:{:02}", s / 60 % 60, s % 60),
+    }
+}
+
+/// One of an `<audio>`'s buttons: a Tabler icon in a 32px box that runs
+/// `tap`, named `label` for assistive technology.
+fn media_button(path: &[usize], d: &str, color: Rgba, label: &str, tap: String) -> LayoutNode {
+    let mut icon = LayoutNode::path(
+        Style {
+            width: Some(Len::Px(24.0)),
+            height: Some(Len::Px(24.0)),
+            shrink: 0.0,
+            fill: None,
+            stroke: Some(color),
+            stroke_width: 2.0,
+            stroke_linecap: rux_layout::LineCap::Round,
+            stroke_linejoin: rux_layout::LineJoin::Round,
+            ..Default::default()
+        },
+        PathContent::parse(d),
+    );
+    icon.style.no_pointer = true;
+    let mut button = LayoutNode::new(Style {
+        display: Display::Flex,
+        align: Some(Align::Center),
+        justify: Some(Justify::Center),
+        width: Some(Len::Px(32.0)),
+        height: Some(Len::Px(32.0)),
+        shrink: 0.0,
+        radius: [CIRCLE; 4],
+        ..Default::default()
+    });
+    button.children.push(icon);
+    button.on_tap = Some(tap);
+    button.focus_path = Some(path.to_vec());
+    button.access = Access { role: AccessRole::Button, label: Some(label.to_string()), ..Access::default() };
+    button
+}
+
 /// An `<input type=checkbox|radio>`: whether it is currently checked, and the
 /// signals its checked state reads (so a change can reconcile just this node).
 #[derive(Clone)]
@@ -7645,6 +7725,214 @@ fn build_node_inner(
 
     if el.tag == "text" {
         return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own, shadows, look.clone(), generated);
+    }
+
+    // `<audio>` (`docs/13-file-input-and-media-plan.md`, B.3). The sound is
+    // the shell's: it reads `field.media` after every build, loads and keeps a
+    // `Sound` under the element's key, and runs `@play` and the rest as that
+    // sound does them. Without `controls` the element is nothing on screen,
+    // as in a browser.
+    //
+    // **The controls are built as the slider is, from parts the language
+    // already has.** Each is a box whose `@tap` (and the seek bar's `@drag`)
+    // is a line of script on the element's `Sound`, reached by its key
+    // through `__rux_media`, and what they show is read from that `Sound`
+    // here. Those reads are property reads, so the node is rebuilt in place
+    // whenever the sound moves, as `{{ s.currentTime }}` is.
+    if el.tag == "audio" {
+        let mut deps: HashSet<String> = HashSet::new();
+        let src = match el.attr(":src") {
+            Some(e) => {
+                let (v, read) = located(el.attr_line(":src"), || engine.eval_display_tracked(e, locals));
+                deps.extend(read);
+                v
+            }
+            None => el.attr("src").unwrap_or_default().to_string(),
+        };
+        let controls = bool_attr(el, "controls", engine, locals, &mut deps);
+        let lazy = match el.attr("preload").map(str::trim) {
+            None | Some("auto" | "metadata" | "") => false,
+            Some("none") => true,
+            Some(other) => {
+                located(el.attr_line("preload"), || {
+                    warn(format!("`preload=\"{other}\"` is not a value Rux knows; use `none`, `metadata` or `auto`"))
+                });
+                false
+            }
+        };
+        if el.children.iter().any(|c| !matches!(c, TplNode::Text(t, _) if t.trim().is_empty())) {
+            located(Some(el.line), || {
+                warn(
+                    "what is written inside an `<audio>` is never shown: a browser shows it only \
+                     when it has no audio at all. Give the sound as `src`"
+                        .to_string(),
+                )
+            });
+        }
+        let key = media_key(instance, tpl_path, row);
+        let media = rux_layout::Media {
+            src,
+            autoplay: bool_attr(el, "autoplay", engine, locals, &mut deps),
+            looping: bool_attr(el, "loop", engine, locals, &mut deps),
+            muted: bool_attr(el, "muted", engine, locals, &mut deps),
+            lazy,
+            on: rux_layout::Media::EVENTS.map(|e| el.attr(&format!("@{e}")).map(|h| bind_locals(h, baked))),
+            key: key.clone(),
+        };
+
+        let mut style = style;
+        let mut node = if controls {
+            let accent = props.get("accent-color").and_then(|v| parse_color(v)).unwrap_or(SWITCH_ON);
+            let (now, read) = engine.eval_value_tracked(
+                &format!(
+                    "[{m}(\"{key}\")?.playing, {m}(\"{key}\")?.currentTime, {m}(\"{key}\")?.duration, \
+                     {m}(\"{key}\")?.volume]",
+                    m = rux_script::MEDIA_FN
+                ),
+                locals,
+            );
+            deps.extend(read);
+            let now = now.and_then(|v| v.as_list().map(<[Value]>::to_vec)).unwrap_or_default();
+            let playing = now.first().is_some_and(Value::is_truthy);
+            let time = now.get(1).and_then(Value::as_number).unwrap_or(0.0);
+            let duration = now.get(2).and_then(Value::as_number).filter(|d| d.is_finite() && *d > 0.0);
+            let silent = now.get(3).and_then(Value::as_number).is_some_and(|v| v <= 0.0);
+            let child_inherited = Inherited {
+                color,
+                selection: selection.clone(),
+                font_size,
+                font_family: font_family.clone(),
+                vars: Rc::clone(&vars),
+                run: None,
+                direction,
+                text: own_text,
+                shadows: shadows.clone(),
+                look: look.clone(),
+            };
+            let shown = match duration {
+                Some(d) => format!("{} / {}", clock(time), clock(d)),
+                None => clock(time),
+            };
+            let at = |i: usize| path.iter().copied().chain([i]).collect::<Vec<usize>>();
+            let time_el = Element {
+                tag: "text".to_string(),
+                attrs: vec![rux_parser::Attr {
+                    name: "style".to_string(),
+                    value: "white-space: nowrap; font-variant-numeric: tabular-nums; margin: 0 4px".to_string(),
+                    line: el.line,
+                    has_value: true,
+                }],
+                children: vec![TplNode::Text(shown.clone(), el.line)],
+                line: el.line,
+            };
+            let time_node = build_node(
+                &time_el, &[], comps, ancestors, &[], &child_inherited, engine, locals, &at(1), &at(1), reg,
+                state, instances, swaps, instance, None, None, row, None,
+            );
+            let fraction = duration.map_or(0.0, |d| (time / d).clamp(0.0, 1.0)) as f32;
+            let m = format!("let __m = {}(\"{key}\");", rux_script::MEDIA_FN);
+            let seek = format!(
+                "{m} if __m != none {{ let __d = __m.duration; if __d != none {{ \
+                 __m.seek(max(0.0, min(1.0, event.x / event.width)) * __d) }} }}"
+            );
+            let mut parts = vec![
+                media_button(
+                    &at(0),
+                    if playing { AUDIO_PAUSE } else { AUDIO_PLAY },
+                    color,
+                    if playing { "Pause" } else { "Play" },
+                    format!("{}(\"{key}\", \"toggle\")", rux_script::MEDIA_ASK_FN),
+                ),
+                time_node,
+            ];
+            let mut bar = LayoutNode::new(Style {
+                display: Display::Flex,
+                align: Some(Align::Center),
+                grow: 1.0,
+                basis: Some(Len::Px(0.0)),
+                height: Some(Len::Px(32.0)),
+                margin: Sides { top: 0.0, right: 4.0, bottom: 0.0, left: 4.0 },
+                ..Default::default()
+            });
+            let part = |grow: f32, color: Rgba| {
+                LayoutNode::new(Style {
+                    display: Display::Flex,
+                    grow,
+                    basis: Some(Len::Px(0.0)),
+                    height: Some(Len::Px(SLIDER_BAR)),
+                    background: Some(Background::Color(color)),
+                    radius: [CIRCLE; 4],
+                    ..Default::default()
+                })
+            };
+            bar.children.push(part(fraction, accent));
+            bar.children.push(LayoutNode::new(Style {
+                display: Display::Flex,
+                width: Some(Len::Px(AUDIO_THUMB)),
+                height: Some(Len::Px(AUDIO_THUMB)),
+                shrink: 0.0,
+                background: Some(Background::Color(accent)),
+                radius: [CIRCLE; 4],
+                ..Default::default()
+            }));
+            bar.children.push(part(1.0 - fraction, SLIDER_REST));
+            // Guarded on `event.x` as the slider's is: Space and `tap()` have
+            // no pointer to seek to.
+            bar.on_tap = Some(format!("if event.contains(\"x\") {{ {seek} }}"));
+            bar.gestures.push((rux_layout::Gesture::Drag, seek));
+            bar.focus_path = Some(at(2));
+            bar.instance = instance.map(str::to_string);
+            bar.access = Access {
+                role: AccessRole::Slider,
+                label: Some("Seek".to_string()),
+                value: Some(shown),
+                ..Access::default()
+            };
+            parts.push(bar);
+            parts.push(media_button(
+                &at(3),
+                if silent { AUDIO_MUTED } else { AUDIO_VOLUME },
+                color,
+                if silent { "Unmute" } else { "Mute" },
+                format!("{m} if __m != none {{ if __m.volume > 0.0 {{ __m.volume = 0.0 }} else {{ __m.volume = 1.0 }} }}"),
+            ));
+            for p in &mut parts {
+                p.instance = instance.map(str::to_string);
+            }
+            // A browser's own size, near enough, unless the author gives one.
+            if !props.contains_key("width") {
+                style.width = Some(Len::Px(300.0));
+            }
+            if !props.contains_key("height") {
+                style.height = Some(Len::Px(40.0));
+            }
+            if style.display == Display::Block || style.display == Display::Inline {
+                style.display = Display::Flex;
+            }
+            style.align.get_or_insert(Align::Center);
+            let mut node = LayoutNode::new(style);
+            node.children = parts;
+            node
+        } else {
+            style.display = Display::None;
+            LayoutNode::new(style)
+        };
+        // Rebuilt in place, as a toggle is: what it reads changes what it
+        // draws and nothing about the tree's shape.
+        reg.toggles.push(ToggleBinding { path: path.to_vec(), deps });
+        node.field = Some(Box::new(rux_layout::Field { media: Some(Box::new(media)), ..Default::default() }));
+        node.on_tap = on_tap;
+        node.gestures = gestures;
+        node.instance = instance.map(str::to_string);
+        node.hidden = hidden;
+        node.id = el.attr("id").map(str::to_string);
+        node.state_path = state_path.clone();
+        node.access = Access {
+            role: if controls { AccessRole::Group } else { AccessRole::None },
+            label: authored_label(el).or_else(|| controls.then(|| "Audio".to_string())),
+            ..Access::default()
+        };
+        return node;
     }
 
     // <image src=…>: a leaf that paints its pixels. The `src` here is still the

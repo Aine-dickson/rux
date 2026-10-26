@@ -15,7 +15,7 @@ use crate::{ElementAction, ElementHandle, Nav};
 /// resolve at all. A test holds the two together.
 pub const FUNCTIONS: &[&str] = &[
     "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "close", "path_for", "pathFor", "blur",
-    crate::SUBMIT_FN, crate::ANSWER_FN, "query", "clearInterval", "setInterval", "__interval", "Ok", "Err", "Number", "parseInt",
+    crate::SUBMIT_FN, crate::ANSWER_FN, crate::MEDIA_FN, crate::MEDIA_ASK_FN, "query", "clearInterval", "setInterval", "__interval", "Ok", "Err", "Number", "parseInt",
     "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
     "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
     "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var",
@@ -29,7 +29,7 @@ pub const METHODS: &[&str] = &[
     "toUpperCase", "to_upper", "toLowerCase", "to_lower", "make_upper", "make_lower", "startsWith", "starts_with",
     "endsWith", "ends_with", "repeat", "charAt", "substring", "sub_string", "split", "chars", "to_chars", "replace",
     "pad", "to_int", "trunc", "floor", "ceil", "ceiling", "round", "to_float", "toFloat", "sqrt", "abs", "is_nan",
-    "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "tap", "call", "set",
+    "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "tap", "play", "pause", "call", "set",
 ];
 
 /// Whether a method changes its receiver, so a call on a place writes the
@@ -209,6 +209,23 @@ impl Interp {
                 let form = text(&argv[0])?;
                 let path = form.split('.').filter_map(|i| i.parse().ok()).collect();
                 crate::ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Submit(path)));
+                V::None
+            }
+            // Read as a property is: the sound arriving, or anything it does,
+            // is Rust saying something moved, so what read it reads again.
+            (crate::MEDIA_FN, 1) => {
+                self.read_properties = true;
+                crate::note_read(crate::native::PROPERTIES_READ);
+                crate::native::media(&text(&argv[0])?)
+            }
+            (crate::MEDIA_ASK_FN, 2) => {
+                let ask = match text(&argv[1])?.as_ref() {
+                    "play" => crate::MediaAsk::Play,
+                    "pause" => crate::MediaAsk::Pause,
+                    _ => crate::MediaAsk::Toggle,
+                };
+                let key = text(&argv[0])?.to_string();
+                crate::ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::Media(key, ask)));
                 V::None
             }
             ("query", 1) => {
@@ -805,6 +822,8 @@ impl Interp {
                     ("focus", 0) => ElementAction::Focus(path),
                     ("scrollIntoView", 0) => ElementAction::ScrollIntoView(path),
                     ("tap", 0) => ElementAction::Tap(path),
+                    ("play", 0) => ElementAction::Play(path),
+                    ("pause", 0) => ElementAction::Pause(path),
                     _ => return Ok(None),
                 };
                 crate::ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(action));

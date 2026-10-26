@@ -2538,6 +2538,33 @@ pub struct Field {
     /// `type="file"`: what its picker offers, and its `@cancel`. Boxed, as
     /// every input but this one has none.
     pub file: Option<Box<FileInput>>,
+    /// `<audio>`: what the shell loads and plays for it. Boxed, as every
+    /// element but this one has none.
+    pub media: Option<Box<Media>>,
+}
+
+/// An `<audio>` (`docs/13-file-input-and-media-plan.md`, B.3), as the shell
+/// reads it after every build: the sound to hold for it, how to play it, and
+/// what to run as it does. Layout ignores it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Media {
+    /// Which element this is from one build to the next: its sound is kept
+    /// under this, and its drawn controls read it by it.
+    pub key: String,
+    /// `src`, as the author wrote it, or `:src` as it last read.
+    pub src: String,
+    pub autoplay: bool,
+    pub looping: bool,
+    pub muted: bool,
+    /// `preload="none"`: nothing is read until the first `play()`.
+    pub lazy: bool,
+    /// `@play`, `@pause`, `@ended`, `@timeupdate`, `@error`, in that order.
+    pub on: [Option<String>; 5],
+}
+
+impl Media {
+    /// The events [`Media::on`] holds, in its order.
+    pub const EVENTS: [&'static str; 5] = ["play", "pause", "ended", "timeupdate", "error"];
 }
 
 /// What an `<input type="file">` asks of the platform's picker

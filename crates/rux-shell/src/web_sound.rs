@@ -258,7 +258,11 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
             set(|a, v| {
                 // A browser throws past 0 to 1; the desktop clamps, and so here.
                 let v = number(v)?;
-                a.set_volume(if v.is_finite() { v.clamp(0.0, 1.0) } else { 1.0 });
+                let v = if v.is_finite() { v.clamp(0.0, 1.0) } else { 1.0 };
+                a.set_volume(v);
+                // Nothing at all is muted, which is what a browser lets play
+                // before a tap: an `<audio muted autoplay>` is this.
+                a.set_muted(v == 0.0);
                 Ok(())
             }),
         ),

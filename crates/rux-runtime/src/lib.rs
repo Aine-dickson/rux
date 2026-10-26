@@ -59,8 +59,12 @@ pub use rux_native as native;
 /// Rux's own native functions, the file dialogs among them: their
 /// interface, which a shell installs with code behind it.
 pub mod builtins {
-    pub use rux_script::native::{builtin_interface, settings_interface, BUILTIN_FNS, BUILTIN_MODULE, SETTINGS_MODULE};
+    pub use rux_script::native::{
+        builtin_interface, set_media, settings_interface, BUILTIN_FNS, BUILTIN_MODULE, SETTINGS_MODULE,
+    };
 }
+/// What is asked of an `<audio>`'s sound. See [`Document::take_media_requests`].
+pub use rux_script::MediaAsk;
 /// Compiled script functions, for the code a release build generates: step 9
 /// of docs/11-next.md.
 pub use rux_script::aot;
@@ -218,6 +222,9 @@ pub struct Document {
     /// Forms a submit button asked to submit, by tree path, that the shell has
     /// not taken yet. The shell's, because a refused submission moves focus.
     pending_submits: Vec<Vec<usize>>,
+    /// What was asked of `<audio>` elements' sounds, by key, that the shell,
+    /// which holds the sounds, has not taken yet.
+    pending_media: Vec<(String, rux_script::MediaAsk)>,
     /// A `focus()` or `blur()` the shell has not taken yet. `Some(None)` is a
     /// blur, `Some(Some(f))` a focus, `None` nothing asked.
     ///
@@ -324,6 +331,9 @@ const FIELD_EVENT_NAMES: &[&str] = &["input", "change", "focus", "blur"];
 /// The event only a file input has: its picker closed with nothing chosen.
 const FILE_EVENT_NAMES: &[&str] = &["cancel"];
 
+/// The events only an `<audio>` has: what its sound does.
+const MEDIA_EVENT_NAMES: &[&str] = &rux_layout::Media::EVENTS;
+
 /// The events only a `role="form"` has: a submission that passed its checks,
 /// and one that did not.
 const FORM_EVENT_NAMES: &[&str] = &["submit", "invalid"];
@@ -358,6 +368,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             let form = el.role().is_some_and(|r| r.eq_ignore_ascii_case("form"));
             let screen = el.tag == "screen";
             let file = field && el.attr("type") == Some("file");
+            let media = el.tag == "audio";
             if is_component
                 || EVENT_NAMES.contains(&event)
                 || KEY_EVENT_NAMES.contains(&event)
@@ -365,6 +376,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
                 || (file && FILE_EVENT_NAMES.contains(&event))
                 || (form && FORM_EVENT_NAMES.contains(&event))
                 || (screen && SCREEN_EVENT_NAMES.contains(&event))
+                || (media && MEDIA_EVENT_NAMES.contains(&event))
             {
                 continue;
             }
@@ -375,6 +387,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
                 .chain(FILE_EVENT_NAMES.iter().filter(|_| file))
                 .chain(FORM_EVENT_NAMES.iter().filter(|_| form))
                 .chain(SCREEN_EVENT_NAMES.iter().filter(|_| screen))
+                .chain(MEDIA_EVENT_NAMES.iter().filter(|_| media))
                 .map(|n| format!("`@{n}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -388,6 +401,8 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
                 format!(" `@{event}` belongs on the `<view role=\"form\">` around the fields.")
             } else if !screen && SCREEN_EVENT_NAMES.contains(&event) {
                 format!(" `@{event}` belongs on the app's `<screen>`.")
+            } else if !media && MEDIA_EVENT_NAMES.contains(&event) {
+                format!(" `@{event}` belongs on an `<audio>`.")
             } else {
                 String::new()
             };
@@ -983,6 +998,12 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
             };
             format!("{{ value: {value} }}")
         }
+        // Where the sound is, as it is now.
+        "play" | "pause" | "ended" | "timeupdate" if el.tag == "audio" => {
+            "{ currentTime: float, duration: float? }".to_string()
+        }
+        // Why it could not be played: `kind` as a `Sound`'s errors have it.
+        "error" if el.tag == "audio" => "{ kind: string, message: string }".to_string(),
         // Every failure, by field; one that passed is not there at all.
         "submit" | "invalid" => {
             let mut fields = vec![rux_script::types::Field {
@@ -1059,7 +1080,8 @@ fn bound_type(tag: &str, name: &str) -> Option<rux_script::types::Type> {
         (_, "to") => "string",
         // Progress, 0 to 1, or nothing while no swap is being driven.
         (_, "r-transition") => "float?",
-        ("image", "src") | ("path", "d") => "string",
+        ("image" | "audio", "src") | ("path", "d") => "string",
+        ("audio", "controls" | "autoplay" | "loop" | "muted") => "bool",
         ("input", "options") => "string[]",
         ("input" | "button", "disabled") | ("input", "readonly" | "required") => "bool",
         _ => return None,
@@ -2886,6 +2908,7 @@ impl Document {
             pending_reveals: Vec::new(),
             pending_taps: Vec::new(),
             pending_submits: Vec::new(),
+            pending_media: Vec::new(),
             pending_focus: None,
             root,
         };
@@ -3039,6 +3062,7 @@ impl Document {
             pending_reveals: Vec::new(),
             pending_taps: Vec::new(),
             pending_submits: Vec::new(),
+            pending_media: Vec::new(),
             pending_focus: None,
             root,
         };
@@ -4643,6 +4667,12 @@ impl Document {
         std::mem::take(&mut self.pending_submits)
     }
 
+    /// Take what was asked of `<audio>` elements' sounds (`play()`, `pause()`,
+    /// a play button), by the element's key, in the order asked.
+    pub fn take_media_requests(&mut self) -> Vec<(String, rux_script::MediaAsk)> {
+        std::mem::take(&mut self.pending_media)
+    }
+
     /// Check the fields of the `role="form"` at `path` and gather their values.
     ///
     /// `None` when nothing at `path` is a form, which a rebuild between the
@@ -4763,9 +4793,36 @@ impl Document {
                     self.pending_submits.push(path);
                     acted = true;
                 }
+                // The shell holds the sounds, so it is asked, by the
+                // element's key, as it is asked to tap.
+                rux_script::ElementAction::Play(path) => acted |= self.ask_media(&path, true),
+                rux_script::ElementAction::Pause(path) => acted |= self.ask_media(&path, false),
+                rux_script::ElementAction::Media(key, ask) => {
+                    self.pending_media.push((key, ask));
+                    acted = true;
+                }
             }
         }
         acted
+    }
+
+    /// Queue `play()` (`play`) or `pause()` for the `<audio>` at `path`.
+    /// Anything else is said and left alone.
+    fn ask_media(&mut self, path: &[usize], play: bool) -> bool {
+        match node_at(&self.root, path).and_then(|n| n.field().media.as_ref()) {
+            Some(m) => {
+                let ask = if play { rux_script::MediaAsk::Play } else { rux_script::MediaAsk::Pause };
+                self.pending_media.push((m.key.clone(), ask));
+                true
+            }
+            None => {
+                rux_script::warn_script(format!(
+                    "{}() was called on an element that is not an `<audio>`, so nothing happened",
+                    if play { "play" } else { "pause" }
+                ));
+                false
+            }
+        }
     }
 
     /// Run a handler, with `event` in scope when it was handed one: a
@@ -9938,6 +9995,195 @@ let open = signal(true);
             )
             .property("Meter", "label", "string", rux_native::Call::sync(|_| Ok(rux_native::Any::Str("meter".into()))), None)
             .install();
+    }
+
+    /// A sound as an `<audio>`'s controls see it: `Sound`'s properties and
+    /// methods, on a resource of its own name so no shell is needed.
+    #[derive(Default)]
+    struct Tape {
+        playing: std::sync::Mutex<bool>,
+        time: std::sync::Mutex<f64>,
+        volume: std::sync::Mutex<f64>,
+    }
+
+    impl rux_native::Resource for Tape {
+        const NAME: &'static str = "Tape";
+    }
+
+    static TAPE: std::sync::OnceLock<std::sync::Arc<Tape>> = std::sync::OnceLock::new();
+    static TAPE_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    fn tape_module() {
+        TAPE.get_or_init(|| std::sync::Arc::new(Tape { volume: std::sync::Mutex::new(1.0), ..Tape::default() }));
+        let of = |args: &[rux_native::Any]| match args.first() {
+            Some(rux_native::Any::Resource(h)) => h.get::<Tape>().ok_or_else(|| rux_native::Error::new("type", "not a Tape")),
+            _ => Err(rux_native::Error::new("type", "not a Tape")),
+        };
+        let method = |name: &str, params: &[(&str, &str)]| rux_native::Item {
+            name: name.into(),
+            kind: rux_native::ItemKind::Method {
+                on: "Tape".into(),
+                sig: rux_native::Sig {
+                    params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+                    result: "()".into(),
+                    is_async: false,
+                },
+            },
+        };
+        let play = move |on: bool| {
+            rux_native::Call::sync(move |args| {
+                *of(&args)?.playing.lock().unwrap() = on;
+                rux_native::notify();
+                Ok(rux_native::Any::None)
+            })
+        };
+        let float = |f: fn(&Tape) -> f64| rux_native::Call::sync(move |args| Ok(rux_native::Any::Float(f(&*of(&args)?))));
+        rux_native::Module::new("rts_tape")
+            .export(rux_native::Export { item: rux_native::Item { name: "Tape".into(), kind: rux_native::ItemKind::Resource }, call: None })
+            .export(rux_native::Export { item: method("play", &[]), call: Some(play(true)) })
+            .export(rux_native::Export { item: method("pause", &[]), call: Some(play(false)) })
+            .export(rux_native::Export {
+                item: method("seek", &[("seconds", "float")]),
+                call: Some(rux_native::Call::sync(move |args| {
+                    if let Some(rux_native::Any::Float(t)) = args.get(1) {
+                        *of(&args)?.time.lock().unwrap() = *t;
+                    }
+                    rux_native::notify();
+                    Ok(rux_native::Any::None)
+                })),
+            })
+            .property("Tape", "playing", "bool", rux_native::Call::sync(move |args| Ok(rux_native::Any::Bool(*of(&args)?.playing.lock().unwrap()))), None)
+            .property("Tape", "currentTime", "float", float(|t| *t.time.lock().unwrap()), None)
+            .property("Tape", "duration", "float?", float(|_| 60.0), None)
+            .property(
+                "Tape",
+                "volume",
+                "float",
+                float(|t| *t.volume.lock().unwrap()),
+                Some(rux_native::Call::sync(move |args| {
+                    if let Some(rux_native::Any::Float(v)) = args.get(1) {
+                        *of(&args)?.volume.lock().unwrap() = *v;
+                    }
+                    rux_native::notify();
+                    Ok(rux_native::Any::None)
+                })),
+            )
+            .install();
+        // Every `<audio>` is this one tape, once it has "loaded".
+        rux_script::native::set_media(|_| {
+            if TAPE_READY.load(std::sync::atomic::Ordering::Acquire) {
+                rux_native::Any::Resource(rux_native::Handle::from_arc(TAPE.get().expect("made").clone()))
+            } else {
+                rux_native::Any::None
+            }
+        });
+    }
+
+    /// Every node under `node` with the accessible role `role`, by label.
+    fn labels_of(node: &LayoutNode, role: rux_layout::AccessRole, out: &mut Vec<String>) {
+        if node.access.role == role {
+            out.push(node.access.label.clone().unwrap_or_default());
+        }
+        for c in &node.children {
+            labels_of(c, role, out);
+        }
+    }
+
+    fn find_node<'a>(node: &'a LayoutNode, f: &dyn Fn(&LayoutNode) -> bool) -> Option<&'a LayoutNode> {
+        if f(node) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|c| find_node(c, f))
+    }
+
+    /// `<audio controls>`: drawn from the element's sound, which the shell
+    /// holds and `__rux_media` reaches by the element's key. Nothing to show
+    /// while it loads; the time and the button follow it once it is there,
+    /// as a property read does; its buttons play it; `query()` reaches it.
+    #[test]
+    fn audio_controls_follow_the_sound_and_drive_it() {
+        tape_module();
+        let mut doc = Document::from_source(
+            "<template><screen><audio controls src=\"song.mp3\" @play=\"n += 1\" /><text>{{ n }}</text></screen></template>
+             <script>let n = signal(0);
+fn go() { query(\"audio\")[0].play(); }
+fn stop() { query(\"audio\")[0].pause(); }
+fn wrong() { query(\"text\")[0].play(); }</script>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
+        let audio = find_node(&doc.root, &|n| n.field().media.is_some()).expect("an audio node");
+        let media = audio.field().media.clone().unwrap();
+        assert_eq!(media.src, "song.mp3");
+        assert!(media.on[0].is_some(), "@play is carried");
+        assert_eq!(text_of(&doc.root).join("|"), "0:00|0");
+        let mut buttons = Vec::new();
+        labels_of(&doc.root, rux_layout::AccessRole::Button, &mut buttons);
+        assert_eq!(buttons, ["Play", "Mute"]);
+
+        TAPE_READY.store(true, std::sync::atomic::Ordering::Release);
+        *TAPE.get().unwrap().time.lock().unwrap() = 5.0;
+        rux_native::notify();
+        assert!(doc.refresh_native_signals(), "the sound arriving is a move");
+        assert_eq!(text_of(&doc.root).join("|"), "0:05 / 1:00|0");
+
+        let key = media.key.clone();
+        let play = find_node(&doc.root, &|n| n.access.label.as_deref() == Some("Play")).unwrap().on_tap.clone().unwrap();
+        doc.apply_handler(&play);
+        assert_eq!(doc.take_media_requests(), [(key.clone(), MediaAsk::Toggle)], "the button asks the shell");
+        // As the shell does what it asks.
+        *TAPE.get().unwrap().playing.lock().unwrap() = true;
+        rux_native::notify();
+        assert!(doc.refresh_native_signals());
+        let mut buttons = Vec::new();
+        labels_of(&doc.root, rux_layout::AccessRole::Button, &mut buttons);
+        assert_eq!(buttons, ["Pause", "Mute"], "and now offers to pause");
+
+        let mute = find_node(&doc.root, &|n| n.access.label.as_deref() == Some("Mute")).unwrap().on_tap.clone().unwrap();
+        doc.apply_handler(&mute);
+        assert_eq!(*TAPE.get().unwrap().volume.lock().unwrap(), 0.0);
+        let mut buttons = Vec::new();
+        labels_of(&doc.root, rux_layout::AccessRole::Button, &mut buttons);
+        assert_eq!(buttons, ["Pause", "Unmute"]);
+
+        doc.apply_handler("go()");
+        doc.apply_handler("stop()");
+        assert_eq!(
+            doc.take_media_requests(),
+            [(key.clone(), MediaAsk::Play), (key, MediaAsk::Pause)]
+        );
+        let _ = take_warnings();
+        doc.apply_handler("wrong()");
+        assert!(doc.take_media_requests().is_empty());
+        let w: Vec<String> = take_warnings().iter().map(|w| w.message.clone()).collect();
+        assert!(w.iter().any(|m| m.contains("not an `<audio>`")), "{w:?}");
+    }
+
+    /// Without `controls` an `<audio>` is nothing on screen, as in a
+    /// browser, and still carries its sound. Its events belong to it alone.
+    #[test]
+    fn audio_without_controls_and_its_events() {
+        let doc = Document::from_source(
+            "<template><screen><audio src=\"a.ogg\" autoplay loop muted preload=\"none\" @ended=\"x = 1\" /></screen></template>
+             <script>let x = signal(0);</script>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
+        let audio = find_node(&doc.root, &|n| n.field().media.is_some()).expect("an audio node");
+        assert_eq!(audio.style.display, rux_layout::Display::None);
+        assert!(audio.children.is_empty());
+        let m = audio.field().media.as_deref().unwrap();
+        assert!(m.autoplay && m.looping && m.muted && m.lazy);
+        assert!(m.on[2].is_some());
+
+        let said = |src: &str| {
+            let doc = Document::from_source(src).expect("load");
+            doc.diagnostics.warnings.iter().map(|w| w.message.clone()).collect::<Vec<_>>().join("\n")
+        };
+        let w = said("<template><screen><view @play=\"go()\" /></screen></template><script>fn go() {}</script>");
+        assert!(w.contains("belongs on an `<audio>`"), "{w}");
+        let w = said("<template><screen><audio src=\"a.mp3\" @playing=\"go()\" /></screen></template><script>fn go() {}</script>");
+        assert!(w.contains("`@timeupdate`"), "the audio's own are listed: {w}");
     }
 
     /// A resource's properties: read in a binding, which follows a change

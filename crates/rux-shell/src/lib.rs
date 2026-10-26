@@ -27,6 +27,8 @@
 //! because two places doing the same coordinate arithmetic eventually disagree.
 
 mod dialogs;
+/// `<audio>`: the sound each element plays, and its events.
+mod media;
 #[cfg(not(target_arch = "wasm32"))]
 mod sound;
 #[cfg(target_arch = "wasm32")]
@@ -4541,6 +4543,11 @@ impl App {
             }
         }
         self.adopt_focus_request();
+        // `play()`, `pause()` and an `<audio>`'s own play button: the sounds
+        // are kept by the shell.
+        for (key, ask) in self.document.take_media_requests() {
+            media::ask(&key, ask);
+        }
         // Last, so a refused submission's focus on the first bad field is the
         // focus the person ends up with.
         for form in self.document.take_submits() {
@@ -5857,6 +5864,13 @@ impl App {
         let Some(body) = body else { return };
         let event = rux_reactive::Value::Map(vec![("value".to_string(), value)]);
         self.field_events.push_back((body.to_string(), instance, event));
+    }
+
+    /// Bring the `<audio>` elements' sounds in step with the tree, and queue
+    /// the `@play`, `@pause`, `@ended`, `@timeupdate` and `@error` their
+    /// sounds gave since the last look. See [`media::sync`].
+    fn sync_media(&mut self) {
+        self.field_events.extend(media::sync(&self.document.root));
     }
 
     /// Run the field handlers the last batch of events queued.
@@ -8118,6 +8132,20 @@ impl ApplicationHandler<RuxEvent> for App {
         if let Some(state) = self.state.as_mut() {
             state.access.process_event(&state.window, &event);
         }
+        // What a browser counts as the person having used the page, which
+        // `<audio autoplay>` waits for on every platform: a press, a touch
+        // ending, a key other than Escape.
+        let activates = match &event {
+            WindowEvent::MouseInput { state, .. } => *state == ElementState::Pressed,
+            WindowEvent::Touch(t) => t.phase == TouchPhase::Ended,
+            WindowEvent::KeyboardInput { event, .. } => {
+                event.state == ElementState::Pressed && event.logical_key != Key::Named(NamedKey::Escape)
+            }
+            _ => false,
+        };
+        if activates {
+            media::activate();
+        }
         match event {
             WindowEvent::CloseRequested => self.close_requested(event_loop),
             WindowEvent::Resized(size) => {
@@ -8552,7 +8580,12 @@ impl ApplicationHandler<RuxEvent> for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         // Whatever `@input`, `@change`, `@focus` and `@blur` the events since
         // the last wake-up queued, now that the shell is done with them.
-        self.flush_field_events();
+        // Twice round with the `<audio>` elements: what their sounds did is
+        // queued the same way, and a handler may add or play one.
+        for _ in 0..2 {
+            self.sync_media();
+            self.flush_field_events();
+        }
 
         // A script called `close()`: the app has decided, so `@close` is not
         // asked again. Last of the handlers' consequences, so a handler that
@@ -10826,6 +10859,7 @@ impl DeviceProfile {
 fn install_rux_modules() {
     dialogs::install_builtins();
     settings::install_settings();
+    media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading
     // too, or a call made then is dropped unanswered.

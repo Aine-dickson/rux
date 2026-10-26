@@ -635,8 +635,10 @@ fn toggle() {
   the browser reports, about four times a second. A path the build did not
   embed is fetched relative to the page. **A browser plays only after a
   tap**: a `play()` before the person has touched the page does nothing, and
-  says so on the console. `<audio>` with drawn controls comes next
-  (`docs/13-file-input-and-media-plan.md`, B.3).
+  says so on the console.
+- **`<audio>`** is the same sound as an element, with drawn controls and
+  `@play`, `@pause`, `@ended`, `@timeupdate` and `@error` (see the
+  elements reference).
 
 ## Settings
 

@@ -421,6 +421,21 @@ pub fn property(on: &str, name: &str) -> Option<NativeProperty> {
 /// is read again when Rust says something moved ([`rux_native::notify`]).
 pub const PROPERTIES_READ: &str = "#native-properties";
 
+/// Where [`crate::MEDIA_FN`] finds an `<audio>`'s sound: the shell's, which
+/// loads and holds it. Unset, every element's sound is `none`.
+static MEDIA: std::sync::OnceLock<fn(&str) -> Any> = std::sync::OnceLock::new();
+
+/// Give [`crate::MEDIA_FN`] its lookup. Once per process; later calls are
+/// the same code again and change nothing.
+pub fn set_media(lookup: fn(&str) -> Any) {
+    let _ = MEDIA.set(lookup);
+}
+
+/// The sound of the `<audio>` keyed `key`, as the interpreter holds values.
+pub fn media(key: &str) -> V {
+    MEDIA.get().map_or(V::None, |lookup| from_any(lookup(key)))
+}
+
 /// Whether linked name `key` is a native property's getter: `Type.name`
 /// where `Type` has a property `name`. Asked once per key by the
 /// interpreter, which caches its calls.

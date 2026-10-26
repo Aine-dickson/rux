@@ -250,6 +250,18 @@ Read before planning, because three facts shape the steps:
   `muted`, otherwise after the person's first interaction. One rule
   everywhere beats a desktop app that works and a web build that does not.
 - Accessibility: the controls as a group of a button, a slider and a button.
+- **Built 2026-10-26 (desktop driven; the web and Android are B.4).** As
+  built: the element's sound is the shell's, a `Sound` kept under the
+  element's key and loaded through `loadSound`, so the element is what a
+  script could have built; its events are found by looking at the sound
+  after every wake, so a play from anywhere fires them. Decided while
+  building, **for the owner to confirm**: `muted` is the volume at nothing
+  (the mute button's state, and on the web the element's `muted` flag too,
+  which is what lets a muted `autoplay` play there); an `autoplay` that waits
+  does not start at the first tap, as in a browser; the controls are 300 by
+  40 unless CSS says otherwise, with no background of their own; a sound of
+  unknown length only pauses at its end, as there is no end flag both
+  platforms share.
 
 ### B.4 Audio on the web and Android, driven
 

@@ -77,6 +77,8 @@ splits=(
   '05-as-built.md|### Layout: **use `display: flex`**|reference/layout.md|Layout|3|Everything defaults to block; use display: flex. Hug, fill, and why inline flow is gone.'
   # Single-quoted for the backticks, as above.
   '05-as-built.md|### `<path>`: vector geometry|reference/paths.md|Paths|16|SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.'
+  # Single-quoted for the backticks, as above.
+  '05-as-built.md|### `<audio>`: a sound, and its controls|reference/audio.md|Audio|17|A sound as an element: drawn controls, autoplay as a browser allows it, and its events.'
   "05-as-built.md|### Honored CSS|reference/css.md|Honored CSS|4|The authoritative list of properties the runtime interprets, plus selectors, pseudo-classes and transitions."
   # Its own page rather than a note inside Layout: the rule is about all of CSS,
   # and a reader arriving from CSS wants the whole list in one place.

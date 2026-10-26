@@ -87,6 +87,11 @@ const ELEMENTS: &[Entry] = &[
               `type=\"radio\"` carry live checked state. Bind it with `r-model`.",
     },
     Entry {
+        name: "audio",
+        detail: "a sound, with or without its controls",
+        doc: "`<audio src=\"song.mp3\" controls />` plays a sound from the project, or a               picked `File`'s `url`. With `controls` it draws play/pause, the time, a seek               bar and mute; without them it is nothing on screen, as in a browser.               `autoplay` plays only when `muted`, or once the person has pressed something               in the app, on every platform. `query(\"audio\")[0].play()` and `.pause()`               reach it from script.",
+    },
+    Entry {
         name: "slot",
         detail: "a component's hole for the caller's children",
         doc: "Renders whatever the caller wrote between the component's tags. \
@@ -150,6 +155,22 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
         &[
             Entry { name: "src", detail: "path, relative to this .rux file", doc: "Resolved relative to the document, not the working directory. `:src` binds an expression." },
             Entry { name: "alt", detail: "accessible description", doc: "What the image is, for the accessibility tree." },
+        ],
+    ),
+    (
+        "audio",
+        &[
+            Entry { name: "src", detail: "the sound: a project path or a File's url", doc: "Read as `loadSound` reads it: a path from the project (built into a release), or a picked `File`'s `url`. WAV, MP3, AAC, FLAC and Ogg Vorbis everywhere; a browser plays what it plays. `:src` binds an expression, and a new value is a new sound." },
+            Entry { name: "controls", detail: "draw play, time, seek and mute", doc: "Play/pause, the time, a seek bar to tap or drag, and mute, in the element's `color` and `accent-color`. 300 by 40 unless CSS sizes it." },
+            Entry { name: "autoplay", detail: "play once loaded, as a browser allows", doc: "Plays by itself only when `muted`, or once the person has pressed something in the app; otherwise it waits for a tap and says why. The browser's rule, on every platform." },
+            Entry { name: "loop", detail: "start again at the end", doc: "Plays from the start again at its end, with no `@ended`." },
+            Entry { name: "muted", detail: "start silent", doc: "The volume at nothing. The mute button turns it back on." },
+            Entry { name: "preload", detail: "`none`: read nothing until played", doc: "`none` reads nothing until the first play; `auto` and `metadata` (the default) read it at once." },
+            Entry { name: "@play", detail: "it started playing", doc: "From the controls, `play()`, `autoplay` or a script. `event.currentTime` and `event.duration` (`none` when not known) say where it is." },
+            Entry { name: "@pause", detail: "it stopped playing", doc: "Paused, or at its end (then `@ended` follows). `event.currentTime` and `event.duration`." },
+            Entry { name: "@ended", detail: "it played to its end", doc: "After the `@pause` at its end. Not with `loop`." },
+            Entry { name: "@timeupdate", detail: "where it is moved", doc: "About four times a second while it plays, and on a seek. `event.currentTime` and `event.duration`." },
+            Entry { name: "@error", detail: "it could not be loaded", doc: "`event.kind` (`io`, `unsupported`, `decode`) and `event.message`. A file Rux cannot decode on the desktop (Opus, WebM) is `unsupported`." },
         ],
     ),
     (
