@@ -3271,14 +3271,24 @@ impl Document {
     }
 
     /// Whether each `@media` block, in the document and in every component,
-    /// applies at `viewport`.
+    /// applies at `viewport`. A `<style src>` file counts: a Tailwind build
+    /// keeps every breakpoint there, and leaving it out meant the first
+    /// cascade's guess at the window size was never corrected.
     fn media_state(&self, environment: Environment) -> Vec<bool> {
-        let mut out = rux_style::media_matches(&self.sfc.style, environment);
+        let sheets = |sfc: &Sfc| -> Vec<bool> {
+            let mut out = Vec::new();
+            for include in &sfc.style_includes {
+                out.extend(rux_style::media_matches(&include.css, environment));
+            }
+            out.extend(rux_style::media_matches(&sfc.style, environment));
+            out
+        };
+        let mut out = sheets(&self.sfc);
         // Components are keyed by tag in a HashMap, so sort for a stable order.
         let mut tags: Vec<&String> = self.components.keys().collect();
         tags.sort();
         for tag in tags {
-            out.extend(rux_style::media_matches(&self.components[tag].style, environment));
+            out.extend(sheets(&self.components[tag]));
         }
         out
     }
@@ -10846,6 +10856,31 @@ async fn go() {
             "still under 600px, nothing to redo"
         );
         assert!(is_red(&doc.root.children[0]), "and the styling is still correct");
+    }
+
+    /// A breakpoint that lives only in a `<style src>` file is a breakpoint
+    /// too. Tailwind writes every `md:` there, and a window opening narrower
+    /// than the first cascade's guess kept the wide layout.
+    #[test]
+    fn resize_across_an_included_breakpoint_restyles() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_css_media_{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("tw.css"), "@layer utilities { @media (width < 600px) { .card { background: #ff0000; } } }")
+            .unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template><screen><view class=\"card\" /></screen></template>\n\
+             <style src=\"tw.css\"></style>",
+        )
+        .unwrap();
+
+        let mut doc = Document::load(dir.join("app.rux")).expect("load app");
+        assert!(!is_red(&doc.root.children[0]), "the default viewport is wide");
+        assert!(doc.set_viewport(Viewport { width: 480.0, height: 800.0 }), "breakpoint crossed");
+        assert!(is_red(&doc.root.children[0]), "narrow → the included @media rule applies");
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     /// A document with no `@media` at all never re-cascades on resize.
