@@ -33,6 +33,9 @@ no Node, no npm, no browser, no system GUI toolkit.
 Building for Android needs four things installed once:
 [setting up for Android](@/tooling/android.md).
 
+Tailwind's classes work too, through its standalone CLI, which `rux run` can
+start for you: [Tailwind CSS](@/tooling/tailwind.md).
+
 Bare `rux` prints the usage, the way `cargo` and `git` do.
 
 ## Editors

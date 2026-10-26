@@ -82,6 +82,9 @@ is **`Shift+Alt+F`**, or right-click and pick it, or set
 | `rux.check.enable` | Report problems from `rux check` on open and save |
 | `rux.autoClosingTags` | Write the closing tag when you finish an opening one |
 
+Tailwind class completions come from Tailwind's own extension, which needs
+three settings to read `.rux` files: [Tailwind CSS](@/tooling/tailwind.md#6-completions-in-vs-code).
+
 ## Diagnostics refresh on save, not on every keystroke
 
 `rux check` reads the file from disk on purpose: it resolves `use` imports

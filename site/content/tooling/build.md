@@ -286,18 +286,8 @@ Keep a tool's binary outside the project folder, or on `PATH`: a release
 build embeds every file in the project, and Tailwind's CLI is 30 MB. Its input
 file (`app.in.css` above) is not loaded by any document, and is only bytes.
 
-For Tailwind, the standalone CLI needs no Node:
-[github.com/tailwindlabs/tailwindcss/releases](https://github.com/tailwindlabs/tailwindcss/releases).
-`app.in.css` holds two lines, and the document loads what it writes:
-
-```css
-@import "tailwindcss";
-@source "./**/*.rux";
-```
-
-```html
-<style src="app.css"></style>
-```
+Setting Tailwind up from the start, with the CLI, PATH and editor completions,
+is its own page: [Tailwind CSS](@/tooling/tailwind.md).
 
 ## The icon is two layers, not one image
 
