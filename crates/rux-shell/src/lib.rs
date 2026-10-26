@@ -547,6 +547,48 @@ const BAR_PAGE_DELAY: Duration = Duration::from_millis(400);
 const BAR_PAGE_REPEAT: Duration = Duration::from_millis(60);
 /// How long after a wheel notch the next one still belongs to the same run.
 const WHEEL_LATCH: Duration = Duration::from_millis(300);
+/// The window's icon for a `cursor`, `None` for `none`. `auto` is the arrow:
+/// see `rux_layout::Cursor`.
+fn cursor_icon(c: Cursor) -> Option<CursorIcon> {
+    Some(match c {
+        Cursor::Auto | Cursor::Default => CursorIcon::Default,
+        Cursor::None => return None,
+        Cursor::ContextMenu => CursorIcon::ContextMenu,
+        Cursor::Help => CursorIcon::Help,
+        Cursor::Pointer => CursorIcon::Pointer,
+        Cursor::Progress => CursorIcon::Progress,
+        Cursor::Wait => CursorIcon::Wait,
+        Cursor::Cell => CursorIcon::Cell,
+        Cursor::Crosshair => CursorIcon::Crosshair,
+        Cursor::Text => CursorIcon::Text,
+        Cursor::VerticalText => CursorIcon::VerticalText,
+        Cursor::Alias => CursorIcon::Alias,
+        Cursor::Copy => CursorIcon::Copy,
+        Cursor::Move => CursorIcon::Move,
+        Cursor::NoDrop => CursorIcon::NoDrop,
+        Cursor::NotAllowed => CursorIcon::NotAllowed,
+        Cursor::Grab => CursorIcon::Grab,
+        Cursor::Grabbing => CursorIcon::Grabbing,
+        Cursor::AllScroll => CursorIcon::AllScroll,
+        Cursor::ColResize => CursorIcon::ColResize,
+        Cursor::RowResize => CursorIcon::RowResize,
+        Cursor::NResize => CursorIcon::NResize,
+        Cursor::EResize => CursorIcon::EResize,
+        Cursor::SResize => CursorIcon::SResize,
+        Cursor::WResize => CursorIcon::WResize,
+        Cursor::NeResize => CursorIcon::NeResize,
+        Cursor::NwResize => CursorIcon::NwResize,
+        Cursor::SeResize => CursorIcon::SeResize,
+        Cursor::SwResize => CursorIcon::SwResize,
+        Cursor::EwResize => CursorIcon::EwResize,
+        Cursor::NsResize => CursorIcon::NsResize,
+        Cursor::NeswResize => CursorIcon::NeswResize,
+        Cursor::NwseResize => CursorIcon::NwseResize,
+        Cursor::ZoomIn => CursorIcon::ZoomIn,
+        Cursor::ZoomOut => CursorIcon::ZoomOut,
+    })
+}
+
 /// The corner of a box with `resize` that a pointer drags it by, and how
 /// small the drag may make it, in logical px.
 const GRIP: f32 = 14.0;
@@ -2159,8 +2201,9 @@ struct App {
     /// Where the left button was pressed, if it is currently down.
     press: Option<(f64, f64)>,
     /// The cursor icon currently set on the window, so a mouse-move only calls
-    /// `set_cursor` when the shape actually changes.
-    cursor: CursorIcon,
+    /// `set_cursor` when the shape actually changes. `None` is `cursor: none`,
+    /// the cursor hidden.
+    cursor: Option<CursorIcon>,
     /// The history position the browser's URL bar was last told about, as
     /// `(index, route)`.
     ///
@@ -2299,7 +2342,7 @@ impl App {
             epoch: Instant::now(),
             pointer: (0.0, 0.0),
             press: None,
-            cursor: CursorIcon::Default,
+            cursor: Some(CursorIcon::Default),
             states: Vec::new(),
             metrics: Vec::new(),
             #[cfg(target_arch = "wasm32")]
@@ -3799,8 +3842,8 @@ impl App {
         Some((t.x + cx - self.text_scroll_for(&region) - own.x, t.y + cy - own.y, ch))
     }
 
-    /// Set the window's cursor from whatever tappable region is under the
-    /// pointer (topmost wins, as with tap dispatch). Only touches the window when
+    /// Set the window's cursor from whatever region is under the pointer
+    /// (topmost wins, as with tap dispatch). Only touches the window when
     /// the shape changes, so it's cheap to call on every mouse move.
     fn update_cursor(&mut self) {
         let scale = self.scale();
@@ -3809,16 +3852,19 @@ impl App {
             self.resizes.iter().rev().find(|r| on_grip(r, px, py)).map(|r| r.axes)
         });
         let want = match (grip, rux_layout::cursor_at(&self.hits, px, py)) {
-            (Some((true, true)), _) if !cfg!(target_os = "android") => CursorIcon::SeResize,
-            (Some((true, false)), _) if !cfg!(target_os = "android") => CursorIcon::EwResize,
-            (Some((false, true)), _) if !cfg!(target_os = "android") => CursorIcon::NsResize,
-            (_, Cursor::Pointer) => CursorIcon::Pointer,
-            (_, Cursor::Default) => CursorIcon::Default,
+            (Some((true, true)), _) if !cfg!(target_os = "android") => Some(CursorIcon::SeResize),
+            (Some((true, false)), _) if !cfg!(target_os = "android") => Some(CursorIcon::EwResize),
+            (Some((false, true)), _) if !cfg!(target_os = "android") => Some(CursorIcon::NsResize),
+            (_, c) => cursor_icon(c),
         };
         if want != self.cursor {
             self.cursor = want;
             if let Some(state) = &self.state {
-                state.window.set_cursor(want);
+                // `cursor: none` hides it; anything else shows it again.
+                state.window.set_cursor_visible(want.is_some());
+                if let Some(icon) = want {
+                    state.window.set_cursor(icon);
+                }
             }
         }
     }

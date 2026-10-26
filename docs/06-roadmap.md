@@ -267,6 +267,11 @@ likely to make Rux feel like a toy, so it gets real scope.
   the hit regions we already compute, `cursor` is honored **only on tappable
   (`@tap`) boxes**: a `cursor` on a plain box still does nothing. Widen to a
   dedicated cursor-region pass if that bites.
+  **It bit (2026-10-26):** Tailwind's `cursor-pointer` on a card did nothing,
+  found by the owner. Since watchlist #46 every box has a hit region, so no
+  new pass was needed: the region carries the box's own `cursor`, `cursor`
+  inherits as in CSS, and every keyword maps to a winit `CursorIcon`
+  (`none` hides it).
 
 **Cheap, the engine already supports it, we just don't map it:**
 

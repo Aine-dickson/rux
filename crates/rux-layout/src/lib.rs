@@ -476,15 +476,103 @@ impl Style {
     }
 }
 
-/// The mouse cursor shown while the pointer is over a box (`cursor`). Only the
-/// values the shell maps to a winit `CursorIcon` are modelled; the default is
-/// the arrow.
+/// The mouse cursor shown while the pointer is over a box (`cursor`): every
+/// CSS keyword, which the shell maps one for one to a winit `CursorIcon`.
+///
+/// `Auto` is CSS's initial value and is kept apart from an explicit
+/// `default` for one reason: a box no style reached (one Rux builds itself)
+/// shows the cursor of the box whose `@tap` it hands taps to, where a box
+/// that says `cursor: default` keeps the arrow. See [`cursor_at`]. Over text
+/// a browser's `auto` is the I-beam; here it is the arrow, as Rux text
+/// outside a field cannot be selected.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Cursor {
     #[default]
+    Auto,
     Default,
+    /// `none`: no cursor drawn at all.
+    None,
+    ContextMenu,
+    Help,
     /// `cursor: pointer`: the hand, for tappable things.
     Pointer,
+    Progress,
+    Wait,
+    Cell,
+    Crosshair,
+    Text,
+    VerticalText,
+    Alias,
+    Copy,
+    Move,
+    NoDrop,
+    NotAllowed,
+    Grab,
+    Grabbing,
+    AllScroll,
+    ColResize,
+    RowResize,
+    NResize,
+    EResize,
+    SResize,
+    WResize,
+    NeResize,
+    NwResize,
+    SeResize,
+    SwResize,
+    EwResize,
+    NsResize,
+    NeswResize,
+    NwseResize,
+    ZoomIn,
+    ZoomOut,
+}
+
+impl Cursor {
+    /// A `cursor` value. Images are not drawn, so `url(...) [x y],` entries
+    /// are skipped for the keyword CSS requires at the end of the list.
+    /// `None` for a keyword CSS does not have.
+    pub fn parse(v: &str) -> Option<Cursor> {
+        Some(match v.rsplit(',').next()?.trim() {
+            "auto" => Cursor::Auto,
+            "default" => Cursor::Default,
+            "none" => Cursor::None,
+            "context-menu" => Cursor::ContextMenu,
+            "help" => Cursor::Help,
+            "pointer" => Cursor::Pointer,
+            "progress" => Cursor::Progress,
+            "wait" => Cursor::Wait,
+            "cell" => Cursor::Cell,
+            "crosshair" => Cursor::Crosshair,
+            "text" => Cursor::Text,
+            "vertical-text" => Cursor::VerticalText,
+            "alias" => Cursor::Alias,
+            "copy" => Cursor::Copy,
+            "move" => Cursor::Move,
+            "no-drop" => Cursor::NoDrop,
+            "not-allowed" => Cursor::NotAllowed,
+            "grab" => Cursor::Grab,
+            "grabbing" => Cursor::Grabbing,
+            "all-scroll" => Cursor::AllScroll,
+            "col-resize" => Cursor::ColResize,
+            "row-resize" => Cursor::RowResize,
+            "n-resize" => Cursor::NResize,
+            "e-resize" => Cursor::EResize,
+            "s-resize" => Cursor::SResize,
+            "w-resize" => Cursor::WResize,
+            "ne-resize" => Cursor::NeResize,
+            "nw-resize" => Cursor::NwResize,
+            "se-resize" => Cursor::SeResize,
+            "sw-resize" => Cursor::SwResize,
+            "ew-resize" => Cursor::EwResize,
+            "ns-resize" => Cursor::NsResize,
+            "nesw-resize" => Cursor::NeswResize,
+            "nwse-resize" => Cursor::NwseResize,
+            "zoom-in" => Cursor::ZoomIn,
+            "zoom-out" => Cursor::ZoomOut,
+            _ => return None,
+        })
+    }
 }
 
 /// `touch-action`: which axes a finger may still scroll when it starts on this
@@ -1679,7 +1767,7 @@ impl Default for Style {
             box_shadow: None,
             outline: None,
             transform: None,
-            cursor: Cursor::Default,
+            cursor: Cursor::Auto,
             touch_action: TouchAction::Auto,
             position: Position::Static,
             inset: [None; 4],
@@ -3448,7 +3536,7 @@ pub struct HitRegion {
     pub gestures: Vec<(Gesture, String)>,
     /// The `cursor` for this region, so the shell can set the pointer shape when
     /// it hovers here. Carried on the hit region because that is the geometry the
-    /// shell already hit-tests; a `cursor` on a non-tappable box is not honored.
+    /// shell already hit-tests. Every box has one, tappable or not.
     pub cursor: Cursor,
     /// The `touch-action` for this region, carried for the same reason as
     /// `cursor`: the shell arbitrates the gesture against the geometry it
@@ -3544,16 +3632,21 @@ pub fn gesture_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
     hits.iter().rev().find(|h| h.seq == owner && !h.gestures.is_empty())
 }
 
-/// The cursor over a point. `cursor` is inherited in CSS, so a box inside a
-/// button shows the button's hand; Rux reads it from the box that would
-/// answer the tap or the gesture, when the box itself does not set one.
+/// The cursor over a point: the topmost box's. `cursor` is inherited, so a
+/// box inside a button already carries the button's hand when styles built
+/// it; one still at `auto` shows the cursor of the box that would answer the
+/// tap or the gesture, which covers the boxes Rux makes itself.
 pub fn cursor_at(hits: &[HitRegion], x: f32, y: f32) -> Cursor {
-    let pointer = |h: Option<&HitRegion>| h.is_some_and(|h| h.cursor == Cursor::Pointer);
-    if pointer(hit_at(hits, x, y)) || pointer(tap_at(hits, x, y)) || pointer(gesture_at(hits, x, y)) {
-        Cursor::Pointer
-    } else {
-        Cursor::Default
+    let Some(top) = hit_at(hits, x, y) else { return Cursor::Auto };
+    if top.cursor != Cursor::Auto {
+        return top.cursor;
     }
+    [tap_at(hits, x, y), gesture_at(hits, x, y)]
+        .into_iter()
+        .flatten()
+        .map(|h| h.cursor)
+        .find(|c| *c != Cursor::Auto)
+        .unwrap_or(Cursor::Auto)
 }
 
 /// Whether a press at a point reaches a text field, a select or a field's
@@ -5349,6 +5442,7 @@ fn build(
             // inside is sorted inside, as with `isolation: isolate`.
             isolate: node.style.isolate || node.style.content_visibility != ContentVisibility::Visible,
             reach: (!node.style.no_pointer).then_some(owners),
+            cursor: node.style.cursor,
         },
     );
     if node.access.role.is_meaningful() {
@@ -5421,6 +5515,9 @@ struct Stack {
     /// `pointer-events: none`. Kept here because every node has exactly one
     /// of these and `collect` reads it where it draws the box.
     reach: Option<Owners>,
+    /// `cursor`, for the box's hit region, which every box has: the handler
+    /// record that used to carry it exists only for `@tap` and gestures.
+    cursor: Cursor,
 }
 
 /// How a child is painted relative to its stacking context: `None` in flow,
@@ -6593,7 +6690,7 @@ fn collect(
                 height: layout.size.height,
                 on_tap: own.and_then(|h| h.1.clone()),
                 gestures: own.map(|h| h.2.clone()).unwrap_or_default(),
-                cursor: own.map(|h| h.3).unwrap_or_default(),
+                cursor: at.stack.cursor,
                 touch_action: own.map(|h| h.4).unwrap_or_default(),
                 instance: own.and_then(|h| h.5.clone()),
                 seq: at.stack.seq,

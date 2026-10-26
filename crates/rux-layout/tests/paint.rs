@@ -602,7 +602,36 @@ fn cover() -> Node {
 fn a_box_with_no_handler_takes_the_tap() {
     let out = under(cover());
     assert!(tap_at(&out.hits, 10.0, 10.0).is_none(), "the backdrop has the tap");
-    assert_eq!(cursor_at(&out.hits, 10.0, 10.0), Cursor::Default);
+    assert_eq!(cursor_at(&out.hits, 10.0, 10.0), Cursor::Auto);
+}
+
+/// `cursor` on a box with no handler shows. It once rode on the handler
+/// record, and a `cursor-pointer` card with its `@tap` on a parent, or none
+/// at all, kept the arrow.
+#[test]
+fn a_box_with_no_handler_shows_its_own_cursor() {
+    let mut c = cover();
+    c.style.cursor = Cursor::Pointer;
+    assert_eq!(cursor_at(&under(c).hits, 10.0, 10.0), Cursor::Pointer);
+    let mut c = cover();
+    c.style.cursor = Cursor::NotAllowed;
+    assert_eq!(cursor_at(&under(c).hits, 150.0, 80.0), Cursor::NotAllowed, "away from the button too");
+}
+
+/// A box inside a button that says `cursor: default` keeps the arrow, as in
+/// a browser; one that says nothing shows the button's hand.
+#[test]
+fn an_explicit_cursor_inside_a_button_is_its_own() {
+    let mut measure = |_: &TextContent, _: Option<f32>| (20.0, 10.0);
+    let mut button = Node::new(Style { width: Some(Len::Px(80.0)), height: Some(Len::Px(30.0)), ..Default::default() });
+    button.on_tap = Some("go()".into());
+    button.style.cursor = Cursor::Pointer;
+    let mut plain = Node::new(Style { width: Some(Len::Px(20.0)), height: Some(Len::Px(20.0)), ..Default::default() });
+    plain.style.cursor = Cursor::Default;
+    button.children.push(plain);
+    let out = layout(&on_screen(button), 200.0, 100.0, &mut measure);
+    assert_eq!(cursor_at(&out.hits, 5.0, 5.0), Cursor::Default);
+    assert_eq!(cursor_at(&out.hits, 50.0, 5.0), Cursor::Pointer);
 }
 
 /// Under `pointer-events: none` the backdrop is passed through again.

@@ -1452,6 +1452,8 @@ struct TextInherit {
     invisible: bool,
     /// `pointer-events: none`.
     no_pointer: bool,
+    /// `cursor`, so the text inside a `cursor: pointer` card shows the hand.
+    cursor: Cursor,
 }
 
 impl Default for TextInherit {
@@ -1467,6 +1469,7 @@ impl Default for TextInherit {
             scheme: ColorScheme::Light,
             invisible: false,
             no_pointer: false,
+            cursor: Cursor::Auto,
         }
     }
 }
@@ -7699,9 +7702,11 @@ fn build_node_inner(
             Some(_) => false,
             None => up.no_pointer,
         },
+        cursor: props.get("cursor").and_then(|v| Cursor::parse(v)).unwrap_or(up.cursor),
     };
     style.invisible = own_text.invisible;
     style.no_pointer = own_text.no_pointer;
+    style.cursor = own_text.cursor;
     style.scroll_smooth = match props.get("scroll-behavior").map(|v| v.trim()) {
         Some("smooth") => true,
         Some("auto") | None => false,
@@ -11878,13 +11883,10 @@ fn interpret(p: &HashMap<String, String>) -> Style {
             _ => TouchAction::Auto,
         };
     }
-    if let Some(v) = p.get("cursor") {
-        // Only `pointer` maps to a distinct shape today; everything else keeps
-        // the default arrow. The shell applies this on hover for tappable boxes.
-        st.cursor = match v.trim() {
-            "pointer" => Cursor::Pointer,
-            _ => Cursor::Default,
-        };
+    // `cursor` inherits, so the build sets it from `TextInherit`; this is the
+    // answer for a style read without a parent.
+    if let Some(c) = p.get("cursor").and_then(|v| Cursor::parse(v)) {
+        st.cursor = c;
     }
     st
 }
@@ -17868,6 +17870,24 @@ mod direction_tests {
         assert_eq!(inner.children[0].text.as_ref().unwrap().direction, Some(Direction::Rtl));
         assert_eq!(root.style.direction, Direction::Ltr, "and nothing outside");
         assert_eq!(root.children[0].text.as_ref().map(|_| ()), None);
+    }
+
+    /// `cursor` inherits, as in CSS: the text in a `cursor-pointer` card
+    /// shows the hand. A child's own value wins, and a `url()` is skipped for
+    /// the keyword after it.
+    #[test]
+    fn cursor_is_inherited() {
+        let root = built(
+            r#"<template><screen><view class="card"><view><text>a</text></view><view class="no">b</view><view class="img">c</view></view></screen></template>
+               <style>.card { cursor: pointer; } .no { cursor: not-allowed; } .img { cursor: url(hand.png) 2 2, grab; }</style>"#,
+        );
+        let card = &root.children[0];
+        assert_eq!(card.style.cursor, rux_layout::Cursor::Pointer);
+        assert_eq!(card.children[0].style.cursor, rux_layout::Cursor::Pointer);
+        assert_eq!(card.children[0].children[0].style.cursor, rux_layout::Cursor::Pointer);
+        assert_eq!(card.children[1].style.cursor, rux_layout::Cursor::NotAllowed);
+        assert_eq!(card.children[2].style.cursor, rux_layout::Cursor::Grab);
+        assert_eq!(root.style.cursor, rux_layout::Cursor::Auto, "and nothing outside");
     }
 
     /// A `direction` rule wins over the attribute, as an author's rule wins over

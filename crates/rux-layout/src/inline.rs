@@ -273,9 +273,11 @@ fn look(node: &Node, content: ItemContent) -> ItemLook {
 }
 
 impl InlinePart {
-    /// Whether a pointer can reach it, so it needs a hit region.
+    /// Whether a pointer can reach it, so it needs a hit region: for a
+    /// handler, or for a `cursor` of its own. Without a handler the region
+    /// hands its taps to the sentence's owners, as the sentence would.
     fn reachable(&self) -> bool {
-        self.on_tap.is_some() || !self.gestures.is_empty()
+        self.on_tap.is_some() || !self.gestures.is_empty() || self.cursor != Cursor::Auto
     }
 }
 

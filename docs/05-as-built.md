@@ -901,7 +901,8 @@ scrollbar-width (auto | thin | none), scrollbar-color (thumb track | auto)
 content-visibility (visible | auto | hidden), contain-intrinsic-size (and -width,
                        -height, -inline-size, -block-size; `auto <length>`)
 overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
-cursor (pointer, on @tap boxes only)
+cursor (every CSS keyword, on any box, inherited; `url()` skipped for the
+                       keyword after it; `auto` is the arrow, also over text)
 touch-action (auto | none | pan-x | pan-y; who wins between a @drag and a
                        scroller, settled at the drag threshold; touch only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
