@@ -138,6 +138,21 @@ covers them; a component with `<style scoped>` sees none of them and needs its
 own. Your own rules can sit beside it in a second `<style>` block, and they win
 a tie, since an include cascades first.
 
+`@apply`, `@utility` and Tailwind's other directives belong in the **input**
+file, not a `<style>` block: Tailwind compiles only its input, and Rux does not
+run Tailwind over your markup's CSS. Written under the `@import`, a rule needs
+no `@reference`, which only a separate stylesheet does:
+
+```css
+@import "tailwindcss";
+
+.btn {
+  @apply rounded-lg bg-green-500 p-4;
+}
+```
+
+`rux check` says so if it finds one in a `<style>` block.
+
 Then write classes as you would anywhere:
 
 ```html

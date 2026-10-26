@@ -1454,6 +1454,42 @@ struct TextInherit {
     no_pointer: bool,
     /// `cursor`, so the text inside a `cursor: pointer` card shows the hand.
     cursor: Cursor,
+    /// The decoration lines a box above draws through the text inside it.
+    /// See [`Lines`].
+    lines: Lines,
+}
+
+/// `text-decoration` lines. Not inherited in CSS but **propagated**: a line
+/// on a box is drawn through all the text in it, and a `none` below cannot
+/// take it off; only a box taken out of flow (`absolute`, `fixed`) starts
+/// clean. Rux once carried them only from a `<text>` into its runs, and
+/// `underline` on a `<view>` drew nothing at all.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Lines {
+    underline: bool,
+    strikethrough: bool,
+    overline: bool,
+}
+
+impl Lines {
+    /// The lines `text-decoration-line`, else `text-decoration`, names.
+    fn of(props: &HashMap<String, String>) -> Lines {
+        let v = props.get("text-decoration-line").or_else(|| props.get("text-decoration"));
+        let has = |t: &str| v.is_some_and(|v| v.split_whitespace().any(|w| w == t));
+        Lines { underline: has("underline"), strikethrough: has("line-through"), overline: has("overline") }
+    }
+
+    fn or(self, o: Lines) -> Lines {
+        Lines {
+            underline: self.underline || o.underline,
+            strikethrough: self.strikethrough || o.strikethrough,
+            overline: self.overline || o.overline,
+        }
+    }
+
+    fn any(self) -> bool {
+        self.underline || self.strikethrough || self.overline
+    }
 }
 
 impl Default for TextInherit {
@@ -1470,6 +1506,7 @@ impl Default for TextInherit {
             invisible: false,
             no_pointer: false,
             cursor: Cursor::Auto,
+            lines: Lines::default(),
         }
     }
 }
@@ -4480,6 +4517,17 @@ fn warn_at_rule(rule: &CssRule) {
         .take_while(|c| c.is_alphanumeric() || *c == '-')
         .collect();
     if name.is_empty() {
+        return;
+    }
+    // Tailwind's own directives are compiled by Tailwind, which reads its
+    // input file and never a `<style>` block, so the answer is where to move
+    // the rule, not that Rux lacks it.
+    if matches!(name.as_str(), "apply" | "utility" | "variant" | "custom-variant" | "theme" | "reference" | "source" | "plugin" | "config" | "tailwind") {
+        warn_once(format!(
+            "`@{name}` is Tailwind's, and Tailwind compiles only its input file (the one with \
+             `@import \"tailwindcss\"`), not a <style> block: move this rule there and it lands \
+             in the CSS Tailwind writes"
+        ));
         return;
     }
     warn_once(format!("`@{name}` is not supported yet, so what is inside it does nothing"));
@@ -7703,6 +7751,11 @@ fn build_node_inner(
             None => up.no_pointer,
         },
         cursor: props.get("cursor").and_then(|v| Cursor::parse(v)).unwrap_or(up.cursor),
+        lines: if matches!(style.position, Position::Absolute | Position::Fixed) {
+            Lines::of(&props)
+        } else {
+            up.lines.or(Lines::of(&props))
+        },
     };
     style.invisible = own_text.invisible;
     style.no_pointer = own_text.no_pointer;
@@ -7722,11 +7775,13 @@ fn build_node_inner(
         None => inherited.shadows.clone(),
     };
     let line_height = own_text.line_height.map(|l| l.px(font_size));
-    let look = text_look(&props, inherited.look.as_ref(), inherited.run.is_some());
-    // `text-decoration[-line]`: underline / line-through (space-separated list).
-    let decoration = props.get("text-decoration-line").or_else(|| props.get("text-decoration"));
-    let underline = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "underline"));
-    let strikethrough = decoration.is_some_and(|v| v.split_whitespace().any(|t| t == "line-through"));
+    // A propagated line keeps the colour and style it was written with, as a
+    // sentence's does in its runs, so the look carries them down too.
+    let carried = inherited.text.lines.any();
+    let look = text_look(&props, inherited.look.as_ref(), inherited.run.is_some() || carried, own_text.lines.overline);
+    // `text-decoration[-line]`: underline / line-through, this box's own and
+    // those propagated from the boxes it is in. See `Lines`.
+    let Lines { underline, strikethrough, .. } = own_text.lines;
 
     if el.tag == "text" {
         return build_text(el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, slot, outlet, row, style, desc, on_tap, to, hidden, state_path, color, selection, font_size, font_family, letter_spacing, word_spacing, line_height, italic, underline, strikethrough, white_space, direction, dir_auto, vars, weight, align, own_text, dir_own, shadows, look.clone(), generated);
@@ -14257,7 +14312,12 @@ fn line_clamp(props: &HashMap<String, String>) -> Option<u32> {
     count(v)
 }
 
-fn text_look(props: &HashMap<String, String>, parent: Option<&Arc<TextLook>>, in_sentence: bool) -> Option<Arc<TextLook>> {
+fn text_look(
+    props: &HashMap<String, String>,
+    parent: Option<&Arc<TextLook>>,
+    in_sentence: bool,
+    overline: bool,
+) -> Option<Arc<TextLook>> {
     let up = parent.map(|p| (**p).clone()).unwrap_or_default();
     let mut look = TextLook {
         transform: up.transform,
@@ -14309,6 +14369,8 @@ fn text_look(props: &HashMap<String, String>, parent: Option<&Arc<TextLook>>, in
     if let Some(v) = props.get("text-decoration-line") {
         look.overline = v.split_whitespace().any(|t| t == "overline");
     }
+    // One from a box above stays, whatever this one says. See `Lines`.
+    look.overline |= overline;
     if let Some(v) = props.get("text-decoration-style") {
         match decoration_style(v.trim()) {
             Some(s) => look.decoration_style = s,
@@ -17890,6 +17952,26 @@ mod direction_tests {
         assert_eq!(root.style.cursor, rux_layout::Cursor::Auto, "and nothing outside");
     }
 
+    /// `underline` on a box is drawn under the text inside it, through boxes
+    /// between, and a `none` below does not take it off. A box out of flow
+    /// starts clean, as CSS says. Before, only a `<text>`'s runs had it.
+    #[test]
+    fn decoration_lines_reach_the_text_in_a_box() {
+        let root = built(
+            r#"<template><screen><view class="u"><view><text>a</text></view><text class="none">b</text><view class="abs"><text>c</text></view></view><view class="s"><text>d</text></view></screen></template>
+               <style>.u { text-decoration: underline; } .none { text-decoration: none; } .abs { position: absolute; } .s { text-decoration-line: line-through; }</style>"#,
+        );
+        let t = |n: &rux_layout::Node| {
+            let t = n.text.as_ref().unwrap();
+            (t.underline, t.strikethrough)
+        };
+        let u = &root.children[0];
+        assert_eq!(t(&u.children[0].children[0]), (true, false), "through a box between");
+        assert_eq!(t(&u.children[1]), (true, false), "`none` below keeps it");
+        assert_eq!(t(&u.children[2].children[0]), (false, false), "out of flow starts clean");
+        assert_eq!(t(&root.children[1].children[0]), (false, true));
+    }
+
     /// A `direction` rule wins over the attribute, as an author's rule wins over
     /// a presentational hint in CSS.
     #[test]
@@ -18631,7 +18713,7 @@ mod text_look_tests {
 
     fn look(pairs: &[(&str, &str)], parent: Option<&Arc<TextLook>>, in_sentence: bool) -> Option<Arc<TextLook>> {
         let p: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-        super::text_look(&p, parent, in_sentence)
+        super::text_look(&p, parent, in_sentence, false)
     }
 
     #[test]
