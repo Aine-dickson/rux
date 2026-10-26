@@ -299,6 +299,55 @@ Before any element, prove frames can reach the screen fast enough:
   spike's numbers decide whether C goes ahead in this milestone. They go to
   the owner before C.1.
 
+**Measured 2026-10-26** (the spike is branch `spike/c0-frames`, not merged).
+A thread stands in for the decoder, writing synthetic RGBA frames at the
+video's rate; the shell draws the newest over the page every frame, scaled
+to fit, by two roads: **blob** (a new vello image per video frame, uploaded
+by vello into its atlas) and **texture** (one texture registered with
+`Renderer::register_texture`, each frame written with `queue.write_texture`,
+copied into the atlas on the GPU). Five-second windows, medians with p95 in
+brackets, real times per frame.
+
+*Dev machine*: Ryzen 5 PRO 4650U, its Radeon, a 60 Hz display, release
+build, Windows.
+
+| | page alone | 720p30 tex | 720p60 tex | 1080p30 tex | 1080p60 tex | 1080p60 blob |
+|---|---|---|---|---|---|---|
+| presents per second | 60 | 60 | 60 | 60 | 60 | 60 |
+| video frames never shown | | 0 of 151 | 0 of 301 | 1 of 151 | 1 of 301 | 0 of 301 (64 of 301 with `sync`) |
+| writing the frame in (CPU) | | 0.59 ms (0.69) | 0.72 (0.87) | 1.30 (2.01) | 1.78 (2.02) | inside render |
+| vello render and submit (CPU) | 1.00 (1.33) | 0.96 (1.36) | 1.03 (1.48) | 1.01 (1.44) | 1.15 (1.58) | 1.98 (4.22) |
+| until the GPU is done (`sync`) | 1.88 (2.58) | 2.38 (2.98) | 2.65 (3.10) | 3.28 (4.01) | 3.75 (4.29) | 4.41 (7.20) |
+| time between presents | 16.6 (17.5) | 16.7 (17.5) | 16.6 (17.5) | 16.7 (17.7) | 16.6 (17.5) | 16.7 (19.1) |
+
+So on the desktop **the texture road holds 1080p60 with room to spare**:
+about 2 ms of CPU to write a frame in and about 2 ms more GPU than the page
+alone, against a 16.7 ms frame. The blob road is worse in every column and
+drops frames once the CPU waits on the GPU, so it is not the road.
+
+*Emulator* (`rux_test`, x86_64, Android's GL translator on the same
+Radeon; optimised build): **no video is possible there, and that says
+nothing about a phone.** The page alone presents only 30 times a second
+(vello's render takes 28 ms), and writing one frame in takes 29 ms at 720p
+and 60 ms at 1080p (the emulator's pipe to the host GPU moves about
+130 MB/s). Every case falls to 12 to 20 presents a second and shows
+between a quarter (1080p60) and three fifths (720p30) of the video's frames,
+by either road. A phone shares memory
+between CPU and GPU and has no such pipe, but **there is no phone to
+measure on**.
+
+What it means for C, for the owner to decide:
+
+- Windows, through the texture road, can go ahead: the per-frame upload is
+  not the cost, so importing a decoder's own texture is not needed there.
+- Android is unmeasured. The emulator cannot answer, and on Android the
+  plan's next step (MediaCodec decoding into a hardware buffer imported
+  into wgpu, no CPU copy) would have to be built blind and judged on the
+  emulator, where even the page alone does not reach 60. Measuring needs a
+  phone.
+- The web was not part of C.0; its frames go to the GPU by
+  `copyExternalImageToTexture` and never through the CPU.
+
 ### C.1 Decoders, one per platform
 
 - **Windows: Media Foundation** (through the `windows` crate), which decodes
