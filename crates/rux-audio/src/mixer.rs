@@ -297,6 +297,21 @@ impl Mixer {
         self.voices.iter().filter_map(|v| v.sound.upgrade()).any(|s| s.state().playing)
     }
 
+    /// What can be heard: `0` nothing, `1` only short sounds, `2` a long
+    /// one. A sound playing at no volume is not heard. See [`crate::audible`].
+    pub(crate) fn audible(&self) -> u8 {
+        self.voices
+            .iter()
+            .filter_map(|v| v.sound.upgrade())
+            .filter(|s| {
+                let st = s.state();
+                st.playing && st.volume > 0.0
+            })
+            .map(|s| if matches!(s.source, Source::Whole(_)) { 1 } else { 2 })
+            .max()
+            .unwrap_or(0)
+    }
+
     /// Fill `out`, interleaved at the output's channels, with every playing
     /// sound summed.
     pub fn mix(&mut self, out: &mut [f32]) {
@@ -410,6 +425,32 @@ mod tests {
         m.lock().unwrap().mix(&mut out);
         assert!(out.iter().all(|s| (s - 0.75).abs() < 1e-6), "{:?}", &out[..4]);
         assert!((a.current_time() - 100.0 / 48_000.0).abs() < 1e-9);
+    }
+
+    /// What can be heard: a sound at no volume is not, and a long one
+    /// outranks a short one. What Android's audio focus follows.
+    #[test]
+    fn only_a_sound_with_volume_is_audible() {
+        let m = Mutex::new(Mixer::new(48_000, 1));
+        let click = constant(0.5, 1, 1_000, 48_000);
+        click.play_on(&m, 48_000).unwrap();
+        click.set_volume(0.0);
+        assert!(m.lock().unwrap().any_playing());
+        assert_eq!(m.lock().unwrap().audible(), 0, "muted, so not heard");
+        click.set_volume(1.0);
+        assert_eq!(m.lock().unwrap().audible(), 1, "a short sound");
+        let song = Sound(Arc::new(Shared {
+            id: crate::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            source: Source::Stream(Input::Bytes { bytes: Vec::new().into(), hint: None }),
+            duration: None,
+            state: Mutex::new(State::new()),
+        }));
+        song.0.state().playing = true;
+        m.lock().unwrap().add(Voice { id: song.0.id, sound: Arc::downgrade(&song.0), feed: Feed::Whole { pcm: Arc::new(Pcm { rate: 48_000, channels: 1, samples: Vec::new() }), frame: 0 } });
+        assert_eq!(m.lock().unwrap().audible(), 2, "a long one");
+        song.pause();
+        click.pause();
+        assert_eq!(m.lock().unwrap().audible(), 0);
     }
 
     #[test]

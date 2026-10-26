@@ -179,6 +179,14 @@ pub fn any_playing() -> bool {
     output::any_playing()
 }
 
+/// What the person can hear: `0` nothing, `1` only short sounds (under ten
+/// seconds, decoded whole), `2` a long one. A sound playing at volume 0
+/// (an `<audio muted autoplay>`) is not heard, so it holds no audio focus.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn audible() -> u8 {
+    output::audible()
+}
+
 impl Sound {
     /// Read `input` far enough to know it is a sound Rux can play: all of it
     /// when it is short, its header when it is long.

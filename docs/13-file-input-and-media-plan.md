@@ -267,6 +267,21 @@ Read before planning, because three facts shape the steps:
 
 - Web in Edge and Brave; Android on the emulator, including focus loss
   (an incoming call from the emulator's controls) and suspend.
+- **Driven 2026-10-26** (`docs/08-user-tests.md`). Everything passed but
+  two things the driving found:
+  - **Fixed:** on Android a muted sound (`<audio muted autoplay>`, or one at
+    volume 0) took the audio focus, so a sound nobody could hear would pause
+    the person's music. The focus now follows what can be heard
+    (`rux_audio::audible`): none at volume 0, taken back on unmuting.
+  - **For the owner:** B.3's rule ("`autoplay` allowed when `muted`") does
+    not hold for audio in Chromium. Edge and Brave refuse `play()` on any
+    audio element before a press, muted or not, attached to the page or not:
+    Chromium's muted allowance is for `<video>` only. So today a muted
+    `autoplay` plays at once on the desktop and Android and never in those
+    browsers. Options: (a) keep it, and on the web start a muted `autoplay`
+    at the first press, which is silent so nobody hears the difference;
+    (b) one rule everywhere, Chromium's: `autoplay` only after a press,
+    muted or not; (c) leave it as it is, written down.
 
 ## Part C: video
 

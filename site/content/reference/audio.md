@@ -40,6 +40,13 @@ the worse surprise, so Rux has the one rule everywhere. An `autoplay` that
 waits says so, and does not start later on its own: the first tap is the
 place to play it.
 
+**In Edge and Brave a muted `autoplay` waits too.** Chromium lets muted
+media play by itself only when it is a video: audio waits for a press
+however quiet it is, so there the muted case plays nothing and the console
+says the browser refused it. On the desktop and Android it plays at once,
+and on Android a muted sound holds no audio focus, so it never pauses the
+person's music.
+
 **Events**: `@play` and `@pause` as it starts and stops, whatever started it
 (its controls, `play()`, `autoplay`, a script); `@ended` after the `@pause` at
 its end (not with `loop`); `@timeupdate` about four times a second while it

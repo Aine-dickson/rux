@@ -2893,6 +2893,28 @@ screenshots. The web and Android are B.4.
 | Drag | press the thumb, drag to the middle, let go | `0:05 / 0:12`; `@timeupdate` for each seek while paused | desktop: pass |
 | Heard | all of the above | the tone, silent while muted | not judged by ear (driven headless) |
 
+## Audio on the web and Android, 2026-10-26
+
+Step B.4 of `docs/13-file-input-and-media-plan.md`: B.3's page (plus a
+`preload="none"` player on a 0.25 s Ogg, and an unmuted `autoplay`) driven
+**in Edge and Brave** over CDP (the release `rux-web` wasm, a test server
+answering Range requests) and **on the `rux_test` emulator** (`adb shell
+input tap`, focus read from `dumpsys audio`). Not judged by ear.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Loaded | open the page | controls drawn, `0:00 / 0:12`; `@error` for the missing file | web: pass (`kind` `"unsupported"`: the test server answers an unknown path with the page itself); Android: pass (`"io"`) |
+| Unmuted `autoplay` | open the page | waits, says why | web, Android: pass |
+| Muted `autoplay` | open the page | plays at once, `@play` | Android: pass, **holding no audio focus** (after the fix below; before it, `GAIN` for 12 s). Web: **refused by the browser** in Edge and Brave, as Chromium allows muted autoplay for video only; the console says so. For the owner (plan B.4) |
+| Play, mute | tap play, then the speaker twice | pause icon, time counting, `@play`, `@timeupdate`; crossed speaker | web (Edge, Brave), Android: pass |
+| Muted focus | Android: mute the playing song, then unmute | focus given back, then `GAIN` again | Android: pass |
+| Seek to the end | tap the bar at 90% | `0:12 / 0:12`, `@pause` then `@ended` | web (Edge, Brave), Android: pass |
+| Drag | drag the thumb to the middle | `0:06 / 0:12` | web: pass |
+| `preload="none"` | tap its play | loaded on the press and played: `@play`, then `@ended` | web (Edge, Brave), Android: pass |
+| Script | `play()`, then `pause()` | from the start, then paused, `@play`, `@pause` | web (Edge, Brave), Android: pass |
+| A call | Android: `adb emu gsm call` while the song plays, then cancel | telecom takes `GAIN_TRANSIENT`, the song pauses (`@pause`) and stays paused after | Android: pass |
+| The app away | Android: Home while it plays, back after 3 s | paused, `@pause`, not playing again on return | Android: pass |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

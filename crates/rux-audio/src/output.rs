@@ -50,6 +50,12 @@ pub(crate) fn any_playing() -> bool {
     out.as_ref().is_some_and(|o| o.mixer.lock().unwrap_or_else(|e| e.into_inner()).any_playing())
 }
 
+/// See [`crate::audible`].
+pub(crate) fn audible() -> u8 {
+    let out = OUTPUT.lock().unwrap_or_else(|e| e.into_inner());
+    out.as_ref().map_or(0, |o| o.mixer.lock().unwrap_or_else(|e| e.into_inner()).audible())
+}
+
 /// Pause every sound and let the output device go.
 pub(crate) fn pause_all() {
     let old = OUTPUT.lock().unwrap_or_else(|e| e.into_inner()).take();

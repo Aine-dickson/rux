@@ -635,7 +635,8 @@ fn toggle() {
   carries on from where it was. A call or another app's music pauses Rux's
   too: a sound holds Android's audio focus while it plays, a long one the
   whole of it (another app's music pauses), a short one only enough to lower
-  theirs for its moment. On the desktop, a new output (headphones pulled, or
+  theirs for its moment. A sound playing at volume 0 holds none, so a
+  muted one never pauses the person's music. On the desktop, a new output (headphones pulled, or
   another chosen) is followed, and the sound carries on there.
 - **In a browser** a sound plays through the browser's own audio, so in
   every format the browser plays (Opus too), and the properties follow it as
