@@ -4205,6 +4205,69 @@ fn warn_unsupported_media(what: &str) {
     }
 }
 
+/// The candidate of `srcset` to show on this screen, as HTML picks one: each
+/// is a URL and a density (`2x`) or a width in pixels (`800w`, read against
+/// the slot `sizes` gives, the whole viewport when it gives none). The one
+/// nearest above the screen's density wins, or else the densest there is.
+///
+/// Picked when the tree is built: a change of window size that crosses no
+/// `@media` boundary does not pick again.
+fn pick_srcset(set: &str, sizes: Option<&str>, env: Environment) -> Option<String> {
+    let slot = sizes.map_or(env.viewport.width, |s| sizes_slot(s, env)).max(1.0);
+    let mut candidates: Vec<(f32, &str)> = Vec::new();
+    for part in set.split(',') {
+        let mut words = part.split_whitespace();
+        let Some(url) = words.next() else { continue };
+        let density = match words.next() {
+            None => 1.0,
+            Some(d) => match (d.strip_suffix('x'), d.strip_suffix('w')) {
+                (Some(x), _) => x.parse().unwrap_or(f32::NAN),
+                (_, Some(w)) => w.parse::<f32>().map_or(f32::NAN, |w| w / slot),
+                _ => f32::NAN,
+            },
+        };
+        if density.is_finite() && density > 0.0 {
+            candidates.push((density, url));
+        } else {
+            warn(format!("`srcset` candidate `{}` has no density (`2x`) or width (`800w`) Rux can read", part.trim()));
+        }
+    }
+    let want = env.density.max(1.0);
+    let above = candidates.iter().filter(|(d, _)| *d >= want).min_by(|a, b| a.0.total_cmp(&b.0));
+    let densest = candidates.iter().max_by(|a, b| a.0.total_cmp(&b.0));
+    above.or(densest).map(|(_, url)| url.to_string())
+}
+
+/// How wide `sizes` says the image is drawn, in CSS pixels: the length of the
+/// first `(condition) length` whose condition holds, else the last bare one.
+fn sizes_slot(sizes: &str, env: Environment) -> f32 {
+    let length = |text: &str| -> Option<f32> {
+        let text = text.trim();
+        let (n, unit) = text.find(|c: char| c.is_alphabetic()).map_or((text, ""), |i| text.split_at(i));
+        let n: f32 = n.trim().parse().ok()?;
+        match unit {
+            "px" | "" => Some(n),
+            "vw" => Some(n * env.viewport.width / 100.0),
+            "vh" => Some(n * env.viewport.height / 100.0),
+            "em" | "rem" => Some(n * 16.0),
+            _ => None,
+        }
+    };
+    for entry in sizes.split(',') {
+        let entry = entry.trim();
+        let (cond, len) = match entry.rfind(')') {
+            Some(close) if entry.starts_with('(') => (Some(&entry[..=close]), &entry[close + 1..]),
+            _ => (None, entry),
+        };
+        if cond.is_none_or(|c| MediaCond::parse(c).holds(env)) {
+            if let Some(px) = length(len) {
+                return px;
+            }
+        }
+    }
+    env.viewport.width
+}
+
 /// Whether each `@media` block in `css` applies at `vp`, in source order. The
 /// runtime compares this across a resize: if it is unchanged, no rule set changed
 /// and the tree does not need re-cascading.
@@ -8067,6 +8130,12 @@ fn build_node_inner(
             })
             .or_else(|| el.attr("src").map(str::to_string))
             .unwrap_or_default();
+        // `srcset` picks for the screen, as in HTML, and `src` is what it
+        // falls back to.
+        let src = el
+            .attr("srcset")
+            .and_then(|set| pick_srcset(set, el.attr("sizes"), BUILD_ENV.with(std::cell::Cell::get)))
+            .unwrap_or(src);
         let mut image = ImageContent::new(src);
         let on = rux_layout::ImageEvents::EVENTS.map(|e| el.attr(&format!("@{e}")).map(|h| bind_locals(h, baked)));
         if on.iter().any(Option::is_some) {
@@ -19029,6 +19098,27 @@ mod selector_list_tests {
             None,
         );
         assert!(red(&root.children[0]));
+    }
+
+    /// `srcset` picks the candidate nearest above the screen's density, by
+    /// `x`, or by `w` against the slot `sizes` gives.
+    #[test]
+    fn srcset_picks_for_the_screen() {
+        use super::{pick_srcset, Environment, Viewport};
+        let env = |density: f32, width: f32| Environment {
+            density,
+            ..Environment::from_viewport(Viewport { width, height: 600.0 })
+        };
+        let set = "a.png 1x, b.png 2x, c.png 3x";
+        assert_eq!(pick_srcset(set, None, env(1.0, 800.0)).as_deref(), Some("a.png"));
+        assert_eq!(pick_srcset(set, None, env(1.5, 800.0)).as_deref(), Some("b.png"));
+        assert_eq!(pick_srcset(set, None, env(4.0, 800.0)).as_deref(), Some("c.png"), "the densest when none is enough");
+        let widths = "s.png 400w, m.png 800w, l.png 1600w";
+        assert_eq!(pick_srcset(widths, Some("400px"), env(2.0, 1000.0)).as_deref(), Some("m.png"));
+        assert_eq!(pick_srcset(widths, None, env(1.0, 1000.0)).as_deref(), Some("l.png"), "the viewport's width");
+        let sizes = "(max-width: 600px) 100vw, 300px";
+        assert_eq!(pick_srcset(widths, Some(sizes), env(1.0, 500.0)).as_deref(), Some("m.png"));
+        assert_eq!(pick_srcset(widths, Some(sizes), env(1.0, 1000.0)).as_deref(), Some("s.png"));
     }
 
     /// `:dir(rtl)` reads the `dir` attribute, the element's own or its

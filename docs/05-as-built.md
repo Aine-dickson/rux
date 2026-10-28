@@ -485,6 +485,15 @@ over the size limit below. Each URL is fetched once per run and kept, a
 failure too. An Android release asks for `INTERNET` when a document or
 stylesheet names an `http:` or `https:` address, and for nothing otherwise.
 
+**`srcset` and `sizes`** (2026-10-28), as in HTML: `srcset="logo.png 1x,
+logo@2x.png 2x"` shows the candidate nearest above the screen's density (the
+window's scale factor), or the densest when none is enough; widths
+(`s.png 400w, l.png 1600w`) are read against the slot `sizes` gives
+(`(max-width: 600px) 100vw, 300px`), the whole viewport without it. `src` is
+what shows when `srcset` is absent. Picked when the tree is built, so a
+resize that crosses no `@media` boundary, or a move to a screen of another
+density, keeps the first pick until the next rebuild.
+
 **`data:` URLs** (2026-10-28): a picture written into the document,
 `src="data:image/png;base64,…"`, or percent-encoded without `;base64`, and the
 same in `url(…)`. Read as a file is, at load, with nothing fetched.
