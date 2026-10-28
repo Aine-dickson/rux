@@ -367,6 +367,7 @@ const PSEUDO_CLASSES: &[Entry] = &[
     Entry { name: "not", detail: "`:not(a, b)`: matches none of these", doc: "Takes compound selectors (`.done`, `button:disabled`), separated by commas, and counts as specific as the most specific of them. A combinator inside (`:not(.a .b)`) is not read yet, and the rule never matches." },
     Entry { name: "is", detail: "`:is(a, b)`: matches any of these", doc: "Takes full selectors, combinators included (`.x:is(.group:hover *)`), and counts as specific as the most specific of them. A forgiving list, as in CSS: an argument that does not parse is dropped, not the whole rule." },
     Entry { name: "where", detail: "`:where(a, b)`: as `:is()`, with no weight", doc: "Matches what `:is()` matches and adds nothing to specificity, so any later rule overrides it. The usual way a reset or a library keeps out of the author's way." },
+    Entry { name: "dir", detail: "the element's text direction", doc: "`:dir(rtl)` or `:dir(ltr)`: what the `dir` attribute says, on the element or its nearest ancestor that has one, and `ltr` where none does. Tailwind's `rtl:` and `ltr:` are written with it. `dir=\"auto\"` counts as saying nothing." },
     Entry { name: "root", detail: "the top element of the app", doc: "The screen's own element, so `:root { --accent: #89b4fa; }` sets a variable for everything under it, as on a web page." },
 ];
 

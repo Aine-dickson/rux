@@ -33,7 +33,7 @@
     { "name": "@close", "detail": "the person asked to close the app", "doc": "On the app's `<screen>` only. Runs when the window's close button is pressed, or Android's Back has no page left. **`false` keeps the app open**, as a route guard's `false` refuses; anything else lets it close, and one that fails lets it close too. Open your own \"save changes?\" and call `close()` from it. Must answer at once, so an `async fn` cannot refuse. Not asked on the web yet." }
   ],
   "directives": [
-    { "name": "r-for", "detail": "repeat this element per item", "doc": "`r-for=\"item in items\"`. Pair it with `r-key` so reconciliation can match rows across a change." },
+    { "name": "r-for", "detail": "repeat this element per item", "doc": "`r-for=\"item in items\"`, or `r-for=\"(item, i) in items\"` for the index too. An `r-if` beside it filters the rows. Pair it with `r-key` so reconciliation can match rows across a change." },
     { "name": "r-key", "detail": "identity for a repeated row", "doc": "`r-key=\"item.id\"`. Without it a keyed change is a rebuild, and input state inside a row moves to the wrong row." },
     { "name": "r-if", "detail": "render only when true", "doc": "`r-if=\"count > 0\"`. The element and its subtree are absent, not hidden, when false." },
     { "name": "r-elif", "detail": "an else-if branch", "doc": "Follows an `r-if` sibling. The first branch whose condition holds renders." },
@@ -246,6 +246,7 @@
     { "name": "not", "detail": "`:not(a, b)`: matches none of these", "doc": "Takes compound selectors (`.done`, `button:disabled`), separated by commas, and counts as specific as the most specific of them. A combinator inside (`:not(.a .b)`) is not read yet, and the rule never matches." },
     { "name": "is", "detail": "`:is(a, b)`: matches any of these", "doc": "Takes full selectors, combinators included (`.x:is(.group:hover *)`), and counts as specific as the most specific of them. A forgiving list, as in CSS: an argument that does not parse is dropped, not the whole rule." },
     { "name": "where", "detail": "`:where(a, b)`: as `:is()`, with no weight", "doc": "Matches what `:is()` matches and adds nothing to specificity, so any later rule overrides it. The usual way a reset or a library keeps out of the author's way." },
+    { "name": "dir", "detail": "the element's text direction", "doc": "`:dir(rtl)` or `:dir(ltr)`: what the `dir` attribute says, on the element or its nearest ancestor that has one, and `ltr` where none does. Tailwind's `rtl:` and `ltr:` are written with it. `dir=\"auto\"` counts as saying nothing." },
     { "name": "root", "detail": "the top element of the app", "doc": "The screen's own element, so `:root { --accent: #89b4fa; }` sets a variable for everything under it, as on a web page." }
   ],
   "voidTags": [
@@ -358,7 +359,7 @@
     { "name": "backdrop-filter", "detail": "blur or recolour what is behind the box", "doc": "The same functions as `filter`, applied to what is drawn behind the box and shown inside it: `backdrop-filter: blur(12px)` is frosted glass. Give the box a translucent background to see it.", "usage": ".sheet { backdrop-filter: blur(12px); background: #ffffff99; }" },
     { "name": "mix-blend-mode", "detail": "how the box blends with what is under it", "doc": "`multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color` or `luminosity`. The box and everything in it blend as one layer.", "usage": ".stamp { mix-blend-mode: multiply; }" },
     { "name": "opacity", "detail": "how see-through the whole box is", "doc": "`0` to `1`, and it applies to the **subtree**, not just this box. Animatable, and the cheapest thing to animate.", "usage": ".msg:enter-from { opacity: 0; }" },
-    { "name": "cursor", "detail": "the pointer shape over this box", "doc": "Only `pointer` differs from the default arrow. Applied by the shell on hover.", "usage": ".send { cursor: pointer; }" },
+    { "name": "cursor", "detail": "the pointer shape over this box", "doc": "Every CSS keyword, on any box, inherited. `url()` images are skipped for the keyword after them. Applied by the shell on hover.", "usage": ".send { cursor: pointer; }" },
     { "name": "touch-action", "detail": "which axes a finger may still scroll here", "doc": "Decides who wins when a `@drag` and a scroller want the same finger. The default `auto` lets the scroller keep any axis it can actually scroll, so a drag inside a scrolling list does not trap the page; `none` gives the element the finger outright; `pan-x` and `pan-y` keep one axis for the scroller. Settled once, when the finger passes the drag threshold. Touch only: a mouse scrolls by wheel, not by dragging.", "usage": ".slider { touch-action: none; }" },
     { "name": "box-shadow", "detail": "a shadow cast by the box", "doc": "`x y blur spread colour`, and a comma list of them, the first on top. Painted outside the border, or with `inset` inside it over the background, and takes no space in the layout. With no colour it is the text `color`.", "usage": ".modal { box-shadow: 0 8px 24px #00000066; }" },
     { "name": "outline", "detail": "a line around the box, outside its border", "doc": "`width style colour`, in any order. Takes no space, is drawn over the element's content, and follows `border-radius`. The focus ring is the default `:focus-visible { outline: auto }`, so this is also how it is restyled or removed. Solid lines only: `dashed` and `dotted` are drawn solid, with a warning.", "usage": ".send:focus-visible { outline: 2px solid #f9e2af; }" },
@@ -628,7 +629,7 @@
     "overflow-wrap": ["normal", "break-word", "anywhere"],
     "word-wrap": ["normal", "break-word", "anywhere"],
     "word-break": ["normal", "break-all"],
-    "cursor": ["default", "pointer"],
+    "cursor": ["auto", "default", "none", "context-menu", "help", "pointer", "progress", "wait", "cell", "crosshair", "text", "vertical-text", "alias", "copy", "move", "no-drop", "not-allowed", "grab", "grabbing", "all-scroll", "col-resize", "row-resize", "n-resize", "e-resize", "s-resize", "w-resize", "ne-resize", "nw-resize", "se-resize", "sw-resize", "ew-resize", "ns-resize", "nesw-resize", "nwse-resize", "zoom-in", "zoom-out"],
     "outline-style": ["none", "auto", "solid"],
     "touch-action": ["auto", "none", "pan-x", "pan-y", "manipulation"],
     "fill-rule": ["nonzero", "evenodd"],

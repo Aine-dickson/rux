@@ -3058,6 +3058,10 @@ enum Pseudo {
     Not(Vec<Compound>),
     /// `:root`: the element with no parent.
     Root,
+    /// `:dir(rtl)` (`true`) and `:dir(ltr)`: the direction the `dir`
+    /// attribute gives the element, its own or its nearest ancestor's, `ltr`
+    /// where none says. Tailwind's `rtl:` and `ltr:` are written with it.
+    Dir(bool),
     /// `:host`, which matches nothing: there is no shadow tree for it to be
     /// the host of. That is what a browser answers in a document's own
     /// sheet, and why it does not warn: Tailwind writes `:root, :host` for
@@ -3248,6 +3252,11 @@ impl Pseudo {
                     Some((a, b)) => Self::Nth { a, b },
                     None => Self::Unknown(other.to_string()),
                 },
+                Some((f, arg)) if f == "dir" => match arg.trim().to_ascii_lowercase().as_str() {
+                    "rtl" => Self::Dir(true),
+                    "ltr" => Self::Dir(false),
+                    _ => Self::Unknown(other.to_string()),
+                },
                 Some((f, arg)) if f == "nth-last-child" => match nth(arg) {
                     Some((a, b)) => Self::NthLast { a, b },
                     None => Self::Unknown(other.to_string()),
@@ -3309,7 +3318,7 @@ impl Pseudo {
             Self::Required => s.required == Some(true),
             Self::Optional => s.required == Some(false),
             // Asked of the element in its place, by `matches_compound`.
-            Self::Nth { .. } | Self::NthLast { .. } | Self::Only | Self::Not(_) | Self::Root | Self::Is { .. } => true,
+            Self::Nth { .. } | Self::NthLast { .. } | Self::Only | Self::Not(_) | Self::Root | Self::Dir(_) | Self::Is { .. } => true,
             Self::Host => false,
             // Fails closed, see the type docs.
             Self::Unknown(_) => false,
@@ -5005,7 +5014,7 @@ const HONORED_PSEUDO_CLASSES: &[&str] =
         "hover", "focus", "focus-visible", "active", "checked", "current", "enter-from",
         "leave-to", "disabled", "enabled", "valid", "invalid", "user-valid", "user-invalid",
         "required", "optional", "first-child", "last-child", "only-child", "nth-child",
-        "nth-last-child", "not", "is", "where", "root",
+        "nth-last-child", "not", "is", "where", "dir", "root",
     ];
 
 /// The properties `transition` can name, in the order `all` expands them.
@@ -5560,7 +5569,13 @@ fn warn_unknown_pseudo(name: &str) {
     // A second colon was kept in the name: a pseudo-element. So are CSS 2's,
     // written with one, which is how the stylesheet parser writes them back.
     let legacy = ["first-letter", "first-line"].iter().any(|n| name.eq_ignore_ascii_case(n));
-    let message = if let Some(element) = name.strip_prefix(':').or(legacy.then_some(name)) {
+    // Tailwind's `rtl:` and `ltr:` are variants, not CSS; the CSS is `:dir()`.
+    let direction = ["rtl", "ltr"].into_iter().find(|d| name.trim_start_matches(':').eq_ignore_ascii_case(d));
+    let message = if let Some(d) = direction {
+        format!(
+            "`:{name}` is not CSS, so rules using it will never match. The CSS for an element in              a `dir=\"{d}\"` part of the page is `:dir({d})`"
+        )
+    } else if let Some(element) = name.strip_prefix(':').or(legacy.then_some(name)) {
         format!("pseudo-element `::{element}` is not supported, rules using it will never match (supported: ::selection, ::placeholder, ::file-selector-button, ::before, ::after)")
     } else {
         format!(
@@ -5578,6 +5593,30 @@ fn warn_unknown_pseudo(name: &str) {
 }
 
 // ── Matching & cascade ──────────────────────────────────────────────────────
+
+/// Whether `el` is right to left by its `dir` attribute, as `:dir()` reads
+/// it: its own, then its nearest ancestor's that says `ltr` or `rtl`, and
+/// left to right where none does. `None` when only the element is known (a
+/// "could this match") and it says nothing itself.
+///
+/// The attribute and not the `direction` property, as in CSS: a selector
+/// cannot read what the cascade it is part of decides. `dir="auto"` reads
+/// as saying nothing, where a browser would look at the text inside;
+/// written down in As Built.
+fn is_rtl(el: &ElemDesc, at: Option<Site>) -> Option<bool> {
+    let said = |d: &ElemDesc| {
+        d.attrs.iter().find(|(n, _)| n == "dir").and_then(|(_, v)| match v.trim().to_ascii_lowercase().as_str() {
+            "rtl" => Some(true),
+            "ltr" => Some(false),
+            _ => None,
+        })
+    };
+    if let Some(own) = said(el) {
+        return Some(own);
+    }
+    let p = at?;
+    Some(p.ancestors.iter().rev().find_map(|a| said(&a.desc)).unwrap_or(false))
+}
 
 /// Whether `el` matches the compound `c`. `place` is where it sits among its
 /// rendered siblings, from 1, which `:nth-child()` and `:first-child` read;
@@ -5630,6 +5669,10 @@ fn matches_compound(c: &Compound, el: &ElemDesc, at: Option<Site>) -> bool {
         Pseudo::Not(list) => !list.iter().any(|c| matches_compound(c, el, at)),
         // The root has no ancestors. Not known, it could be.
         Pseudo::Root => at.is_none_or(|p| p.ancestors.is_empty()),
+        Pseudo::Dir(rtl) => match is_rtl(el, at) {
+            Some(is) => is == *rtl,
+            None => true,
+        },
         Pseudo::Is { alts, .. } => alts.iter().any(|alt| match at {
             Some(p) => matches_at(&alt.chain, &alt.combs, el, p.at, p.ancestors, p.prev),
             // Could it match: its last compound is the element.
@@ -15415,6 +15458,7 @@ mod tests {
                 "nth-child" => "nth-child(2n+1)".to_string(),
                 "nth-last-child" => "nth-last-child(2)".to_string(),
                 "not" => "not(.a)".to_string(),
+                "dir" => "dir(rtl)".to_string(),
                 "is" | "where" => format!("{name}(.a .b)"),
                 n => n.to_string(),
             };
@@ -18978,6 +19022,28 @@ mod selector_list_tests {
             None,
         );
         assert!(red(&root.children[0]));
+    }
+
+    /// `:dir(rtl)` reads the `dir` attribute, the element's own or its
+    /// nearest ancestor's, and `ltr` where none says, so Tailwind's `rtl:`
+    /// form (`:where(:dir(rtl), [dir="rtl"], [dir="rtl"] *)`) works.
+    #[test]
+    fn dir_reads_the_nearest_dir_attribute() {
+        let root = built(
+            r#"<template><screen dir="rtl"><view class="a" /><view dir="ltr"><view class="a" /><view class="b" /></view><view class="c" /></screen></template>
+               <style>.a:dir(rtl) { background: #ff0000; } .b:dir(ltr) { background: #ff0000; }
+               .c:where(:dir(rtl), [dir="rtl"], [dir="rtl"] *) { background: #ff0000; }</style>"#,
+            None,
+        );
+        assert!(red(&root.children[0]), "inside dir=rtl");
+        assert!(!red(&root.children[1].children[0]), "a nearer dir=ltr wins");
+        assert!(red(&root.children[1].children[1]), ":dir(ltr) there");
+        assert!(red(&root.children[2]), "Tailwind's rtl: form");
+        let plain = built(
+            r#"<template><screen><view class="b" /></screen></template><style>.b:dir(ltr) { background: #ff0000; }</style>"#,
+            None,
+        );
+        assert!(red(&plain.children[0]), "ltr where nothing says");
     }
 
     /// CSS's defaults: black text on a white window; `color-scheme: dark` on

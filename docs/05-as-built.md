@@ -1039,6 +1039,14 @@ read CSS escapes (`.md\:flex`, `.py-1\.5`, `.\31 0`), and a vendor's own
 pseudo-element (`::-webkit-scrollbar`) passes quietly, as it does in every
 other engine.
 
+**`:dir(rtl)` and `:dir(ltr)`** (2026-10-28). The direction the `dir` attribute
+gives an element, its own or its nearest ancestor's, and `ltr` where none
+says, which is what Tailwind's `rtl:` and `ltr:` variants compile to
+(`:where(:dir(rtl), [dir="rtl"], [dir="rtl"] *)`). The attribute and not the
+`direction` property, as in CSS. **Differs from CSS:** `dir="auto"` counts as
+saying nothing, where a browser reads the text inside for its first strong
+letter. `::rtl` and `:rtl` are not CSS, and their warning names `:dir()`.
+
 **CSS-wide keywords** (2026-10-23). `inherit`, `initial`, `unset`, `revert` and
 `revert-layer` read as no declaration at all: a property that inherits takes
 its parent's value, one that does not takes Rux's default, which is what
