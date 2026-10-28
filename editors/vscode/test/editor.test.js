@@ -172,6 +172,10 @@ test('the pseudo-classes offered are the ones that match', () => {
     'nth-child',
     'nth-last-child',
     'not',
+    'is',
+    'where',
+    'dir',
+    'root',
   ]);
 });
 
@@ -413,6 +417,10 @@ test('a colon in a selector offers pseudo-classes, not properties', () => {
     'nth-child',
     'nth-last-child',
     'not',
+    'is',
+    'where',
+    'dir',
+    'root',
   ]);
 });
 

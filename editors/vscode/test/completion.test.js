@@ -123,6 +123,7 @@ test('an input type offers the kinds the runtime accepts and nothing else', () =
       'switch',
       'slider',
       'radio',
+      'file',
     ],
     'the kinds, in the vocabulary order'
   );
