@@ -7147,6 +7147,39 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The same for the component's `<style>` and its directives. Its rules
+    /// were read in the document's file with no line, so an editor put a
+    /// typo in `header.rux`'s CSS on line 1 of `app.rux`; and `r-for`'s own
+    /// warnings named the component and lost the line.
+    #[test]
+    fn a_components_css_and_directives_warn_at_its_own_lines() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_compcss_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join("app.rux"),
+            "<template>\n  <screen>\n    <header />\n  </screen>\n</template>\n<script>\nuse header;\n</script>\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("header.rux"),
+            "<template>\n  <view class=\"bar\">\n    <view r-for=\"(a, b, c) in xs\"></view>\n  </view>\n\
+             </template>\n<style>\n  .bar { colr: red; }\n</style>\n<script>\nlet xs = [1];\n</script>\n",
+        )
+        .unwrap();
+
+        let _ = take_warnings();
+        let doc = Document::load(&dir.join("app.rux")).expect("renders anyway");
+        let at = |needle: &str| {
+            let w = doc.diagnostics.warnings.iter().find(|w| w.message.contains(needle)).expect(needle);
+            (w.file.as_deref().and_then(|p| p.file_name()).and_then(|n| n.to_str()).map(str::to_string), w.line)
+        };
+        assert_eq!(at("`colr`"), (Some("header.rux".into()), Some(7)));
+        assert_eq!(at("(a, b, c)"), (Some("header.rux".into()), Some(3)));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// The parser is handed the `<template>` body alone, so it counts from 1 at
     /// the template's first line and every position is short by whatever came
     /// before it. A document that opens with `<script>` is the ordinary case,

@@ -86,9 +86,13 @@ thread_local! {
 
 /// Run `f` with any warnings it raises attributed to `line`. Restores whatever
 /// was set before, so nesting (a rule inside an `@media`) unwinds correctly.
+///
+/// Sets the script tier's line as well, as [`in_file`] does its file: a
+/// directive raises into both sinks, and calling only `rux_script::located`
+/// left this sink's half (`r-for`'s own warnings) with a file and no line.
 fn located<T>(line: Option<usize>, f: impl FnOnce() -> T) -> T {
     let previous = AT_LINE.with(|l| l.replace(line));
-    let out = f();
+    let out = rux_script::located(line, f);
     AT_LINE.with(|l| l.set(previous));
     out
 }
@@ -2437,11 +2441,10 @@ pub fn build_styled_tree_stateful(
     env: Environment,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
     // The document's own `<style>` knows where it is in its file, so its
-    // warnings get a line. A component's does not: its rules live in a
-    // *different* file, and every consumer of a warning attributes it to the
-    // document being built, so a line from the component's coordinate space
-    // would point confidently at the wrong place. Unplaced is the honest answer
-    // until warnings carry a file as well as a line.
+    // warnings get a line. So does a component's, read in its own file (see
+    // [`parse_component_rules`]): until 2026-10-28 it was read in the
+    // document's, unplaced, and an editor put its warnings on line 1 of the
+    // page that used it.
     let rules = rux_script::profile::time(rux_script::profile::Phase::Css, || parse_document_rules(sfc, env));
 
     // What `env()` reads, for the length of this build. Set here rather than
@@ -2759,7 +2762,7 @@ fn build_run(
     let up = inherited.text;
     let template = text_template(el);
     let (text, deps) =
-        rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
+        located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
     if template.contains("{{") {
         // Uncollapsed: the layout collapses it with the runs beside it.
         reg.text.push(TextBinding { path: path.to_vec(), template, locals: locals.clone(), deps, white_space: None });
@@ -4339,20 +4342,23 @@ fn rules_print(sfc: &Sfc) -> u64 {
     h.finish()
 }
 
-/// [`parse_document_rules`] for a component, whose own `<style>` is unplaced
-/// too.
+/// [`parse_document_rules`] for a component, read in its own file so its
+/// lines are its own. One with no file (built from source in memory) stays
+/// unplaced: a line with no file is read as the document's.
 fn parse_component_rules(sfc: &Sfc, env: Environment) -> Vec<Rule> {
+    if sfc.file.is_some() {
+        return in_file(sfc.file.clone(), || parse_document_rules(sfc, env));
+    }
     let tries = sheet_position_tries(sfc, env);
     let mut layers = layer::Layers::default();
-    if sfc.style_includes.is_empty() {
-        return parse_rules_at(&sfc.style, env, None, &tries, &mut layers);
-    }
     let mut rules = Vec::new();
     for include in &sfc.style_includes {
         rules.extend(parse_rules_at(&include.css, env, None, &tries, &mut layers));
     }
     rules.extend(parse_rules_at(&sfc.style, env, None, &tries, &mut layers));
-    renumber(&mut rules);
+    if !sfc.style_includes.is_empty() {
+        renumber(&mut rules);
+    }
     rules
 }
 
@@ -6745,7 +6751,7 @@ fn build_node(
     row: Option<&str>,
     swap: Option<SwapSide>,
 ) -> LayoutNode {
-    let mut node = rux_script::located(Some(el.line), || {
+    let mut node = located(Some(el.line), || {
         build_node_inner(
             el, rules, comps, ancestors, prev, inherited, engine, locals, path, tpl_path, reg,
             state, instances, swaps, instance, slot, outlet, row, swap,
@@ -7079,7 +7085,7 @@ fn build_text(
     // Placed on the text itself, which for a multi-line `<text>` is not the
     // line the tag opened on.
     let (text, deps) =
-        rux_script::located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
+        located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
     // A run keeps its spaces for the layout, which collapses them with the
     // runs beside it; anything else is collapsed now.
     let collapse = outer.is_none().then_some(white_space);
@@ -7468,7 +7474,7 @@ fn build_node_inner(
             value.is_some_and(|v| match_route(to, &v.to_display()).is_some());
     }
     if let Some(expr) = el.attr(":class") {
-        let (value, deps) = rux_script::located(el.attr_line(":class"), || {
+        let (value, deps) = located(el.attr_line(":class"), || {
             engine.eval_value_tracked(expr, locals)
         });
         dyn_deps.extend(deps);
@@ -10068,7 +10074,7 @@ fn build_children(
                 // would be reported on the parent's line. It belongs on the line
                 // the directive was written on.
                 let at = el.attr_line("r-for");
-                rux_script::located(at, || warn_if_destructuring_for(for_expr, var));
+                located(at, || warn_if_destructuring_for(for_expr, var));
                 // `r-if` beside `r-for` filters the rows: it is read once a row,
                 // with the row's item and index, as Vue 2 did (Vue 3 reads it
                 // before the loop, where neither exists). The owner chose this
@@ -10078,7 +10084,7 @@ fn build_children(
                 // to be its branch, and `r-show` is not read here.
                 for name in ["r-elif", "r-else", "r-show"] {
                     if el.attr(name).is_some() {
-                        rux_script::located(el.attr_line(name).or(at), || {
+                        located(el.attr_line(name).or(at), || {
                             warn(format!(
                                 "`{name}` on the same element as `r-for` does nothing: the loop \
                                  expands the element and the condition is never read, so every \
@@ -10092,7 +10098,7 @@ fn build_children(
                 // it flows to the parent's structural deps (via the return), not to
                 // `reg.structural`.
                 let (value, deps) =
-                    rux_script::located(at, || engine.eval_value_tracked(coll, locals));
+                    located(at, || engine.eval_value_tracked(coll, locals));
                 structural_deps.extend(deps);
                 // Taken, not copied: the value is this build's own.
                 let items = value.and_then(|v| match v {
@@ -10138,7 +10144,7 @@ fn build_children(
                             child_locals.push((name.to_string(), Value::Number(index as f64)));
                         }
                         if let Some(cond) = row_if {
-                            let (keep, deps) = rux_script::located(el.attr_line("r-if").or(at), || {
+                            let (keep, deps) = located(el.attr_line("r-if").or(at), || {
                                 engine.eval_bool_tracked(cond, &child_locals)
                             });
                             structural_deps.extend(deps);
@@ -10262,7 +10268,7 @@ fn build_children(
         // the answer is always the condition itself.
         if let Some(cond) = el.attr("r-if") {
             in_chain = true;
-            let (v, deps) = rux_script::located(el.attr_line("r-if"), || {
+            let (v, deps) = located(el.attr_line("r-if"), || {
                 engine.eval_bool_tracked(cond, locals)
             });
             structural_deps.extend(deps);
@@ -10280,7 +10286,7 @@ fn build_children(
         }
         if let Some(cond) = el.attr("r-elif") {
             let taken = if in_chain && !chain_satisfied {
-                let (v, deps) = rux_script::located(el.attr_line("r-elif"), || {
+                let (v, deps) = located(el.attr_line("r-elif"), || {
                     engine.eval_bool_tracked(cond, locals)
                 });
                 structural_deps.extend(deps);
@@ -15658,9 +15664,10 @@ mod tests {
         assert!(line_of(14).contains("zoom"));
     }
 
-    /// A component's CSS lives in a different file, and a warning carries no
-    /// file, so claiming a line would point into whichever document happened to
-    /// import it. Unplaced is the honest answer until warnings carry a file too.
+    /// A component with no file (parsed from source, as here) has nowhere to
+    /// point a line, and one with no file would be read as the document's.
+    /// One loaded from disk is placed in its own file: see the runtime's
+    /// `a_components_css_and_directives_warn_at_its_own_lines`.
     #[test]
     fn a_components_css_warning_is_left_unplaced() {
         let main = rux_parser::parse_sfc(
