@@ -8137,6 +8137,14 @@ fn build_node_inner(
             .and_then(|set| pick_srcset(set, el.attr("sizes"), BUILD_ENV.with(std::cell::Cell::get)))
             .unwrap_or(src);
         let mut image = ImageContent::new(src);
+        image.lazy = match el.attr("loading").map(str::trim) {
+            None | Some("eager") => false,
+            Some("lazy") => true,
+            Some(other) => {
+                warn(format!("`loading=\"{other}\"` is not a loading Rux knows; use `lazy` or `eager`"));
+                false
+            }
+        };
         let on = rux_layout::ImageEvents::EVENTS.map(|e| el.attr(&format!("@{e}")).map(|h| bind_locals(h, baked)));
         if on.iter().any(Option::is_some) {
             image.events = Some(Box::new(rux_layout::ImageEvents { key: media_key(instance, tpl_path, row), on }));

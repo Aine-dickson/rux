@@ -157,6 +157,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "alt", detail: "accessible description", doc: "What the image is, for the accessibility tree." },
             Entry { name: "srcset", detail: "pictures for different screens", doc: "`a.png 1x, a@2x.png 2x`, or widths, `s.png 400w, l.png 1600w` with `sizes`. The one nearest above the screen's density is shown, `src` when none is given." },
             Entry { name: "sizes", detail: "how wide the image is drawn, for `srcset`'s widths", doc: "`(max-width: 600px) 100vw, 300px`: the first whose condition holds, else the last. The whole viewport when absent." },
+            Entry { name: "loading", detail: "`lazy`: fetch only when near the window", doc: "`loading=\"lazy\"` fetches a network picture once its box comes within 1250 px of the window, as Chromium does. Give it a size, or the page moves when it arrives." },
             Entry { name: "@load", detail: "the picture is there", doc: "Once per `src`. `event.width` and `event.height` are its own size in pixels." },
             Entry { name: "@error", detail: "the picture could not be had", doc: "Once per `src`: missing, refused by the network, or not a picture. `event.message` says which." },
         ],

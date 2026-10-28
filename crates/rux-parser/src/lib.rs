@@ -78,7 +78,7 @@ const GLOBAL_ATTRIBUTES: &[&str] = &[
 /// Attributes that mean something on one element only. `rux vocab` advertises
 /// the same set to the editor, and `rux-cli` has a test that the two agree.
 const ELEMENT_ATTRIBUTES: &[(&str, &[&str])] = &[
-    ("image", &["src", "alt", "srcset", "sizes"]),
+    ("image", &["src", "alt", "srcset", "sizes", "loading"]),
     ("path", &["d", "alt"]),
     (
         "input",

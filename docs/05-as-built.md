@@ -494,6 +494,13 @@ what shows when `srcset` is absent. Picked when the tree is built, so a
 resize that crosses no `@media` boundary, or a move to a screen of another
 density, keeps the first pick until the next rebuild.
 
+**`loading="lazy"`** (2026-10-28): a network picture is fetched once its box
+comes within 1250 px of the window (Chromium's distance on a fast connection),
+asked for by the painter when it stops leaving that box out, so it costs no
+pass of its own. Until then the box has no size and `@load` waits. Give a lazy
+image a size, or the page moves when it arrives. A file on the disk is read
+at load either way; `eager`, the default, starts the fetch at load.
+
 **`data:` URLs** (2026-10-28): a picture written into the document,
 `src="data:image/png;base64,…"`, or percent-encoded without `;base64`, and the
 same in `url(…)`. Read as a file is, at load, with nothing fetched.

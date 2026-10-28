@@ -1812,7 +1812,15 @@ pub struct ImageContent {
     /// `@load` and `@error`, when either is written: most images have
     /// neither, so they carry one empty pointer.
     pub events: Option<Box<ImageEvents>>,
+    /// `loading="lazy"`: a network picture is fetched only once its box comes
+    /// within [`LAZY_MARGIN`] of the window.
+    pub lazy: bool,
 }
+
+/// How near the window a `loading="lazy"` image's box must come before its
+/// picture is fetched, in logical pixels: Chromium's distance on a fast
+/// connection, so it is usually there by the time it is scrolled to.
+pub const LAZY_MARGIN: f32 = 1250.0;
 
 /// An `<image>`'s `@load` and `@error`, and which element it is from one
 /// build to the next, so each fires once for each `src`.
@@ -1832,7 +1840,7 @@ impl ImageContent {
     /// An image as CSS has it with nothing said: stretched to its box.
     pub fn new(src: String) -> Self {
         let centre = BgPos { pct: 50.0, px: 0.0 };
-        ImageContent { src, intrinsic: (0.0, 0.0), fit: ObjectFit::Fill, position: [centre; 2], events: None }
+        ImageContent { src, intrinsic: (0.0, 0.0), fit: ObjectFit::Fill, position: [centre; 2], events: None, lazy: false }
     }
 
     /// Where the picture goes, `(x, y, width, height)`, in a content box at

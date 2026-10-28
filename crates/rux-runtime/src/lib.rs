@@ -2152,9 +2152,15 @@ pub enum ImageState {
 
 /// The state of the image at `src`, resolved as the tree holds it: from the
 /// network store, a picked file's bytes, or the source. Reads only the header.
-pub fn image_state(src: &str) -> ImageState {
+///
+/// A `lazy` one from the network that nobody has asked for yet is `Loading`,
+/// and stays so until its box is painted.
+pub fn image_state(src: &str, lazy: bool) -> ImageState {
     if src.is_empty() {
         return ImageState::Failed("it has no `src`".to_string());
+    }
+    if lazy && remote::is_remote(src) && remote::peek(src).is_none() {
+        return ImageState::Loading;
     }
     let bytes = match image_bytes(src) {
         Ok(bytes) => bytes,
@@ -2193,8 +2199,11 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
     if let Some(img) = &mut node.image {
         // A URL (a picked `File`'s `url`) is where it says, not beside the
         // .rux file, and stays a URL: the reader below and the painter's
-        // both take it as it is.
-        if is_url(&img.src) {
+        // both take it as it is. A lazy one from the network nobody has
+        // asked for is left alone: the painter asks, once its box comes
+        // near the window, and until then it has no size.
+        let unasked = img.lazy && remote::is_remote(&img.src) && remote::peek(&img.src).is_none();
+        if is_url(&img.src) && !unasked {
             let read = image_bytes(&img.src);
             let waiting = read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock);
             match read.ok().and_then(|bytes| picture_size(&bytes).ok()) {
@@ -2210,7 +2219,7 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
                 None if remote::is_remote(&img.src) => {}
                 None => eprintln!("rux: cannot read image {}", img.src),
             }
-        } else if !img.src.is_empty() {
+        } else if !img.src.is_empty() && !is_url(&img.src) {
             let path = base.join(&img.src);
             // Read through the provider rather than by path, because `path` is
             // a key and not necessarily a file. See `picture_size`.
@@ -5407,7 +5416,8 @@ impl Document {
             return false;
         }
         fn walk(node: &mut LayoutNode) {
-            if let Some(img) = node.image.as_mut().filter(|i| remote::is_remote(&i.src) && i.intrinsic == (0.0, 0.0)) {
+            let asked = |i: &&mut rux_layout::ImageContent| remote::peek(&i.src).is_some();
+            if let Some(img) = node.image.as_mut().filter(|i| remote::is_remote(&i.src) && i.intrinsic == (0.0, 0.0)).filter(asked) {
                 if let Some((w, h)) = image_bytes(&img.src).ok().and_then(|bytes| picture_size(&bytes).ok()) {
                     img.intrinsic = (w, h);
                 }

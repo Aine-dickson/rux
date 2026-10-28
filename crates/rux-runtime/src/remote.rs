@@ -69,6 +69,17 @@ pub fn bytes(url: &str) -> Option<Result<Arc<[u8]>, String>> {
     }
 }
 
+/// What the network gave for `url`, without asking for it: `None` when
+/// nobody has, `Some(None)` while it is coming.
+pub fn peek(url: &str) -> Option<Option<Result<Arc<[u8]>, String>>> {
+    let store = STORE.lock().unwrap_or_else(|e| e.into_inner());
+    Some(match store.as_ref()?.get(url)? {
+        State::Ready(bytes) => Some(Ok(bytes.clone())),
+        State::Failed(why) => Some(Err(why.clone())),
+        State::Loading => None,
+    })
+}
+
 /// What a fetch came back with. Called by whoever fetched, from any thread.
 pub fn deliver(url: &str, result: Result<Vec<u8>, String>) {
     let state = match result {

@@ -1038,6 +1038,12 @@ pub fn visible_paints(
             // Inside its box, which it is clipped to.
             Paint::TextFill { rect: (x, y, w, h), .. } => reaches(reach.local, rect_of(*x, *y, *w, *h)),
             Paint::Border(r) => reaches(reach.local, rect_of(r.x, r.y, r.width, r.height)),
+            // A lazy one is kept from further off, since keeping it is what
+            // asks for its picture (`ImageContent::lazy`).
+            Paint::Image(i) if i.content.lazy => {
+                let m = rux_layout::LAZY_MARGIN as f64;
+                reaches(reach.local, rect_of(i.x, i.y, i.width, i.height).inflate(m, m))
+            }
             Paint::Image(i) => reaches(reach.local, rect_of(i.x, i.y, i.width, i.height)),
             // vello's blur reaches about three standard deviations, and the
             // standard deviation is half the CSS blur.
