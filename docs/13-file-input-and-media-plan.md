@@ -547,6 +547,17 @@ What it means for C, for the owner to decide:
 - Desktop with H.264 and VP9 files, a long file seeking, a picked
   `File.url`; the web in Edge and Brave; Android on the emulator, with
   suspend and resume. Frame times recorded against C.0's.
+- **Driven 2026-10-28** (each in `docs/08-user-tests.md`): Windows with
+  H.264 (MP4, AAC) and VP9 (WebM, Opus) at 1080p60 and 720p30, sync and
+  frame times recorded (0 to 3 of 300 passed over, pictures within 2 ms of
+  the sound against C.0's 0 to 1 with no sound), seeking, the end, a loop,
+  out of sight, hiding, fullscreen; the web in Brave; Android on the
+  emulator with seeking and the app put away and back. **Not driven**,
+  left open: a picked `File.url` on any platform, Edge, a file longer than
+  20 s seeking far, a real phone (none to hand), Back leaving fullscreen
+  on Android, and the sound actually listened to anywhere but by its
+  clock. With those, **Part C is built on Windows, Android and the web**;
+  Linux and macOS show the poster and fire `@error`, as planned.
 
 ## Questions the plan raised (decided 2026-10-23)
 
