@@ -1339,6 +1339,17 @@ reported in the overlay rather than hung on.
 Both are document-level today: a component's own `computed`/`effect` lines are
 stripped, not run. Driven in `examples/computed.rux`.
 
+**The index, and filtering rows** (2026-10-28): `r-for="(item, i) in items"`
+binds the row's index too, an `int` from 0, as a script's `for (item, i) in items`
+does. An `r-if` on the same element is read once a row, with both in scope,
+and leaves out the rows it is false for; the index still counts every row of
+the collection. This is Vue 2's order, not Vue 3's (which reads `v-if` before
+the loop, where the item does not exist yet). `r-elif`, `r-else` and `r-show`
+beside `r-for` still do nothing and warn.
+```html
+<view r-for="(item, i) in navItems" r-if="i != navItems.length - 1"> … </view>
+```
+
 **Keyed lists:** `r-key` on the same element as `r-for` says what a row *is*,
 rather than where it sits:
 ```html
@@ -1857,7 +1868,7 @@ animating an `anchor()`.
 > differs from stock rhai and from JavaScript.
 
 - `<script>` is **rhai**, forked as `rux-rhai`. `let x = signal(v)` declares state (numbers coerce to float).
-- `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"`, `r-show`.
+- `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"` or `r-for="(x, i) in list"`, `r-show`.
 - `@tap="…"` handlers.
 - `use native::m;` then `m.fn()` calls the app's own compiled Rust, exported with `#[rux::export]` from its `native/` crate. See [Script, Native code](./07-script.md#native-code).
 - `{ key: value }` is a map, as in JavaScript, so `:class="{ active: on }"` and

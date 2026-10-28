@@ -55,8 +55,9 @@ pub enum Tpl {
     /// A value that is not an expression, as `label="Save"` passes a string,
     /// handed to something that takes `want`.
     Given { given: Type, want: Type, line: usize, what: String },
-    /// `r-for="var in src"`: the body sees `var` as one element of `src`.
-    For { var: String, src: String, line: usize, body: Vec<Tpl> },
+    /// `r-for="var in src"`: the body sees `var` as one element of `src`,
+    /// and `index`, when `r-for="(var, index) in src"` names one, as an `int`.
+    For { var: String, index: Option<String>, src: String, line: usize, body: Vec<Tpl> },
     /// An `r-if` chain. Each branch is its condition, `None` for `r-else`, its
     /// line, and its subtree, which sees its condition true and every earlier
     /// one false.
@@ -962,7 +963,7 @@ impl<'a> Checker<'a> {
                     }
                 });
             }
-            Tpl::For { var, src, line, body } => {
+            Tpl::For { var, index, src, line, body } => {
                 let Some(piece) = self.parse_piece(src) else { return };
                 let Some(e) = Self::piece_expr(&piece) else { return };
                 let element = self.in_piece_of(src, Some(&piece), PieceKind::Value, &[], *line, "`r-for`", |c| {
@@ -971,6 +972,9 @@ impl<'a> Checker<'a> {
                 });
                 self.with_scope(|c| {
                     c.bind(var, element);
+                    if let Some(index) = index {
+                        c.bind(index, Type::Int);
+                    }
                     for item in body {
                         c.template_item(item);
                     }
@@ -4615,10 +4619,10 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
     fn a_loop_variable_is_an_element_of_its_list() {
         let script = format!("{TASK}let tasks: Task[] = signal([]);");
         let body = vec![expr("t.titel", None)];
-        let f = template_findings(&script, vec![Tpl::For { var: "t".into(), src: "tasks".into(), line: 5, body }]);
+        let f = template_findings(&script, vec![Tpl::For { var: "t".into(), index: None, src: "tasks".into(), line: 5, body }]);
         assert!(f.iter().any(|f| f.message.contains("titel") && f.is_error), "{f:?}");
         let body = vec![expr("t.title", Some("string"))];
-        let f = template_findings(&script, vec![Tpl::For { var: "t".into(), src: "tasks".into(), line: 5, body }]);
+        let f = template_findings(&script, vec![Tpl::For { var: "t".into(), index: None, src: "tasks".into(), line: 5, body }]);
         assert!(f.is_empty(), "{f:?}");
     }
 

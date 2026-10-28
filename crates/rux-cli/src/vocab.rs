@@ -138,7 +138,7 @@ const GLOBAL_ATTRIBUTES: &[Entry] = &[
 /// ranking first in a completion list: they are what makes a template a
 /// template rather than a picture.
 const DIRECTIVES: &[Entry] = &[
-    Entry { name: "r-for", detail: "repeat this element per item", doc: "`r-for=\"item in items\"`. Pair it with `r-key` so reconciliation can match rows across a change." },
+    Entry { name: "r-for", detail: "repeat this element per item", doc: "`r-for=\"item in items\"`, or `r-for=\"(item, i) in items\"` for the index too. An `r-if` beside it filters the rows. Pair it with `r-key` so reconciliation can match rows across a change." },
     Entry { name: "r-key", detail: "identity for a repeated row", doc: "`r-key=\"item.id\"`. Without it a keyed change is a rebuild, and input state inside a row moves to the wrong row." },
     Entry { name: "r-if", detail: "render only when true", doc: "`r-if=\"count > 0\"`. The element and its subtree are absent, not hidden, when false." },
     Entry { name: "r-elif", detail: "an else-if branch", doc: "Follows an `r-if` sibling. The first branch whose condition holds renders." },

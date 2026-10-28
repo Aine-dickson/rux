@@ -16,8 +16,8 @@
 Known to be wrong below, and left standing rather than rewritten, because
 rewriting it is what would turn it back into a second reference and start the
 drift over. Two lines are annotated in place rather than left alone, because an
-author actually followed them: the `r-for` index form and `:key`, neither of
-which was ever built.
+author actually followed them: the `r-for` index form (built late, on
+2026-10-28) and `:key` (never built).
 
 | This says | What shipped |
 |---|---|
@@ -190,9 +190,8 @@ Notes:
 - `{{ expr }}` and `:attr` / `r-model` / `r-for` accept **script expressions**
   evaluated in the component's [scope](#scripting-and-the-host).
 - `r-for` was designed with an index form, `r-for="(item, i) in items"`.
-  **It was never built.** `r-for` binds exactly one name, and writing the tuple
-  binds a local called `(item, i)` with neither `item` nor `i` in it. The
-  runtime says so from v0.7.1; before that it only reported `i` as undefined.
+  It was not built until 2026-10-28; before that the tuple bound one local
+  called `(item, i)`. It works now: see [As Built](./05-as-built.md).
 - Elements in an `r-for` should carry a stable key where identity matters
   (reordering, animation). **It shipped as `r-key`, not `:key`**, because it
   names what a row *is* rather than binding an attribute on it. See

@@ -9567,21 +9567,47 @@ pub fn model_target(model: &str, locals: &[(String, Value)]) -> String {
     }
 }
 
-/// Parse `r-for="item in items"` into `(binding, collection_expr)`.
+/// What an `r-for` binds: the row's item, its index when one is named, and
+/// the collection's expression.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ForLoop<'a> {
+    pub item: &'a str,
+    pub index: Option<&'a str>,
+    pub coll: &'a str,
+}
+
+/// Parse `r-for="item in items"` or `r-for="(item, i) in items"`, the form a
+/// script's `for (item, i) in items` takes, and Vue's `v-for`.
+///
+/// Anything else left of ` in `, three names or something that is not a name,
+/// is taken whole as the item, which binds nothing anyone can write, and
+/// [`warn_if_destructuring_for`] says so.
 ///
 /// Public because the checker needs the same answer: a loop variable is a name
 /// in scope inside anything a row's handler calls, and a second parser for one
 /// `split_once` would eventually disagree with this one about what `r-for`
 /// binds.
-pub fn parse_for(expr: &str) -> Option<(&str, &str)> {
+pub fn parse_for(expr: &str) -> Option<ForLoop<'_>> {
     let (var, coll) = expr.split_once(" in ")?;
-    Some((var.trim(), coll.trim()))
+    let (var, coll) = (var.trim(), coll.trim());
+    let is_name = |n: &str| {
+        n.starts_with(|c: char| c.is_alphabetic() || c == '_') && n.chars().all(|c| c.is_alphanumeric() || c == '_')
+    };
+    let inner = var.strip_prefix('(').and_then(|v| v.strip_suffix(')')).unwrap_or(var);
+    let names: Vec<&str> = inner.split(',').map(str::trim).collect();
+    let (item, index) = match names[..] {
+        [item] if is_name(item) => (item, None),
+        [item, index] if is_name(item) && is_name(index) && item != index => (item, Some(index)),
+        _ => (var, None),
+    };
+    Some(ForLoop { item, index, coll })
 }
 
-/// Say so when `r-for` was written with a destructuring or index form.
+/// Say so when `r-for` was written with a form it does not have.
 ///
-/// `r-for` binds exactly **one** name, and [`parse_for`] takes everything left
-/// of ` in ` as that name. So `r-for="(pot, index) in pots"` bound a local
+/// `r-for` binds an item, or an item and an index, and [`parse_for`] takes
+/// anything else left of ` in ` as the item's name. Until 2026-10-28 that
+/// was true of the index form too, and this was written for it: So `r-for="(pot, index) in pots"` bound a local
 /// literally called `(pot, index)`, and both `pot` and `index` were then
 /// undefined. What the author saw was the undefined-variable warning for
 /// `index`, advising them to declare it in `<script>` as a signal, advice that
@@ -9606,9 +9632,10 @@ fn warn_if_destructuring_for(expr: &str, var: &str) {
         .collect();
     let first = names.first().copied().unwrap_or("item");
     warn(format!(
-        "`r-for=\"{expr}\"` binds one name and `{var}` is being taken as that whole name, \
-         so none of {} exists inside the row. `r-for` has no index or destructuring form: \
-         write `r-for=\"{first} in …\"` and reach the rest through `{first}`",
+        "`r-for=\"{expr}\"` binds an item, or an item and its index, and `{var}` is neither, \
+         so it is being taken as one whole name and none of {} exists inside the row. Write \
+         `r-for=\"{first} in …\"` or `r-for=\"({first}, i) in …\"`, and reach the rest through \
+         `{first}`",
         names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")
     ));
 }
@@ -10036,20 +10063,20 @@ fn build_children(
         // The collection is a structural read, a change re-diffs the list.
         if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
-            if let Some((var, coll)) = parse_for(for_expr) {
+            if let Some(ForLoop { item: var, index: index_name, coll }) = parse_for(for_expr) {
                 // A directive is read by the *parent's* loop, so without this it
                 // would be reported on the parent's line. It belongs on the line
                 // the directive was written on.
                 let at = el.attr_line("r-for");
                 rux_script::located(at, || warn_if_destructuring_for(for_expr, var));
-                // `r-if` on the same element as `r-for` is read by nobody: the
-                // loop expands the element and the condition is never consulted,
-                // so every row renders and the filter silently does nothing.
-                // Said out loud rather than honored, because which one wins is a
-                // real design question (Vue has answered it both ways across two
-                // major versions) and quietly picking an answer here would change
-                // what existing documents render.
-                for name in ["r-if", "r-elif", "r-else", "r-show"] {
+                // `r-if` beside `r-for` filters the rows: it is read once a row,
+                // with the row's item and index, as Vue 2 did (Vue 3 reads it
+                // before the loop, where neither exists). The owner chose this
+                // on 2026-10-28; until then it was read by nobody and warned.
+                let row_if = el.attr("r-if");
+                // The rest have no meaning on a loop: a chain needs one element
+                // to be its branch, and `r-show` is not read here.
+                for name in ["r-elif", "r-else", "r-show"] {
                     if el.attr(name).is_some() {
                         rux_script::located(el.attr_line(name).or(at), || {
                             warn(format!(
@@ -10104,6 +10131,21 @@ fn build_children(
                     for (index, item) in items.into_iter().enumerate() {
                         let mut child_locals = locals.clone();
                         child_locals.push((var.to_string(), item));
+                        // Before the row's place, which `build_row` expects
+                        // last; the index is compared by value like the item,
+                        // so a kept row that moved is built again.
+                        if let Some(name) = index_name {
+                            child_locals.push((name.to_string(), Value::Number(index as f64)));
+                        }
+                        if let Some(cond) = row_if {
+                            let (keep, deps) = rux_script::located(el.attr_line("r-if").or(at), || {
+                                engine.eval_bool_tracked(cond, &child_locals)
+                            });
+                            structural_deps.extend(deps);
+                            if !keep {
+                                continue;
+                            }
+                        }
                         if let Some(place) = &place {
                             child_locals
                                 .push((format!("{ROW_PLACE}{var}"), Value::Text(format!("{place}[{index}]"))));
@@ -10323,9 +10365,21 @@ fn count_rendered(
             n += match_router(el, &current).is_some() as usize;
         } else if let Some(for_expr) = el.attr("r-for") {
             in_chain = false;
-            if let Some((_, coll)) = parse_for(for_expr) {
+            if let Some(ForLoop { item: var, index: index_name, coll }) = parse_for(for_expr) {
                 if let (Some(Value::List(items)), _) = engine.eval_value_tracked(coll, locals) {
-                    n += items.len();
+                    match el.attr("r-if") {
+                        None => n += items.len(),
+                        Some(cond) => {
+                            for (index, item) in items.into_iter().enumerate() {
+                                let mut row = locals.clone();
+                                row.push((var.to_string(), item));
+                                if let Some(name) = index_name {
+                                    row.push((name.to_string(), Value::Number(index as f64)));
+                                }
+                                n += engine.eval_bool_tracked(cond, &row).0 as usize;
+                            }
+                        }
+                    }
                 }
             }
         } else if let Some(cond) = el.attr("r-if") {

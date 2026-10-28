@@ -1114,9 +1114,21 @@ fn file_model_type(el: &rux_parser::Element) -> rux_script::types::Type {
 /// `el` itself: an `r-for` makes its whole element the loop's body.
 fn element_for_types(el: &rux_parser::Element, tags: &TagProps, out: &mut Vec<rux_script::check::Tpl>) {
     use rux_script::check::Tpl;
-    if let Some((var, src)) = el.attr("r-for").and_then(rux_style::parse_for) {
+    if let Some(f) = el.attr("r-for").and_then(rux_style::parse_for) {
         let line = el.attr_line("r-for").unwrap_or(el.line);
-        out.push(Tpl::For { var: var.to_string(), src: src.to_string(), line, body: element_body(el, tags) });
+        let mut body = element_body(el, tags);
+        // An `r-if` beside it filters the rows, so it is read in the loop.
+        if let Some(cond) = el.attr("r-if") {
+            let at = el.attr_line("r-if").unwrap_or(line);
+            body = vec![Tpl::If { branches: vec![(Some(cond.to_string()), at, body)] }];
+        }
+        out.push(Tpl::For {
+            var: f.item.to_string(),
+            index: f.index.map(str::to_string),
+            src: f.coll.to_string(),
+            line,
+            body,
+        });
     } else {
         out.extend(element_body(el, tags));
     }
@@ -1186,8 +1198,8 @@ fn children_for_types(children: &[rux_parser::Node], tags: &TagProps, out: &mut 
                 }
                 i += 1;
             }
-            // `r-for` wins over an `r-if` on the same element, as it does when
-            // the tree is built.
+            // An `r-if` beside an `r-for` filters its rows and starts no chain,
+            // as when the tree is built: `element_for_types` reads it.
             Node::Element(el) if el.attr("r-if").is_some() && el.attr("r-for").is_none() => {
                 let branch = |el: &rux_parser::Element, name: &str| {
                     let cond = el.attr(name).map(str::to_string).filter(|_| name != "r-else");
@@ -1248,8 +1260,9 @@ fn collect_caller_names(
     out: &mut HashSet<String>,
 ) {
     if let Some(expr) = el.attr("r-for") {
-        if let Some((var, _)) = rux_style::parse_for(expr) {
-            out.insert(var.to_string());
+        if let Some(f) = rux_style::parse_for(expr) {
+            out.insert(f.item.to_string());
+            out.extend(f.index.map(str::to_string));
         }
     }
     for rux_parser::Attr { name, value, .. } in &el.attrs {
@@ -7274,31 +7287,35 @@ mod tests {
         assert!(noise.is_empty(), "nothing here is wrong: {noise:?}");
     }
 
-    /// `r-for` binds one name, so the tuple form bound a local literally called
-    /// `(pot, index)` and left both `pot` and `index` undefined. All an author
-    /// saw was the undefined-variable warning for `index`, telling them to
-    /// declare it in `<script>` as a signal, which is not a thing anyone
-    /// reaching for a loop index can act on. The warning has to say that the
-    /// form itself is unsupported.
+    /// `r-for="(pot, index) in pots"` bound a local literally called
+    /// `(pot, index)` until 2026-10-28, and two authors reached for it. It
+    /// binds both now, the index counting the collection's rows, and an
+    /// `r-if` beside it filters them with both in scope.
     #[test]
-    fn the_r_for_tuple_form_says_it_is_unsupported() {
+    fn the_r_for_index_form_binds_both_and_r_if_filters_the_rows() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><text r-for=\"(pot, i) in pots\" r-if=\"i != pots.length - 1\">             {{ i }}:{{ pot }},</text></screen></template>
+             <script>let pots: string[] = signal([\"a\", \"b\", \"c\"]);</script>",
+        )
+        .expect("renders");
+        assert_eq!(text_of(&doc.root).join(""), "0:a,1:b,");
+        assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
+    }
+
+    /// A form `r-for` does not have still says so, rather than leaving only
+    /// an undefined-name warning for the reader to puzzle out.
+    #[test]
+    fn an_r_for_form_it_does_not_have_says_so() {
         let _ = take_warnings(); // the sinks are global; start from a known state
         let doc = Document::from_source(
-            "<template><screen><text r-for=\"(pot, index) in pots\">{{ pot }}</text></screen>\
-             </template>\n<script>let pots = signal([\"a\", \"b\"]);</script>",
+            "<template><screen><text r-for=\"(pot, key, index) in pots\">{{ pot }}</text></screen>             </template>
+<script>let pots = signal([\"a\", \"b\"]);</script>",
         )
         .expect("the row still builds, so the rest of the document can be checked");
         let said = |needle: &str| doc.diagnostics.warnings.iter().any(|w| w.message.contains(needle));
-        assert!(
-            said("no index or destructuring form"),
-            "the warning must name the form, not the symptom: {:?}",
-            doc.diagnostics.warnings
-        );
-        assert!(
-            said("`pot`, `index`"),
-            "and must name what is undefined as a result: {:?}",
-            doc.diagnostics.warnings
-        );
+        assert!(said("an item and its index"), "{:?}", doc.diagnostics.warnings);
+        assert!(said("`pot`, `key`, `index`"), "{:?}", doc.diagnostics.warnings);
     }
 
     /// The ordinary single-name form must stay silent, or the warning above is
