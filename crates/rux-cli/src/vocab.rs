@@ -92,6 +92,11 @@ const ELEMENTS: &[Entry] = &[
         doc: "`<audio src=\"song.mp3\" controls />` plays a sound from the project, or a               picked `File`'s `url`. With `controls` it draws play/pause, the time, a seek               bar and mute; without them it is nothing on screen, as in a browser.               `autoplay` plays only when `muted`, or once the person has pressed something               in the app, on every platform. `query(\"audio\")[0].play()` and `.pause()`               reach it from script.",
     },
     Entry {
+        name: "video",
+        detail: "a video, with or without its controls",
+        doc: "`<video src=\"clip.mp4\" controls />` plays a video from the project, or a               picked `File`'s `url`, sized by its picture until CSS says otherwise and               fitted by `object-fit` (`contain` unless set). `poster` shows until it is               played. Decoded by the platform: Media Foundation on Windows; elsewhere,               for now, it shows its poster and fires `@error`. No sound yet.",
+    },
+    Entry {
         name: "slot",
         detail: "a component's hole for the caller's children",
         doc: "Renders whatever the caller wrote between the component's tags. \
@@ -176,6 +181,26 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "@ended", detail: "it played to its end", doc: "After the `@pause` at its end. Not with `loop`." },
             Entry { name: "@timeupdate", detail: "where it is moved", doc: "About four times a second while it plays, and on a seek. `event.currentTime` and `event.duration`." },
             Entry { name: "@error", detail: "it could not be loaded", doc: "`event.kind` (`io`, `unsupported`, `decode`) and `event.message`. A file Rux cannot decode on the desktop (Opus, WebM) is `unsupported`." },
+            Entry { name: "@loadedmetadata", detail: "it is loaded and its length known", doc: "Once per `src`. `event.duration` (`none` when not known)." },
+        ],
+    ),
+    (
+        "video",
+        &[
+            Entry { name: "src", detail: "the video: a project path or a File's url", doc: "A path from the project (built into a release), or a picked `File`'s `url`. On Windows, what Media Foundation plays: H.264 always, VP9, HEVC and AV1 with their store extensions. `:src` binds an expression, and a new value is a new video." },
+            Entry { name: "poster", detail: "a picture shown until it plays", doc: "An image path, shown in the video's box until the first play or seek. Without it the first frame shows." },
+            Entry { name: "controls", detail: "draw play, time, seek and mute over it", doc: "The `<audio>` controls in a bar along the bottom of the picture, in white on a dark band." },
+            Entry { name: "autoplay", detail: "play once loaded, as a browser allows", doc: "As `<audio autoplay>`: by itself only when `muted`, or once the person has pressed something in the app." },
+            Entry { name: "loop", detail: "start again at the end", doc: "Plays from the start again at its end, with no `@ended`." },
+            Entry { name: "muted", detail: "start silent", doc: "The volume at nothing. The mute button turns it back on." },
+            Entry { name: "preload", detail: "`none`: read nothing until played", doc: "`none` reads nothing until the first play, and shows only the poster; `auto` and `metadata` (the default) read it at once." },
+            Entry { name: "playsinline", detail: "accepted: Rux always plays in the page", doc: "A phone browser's attribute to keep a video in the page instead of full screen, which is the only way Rux plays one." },
+            Entry { name: "@play", detail: "it started playing", doc: "As `<audio>`'s. `event.currentTime` and `event.duration`." },
+            Entry { name: "@pause", detail: "it stopped playing", doc: "Paused, or at its end (then `@ended` follows)." },
+            Entry { name: "@ended", detail: "it played to its end", doc: "After the `@pause` at its end. Not with `loop`." },
+            Entry { name: "@timeupdate", detail: "where it is moved", doc: "About four times a second while it plays, and on a seek." },
+            Entry { name: "@error", detail: "it could not be loaded", doc: "`event.kind` (`io`, `unsupported`, `decode`) and `event.message`. A format the machine has no decoder for, or any video off Windows for now, is `unsupported`." },
+            Entry { name: "@loadedmetadata", detail: "it is loaded and its size known", doc: "Once per `src`. `event.videoWidth`, `event.videoHeight` and `event.duration`." },
         ],
     ),
     (

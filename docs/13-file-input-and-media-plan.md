@@ -410,6 +410,29 @@ What it means for C, for the owner to decide:
   after a few idle seconds and shown on a tap.
 - The same events and script reach as `<audio>`, plus `@loadedmetadata`
   with `videoWidth` and `videoHeight`.
+- **Built 2026-10-28 on Windows, without fullscreen or hiding** (below).
+  As built: the element is `<audio>`'s, its `Sound` a `Video` (a resource of
+  the same shape, made only by the element) whose thread keeps four
+  pictures decoded ahead and puts each up when the wall clock reaches it,
+  passing over one already too late. A new picture asks for a redraw only;
+  before each frame the shell writes it into the video's texture (C.0's
+  texture road) and the painter draws it as an `<image>` filling the box.
+  `@loadedmetadata` is `<audio>`'s too. Driven in the window
+  (`docs/08-user-tests.md`); 1080p60 shows every frame.
+  Decided while building, **for the owner to confirm**:
+  - **`object-fit: contain` by default**, as a browser's own stylesheet has
+    it, where an `<image>` stretches (`fill`).
+  - **The poster gives way at the first play or seek**, and without one the
+    first frame shows, as in a browser.
+  - **The controls are always shown**, white on a dark band. Hiding them
+    after idle seconds and fullscreen are left for a step of their own:
+    hiding wants a timer and the pointer's whereabouts the shell does not
+    yet give an element, and fullscreen wants a window mode for one box.
+  - **Media Foundation's timestamps start at 0**: it ignores an MP4's edit
+    list, so the first picture's time (under a second) is taken as the
+    start. A file whose picture truly starts later shows it at once.
+  - `loop` starts again with a seek, so there is a frame's pause at the
+    joint; seamless looping is not built.
 
 ### C.3 Sound and sync
 

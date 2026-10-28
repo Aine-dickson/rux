@@ -2981,6 +2981,49 @@ NDK clang `rux build` now hands C build scripts. Not driven: the web (builds;
 the browser's `fetch` not yet run in a page), and a release APK's `INTERNET`
 on a device (unit-tested in the manifest).
 
+## `<video>`, Windows, 2026-10-28
+
+Step C.2 of `docs/13-file-input-and-media-plan.md`. Under test in
+`rux-video` (H.264 and VP9 fixtures, both decoders, seeks, B-frames) and
+`rux-runtime` (the box before it loads, the poster, the controls, the
+events allowed). **Driven in the window** on Windows from
+`rux-harness/video-el`: a page with `<video controls poster>` on a 6 s
+640x360 H.264 clip (ffmpeg's `testsrc2`, which prints its own time and frame
+number into the picture) logging `@play`, `@pause`, `@ended`, `@error`,
+`@loadedmetadata` and counting `@timeupdate`; a second `<video>` with no
+poster in a 160x120 box; one on a missing file; and two buttons calling
+`play()` and `pause()` through `query()`. Clicks by `SetCursorPos`, read from
+screenshots.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Loaded | open the page | the poster filling a 16:9 box (the clip's shape, not 300x150), the controls band with `0:00 / 0:06`; `size: 640x360` from `@loadedmetadata`; the small one shows the clip's first frame letterboxed on its dark background; `@error` with `kind` `"io"` for the missing file | pass |
+| Play | click the play button | the picture moving in place of the poster, pause icon, the time counting, `@play` | pass |
+| Pause | click pause 2.5 s in | the picture holds (the clip's own counter reads 2.733), `@pause` | pass |
+| Played out | click play, wait | the clip's last frame (frame 179, 5.967 s), play icon, `0:06 / 0:06`, `@pause` then `@ended` | pass, after two fixes (below) |
+| Again | click play after the end | from the start | pass |
+| Script | `query("#clip")[0].play()`, 1.2 s later `.pause()` | plays, then holds at 1.4 s: `@play`, `@pause` | pass |
+| Seek | drag the thumb to four fifths | the frame at 4.467 s while paused | pass |
+| 1080p60 | release build, `<video autoplay muted loop>` on a 10 s 1920x1080 60 fps H.264 file, filling the window, 20 s | 60 renders a second, every frame shown | pass: 0 to 1 frames of 300 passed over per 5 s; 2.0 ms median (3.6 p95) to write a frame into its texture |
+
+Found by the driving and fixed before the commit:
+- **It never ended.** Media Foundation stamped the clip's frames 0.067 s
+  late (it ignores the MP4 edit list ffmpeg writes for B-frames), so the
+  last two came after the clip's own 6.0 s and the clock, which stops at
+  the length, never reached them. The decoder now starts the pictures at 0
+  (`rux-video`, under test with a B-frame fixture), and a picture stamped
+  past the length ends the video.
+- **Frames were missed at 1080p60**: about 100 in 300 at first, as the
+  player decoded the next picture before showing a due one. Shown first and
+  decoded after, then 8 to 17; with four pictures decoded ahead, 0 to 1.
+- **The controls never moved and the box kept 300 by 150**: a `Video`'s
+  properties were read through a module interface that declared only
+  `Sound`'s. `Video` is declared beside it.
+- **`rux check` overflowed a debug build's stack** on the shipped examples
+  and a fresh project (watchlist #41) with the `<video>` branch inside the
+  element builder's recursion. The branch is a function of its own, as
+  `<text>`'s is.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

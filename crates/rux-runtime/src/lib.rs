@@ -374,7 +374,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             let form = el.role().is_some_and(|r| r.eq_ignore_ascii_case("form"));
             let screen = el.tag == "screen";
             let file = field && el.attr("type") == Some("file");
-            let media = el.tag == "audio";
+            let media = matches!(el.tag.as_str(), "audio" | "video");
             let image = el.tag == "image";
             if is_component
                 || (image && IMAGE_EVENT_NAMES.contains(&event))
@@ -411,7 +411,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             } else if !screen && SCREEN_EVENT_NAMES.contains(&event) {
                 format!(" `@{event}` belongs on the app's `<screen>`.")
             } else if !media && MEDIA_EVENT_NAMES.contains(&event) {
-                format!(" `@{event}` belongs on an `<audio>`.")
+                format!(" `@{event}` belongs on an `<audio>` or a `<video>`.")
             } else {
                 String::new()
             };
@@ -1008,11 +1008,16 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
             format!("{{ value: {value} }}")
         }
         // Where the sound is, as it is now.
-        "play" | "pause" | "ended" | "timeupdate" if el.tag == "audio" => {
+        "play" | "pause" | "ended" | "timeupdate" if matches!(el.tag.as_str(), "audio" | "video") => {
             "{ currentTime: float, duration: float? }".to_string()
         }
         // Why it could not be played: `kind` as a `Sound`'s errors have it.
-        "error" if el.tag == "audio" => "{ kind: string, message: string }".to_string(),
+        "error" if matches!(el.tag.as_str(), "audio" | "video") => "{ kind: string, message: string }".to_string(),
+        // Loaded: its length, and a video's picture size as `videoWidth` and
+        // `videoHeight` (0 for a sound, as a browser has it).
+        "loadedmetadata" if matches!(el.tag.as_str(), "audio" | "video") => {
+            "{ duration: float?, videoWidth: int, videoHeight: int }".to_string()
+        }
         // The picture's own size, as `naturalWidth` and `naturalHeight`.
         "load" if el.tag == "image" => "{ width: int, height: int }".to_string(),
         "error" if el.tag == "image" => "{ message: string }".to_string(),
@@ -1092,8 +1097,8 @@ fn bound_type(tag: &str, name: &str) -> Option<rux_script::types::Type> {
         (_, "to") => "string",
         // Progress, 0 to 1, or nothing while no swap is being driven.
         (_, "r-transition") => "float?",
-        ("image" | "audio", "src") | ("path", "d") => "string",
-        ("audio", "controls" | "autoplay" | "loop" | "muted") => "bool",
+        ("image" | "audio" | "video", "src") | ("video", "poster") | ("path", "d") => "string",
+        ("audio" | "video", "controls" | "autoplay" | "loop" | "muted") => "bool",
         ("input", "options") => "string[]",
         ("input" | "button", "disabled") | ("input", "readonly" | "required") => "bool",
         _ => return None,
@@ -2196,7 +2201,9 @@ fn picture_size(bytes: &[u8]) -> Result<(f32, f32), String> {
 /// size, so a sizeless `<image>` lays out at its natural pixel dimensions. Only
 /// the file header is read, not the pixels; the painter decodes and caches those.
 fn resolve_images(node: &mut LayoutNode, base: &Path) {
-    if let Some(img) = &mut node.image {
+    // A `<video>`'s picture is the shell's to give, and its size the
+    // element's to say.
+    if let Some(img) = node.image.as_mut().filter(|i| !i.src.starts_with(rux_layout::VIDEO_FRAME)) {
         // A URL (a picked `File`'s `url`) is where it says, not beside the
         // .rux file, and stays a URL: the reader below and the painter's
         // both take it as it is. A lazy one from the network nobody has
@@ -4921,7 +4928,7 @@ impl Document {
             }
             None => {
                 rux_script::warn_script(format!(
-                    "{}() was called on an element that is not an `<audio>`, so nothing happened",
+                    "{}() was called on an element that is not an `<audio>` or a `<video>`, so nothing happened",
                     if play { "play" } else { "pause" }
                 ));
                 false
@@ -10437,6 +10444,39 @@ fn wrong() { query(\"text\")[0].play(); }</script>",
         assert!(w.contains("belongs on an `<audio>`"), "{w}");
         let w = said("<template><screen><audio src=\"a.mp3\" @playing=\"go()\" /></screen></template><script>fn go() {}</script>");
         assert!(w.contains("`@timeupdate`"), "the audio's own are listed: {w}");
+    }
+
+    /// A `<video>` before its video is there: a box of a browser's 300 by
+    /// 150, its poster filling it as a picture, its controls in a band over
+    /// it, and its own events (`@loadedmetadata` among them) allowed.
+    #[test]
+    fn video_before_it_loads() {
+        let doc = Document::from_source(
+            "<template><screen><video src=\"clip.mp4\" poster=\"p.png\" controls playsinline                @loadedmetadata=\"x = event.videoWidth\" /></screen></template>
+             <script>let x = signal(0);</script>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
+        let video = find_node(&doc.root, &|n| n.field().media.is_some()).expect("a video node");
+        let m = video.field().media.as_deref().unwrap();
+        assert!(m.video && m.src == "clip.mp4" && m.on[5].is_some());
+        assert_eq!(video.style.width, Some(rux_layout::Len::Px(300.0)));
+        assert_eq!(video.style.height, Some(rux_layout::Len::Px(150.0)));
+        let picture = video.children[0].image.as_ref().expect("the picture first");
+        assert!(picture.src.ends_with("p.png"), "the poster until it plays: {}", picture.src);
+        assert_eq!(picture.fit, rux_layout::ObjectFit::Contain);
+        // Their labels follow whatever `__rux_media` answers, which another
+        // test may have set for every key: here only that they are there.
+        let mut buttons = Vec::new();
+        labels_of(&doc.root, rux_layout::AccessRole::Button, &mut buttons);
+        assert_eq!(buttons.len(), 2, "play and mute: {buttons:?}");
+
+        // Without a poster, the picture is the frame the shell puts up.
+        let doc = Document::from_source("<template><screen><video src=\"clip.mp4\" /></screen></template>").expect("load");
+        let video = find_node(&doc.root, &|n| n.field().media.is_some()).expect("a video node");
+        let src = &video.children[0].image.as_ref().unwrap().src;
+        assert!(src.starts_with(rux_layout::VIDEO_FRAME), "{src}");
+        assert_eq!(video.children.len(), 1, "no controls asked for");
     }
 
     /// A resource's properties: read in a binding, which follows a change

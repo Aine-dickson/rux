@@ -243,7 +243,8 @@ scrollbar-width (auto | thin | none), scrollbar-color (thumb track | auto)
 content-visibility (visible | auto | hidden), contain-intrinsic-size (and -width,
                        -height, -inline-size, -block-size; `auto <length>`)
 overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
-cursor (pointer, on @tap boxes only)
+cursor (every CSS keyword, on any box, inherited; `url()` skipped for the
+                       keyword after it; `auto` is the arrow, also over text)
 touch-action (auto | none | pan-x | pan-y; who wins between a @drag and a
                        scroller, settled at the drag threshold; touch only)
 fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
@@ -379,6 +380,14 @@ matches nothing and says nothing, as in a document's sheet. Class and id names
 read CSS escapes (`.md\:flex`, `.py-1\.5`, `.\31 0`), and a vendor's own
 pseudo-element (`::-webkit-scrollbar`) passes quietly, as it does in every
 other engine.
+
+**`:dir(rtl)` and `:dir(ltr)`** (2026-10-28). The direction the `dir` attribute
+gives an element, its own or its nearest ancestor's, and `ltr` where none
+says, which is what Tailwind's `rtl:` and `ltr:` variants compile to
+(`:where(:dir(rtl), [dir="rtl"], [dir="rtl"] *)`). The attribute and not the
+`direction` property, as in CSS. **Differs from CSS:** `dir="auto"` counts as
+saying nothing, where a browser reads the text inside for its first strong
+letter. `::rtl` and `:rtl` are not CSS, and their warning names `:dir()`.
 
 **CSS-wide keywords** (2026-10-23). `inherit`, `initial`, `unset`, `revert` and
 `revert-layer` read as no declaration at all: a property that inherits takes

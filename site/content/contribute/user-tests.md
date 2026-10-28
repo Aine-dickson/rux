@@ -2905,7 +2905,7 @@ input tap`, focus read from `dumpsys audio`). Not judged by ear.
 |---|---|---|---|
 | Loaded | open the page | controls drawn, `0:00 / 0:12`; `@error` for the missing file | web: pass (`kind` `"unsupported"`: the test server answers an unknown path with the page itself); Android: pass (`"io"`) |
 | Unmuted `autoplay` | open the page | waits, says why | web, Android: pass |
-| Muted `autoplay` | open the page | plays at once, `@play` | Android: pass, **holding no audio focus** (after the fix below; before it, `GAIN` for 12 s). Web: **refused by the browser** in Edge and Brave, as Chromium allows muted autoplay for video only; the console says so. For the owner (plan B.4) |
+| Muted `autoplay` | open the page | plays at once, `@play` | Android: pass, **holding no audio focus** (after the fix below; before it, `GAIN` for 12 s). Web: **refused by the browser** in Edge and Brave, as Chromium allows muted autoplay for video only; the console says so. Owner chose 2026-10-28 to leave it as it is, written down (plan B.4 (c)) |
 | Play, mute | tap play, then the speaker twice | pause icon, time counting, `@play`, `@timeupdate`; crossed speaker | web (Edge, Brave), Android: pass |
 | Muted focus | Android: mute the playing song, then unmute | focus given back, then `GAIN` again | Android: pass |
 | Seek to the end | tap the bar at 90% | `0:12 / 0:12`, `@pause` then `@ended` | web (Edge, Brave), Android: pass |
@@ -2932,6 +2932,104 @@ started in a console of its own so stdin is a terminal.
 
 Not driven: `rux build` (desktop, web, Android) running `before`, and
 `rux run --device` with `watch`; a native/ app's loop.
+
+## Owner's quirks of 2026-10-28: `r-for` index, component warnings, `:dir()`
+
+Desktop, Windows 11, scratch projects.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The owner's nav list | `r-for="(item, index) in navItems" r-if="index != navItems.length - 1"`, rows `{{ index + 1 }}. {{ item }}`, `.row:last-child` tinted | Home, School, Work numbered 1 to 3, Settings left out, Work tinted | pass, screenshot; `rux check` clean, `index.nope` an error on `int` |
+| Three names | `r-for="(a, b, c) in xs"` | a warning naming the form, on its line | pass |
+| A component's mistakes | `header.rux` with `colr: red` in its `<style>`, a bad `r-for`, `r-show` beside `r-for`, used from `app.rux` | each on its line of `header.rux`, none on `app.rux` | pass (before: the CSS one on `app.rux` with no line, which VS Code draws on line 1; the directive ones in `header.rux` with no line) |
+| `:dir()` | `<screen dir="rtl">`, `.a:where(:dir(rtl), [dir="rtl"], [dir="rtl"] *)`, `.b:dir(rtl)`, `.c::rtl` | the first two match with no warning; `::rtl` warns and names `:dir(rtl)` | pass (`rux check`; matching by unit test) |
+
+## Tailwind's directives in `<style>` blocks, 2026-10-28
+
+A scratch project: `assets/input.css` (`@import "tailwindcss"`, a `@theme`
+colour `--color-brand`), `app.rux` with `@reference "./assets/input.css"` and
+`.card { @apply p-4 bg-brand rounded-lg; }`, and `components/header.rux`,
+`<style scoped>`, with `@reference "../assets/input.css"` and
+`.bar { @apply px-4 bg-green-500 hover:bg-green-700; }`. Tailwind v4.3.3
+standalone on PATH. Desktop, Windows 11.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| First check | `rux check app.rux` | both blocks compiled, no problems | pass, 1.9 s (two CLI runs); `.rux-build/tailwind/` holds two files |
+| Cached | the same again | no CLI run | pass, 0.11 s |
+| Window | `rux run app.rux` | green bar padded `px-4`, brand-coloured rounded card | pass, screenshot. `hover:` not driven: injected pointer input does not reach the window here |
+| A misspelt class | `bg-gren-500` in the component | an error on the component's line 6, Tailwind's message | pass |
+| No CLI | PATH without it, a block edited so the cache misses | an error on the line of `@reference`, naming PATH and where the CLI comes from | pass |
+| Release build | `rux build --release`, then `dist/twapp.exe` with `tailwindcss` off PATH and `.rux-build/tailwind` moved aside | the same window, from what the build carried in | **found**: the app failed to load asking for the CLI. The component's `../assets/input.css` is `components/../assets/input.css` in the app's embedded files, which did not resolve the `..`, so its block hashed differently. Fixed (paths resolved before reading), rebuilt: pass, the same window, screenshot |
+
+Not driven: `rux run --device` sending compiled blocks to a phone, and the web
+build. The playground keeps the warning (it has no CLI).
+
+## Network images and `@load` / `@error`, desktop, 2026-10-28
+
+Desktop, Windows 11, a scratch document, the network live.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| `https://` image | `<image src="https://www.rust-lang.org/logos/rust-logo-256x256.png">` (answers 301 first) | the window opens at once, the box takes the logo's size when it comes | pass, screenshot |
+| Background | `background-image: url(https://…/rust-logo-128x128.png)` on a 120x60 box | the logo, `cover` | pass |
+| A host that does not exist | `src="https://example.invalid/x.png"` with a red border | an empty box, no crash | pass |
+| `@load` | a local PNG, the network logo | `event.width`/`height`: `619x925`, `128x128` | pass, screenshot |
+| `@error` | the invalid host | `event.message`: `io: No such host is known. (os error 11001)` | pass |
+| `data:` | the 21 KB `examples/assets/logo.png` as base64 in `src` and in `background-image: url("data:…")` | both drawn | pass, screenshot |
+| SVG | a Tabler-style 24x24 star file at its size and at 120x120; Tailwind forms' checkmark as `data:image/svg+xml` in `background-image` | sharp at both sizes, `@load` 24x24, the check drawn | pass, screenshot |
+| `loading="lazy"` | a 250 px scroller: an eager logo, a 3000 px spacer, a lazy 128x128 logo with `@load`; `setInterval` scrolls to it at 4 s | at 3 s the lazy one has not loaded; after the scroll it has, and shows | pass, screenshots. The same page as a scrolling `<screen>` with a sticky header scrolled but did not show the target, lazy or not: watchlist #54 |
+| `srcset` | by unit test (x, w, `sizes` with a media condition) | | not driven in the window: one density on this machine |
+| `@load` misspelt as a plain `let` | handlers writing a plain `let` | the checker says to make it a signal | pass (and `@load` is no longer "not an event") |
+| Android | the network page as a dev APK (x86_64) on the `rux_test` emulator | the same three boxes | pass, screenshot: both logos over TLS, the empty red box; logcat has `cannot load image https://example.invalid/nothing.png: io: failed to lookup address` |
+
+The APK build is also the proof that `ring` (under rustls) compiles with the
+NDK clang `rux build` now hands C build scripts. Not driven: the web (builds;
+the browser's `fetch` not yet run in a page), and a release APK's `INTERNET`
+on a device (unit-tested in the manifest).
+
+## `<video>`, Windows, 2026-10-28
+
+Step C.2 of `docs/13-file-input-and-media-plan.md`. Under test in
+`rux-video` (H.264 and VP9 fixtures, both decoders, seeks, B-frames) and
+`rux-runtime` (the box before it loads, the poster, the controls, the
+events allowed). **Driven in the window** on Windows from
+`rux-harness/video-el`: a page with `<video controls poster>` on a 6 s
+640x360 H.264 clip (ffmpeg's `testsrc2`, which prints its own time and frame
+number into the picture) logging `@play`, `@pause`, `@ended`, `@error`,
+`@loadedmetadata` and counting `@timeupdate`; a second `<video>` with no
+poster in a 160x120 box; one on a missing file; and two buttons calling
+`play()` and `pause()` through `query()`. Clicks by `SetCursorPos`, read from
+screenshots.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Loaded | open the page | the poster filling a 16:9 box (the clip's shape, not 300x150), the controls band with `0:00 / 0:06`; `size: 640x360` from `@loadedmetadata`; the small one shows the clip's first frame letterboxed on its dark background; `@error` with `kind` `"io"` for the missing file | pass |
+| Play | click the play button | the picture moving in place of the poster, pause icon, the time counting, `@play` | pass |
+| Pause | click pause 2.5 s in | the picture holds (the clip's own counter reads 2.733), `@pause` | pass |
+| Played out | click play, wait | the clip's last frame (frame 179, 5.967 s), play icon, `0:06 / 0:06`, `@pause` then `@ended` | pass, after two fixes (below) |
+| Again | click play after the end | from the start | pass |
+| Script | `query("#clip")[0].play()`, 1.2 s later `.pause()` | plays, then holds at 1.4 s: `@play`, `@pause` | pass |
+| Seek | drag the thumb to four fifths | the frame at 4.467 s while paused | pass |
+| 1080p60 | release build, `<video autoplay muted loop>` on a 10 s 1920x1080 60 fps H.264 file, filling the window, 20 s | 60 renders a second, every frame shown | pass: 0 to 1 frames of 300 passed over per 5 s; 2.0 ms median (3.6 p95) to write a frame into its texture |
+
+Found by the driving and fixed before the commit:
+- **It never ended.** Media Foundation stamped the clip's frames 0.067 s
+  late (it ignores the MP4 edit list ffmpeg writes for B-frames), so the
+  last two came after the clip's own 6.0 s and the clock, which stops at
+  the length, never reached them. The decoder now starts the pictures at 0
+  (`rux-video`, under test with a B-frame fixture), and a picture stamped
+  past the length ends the video.
+- **Frames were missed at 1080p60**: about 100 in 300 at first, as the
+  player decoded the next picture before showing a due one. Shown first and
+  decoded after, then 8 to 17; with four pictures decoded ahead, 0 to 1.
+- **The controls never moved and the box kept 300 by 150**: a `Video`'s
+  properties were read through a module interface that declared only
+  `Sound`'s. `Video` is declared beside it.
+- **`rux check` overflowed a debug build's stack** on the shipped examples
+  and a fresh project (watchlist #41) with the `<video>` branch inside the
+  element builder's recursion. The branch is a function of its own, as
+  `<text>`'s is.
 
 ## Standing gaps
 

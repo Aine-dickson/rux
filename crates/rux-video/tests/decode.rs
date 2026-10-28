@@ -127,6 +127,27 @@ fn seeks(mut d: Decoder) {
     assert!(rest <= 1, "{rest} frames after the end");
 }
 
+/// Two B-frames, so ffmpeg writes an edit list that Media Foundation does
+/// not apply: the pictures still start at 0 and end inside the length.
+#[cfg(windows)]
+#[test]
+fn b_frames_start_at_zero() {
+    for gpu in [true, false] {
+        let mut d = Decoder::open_on(fixture("bframes.mp4"), gpu).unwrap();
+        let mut frames = Vec::new();
+        while let Some(f) = d.next_frame().unwrap() {
+            check("bframes.mp4", &f);
+            frames.push(f.time);
+        }
+        assert_eq!(frames.len(), 20, "{frames:?}");
+        assert!(frames[0].abs() < 1e-3 && (frames[19] - 1.9).abs() < 1e-3, "{frames:?}");
+        d.seek(1.25).unwrap();
+        let f = d.next_frame().unwrap().unwrap();
+        assert!((f.time - 1.2).abs() < 0.01, "{f:?}");
+        check("bframes.mp4 after a seek", &f);
+    }
+}
+
 #[test]
 fn not_a_video_is_an_error() {
     let bytes: Arc<[u8]> = b"this is not a video".to_vec().into();

@@ -27,11 +27,14 @@
 //! because two places doing the same coordinate arithmetic eventually disagree.
 
 mod dialogs;
-/// `<audio>`: the sound each element plays, and its events.
+/// `<audio>` and `<video>`: what each element plays, and its events.
 mod media;
 mod image_events;
 #[cfg(not(target_arch = "wasm32"))]
 mod sound;
+/// `<video>`'s player and its pictures' road to the screen.
+#[cfg(not(target_arch = "wasm32"))]
+mod video;
 #[cfg(target_arch = "wasm32")]
 mod web_sound;
 mod files;
@@ -98,6 +101,9 @@ enum RuxEvent {
     /// was dismissed. The input is in [`App::pending_file`], for the reason
     /// a select's is in `pending_select`.
     PickedFiles { files: Option<Vec<rux_runtime::native::Any>> },
+    /// A `<video>` put up a new picture: drawn, with nothing rebuilt.
+    #[cfg(not(target_arch = "wasm32"))]
+    VideoFrame,
     /// The `.rux` file changed on disk.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     Reload,
@@ -7400,6 +7406,19 @@ impl App {
         // Only what can be seen is drawn: the whole surface, in logical pixels,
         // the part under a soft keyboard included, since a paint may reach it.
         let surface = ((width as f64 / scale) as f32, (height as f64 / scale) as f32);
+        // Each `<video>`'s newest picture into its texture, before the scene
+        // that draws it is built.
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let device_handle = &context.devices[state.surface.dev_id];
+            video::upload(
+                &media::videos(),
+                &device_handle.device,
+                &device_handle.queue,
+                &mut state.renderer,
+                images,
+            );
+        }
         // A `filter` or `backdrop-filter` is drawn apart, and run through its
         // passes just before the frame is drawn: see `filter`.
         let (content, apart) = profile::time(Phase::Scene, || {
@@ -7882,6 +7901,8 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.request_redraw();
                 }
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            RuxEvent::VideoFrame => self.request_redraw(),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             RuxEvent::Reload => self.reload(),
 
@@ -10958,6 +10979,13 @@ fn wake_on_answers(event_loop: &EventLoop<RuxEvent>) {
     // functions (the file dialogs) are put in place for every document.
     install_rux_modules();
     let proxy = event_loop.create_proxy();
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let proxy = proxy.clone();
+        video::set_frame_wake(move || {
+            let _ = proxy.send_event(RuxEvent::VideoFrame);
+        });
+    }
     rux_runtime::host::set_waker(move || {
         let _ = proxy.send_event(RuxEvent::Answered);
     });

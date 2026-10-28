@@ -78,6 +78,7 @@ pub fn builtin_interface() -> rux_native::Interface {
         ]
         .into_iter()
         .chain(sound_items())
+        .chain(video_items())
         .collect(),
     }
 }
@@ -118,6 +119,48 @@ fn sound_items() -> Vec<rux_native::Item> {
         // `none` while the file has not said.
         property("duration", "float?", false),
         property("playing", "bool", false),
+    ]
+}
+
+/// A `<video>`'s player (C.2), shaped as a [`Sound`](sound_items) with the
+/// picture's size besides. Only the element makes one, through a
+/// `loadVideo` this does not declare, so no script can call it; declared
+/// here so the element's controls can read it, and `__rux_media(key)` give
+/// it to a script.
+fn video_items() -> Vec<rux_native::Item> {
+    use rux_native::{Item, Sig};
+    let method = |name: &str, params: &[(&str, &str)]| Item {
+        name: name.into(),
+        kind: ItemKind::Method {
+            on: "Video".into(),
+            sig: Sig {
+                params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+                result: "void".into(),
+                is_async: false,
+            },
+        },
+    };
+    let property = |name: &str, ty: &str, writable: bool| Item {
+        name: name.into(),
+        kind: ItemKind::Property { on: "Video".into(), ty: ty.into(), writable },
+    };
+    vec![
+        Item { name: "Video".into(), kind: ItemKind::Resource },
+        method("play", &[]),
+        method("pause", &[]),
+        method("stop", &[]),
+        method("seek", &[("seconds", "float")]),
+        property("volume", "float", true),
+        property("loop", "bool", true),
+        property("currentTime", "float", true),
+        property("duration", "float?", false),
+        property("playing", "bool", false),
+        property("videoWidth", "int", false),
+        property("videoHeight", "int", false),
+        // Played or sought: the poster has given way to the picture.
+        property("started", "bool", false),
+        // Why it stopped part way, as `kind` and `message` with a tab between.
+        property("error", "string?", false),
     ]
 }
 

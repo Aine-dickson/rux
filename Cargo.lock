@@ -3356,6 +3356,7 @@ dependencies = [
  "rux-reactive",
  "rux-runtime",
  "rux-text",
+ "rux-video",
  "serde_json",
  "vello",
  "wasm-bindgen",

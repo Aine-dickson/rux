@@ -630,6 +630,37 @@ plays and on a seek, each with `event.currentTime` and `event.duration`
 A sound of unknown length has no end Rux can see, so it only pauses there.
 What is written between `<audio>` and `</audio>` is never shown, as a
 browser shows it only when it has no audio at all, and Rux says so.
+`@loadedmetadata` fires once it is loaded, with `event.duration`.
+
+### `<video>`: a video, and its controls
+```rux
+<video src="clips/intro.mp4" poster="clips/intro.png" controls />
+```
+`<audio>` with a picture: the same attributes (`src`, `controls`,
+`autoplay`, `loop`, `muted`, `preload`), the same events, and the same reach
+from script, plus `poster`, and `playsinline`, which is accepted and is what
+Rux always does. `@loadedmetadata` gives `event.videoWidth` and
+`event.videoHeight`.
+
+**Sized as a browser sizes one**: by its picture when CSS gives no size, the
+other side by the picture's shape when CSS gives one, 300 by 150 until the
+picture's size is known. The picture is fitted by `object-fit` and
+`object-position`, **`contain` unless set**, as a browser's own stylesheet
+has it, so a video in a box of another shape is letterboxed on the box's
+`background`. `poster` shows until the first play or seek; without one, the
+first frame does. With `controls`, the `<audio>` controls lie in a dark band
+along the bottom of the picture, in white.
+
+**Windows only for now.** The picture is decoded by Media Foundation, on the
+GPU where there is one: H.264 always, and VP9, HEVC and AV1 when their store
+extensions are installed. Anywhere else, or a format the machine has no
+decoder for, `@error` fires with `kind` `"unsupported"` and the poster stays.
+**There is no sound yet** (step C.3 of the plan): `muted` and the mute
+button change nothing you can hear.
+
+A picture the decoder delivers too late to be on time is passed over, as
+every player does, so a slow machine shows fewer frames rather than falling
+behind. A 1080p60 H.264 file shows every frame on the dev machine.
 
 ### Layout: **use `display: flex`**
 > **DIVERGENCE from docs 01–04.** The inline/block-by-role model was **built and

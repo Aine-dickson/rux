@@ -1,5 +1,8 @@
 //! `<audio>` (`docs/13-file-input-and-media-plan.md`, B.3): the sound each
 //! element plays, kept here under the element's key, and the events it fires.
+//! `<video>` (C.2) is the same with a `Video` in place of the `Sound`
+//! (`crate::video`): every call is made on the handle's own type, so one
+//! path drives both.
 //!
 //! **One code path on every platform.** A sound is loaded and played through
 //! Rux's own module's calls, the same `loadSound` and `Sound` a script has
@@ -45,6 +48,10 @@ enum Load {
 
 struct Entry {
     src: String,
+    /// A `<video>`, loaded with `loadVideo`.
+    video: bool,
+    /// `@loadedmetadata` has been given.
+    met: bool,
     load: Load,
     /// What `loop` and `muted` were last given to the sound as.
     looping: Option<bool>,
@@ -59,13 +66,17 @@ struct Entry {
     reported: f64,
     /// Why it could not be loaded, until `@error` has been given it.
     error: Option<Error>,
+    /// A video's own failure part way has been given as `@error`.
+    failed_once: bool,
     seen: bool,
 }
 
 impl Entry {
-    fn new(src: &str) -> Entry {
+    fn new(src: &str, video: bool) -> Entry {
         Entry {
             src: src.to_string(),
+            video,
+            met: false,
             load: Load::Idle,
             looping: None,
             muted: None,
@@ -74,6 +85,7 @@ impl Entry {
             playing: false,
             reported: 0.0,
             error: None,
+            failed_once: false,
             seen: true,
         }
     }
@@ -105,16 +117,21 @@ pub(crate) fn activate() {
     ACTIVATED.store(true, Ordering::Relaxed);
 }
 
-/// One of the `Sound` calls Rux's own module has.
+/// One of the `Sound` or `Video` calls Rux's own module has.
 fn call(key: &str, args: Vec<Any>) -> Result<Any, Error> {
     match registry::call(rux_runtime::builtins::BUILTIN_MODULE, key) {
         Some(Call::Sync(f)) => f(args),
-        _ => Err(Error::new("unsupported", "this build has no sound")),
+        _ => Err(Error::new("unsupported", "this build cannot play it")),
     }
 }
 
-fn on(h: &Handle, key: &str) -> Any {
-    call(key, vec![Any::Resource(h.clone())]).unwrap_or(Any::None)
+/// `what` of the sound or video `h` is: `Sound.playing`, `Video.playing`.
+fn named(h: &Handle, what: &str) -> String {
+    format!("{}.{what}", h.type_name())
+}
+
+fn on(h: &Handle, what: &str) -> Any {
+    call(&named(h, what), vec![Any::Resource(h.clone())]).unwrap_or(Any::None)
 }
 
 fn number(a: Any) -> Option<f64> {
@@ -129,16 +146,19 @@ fn number(a: Any) -> Option<f64> {
 fn act(h: &Handle, what: &str, args: Vec<Any>) {
     let mut all = vec![Any::Resource(h.clone())];
     all.extend(args);
-    if let Err(e) = call(what, all) {
-        rux_runtime::warn_script(format!("an `<audio>` could not {}: {}", what.trim_start_matches("Sound."), e.message));
+    if let Err(e) = call(&named(h, what), all) {
+        let tag = if h.type_name() == "Video" { "a `<video>`" } else { "an `<audio>`" };
+        rux_runtime::warn_script(format!("{tag} could not {}: {}", what.trim_end_matches('='), e.message));
     }
 }
 
 /// Start reading `src` for the element keyed `key`, on the thread an
 /// `async` native call runs on; the answer is kept and the window woken.
 fn start_load(key: &str, e: &mut Entry) {
-    let Some(Call::Async(f)) = registry::call(rux_runtime::builtins::BUILTIN_MODULE, "loadSound") else {
-        e.error = Some(Error::new("unsupported", "this build has no sound"));
+    let load = if e.video { "loadVideo" } else { "loadSound" };
+    let Some(Call::Async(f)) = registry::call(rux_runtime::builtins::BUILTIN_MODULE, load) else {
+        let what = if e.video { "video" } else { "sound" };
+        e.error = Some(Error::new("unsupported", format!("this build plays no {what}")));
         e.load = Load::Failed;
         return;
     };
@@ -155,7 +175,7 @@ fn start_load(key: &str, e: &mut Entry) {
                 match answer {
                     Ok(Any::Resource(h)) => e.load = Load::Ready(h),
                     Ok(_) => {
-                        e.error = Some(Error::new("type", "`loadSound` gave something that is not a `Sound`"));
+                        e.error = Some(Error::new("type", format!("`{load}` gave something that is not playable")));
                         e.load = Load::Failed;
                     }
                     Err(err) => {
@@ -173,7 +193,7 @@ fn start_load(key: &str, e: &mut Entry) {
 /// voice in the mixer) would otherwise play on with no element.
 fn forget(e: Entry) {
     if let Load::Ready(h) = &e.load {
-        act(h, "Sound.stop", Vec::new());
+        act(h, "stop", Vec::new());
     }
 }
 
@@ -185,13 +205,13 @@ pub(crate) fn ask(key: &str, what: MediaAsk) {
     e.autoplayed = true;
     match &e.load {
         Load::Ready(h) => {
-            let playing = matches!(on(h, "Sound.playing"), Any::Bool(true));
+            let playing = matches!(on(h, "playing"), Any::Bool(true));
             let play = match what {
                 MediaAsk::Play => true,
                 MediaAsk::Pause => false,
                 MediaAsk::Toggle => !playing,
             };
-            act(h, if play { "Sound.play" } else { "Sound.pause" }, Vec::new());
+            act(h, if play { "play" } else { "pause" }, Vec::new());
         }
         // Not there yet: played once it is, which for `preload="none"` is
         // once this asks for it.
@@ -206,7 +226,8 @@ pub(crate) fn ask(key: &str, what: MediaAsk) {
     }
 }
 
-/// Every `<audio>` in the tree, with the instance its handlers run in.
+/// Every `<audio>` and `<video>` in the tree, with the instance its
+/// handlers run in.
 fn walk<'a>(node: &'a LayoutNode, out: &mut Vec<(&'a Media, Option<&'a str>)>) {
     if let Some(m) = node.field().media.as_deref() {
         out.push((m, node.instance.as_deref()));
@@ -235,11 +256,11 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
             e.seen = false;
         }
         for (m, instance) in found {
-            let e = map.entry(m.key.clone()).or_insert_with(|| Entry::new(&m.src));
+            let e = map.entry(m.key.clone()).or_insert_with(|| Entry::new(&m.src, m.video));
             e.seen = true;
             // A new `src` is a new sound, as a browser has it.
-            if e.src != m.src {
-                gone.push(std::mem::replace(e, Entry::new(&m.src)));
+            if e.src != m.src || e.video != m.video {
+                gone.push(std::mem::replace(e, Entry::new(&m.src, m.video)));
             }
             if matches!(e.load, Load::Idle) && !m.lazy && !e.src.is_empty() {
                 start_load(&m.key, e);
@@ -254,38 +275,63 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
             }
             let Load::Ready(h) = &e.load else { continue };
             let h = h.clone();
+            if !e.met {
+                e.met = true;
+                let size = |what| match on(&h, what) {
+                    Any::Int(n) => n,
+                    _ => 0,
+                };
+                fire(
+                    &mut out,
+                    5,
+                    record(&[
+                        ("duration", number(on(&h, "duration")).map_or(Value::Null, Value::Number)),
+                        ("videoWidth", Value::Number(size("videoWidth") as f64)),
+                        ("videoHeight", Value::Number(size("videoHeight") as f64)),
+                    ]),
+                );
+            }
+            // A video that stopped decoding part way says so once.
+            if let Some(Any::Str(err)) = e.video.then(|| on(&h, "error")) {
+                let (kind, message) = err.split_once('\t').unwrap_or(("decode", &err));
+                if e.error.is_none() && !e.failed_once {
+                    e.failed_once = true;
+                    fire(&mut out, 4, record(&[("kind", Value::Text(kind.into())), ("message", Value::Text(message.into()))]));
+                }
+            }
             if e.looping != Some(m.looping) {
-                act(&h, "Sound.loop=", vec![Any::Bool(m.looping)]);
+                act(&h, "loop=", vec![Any::Bool(m.looping)]);
                 e.looping = Some(m.looping);
             }
             if e.muted != Some(m.muted) {
                 // `muted` is the volume at nothing, which the mute button
                 // reads; unmuted is the volume as recorded.
-                act(&h, "Sound.volume=", vec![Any::Float(if m.muted { 0.0 } else { 1.0 })]);
+                act(&h, "volume=", vec![Any::Float(if m.muted { 0.0 } else { 1.0 })]);
                 e.muted = Some(m.muted);
             }
             if e.play_when_ready {
                 e.play_when_ready = false;
                 e.autoplayed = true;
-                act(&h, "Sound.play", Vec::new());
+                act(&h, "play", Vec::new());
             } else if !e.autoplayed {
                 e.autoplayed = true;
                 if m.autoplay {
                     if m.muted || ACTIVATED.load(Ordering::Relaxed) {
-                        act(&h, "Sound.play", Vec::new());
+                        act(&h, "play", Vec::new());
                     } else {
                         rux_runtime::warn_script(format!(
-                            "`<audio autoplay src=\"{}\">` did not play: a sound plays by itself only \
+                            "`<{} autoplay src=\"{}\">` did not play: it plays by itself only \
                              when it is `muted` or once the person has pressed something, as a browser \
                              has it. Add `muted`, or play it from a tap",
+                            if m.video { "video" } else { "audio" },
                             m.src
                         ));
                     }
                 }
             }
-            let playing = matches!(on(&h, "Sound.playing"), Any::Bool(true));
-            let time = number(on(&h, "Sound.currentTime")).unwrap_or(0.0);
-            let duration = number(on(&h, "Sound.duration"));
+            let playing = matches!(on(&h, "playing"), Any::Bool(true));
+            let time = number(on(&h, "currentTime")).unwrap_or(0.0);
+            let duration = number(on(&h, "duration"));
             let now = || {
                 record(&[
                     ("currentTime", Value::Number(time)),
@@ -317,6 +363,19 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
         forget(e);
     }
     out
+}
+
+/// Every `<video>` playing now, by key, for the frame's upload.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn videos() -> Vec<(String, std::sync::Arc<crate::video::Player>)> {
+    let guard = sounds();
+    let Some(map) = guard.as_ref() else { return Vec::new() };
+    map.iter()
+        .filter_map(|(k, e)| match &e.load {
+            Load::Ready(h) => crate::video::player(h).map(|p| (k.clone(), p)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn record(fields: &[(&str, Value)]) -> Value {

@@ -12,7 +12,7 @@ weight = 5
 > differs from stock rhai and from JavaScript.
 
 - `<script>` is **rhai**, forked as `rux-rhai`. `let x = signal(v)` declares state (numbers coerce to float).
-- `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"`, `r-show`.
+- `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"` or `r-for="(x, i) in list"`, `r-show`.
 - `@tap="…"` handlers.
 - `use native::m;` then `m.fn()` calls the app's own compiled Rust, exported with `#[rux::export]` from its `native/` crate. See [Script, Native code](/reference/script/#native-code).
 - `{ key: value }` is a map, as in JavaScript, so `:class="{ active: on }"` and

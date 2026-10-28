@@ -50,7 +50,7 @@ const VOID_TAGS: &[&str] = &[
 /// is documented with the router rather than on its own. It is still a tag Rux
 /// defines, which is what this list is for.
 const ELEMENT_TAGS: &[&str] = &[
-    "screen", "view", "text", "image", "path", "button", "input", "audio", //
+    "screen", "view", "text", "image", "path", "button", "input", "audio", "video", //
     "slot", "router", "route", "router-view",
 ];
 
@@ -91,6 +91,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[&str])] = &[
     ),
     ("button", &["disabled", "type"]),
     ("audio", &["src", "controls", "autoplay", "loop", "muted", "preload"]),
+    ("video", &["src", "controls", "autoplay", "loop", "muted", "preload", "poster", "playsinline"]),
     ("route", &["path", "view", "fallback", "guard", "name"]),
     ("router", &["restore-scroll", "guard"]),
     ("text", &["for"]),
@@ -105,6 +106,7 @@ const BOUND_ELEMENT: &[(&str, &[&str])] = &[
     ("input", &["options", "disabled", "readonly", "required"]),
     ("button", &["disabled"]),
     ("audio", &["src", "controls", "autoplay", "loop", "muted"]),
+    ("video", &["src", "poster", "controls", "autoplay", "loop", "muted"]),
 ];
 
 /// Whether `<tag name>` means something to Rux, `name` written as it appears

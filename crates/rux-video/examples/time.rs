@@ -22,12 +22,17 @@ fn main() {
         t.elapsed().as_secs_f64() * 1000.0
     );
     let mut ms = Vec::new();
+    let mut times = Vec::new();
     loop {
         let t = Instant::now();
-        let Some(_) = d.next_frame().expect("decode") else {
+        let Some(f) = d.next_frame().expect("decode") else {
             break;
         };
         ms.push(t.elapsed().as_secs_f64() * 1000.0);
+        times.push(f.time);
+    }
+    if let (Some(first), Some(last)) = (times.first(), times.last()) {
+        println!("frames from {first:.3} s to {last:.3} s");
     }
     ms.sort_by(f64::total_cmp);
     // A second open, as a second video on the page would be.

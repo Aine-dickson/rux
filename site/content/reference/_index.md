@@ -70,6 +70,36 @@ under [Tooling](/tooling/), along with how to set up the VS Code extension.
 - [Accessibility](/reference/accessibility/): The real accessibility tree, the roles elements map to, and what a screen reader is told.
 - [Errors](/reference/errors/): What happens when a document will not load, and what the overlay shows.
 
+### `<video>`: a video, and its controls
+```rux
+<video src="clips/intro.mp4" poster="clips/intro.png" controls />
+```
+`<audio>` with a picture: the same attributes (`src`, `controls`,
+`autoplay`, `loop`, `muted`, `preload`), the same events, and the same reach
+from script, plus `poster`, and `playsinline`, which is accepted and is what
+Rux always does. `@loadedmetadata` gives `event.videoWidth` and
+`event.videoHeight`.
+
+**Sized as a browser sizes one**: by its picture when CSS gives no size, the
+other side by the picture's shape when CSS gives one, 300 by 150 until the
+picture's size is known. The picture is fitted by `object-fit` and
+`object-position`, **`contain` unless set**, as a browser's own stylesheet
+has it, so a video in a box of another shape is letterboxed on the box's
+`background`. `poster` shows until the first play or seek; without one, the
+first frame does. With `controls`, the `<audio>` controls lie in a dark band
+along the bottom of the picture, in white.
+
+**Windows only for now.** The picture is decoded by Media Foundation, on the
+GPU where there is one: H.264 always, and VP9, HEVC and AV1 when their store
+extensions are installed. Anywhere else, or a format the machine has no
+decoder for, `@error` fires with `kind` `"unsupported"` and the poster stays.
+**There is no sound yet** (step C.3 of the plan): `muted` and the mute
+button change nothing you can hear.
+
+A picture the decoder delivers too late to be on time is passed over, as
+every player does, so a slow machine shows fewer frames rather than falling
+behind. A 1080p60 H.264 file shows every frame on the dev machine.
+
 ### `position`, and which box an out-of-flow one is measured against
 
 All five of `static`, `relative`, `sticky`, `absolute` and `fixed` mean what CSS
@@ -237,6 +267,17 @@ reported in the overlay rather than hung on.
 Both are document-level today: a component's own `computed`/`effect` lines are
 stripped, not run. Driven in `examples/computed.rux`.
 
+**The index, and filtering rows** (2026-10-28): `r-for="(item, i) in items"`
+binds the row's index too, an `int` from 0, as a script's `for (item, i) in items`
+does. An `r-if` on the same element is read once a row, with both in scope,
+and leaves out the rows it is false for; the index still counts every row of
+the collection. This is Vue 2's order, not Vue 3's (which reads `v-if` before
+the loop, where the item does not exist yet). `r-elif`, `r-else` and `r-show`
+beside `r-for` still do nothing and warn.
+```html
+<view r-for="(item, i) in navItems" r-if="i != navItems.length - 1"> … </view>
+```
+
 **Keyed lists:** `r-key` on the same element as `r-for` says what a row *is*,
 rather than where it sits:
 ```html
@@ -343,6 +384,36 @@ The playground is the exception: it has source text and no file, so there is
 nothing for a path to be relative to and nothing to read. An include there is
 ignored, with a warning saying exactly that. Driven in
 `examples/shared-style.rux`, which shares `examples/palette.css`.
+
+**Tailwind's directives in a `<style>` block** (2026-10-28, as Vite does it).
+A file's `<style>` that uses `@apply`, `@reference`, `@utility`, `@variant`,
+`@custom-variant`, `@theme`, `@source`, `@plugin`, `@config` or `@tailwind` is
+handed to the `tailwindcss` CLI on PATH, run in the file's folder, and the CSS
+it writes back is used in the block's place, after the includes. A block with
+none never reaches the CLI.
+```html
+<style scoped>
+  @reference "../assets/app.css";
+  .bar { @apply px-4 bg-green-500 hover:bg-green-700; }
+</style>
+```
+- **Cached** in `.rux-build/tailwind/<hash>.css` under the project root,
+  hashed over the block's text and the contents of the files it names by a
+  relative path (`@reference`, `@import`, `@plugin`, `@config`). A file those
+  import in turn, and the CLI's version, are not in the hash: editing one keeps
+  the old result until the block or the named file changes.
+- **Carried by `rux build`** and by `rux run --device`'s hot reload, which
+  compile every block on the machine and send the cache files with the
+  documents. The app finds them under the same path through its embedded
+  source, so a phone or a browser never runs Tailwind.
+- **A failure fails the load**, as a missing stylesheet does: Tailwind's
+  message (`Cannot apply unknown utility class `bg-gren-500``) on the line
+  of the class it names, and a missing CLI on the line of the first
+  directive.
+- **Lines inside a compiled block are lost.** A warning from its CSS names the
+  file and no line, since the rules Rux reads are the CLI's layout of them.
+- **The playground and a document loaded from source** compile nothing: the
+  directive warns, and says to move the rule into Tailwind's input file.
 
 **Custom properties + `var()`:** `--name: value` declarations **inherit** down the
 tree (like `color`), so a palette declared once is readable anywhere below:

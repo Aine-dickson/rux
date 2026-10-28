@@ -43,6 +43,7 @@ pollster.workspace = true
 # `loadSound`: decoding and the mixer, on the desktop and Android alike. A
 # browser plays a sound itself.
 rux-audio.workspace = true
+rux-video.workspace = true
 
 # Desktop-only platform services, and "desktop" here means neither a browser nor
 # a phone. Each of these wraps something both of those either lack or spell

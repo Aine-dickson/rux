@@ -120,7 +120,23 @@ impl ImageCache {
         Self::default()
     }
 
+    /// What a `<video>` shows now ([`rux_layout::VIDEO_FRAME`] and its key),
+    /// or `None` once it has gone.
+    pub fn set_frame(&mut self, src: &str, frame: Option<ImageBrush>) {
+        match frame {
+            Some(brush) => {
+                self.images.insert(src.to_string(), Some(Picture::Bitmap(brush)));
+            }
+            None => {
+                self.images.remove(src);
+            }
+        }
+    }
+
     fn picture(&mut self, src: &str) -> Option<&Picture> {
+        if src.starts_with(rux_layout::VIDEO_FRAME) {
+            return self.images.get(src).and_then(Option::as_ref);
+        }
         let arrived = rux_layout::images_arrived();
         if arrived != self.arrived {
             self.arrived = arrived;

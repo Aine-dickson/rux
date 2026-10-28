@@ -41,6 +41,8 @@ pub(crate) fn install_builtins() {
     calls.extend(crate::files::calls());
     #[cfg(not(target_arch = "wasm32"))]
     calls.extend(crate::sound::calls());
+    #[cfg(not(target_arch = "wasm32"))]
+    calls.extend(crate::video::calls());
     // A browser plays a sound itself, through its own audio element.
     #[cfg(target_arch = "wasm32")]
     calls.extend(crate::web_sound::calls());

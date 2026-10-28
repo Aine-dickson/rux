@@ -2076,6 +2076,387 @@ fn clock(secs: f64) -> String {
     }
 }
 
+/// An `<audio>` or `<video>`: the element, its controls, and a video's
+/// picture.
+///
+/// Its own function for the reason [`build_text`] is: [`build_node_inner`]
+/// recurses once per element, and with this inline the `<video>` branch took
+/// a fresh project's `rux check` over a debug build's stack (watchlist #41).
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn build_media(
+    el: &Element,
+    comps: &Components,
+    ancestors: &mut Vec<AncNode>,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    tpl_path: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    instance: Option<&str>,
+    row: Option<&str>,
+    props: HashMap<String, String>,
+    style: Style,
+    on_tap: Option<String>,
+    gestures: Vec<(rux_layout::Gesture, String)>,
+    hidden: bool,
+    state_path: Option<Vec<usize>>,
+    color: Rgba,
+    selection: SelectionStyle,
+    font_size: f32,
+    font_family: Option<String>,
+    vars: Vars,
+    direction: rux_layout::Direction,
+    own_text: TextInherit,
+    shadows: Option<Arc<Vec<rux_layout::TextShadow>>>,
+    look: Option<Arc<TextLook>>,
+) -> LayoutNode {
+    let baked = handler_locals(locals, instance, instances).to_vec();
+    let baked = &baked[..];
+    let video = el.tag == "video";
+    let mut deps: HashSet<String> = HashSet::new();
+    let src = match el.attr(":src") {
+        Some(e) => {
+            let (v, read) = located(el.attr_line(":src"), || engine.eval_display_tracked(e, locals));
+            deps.extend(read);
+            v
+        }
+        None => el.attr("src").unwrap_or_default().to_string(),
+    };
+    let controls = bool_attr(el, "controls", engine, locals, &mut deps);
+    let lazy = match el.attr("preload").map(str::trim) {
+        None | Some("auto" | "metadata" | "") => false,
+        Some("none") => true,
+        Some(other) => {
+            located(el.attr_line("preload"), || {
+                warn(format!("`preload=\"{other}\"` is not a value Rux knows; use `none`, `metadata` or `auto`"))
+            });
+            false
+        }
+    };
+    if el.children.iter().any(|c| !matches!(c, TplNode::Text(t, _) if t.trim().is_empty())) {
+        located(Some(el.line), || {
+            warn(
+                format!(
+                    "what is written inside a `<{0}>` is never shown: a browser shows it only \
+                     when it cannot play {0} at all. Give the file as `src`",
+                    el.tag
+                ),
+            )
+        });
+    }
+    let key = media_key(instance, tpl_path, row);
+    let media = rux_layout::Media {
+        src,
+        autoplay: bool_attr(el, "autoplay", engine, locals, &mut deps),
+        looping: bool_attr(el, "loop", engine, locals, &mut deps),
+        muted: bool_attr(el, "muted", engine, locals, &mut deps),
+        lazy,
+        video,
+        on: rux_layout::Media::EVENTS.map(|e| el.attr(&format!("@{e}")).map(|h| bind_locals(h, baked))),
+        key: key.clone(),
+    };
+
+    // What the element's sound or video is doing, read so the node is
+    // rebuilt as it moves. A video's picture size and whether it has
+    // started are read with or without controls: they size the box and
+    // take the poster away.
+    let now = if controls || video {
+        let m = rux_script::MEDIA_FN;
+        let mut reads = format!(
+            "[{m}(\"{key}\")?.playing, {m}(\"{key}\")?.currentTime, {m}(\"{key}\")?.duration, \
+             {m}(\"{key}\")?.volume"
+        );
+        if video {
+            reads.push_str(&format!(
+                ", {m}(\"{key}\")?.videoWidth, {m}(\"{key}\")?.videoHeight, {m}(\"{key}\")?.started"
+            ));
+        }
+        reads.push(']');
+        let (now, read) = engine.eval_value_tracked(&reads, locals);
+        deps.extend(read);
+        now.and_then(|v| v.as_list().map(<[Value]>::to_vec)).unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    // Over a picture the controls are white on a dark band, as every
+    // player has them, whatever the page's text colour.
+    let ink = if video { Rgba::new(1.0, 1.0, 1.0, 1.0) } else { color };
+
+    let mut style = style;
+    let mut node = if controls {
+        let accent = props.get("accent-color").and_then(|v| parse_color(v)).unwrap_or(SWITCH_ON);
+        let playing = now.first().is_some_and(Value::is_truthy);
+        let time = now.get(1).and_then(Value::as_number).unwrap_or(0.0);
+        let duration = now.get(2).and_then(Value::as_number).filter(|d| d.is_finite() && *d > 0.0);
+        let silent = now.get(3).and_then(Value::as_number).is_some_and(|v| v <= 0.0);
+        let child_inherited = Inherited {
+            color: ink,
+            selection: selection.clone(),
+            font_size,
+            font_family: font_family.clone(),
+            vars: Rc::clone(&vars),
+            run: None,
+            direction,
+            text: own_text,
+            shadows: shadows.clone(),
+            look: look.clone(),
+        };
+        let shown = match duration {
+            Some(d) => format!("{} / {}", clock(time), clock(d)),
+            None => clock(time),
+        };
+        let at = |i: usize| path.iter().copied().chain([i]).collect::<Vec<usize>>();
+        let time_el = Element {
+            tag: "text".to_string(),
+            attrs: vec![rux_parser::Attr {
+                name: "style".to_string(),
+                value: "white-space: nowrap; font-variant-numeric: tabular-nums; margin: 0 4px".to_string(),
+                line: el.line,
+                has_value: true,
+            }],
+            children: vec![TplNode::Text(shown.clone(), el.line)],
+            line: el.line,
+        };
+        let time_node = build_node(
+            &time_el, &[], comps, ancestors, &[], &child_inherited, engine, locals, &at(1), &at(1), reg,
+            state, instances, swaps, instance, None, None, row, None,
+        );
+        let fraction = duration.map_or(0.0, |d| (time / d).clamp(0.0, 1.0)) as f32;
+        let m = format!("let __m = {}(\"{key}\");", rux_script::MEDIA_FN);
+        let seek = format!(
+            "{m} if __m != none {{ let __d = __m.duration; if __d != none {{ \
+             __m.seek(max(0.0, min(1.0, event.x / event.width)) * __d) }} }}"
+        );
+        let mut parts = vec![
+            media_button(
+                &at(0),
+                if playing { AUDIO_PAUSE } else { AUDIO_PLAY },
+                ink,
+                if playing { "Pause" } else { "Play" },
+                format!("{}(\"{key}\", \"toggle\")", rux_script::MEDIA_ASK_FN),
+            ),
+            time_node,
+        ];
+        let mut bar = LayoutNode::new(Style {
+            display: Display::Flex,
+            align: Some(Align::Center),
+            grow: 1.0,
+            basis: Some(Len::Px(0.0)),
+            height: Some(Len::Px(32.0)),
+            margin: Sides { top: 0.0, right: 4.0, bottom: 0.0, left: 4.0 },
+            ..Default::default()
+        });
+        let part = |grow: f32, color: Rgba| {
+            LayoutNode::new(Style {
+                display: Display::Flex,
+                grow,
+                basis: Some(Len::Px(0.0)),
+                height: Some(Len::Px(SLIDER_BAR)),
+                background: Some(Background::Color(color)),
+                radius: [CIRCLE; 4],
+                ..Default::default()
+            })
+        };
+        bar.children.push(part(fraction, accent));
+        bar.children.push(LayoutNode::new(Style {
+            display: Display::Flex,
+            width: Some(Len::Px(AUDIO_THUMB)),
+            height: Some(Len::Px(AUDIO_THUMB)),
+            shrink: 0.0,
+            background: Some(Background::Color(accent)),
+            radius: [CIRCLE; 4],
+            ..Default::default()
+        }));
+        bar.children.push(part(1.0 - fraction, SLIDER_REST));
+        // Guarded on `event.x` as the slider's is: Space and `tap()` have
+        // no pointer to seek to.
+        bar.on_tap = Some(format!("if event.contains(\"x\") {{ {seek} }}"));
+        bar.gestures.push((rux_layout::Gesture::Drag, seek));
+        bar.focus_path = Some(at(2));
+        bar.instance = instance.map(str::to_string);
+        bar.access = Access {
+            role: AccessRole::Slider,
+            label: Some("Seek".to_string()),
+            value: Some(shown),
+            ..Access::default()
+        };
+        parts.push(bar);
+        parts.push(media_button(
+            &at(3),
+            if silent { AUDIO_MUTED } else { AUDIO_VOLUME },
+            ink,
+            if silent { "Unmute" } else { "Mute" },
+            format!("{m} if __m != none {{ if __m.volume > 0.0 {{ __m.volume = 0.0 }} else {{ __m.volume = 1.0 }} }}"),
+        ));
+        for p in &mut parts {
+            p.instance = instance.map(str::to_string);
+        }
+        if video {
+            video_band(parts, style, instance)
+        } else {
+            // A browser's own size, near enough, unless the author gives one.
+            if !props.contains_key("width") {
+                style.width = Some(Len::Px(300.0));
+            }
+            if !props.contains_key("height") {
+                style.height = Some(Len::Px(40.0));
+            }
+            if style.display == Display::Block || style.display == Display::Inline {
+                style.display = Display::Flex;
+            }
+            style.align.get_or_insert(Align::Center);
+            let mut node = LayoutNode::new(style);
+            node.children = parts;
+            node
+        }
+    } else if video {
+        LayoutNode::new(style)
+    } else {
+        style.display = Display::None;
+        LayoutNode::new(style)
+    };
+    if video {
+        video_picture(&mut node, el, engine, locals, &mut deps, &props, &key, &now);
+    }
+    // Rebuilt in place, as a toggle is: what it reads changes what it
+    // draws and nothing about the tree's shape.
+    reg.toggles.push(ToggleBinding { path: path.to_vec(), deps });
+    node.field = Some(Box::new(rux_layout::Field { media: Some(Box::new(media)), ..Default::default() }));
+    node.on_tap = on_tap;
+    node.gestures = gestures;
+    node.instance = instance.map(str::to_string);
+    node.hidden = hidden;
+    node.id = el.attr("id").map(str::to_string);
+    node.state_path = state_path.clone();
+    node.access = Access {
+        role: if controls { AccessRole::Group } else if video { AccessRole::Image } else { AccessRole::None },
+        label: authored_label(el).or_else(|| {
+            (controls || video).then(|| if video { "Video" } else { "Audio" }.to_string())
+        }),
+        ..Access::default()
+    };
+    node
+}
+
+/// A `<video>`'s band of controls along the bottom of its picture.
+///
+/// This and [`video_picture`] are their own functions for the reason
+/// [`build_text`] is: [`build_node_inner`] recurses once per element, and
+/// with their `Style`s inline `rux check` on the examples overflowed a debug
+/// build's stack again (watchlist #41).
+#[inline(never)]
+fn video_band(parts: Vec<LayoutNode>, style: Style, instance: Option<&str>) -> LayoutNode {
+    let mut band = LayoutNode::new(Style {
+        display: Display::Flex,
+        align: Some(Align::Center),
+        position: rux_layout::Position::Absolute,
+        inset: [None, Some(Len::Px(0.0)), Some(Len::Px(0.0)), Some(Len::Px(0.0))],
+        height: Some(Len::Px(40.0)),
+        padding: Sides { top: 0.0, right: 4.0, bottom: 0.0, left: 4.0 },
+        background: Some(Background::Color(Rgba::new(0.0, 0.0, 0.0, 0.55))),
+        ..Default::default()
+    });
+    band.children = parts;
+    band.instance = instance.map(str::to_string);
+    let mut node = LayoutNode::new(style);
+    node.children.push(band);
+    node
+}
+
+/// A `<video>`'s box sized by its picture, and the picture in it: the
+/// poster until it is played or sought, then the frame the shell puts up.
+/// `now` is what the element read of its `Video` (see the `<audio>` branch).
+#[allow(clippy::too_many_arguments)]
+#[inline(never)]
+fn video_picture(
+    node: &mut LayoutNode,
+    el: &Element,
+    engine: &mut Engine,
+    locals: &Locals,
+    deps: &mut HashSet<String>,
+    props: &HashMap<String, String>,
+    key: &str,
+    now: &[Value],
+) {
+    // Sized by the picture, as an `<image>` is: both sides when CSS
+    // gives neither, the other side by its proportions when it gives
+    // one. 300 by 150 until the picture's size is known.
+    let int = |i: usize| now.get(i).and_then(Value::as_number).filter(|n| *n > 0.0);
+    let (vw, vh) = match (int(4), int(5)) {
+        (Some(w), Some(h)) => (w as f32, h as f32),
+        _ => (300.0, 150.0),
+    };
+    let started = now.get(6).is_some_and(Value::is_truthy);
+    let s = &mut node.style;
+    match (props.contains_key("width"), props.contains_key("height")) {
+        (false, false) => {
+            s.width = Some(Len::Px(vw));
+            s.height = Some(Len::Px(vh));
+        }
+        (true, true) => {}
+        _ => {
+            s.aspect_ratio.get_or_insert(vw / vh);
+        }
+    }
+    if s.position == rux_layout::Position::Static {
+        s.position = rux_layout::Position::Relative;
+    }
+    if s.display == Display::Inline {
+        s.display = Display::Block;
+    }
+    // The poster until it is played or sought, then the picture.
+    let poster = match el.attr(":poster") {
+        Some(e) => {
+            let (v, read) = located(el.attr_line(":poster"), || engine.eval_display_tracked(e, locals));
+            deps.extend(read);
+            Some(v)
+        }
+        None => el.attr("poster").map(str::to_string),
+    }
+    .filter(|p| !p.is_empty());
+    let src = match poster {
+        Some(p) if !started => p,
+        _ => format!("{}{key}", rux_layout::VIDEO_FRAME),
+    };
+    let mut picture = ImageContent::new(src);
+    // A video is letterboxed unless CSS says otherwise, as a
+    // browser's own stylesheet has it.
+    picture.fit = match props.get("object-fit").map(|v| v.trim()) {
+        None | Some("contain") => ObjectFit::Contain,
+        Some("fill") => ObjectFit::Fill,
+        Some("cover") => ObjectFit::Cover,
+        Some("none") => ObjectFit::None,
+        Some("scale-down") => ObjectFit::ScaleDown,
+        Some(other) => {
+            warn(format!("`object-fit: {other}` is not a fit Rux knows; use `fill`, `contain`, `cover`, `none` or `scale-down`"));
+            ObjectFit::Contain
+        }
+    };
+    if let Some(v) = props.get("object-position") {
+        let toks: Vec<String> = split_top_level(v).into_iter().map(str::to_string).collect();
+        match parse_bg_position(&toks) {
+            Some(p) => picture.position = p,
+            None => warn(format!("`object-position: {v}` is not a position Rux knows")),
+        }
+    }
+    let mut picture = LayoutNode::image(
+        Style {
+            position: rux_layout::Position::Absolute,
+            inset: [Some(Len::Px(0.0)), None, None, Some(Len::Px(0.0))],
+            width: Some(Len::Pct(1.0)),
+            height: Some(Len::Pct(1.0)),
+            ..Default::default()
+        },
+        picture,
+    );
+    picture.style.no_pointer = true;
+    node.children.insert(0, picture);
+}
+
 /// One of an `<audio>`'s buttons: a Tabler icon in a 32px box that runs
 /// `tap`, named `label` for assistive technology.
 fn media_button(path: &[usize], d: &str, color: Rgba, label: &str, tap: String) -> LayoutNode {
@@ -7914,200 +8295,19 @@ fn build_node_inner(
     // through `__rux_media`, and what they show is read from that `Sound`
     // here. Those reads are property reads, so the node is rebuilt in place
     // whenever the sound moves, as `{{ s.currentTime }}` is.
-    if el.tag == "audio" {
-        let mut deps: HashSet<String> = HashSet::new();
-        let src = match el.attr(":src") {
-            Some(e) => {
-                let (v, read) = located(el.attr_line(":src"), || engine.eval_display_tracked(e, locals));
-                deps.extend(read);
-                v
-            }
-            None => el.attr("src").unwrap_or_default().to_string(),
-        };
-        let controls = bool_attr(el, "controls", engine, locals, &mut deps);
-        let lazy = match el.attr("preload").map(str::trim) {
-            None | Some("auto" | "metadata" | "") => false,
-            Some("none") => true,
-            Some(other) => {
-                located(el.attr_line("preload"), || {
-                    warn(format!("`preload=\"{other}\"` is not a value Rux knows; use `none`, `metadata` or `auto`"))
-                });
-                false
-            }
-        };
-        if el.children.iter().any(|c| !matches!(c, TplNode::Text(t, _) if t.trim().is_empty())) {
-            located(Some(el.line), || {
-                warn(
-                    "what is written inside an `<audio>` is never shown: a browser shows it only \
-                     when it has no audio at all. Give the sound as `src`"
-                        .to_string(),
-                )
-            });
-        }
-        let key = media_key(instance, tpl_path, row);
-        let media = rux_layout::Media {
-            src,
-            autoplay: bool_attr(el, "autoplay", engine, locals, &mut deps),
-            looping: bool_attr(el, "loop", engine, locals, &mut deps),
-            muted: bool_attr(el, "muted", engine, locals, &mut deps),
-            lazy,
-            on: rux_layout::Media::EVENTS.map(|e| el.attr(&format!("@{e}")).map(|h| bind_locals(h, baked))),
-            key: key.clone(),
-        };
-
-        let mut style = style;
-        let mut node = if controls {
-            let accent = props.get("accent-color").and_then(|v| parse_color(v)).unwrap_or(SWITCH_ON);
-            let (now, read) = engine.eval_value_tracked(
-                &format!(
-                    "[{m}(\"{key}\")?.playing, {m}(\"{key}\")?.currentTime, {m}(\"{key}\")?.duration, \
-                     {m}(\"{key}\")?.volume]",
-                    m = rux_script::MEDIA_FN
-                ),
-                locals,
-            );
-            deps.extend(read);
-            let now = now.and_then(|v| v.as_list().map(<[Value]>::to_vec)).unwrap_or_default();
-            let playing = now.first().is_some_and(Value::is_truthy);
-            let time = now.get(1).and_then(Value::as_number).unwrap_or(0.0);
-            let duration = now.get(2).and_then(Value::as_number).filter(|d| d.is_finite() && *d > 0.0);
-            let silent = now.get(3).and_then(Value::as_number).is_some_and(|v| v <= 0.0);
-            let child_inherited = Inherited {
-                color,
-                selection: selection.clone(),
-                font_size,
-                font_family: font_family.clone(),
-                vars: Rc::clone(&vars),
-                run: None,
-                direction,
-                text: own_text,
-                shadows: shadows.clone(),
-                look: look.clone(),
-            };
-            let shown = match duration {
-                Some(d) => format!("{} / {}", clock(time), clock(d)),
-                None => clock(time),
-            };
-            let at = |i: usize| path.iter().copied().chain([i]).collect::<Vec<usize>>();
-            let time_el = Element {
-                tag: "text".to_string(),
-                attrs: vec![rux_parser::Attr {
-                    name: "style".to_string(),
-                    value: "white-space: nowrap; font-variant-numeric: tabular-nums; margin: 0 4px".to_string(),
-                    line: el.line,
-                    has_value: true,
-                }],
-                children: vec![TplNode::Text(shown.clone(), el.line)],
-                line: el.line,
-            };
-            let time_node = build_node(
-                &time_el, &[], comps, ancestors, &[], &child_inherited, engine, locals, &at(1), &at(1), reg,
-                state, instances, swaps, instance, None, None, row, None,
-            );
-            let fraction = duration.map_or(0.0, |d| (time / d).clamp(0.0, 1.0)) as f32;
-            let m = format!("let __m = {}(\"{key}\");", rux_script::MEDIA_FN);
-            let seek = format!(
-                "{m} if __m != none {{ let __d = __m.duration; if __d != none {{ \
-                 __m.seek(max(0.0, min(1.0, event.x / event.width)) * __d) }} }}"
-            );
-            let mut parts = vec![
-                media_button(
-                    &at(0),
-                    if playing { AUDIO_PAUSE } else { AUDIO_PLAY },
-                    color,
-                    if playing { "Pause" } else { "Play" },
-                    format!("{}(\"{key}\", \"toggle\")", rux_script::MEDIA_ASK_FN),
-                ),
-                time_node,
-            ];
-            let mut bar = LayoutNode::new(Style {
-                display: Display::Flex,
-                align: Some(Align::Center),
-                grow: 1.0,
-                basis: Some(Len::Px(0.0)),
-                height: Some(Len::Px(32.0)),
-                margin: Sides { top: 0.0, right: 4.0, bottom: 0.0, left: 4.0 },
-                ..Default::default()
-            });
-            let part = |grow: f32, color: Rgba| {
-                LayoutNode::new(Style {
-                    display: Display::Flex,
-                    grow,
-                    basis: Some(Len::Px(0.0)),
-                    height: Some(Len::Px(SLIDER_BAR)),
-                    background: Some(Background::Color(color)),
-                    radius: [CIRCLE; 4],
-                    ..Default::default()
-                })
-            };
-            bar.children.push(part(fraction, accent));
-            bar.children.push(LayoutNode::new(Style {
-                display: Display::Flex,
-                width: Some(Len::Px(AUDIO_THUMB)),
-                height: Some(Len::Px(AUDIO_THUMB)),
-                shrink: 0.0,
-                background: Some(Background::Color(accent)),
-                radius: [CIRCLE; 4],
-                ..Default::default()
-            }));
-            bar.children.push(part(1.0 - fraction, SLIDER_REST));
-            // Guarded on `event.x` as the slider's is: Space and `tap()` have
-            // no pointer to seek to.
-            bar.on_tap = Some(format!("if event.contains(\"x\") {{ {seek} }}"));
-            bar.gestures.push((rux_layout::Gesture::Drag, seek));
-            bar.focus_path = Some(at(2));
-            bar.instance = instance.map(str::to_string);
-            bar.access = Access {
-                role: AccessRole::Slider,
-                label: Some("Seek".to_string()),
-                value: Some(shown),
-                ..Access::default()
-            };
-            parts.push(bar);
-            parts.push(media_button(
-                &at(3),
-                if silent { AUDIO_MUTED } else { AUDIO_VOLUME },
-                color,
-                if silent { "Unmute" } else { "Mute" },
-                format!("{m} if __m != none {{ if __m.volume > 0.0 {{ __m.volume = 0.0 }} else {{ __m.volume = 1.0 }} }}"),
-            ));
-            for p in &mut parts {
-                p.instance = instance.map(str::to_string);
-            }
-            // A browser's own size, near enough, unless the author gives one.
-            if !props.contains_key("width") {
-                style.width = Some(Len::Px(300.0));
-            }
-            if !props.contains_key("height") {
-                style.height = Some(Len::Px(40.0));
-            }
-            if style.display == Display::Block || style.display == Display::Inline {
-                style.display = Display::Flex;
-            }
-            style.align.get_or_insert(Align::Center);
-            let mut node = LayoutNode::new(style);
-            node.children = parts;
-            node
-        } else {
-            style.display = Display::None;
-            LayoutNode::new(style)
-        };
-        // Rebuilt in place, as a toggle is: what it reads changes what it
-        // draws and nothing about the tree's shape.
-        reg.toggles.push(ToggleBinding { path: path.to_vec(), deps });
-        node.field = Some(Box::new(rux_layout::Field { media: Some(Box::new(media)), ..Default::default() }));
-        node.on_tap = on_tap;
-        node.gestures = gestures;
-        node.instance = instance.map(str::to_string);
-        node.hidden = hidden;
-        node.id = el.attr("id").map(str::to_string);
-        node.state_path = state_path.clone();
-        node.access = Access {
-            role: if controls { AccessRole::Group } else { AccessRole::None },
-            label: authored_label(el).or_else(|| controls.then(|| "Audio".to_string())),
-            ..Access::default()
-        };
-        return node;
+    //
+    // `<video>` (C.2) is the same element with a picture: its `Video` is
+    // the shell's as a `Sound` is, its controls are these in a dark band
+    // along the bottom, and the picture is an `<image>` filling the box whose
+    // `src` names the frame the shell puts up ([`rux_layout::VIDEO_FRAME`]).
+    // The box is sized as a replaced element is, by the picture's own size
+    // (300 by 150 until it is known, as in a browser).
+    if el.tag == "audio" || el.tag == "video" {
+        return build_media(
+            el, comps, ancestors, engine, locals, path, tpl_path, reg, state, instances, swaps, instance, row,
+            props, style, on_tap, gestures, hidden, state_path, color, selection, font_size, font_family, vars,
+            direction, own_text, shadows, look,
+        );
     }
 
     // <image src=…>: a leaf that paints its pixels. The `src` here is still the

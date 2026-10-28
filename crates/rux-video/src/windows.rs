@@ -84,7 +84,25 @@ pub(crate) struct Decoder {
     has_audio: bool,
     /// A seek's target, until a frame showing at it is read.
     seeking: Option<f64>,
+    /// When the first picture is stamped, taken off every time so the first
+    /// is at 0. See [`START_SHIFT`].
+    offset: f64,
+    /// The first picture, read at open to learn [`Decoder::offset`].
+    held: Option<Frame>,
 }
+
+/// The most the first picture's time is taken as a shift rather than as when
+/// it is shown.
+///
+/// **Media Foundation ignores an MP4's edit list.** ffmpeg writes one for
+/// every H.264 file with B-frames, saying to start playing two frames in, and
+/// the reader stamps the pictures as if it were not there: a 6.0 s clip at
+/// 30 fps came out from 0.067 s to 6.033 s, its last frames past its own
+/// length, and a 10 fps clip with two B-frames from 0.2 s. A browser starts
+/// both at 0. Taking the first picture's time as the start is what players on
+/// this reader do; a file that truly begins its picture later than this is
+/// shown from its first picture too.
+const START_SHIFT: f64 = 1.0;
 
 /// A D3D11 device for Media Foundation to decode on, so the GPU's own
 /// decoder and video processor do the work: 1080p60 H.264 took 16.3 ms a
@@ -248,8 +266,16 @@ impl Decoder {
                 duration,
                 has_audio,
                 seeking: None,
+                offset: 0.0,
+                held: None,
             };
             d.read_type()?;
+            if let Some(first) = d.read()? {
+                if first.time > 0.0 && first.time < START_SHIFT {
+                    d.offset = first.time;
+                }
+                d.held = Some(Frame { time: first.time - d.offset, ..first });
+            }
             Ok(d)
         }
     }
@@ -302,6 +328,14 @@ impl Decoder {
     }
 
     pub fn next_frame(&mut self) -> Result<Option<Frame>, VideoError> {
+        if let Some(first) = self.held.take() {
+            return Ok(Some(first));
+        }
+        Ok(self.read()?.map(|f| Frame { time: (f.time - self.offset).max(0.0), ..f }))
+    }
+
+    /// The next picture as the reader stamps it.
+    fn read(&mut self) -> Result<Option<Frame>, VideoError> {
         loop {
             let mut flags = 0u32;
             let mut ticks = 0i64;
@@ -420,13 +454,16 @@ impl Decoder {
             Some(d) => secs.clamp(0.0, d),
             None => secs.max(0.0),
         };
-        let at = PROPVARIANT::from((secs * TICKS) as i64);
+        // In the reader's own times, which start at the shift.
+        let raw = secs + self.offset;
+        let at = PROPVARIANT::from((raw * TICKS) as i64);
         unsafe {
             self.reader
                 .SetCurrentPosition(&windows::core::GUID::zeroed(), &at)
                 .map_err(err("decode", "cannot seek in it"))?;
         }
-        self.seeking = Some(secs);
+        self.held = None;
+        self.seeking = Some(raw);
         Ok(())
     }
 }

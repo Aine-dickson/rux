@@ -2014,6 +2014,11 @@ pub fn images_arrived() -> u64 {
     IMAGES_ARRIVED.load(std::sync::atomic::Ordering::Acquire)
 }
 
+/// The `src` of a `<video>`'s picture, before the element's key: drawn from
+/// the frame the shell last put up for it ([`rux_paint`'s `set_frame`]),
+/// never read from anywhere.
+pub const VIDEO_FRAME: &str = "rux-video:";
+
 /// Whether `src` is fetched from the network (`http:` or `https:`) rather than
 /// read, so the painter waits for it instead of looking on the disk.
 pub fn is_remote(src: &str) -> bool {
@@ -2699,14 +2704,15 @@ pub struct Field {
     /// `type="file"`: what its picker offers, and its `@cancel`. Boxed, as
     /// every input but this one has none.
     pub file: Option<Box<FileInput>>,
-    /// `<audio>`: what the shell loads and plays for it. Boxed, as every
-    /// element but this one has none.
+    /// `<audio>` and `<video>`: what the shell loads and plays for it.
+    /// Boxed, as every element but these has none.
     pub media: Option<Box<Media>>,
 }
 
-/// An `<audio>` (`docs/13-file-input-and-media-plan.md`, B.3), as the shell
-/// reads it after every build: the sound to hold for it, how to play it, and
-/// what to run as it does. Layout ignores it.
+/// An `<audio>` or `<video>` (`docs/13-file-input-and-media-plan.md`, B.3
+/// and C.2), as the shell reads it after every build: the sound or video to
+/// hold for it, how to play it, and what to run as it does. Layout ignores
+/// it.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Media {
     /// Which element this is from one build to the next: its sound is kept
@@ -2719,13 +2725,16 @@ pub struct Media {
     pub muted: bool,
     /// `preload="none"`: nothing is read until the first `play()`.
     pub lazy: bool,
-    /// `@play`, `@pause`, `@ended`, `@timeupdate`, `@error`, in that order.
-    pub on: [Option<String>; 5],
+    /// A `<video>`: held as a `Video`, its pictures drawn by the shell.
+    pub video: bool,
+    /// `@play`, `@pause`, `@ended`, `@timeupdate`, `@error`,
+    /// `@loadedmetadata`, in that order.
+    pub on: [Option<String>; 6],
 }
 
 impl Media {
     /// The events [`Media::on`] holds, in its order.
-    pub const EVENTS: [&'static str; 5] = ["play", "pause", "ended", "timeupdate", "error"];
+    pub const EVENTS: [&'static str; 6] = ["play", "pause", "ended", "timeupdate", "error", "loadedmetadata"];
 }
 
 /// What an `<input type="file">` asks of the platform's picker

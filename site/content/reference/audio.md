@@ -59,3 +59,4 @@ plays and on a seek, each with `event.currentTime` and `event.duration`
 A sound of unknown length has no end Rux can see, so it only pauses there.
 What is written between `<audio>` and `</audio>` is never shown, as a
 browser shows it only when it has no audio at all, and Rux says so.
+`@loadedmetadata` fires once it is loaded, with `event.duration`.

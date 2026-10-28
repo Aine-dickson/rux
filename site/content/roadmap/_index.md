@@ -277,6 +277,11 @@ likely to make Rux feel like a toy, so it gets real scope.
   the hit regions we already compute, `cursor` is honored **only on tappable
   (`@tap`) boxes**: a `cursor` on a plain box still does nothing. Widen to a
   dedicated cursor-region pass if that bites.
+  **It bit (2026-10-26):** Tailwind's `cursor-pointer` on a card did nothing,
+  found by the owner. Since watchlist #46 every box has a hit region, so no
+  new pass was needed: the region carries the box's own `cursor`, `cursor`
+  inherits as in CSS, and every keyword maps to a winit `CursorIcon`
+  (`none` hides it).
 
 **Cheap, the engine already supports it, we just don't map it:**
 
@@ -3184,3 +3189,67 @@ not what we assume.
   wrote. It stops being fine the moment files are shared, fetched, or pasted
   from a playground link. The browser build is sandboxed by wasm and safe by
   accident rather than by design; native is not sandboxed at all.
+
+---
+
+## Tailwind directives in `<style>` blocks (decided 2026-10-26, BUILT 2026-10-28)
+
+**Decided by the owner: do what Vite does.** Built 2026-10-28 as written
+below; what shipped, and where it differs, is in As Built ("Tailwind's
+directives in a `<style>` block"). One change from the plan: the CLI runs in
+the `.rux` file's folder on stdin, so a relative `@reference` resolves
+without rewriting it.
+
+**The gap.** `@apply` (and `@reference`, `@utility`, `@variant` and the rest)
+only works in Tailwind's input file today, because the Tailwind CLI compiles
+that one file and nothing compiles a `.rux` `<style>` block. `rux check` says
+so and names the input file as the place to move the rule (d5d7bdd). That
+works, but it forces a component's rules out of the component, which is the
+limitation the owner raised: a component's look should live in the component.
+
+**How Vite does it.** The SFC plugin pulls each `<style>` block out of the
+component as its own CSS module; the CSS pipeline (`@tailwindcss/vite` or
+PostCSS) runs Tailwind over each one separately; a block compiled alone knows
+no theme, so `@reference "../assets/input.css"` loads the theme and utilities
+for lookup without emitting them; scoping (`data-v-*`) is a separate step after.
+
+**What Rux already has.** Scoping needs no compile step: a component's own
+rules only ever style its own markup, and `<style scoped>` keeps the
+document's rules out. Theme variables still reach a scoped component, since
+`@apply bg-green-500` compiles to `var(--color-green-500)` and variables
+inherit. So the only missing piece is the compile.
+
+**The work.**
+
+1. When a `<style>` block uses a Tailwind directive (`@apply`, `@reference`,
+   `@utility`, `@variant`, `@custom-variant`, `@theme`, `@source`, `@plugin`,
+   `@config`), `rux` hands that block's CSS to the `tailwindcss` CLI and uses
+   what comes back in its place. A block with none is untouched, so a project
+   without Tailwind never needs the CLI.
+2. **The syntax is Vite's**, unchanged: `@reference "../assets/input.css"`,
+   resolved relative to the `.rux` file (rewrite it to an absolute path before
+   handing the block over, since the CLI resolves against its input's folder).
+   Without a `@reference`, `@apply` of a theme utility fails in Tailwind; pass
+   its error through with the block's file and line.
+3. **Cache by content hash** (block text + the referenced file's contents), so
+   only an edited block recompiles. Measure the cost per block; the CLI took
+   ~50 ms on a full input file here.
+4. **When it runs:** under `rux run` / `rux dev` (hot reload recompiles the
+   edited block) and in `rux build`, whose output carries the compiled CSS, so
+   Android and the web never need Tailwind on the device. The web playground
+   cannot run a process: say so there rather than drop the block.
+5. **No CLI on PATH** with a directive present: refuse the same way `[dev]
+   watch` does (names PATH and where the CLI comes from, exit 1), not a silent
+   drop. `rux check` reports it too.
+6. Remove the "move this rule to the input file" warning for blocks that now
+   compile; keep it for the playground. Update `site/content/tooling/tailwind.md`
+   (its `@apply` section) and `docs/05-as-built.md`.
+7. Drive it in the window: a component with `<style scoped>` using `@reference`
+   + `@apply` with a `hover:` variant; a document using `@apply` in a second
+   `<style>` block; an edit under `rux dev`; `rux build` on a machine without
+   the CLI on PATH after the build. Log the cases in `docs/08-user-tests.md`.
+
+**Found the same day, already fixed (all 2026-10-26):** `cursor-*` did nothing
+on a box with no `@tap` (c86b4a3); a second `<style>` block was dropped
+without a word (6edd27b); `underline`/`line-through` on a box did not reach
+the text inside it (d5d7bdd).

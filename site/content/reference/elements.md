@@ -87,4 +87,51 @@ mistake was being written the way HTML is written.
 `<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
 (not the working directory), and `:src` binds an expression. With no CSS size it
 lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
-Formats: PNG, JPEG, GIF, WebP. A missing file logs to stderr and paints nothing.
+Formats: PNG, JPEG, GIF, WebP, and SVG. A missing file logs to stderr and paints nothing.
+
+**SVG** (2026-10-28): told from its bytes, not its name, so a `data:` URL or a
+server's answer works too. Its size is its `width` and `height`, or its
+`viewBox`; it is drawn as vectors (`vello_svg`), so it stays sharp at any
+size, in an `<image>` and in `background-image`, where Tailwind's form styles
+put their checkmarks. Like a browser's `<img>`, it is a picture: its
+`currentColor` is black, not the colour around it, and nothing in it can be
+styled from outside. **Not yet:** an SVG as `mask-image` (a mask needs
+pixels), and a bitmap embedded inside an SVG, which is not drawn.
+
+**From the network** (2026-10-28): `src="https://…"` (or `http:`), and the same
+in `background-image: url(…)`. The window does not wait: the box lays out with
+no size until the bytes come, as a browser's does, then takes the picture's
+size and paints it. Fetched on a thread with `ureq` (rustls, its own root
+certificates) on the desktop and Android, and by the browser's `fetch` on the
+web. Redirects are followed; a body over 32 MB is refused, and so is a picture
+over the size limit below. Each URL is fetched once per run and kept, a
+failure too. An Android release asks for `INTERNET` when a document or
+stylesheet names an `http:` or `https:` address, and for nothing otherwise.
+
+**`srcset` and `sizes`** (2026-10-28), as in HTML: `srcset="logo.png 1x,
+logo@2x.png 2x"` shows the candidate nearest above the screen's density (the
+window's scale factor), or the densest when none is enough; widths
+(`s.png 400w, l.png 1600w`) are read against the slot `sizes` gives
+(`(max-width: 600px) 100vw, 300px`), the whole viewport without it. `src` is
+what shows when `srcset` is absent. Picked when the tree is built, so a
+resize that crosses no `@media` boundary, or a move to a screen of another
+density, keeps the first pick until the next rebuild.
+
+**`loading="lazy"`** (2026-10-28): a network picture is fetched once its box
+comes within 1250 px of the window (Chromium's distance on a fast connection),
+asked for by the painter when it stops leaving that box out, so it costs no
+pass of its own. Until then the box has no size and `@load` waits. Give a lazy
+image a size, or the page moves when it arrives. A file on the disk is read
+at load either way; `eager`, the default, starts the fetch at load.
+
+**`data:` URLs** (2026-10-28): a picture written into the document,
+`src="data:image/png;base64,…"`, or percent-encoded without `;base64`, and the
+same in `url(…)`. Read as a file is, at load, with nothing fetched.
+
+**`@load` and `@error`** (2026-10-28): once per `src`, when the picture is
+there (`event.width`, `event.height`: its own size in pixels) or cannot be
+(`event.message`). A file on the disk fires at the first frame, one from the
+network when it comes, and a new `:src` fires again.
+```rux
+<image :src="avatarUrl" @load="ready = true" @error="avatarUrl = `assets/placeholder.png`" />
+```
