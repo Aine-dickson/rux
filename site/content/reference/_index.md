@@ -87,18 +87,38 @@ picture's size is known. The picture is fitted by `object-fit` and
 has it, so a video in a box of another shape is letterboxed on the box's
 `background`. `poster` shows until the first play or seek; without one, the
 first frame does. With `controls`, the `<audio>` controls lie in a dark band
-along the bottom of the picture, in white.
+along the bottom of the picture, in white, with a fullscreen button at the
+end. **While it plays the band goes** three seconds after the pointer last
+moved over the picture, pressed it, or a key reached one of its buttons, and
+any of those bring it back; paused, it stays.
+
+**Fullscreen** fills the screen with the video on black, letterboxed, over
+everything on the page, and the window goes borderless across the monitor;
+the button again, Escape, or Android's Back leave it, before any `@key` sees
+the key. On Android the box covers the activity, which is the whole screen
+already, and the system bars stay.
 
 **Windows only for now.** The picture is decoded by Media Foundation, on the
 GPU where there is one: H.264 always, and VP9, HEVC and AV1 when their store
 extensions are installed. Anywhere else, or a format the machine has no
 decoder for, `@error` fires with `kind` `"unsupported"` and the poster stays.
-**There is no sound yet** (step C.3 of the plan): `muted` and the mute
-button change nothing you can hear.
+
+**Its sound plays, and the picture keeps to it.** The sound is decoded by
+the same Media Foundation (AAC in an MP4, Opus or Vorbis in a WebM, whatever
+the machine plays) and mixed with every other sound the app plays; `muted`,
+the mute button and `volume` reach it. Each picture is shown when the sound
+reaches it in what the speakers play, not in what has been mixed (on the dev
+machine the output held about 40 ms), so lips and words stay together. A
+sound the machine cannot decode leaves the video playing silent, with a
+warning on the console; a video with no sound keeps time by the clock.
+Taken away (the app put in the background, another app taking the sound,
+the output unplugged), the sound pauses and the picture with it.
 
 A picture the decoder delivers too late to be on time is passed over, as
 every player does, so a slow machine shows fewer frames rather than falling
-behind. A 1080p60 H.264 file shows every frame on the dev machine.
+behind. A 1080p60 H.264 file with its sound passes over 0 to 3 frames in
+300 on the dev machine. **Scrolled out of sight**, a video plays on, its
+sound too, and its pictures stop being drawn until it is back.
 
 ### `position`, and which box an out-of-flow one is measured against
 

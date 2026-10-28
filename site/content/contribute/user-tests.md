@@ -3031,6 +3031,60 @@ Found by the driving and fixed before the commit:
   element builder's recursion. The branch is a function of its own, as
   `<text>`'s is.
 
+## `<video>` sound and sync, Windows, 2026-10-28
+
+Step C.3 of `docs/13-file-input-and-media-plan.md`. Under test in
+`rux-video` (the sound tracks of the MP4 and WebM fixtures, AAC and Opus,
+decoded and sought; none in a silent file) and `rux-audio` (its streams
+through the new `Stream`). **Driven in the window**, release build, from
+`rux-harness/video-el`: `av.rux`, a `<video controls>` on a 20 s 1920x1080
+60 fps H.264 file with AAC sound (ffmpeg's `testsrc2` and a 440 Hz tone
+beeping each second), `avw.rux` the same at 720p30 in a WebM with Opus
+sound (`av-drive.ps1`), the C.2 page again (`drive-rel.ps1`), and
+`offscreen.rux`, a muted looping video above a 3000 px spacer scrolled away
+by the wheel and back (`off-drive.ps1`, counting `RUX_PROFILE` reports).
+Sync was read by a temporary log, removed before the commit, of each
+picture's time against the sound's heard time as it went up.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Sound | click play on `av.rux` | the tone heard, the picture moving | pass |
+| Sync, 1080p60 MP4 | 14 s playing | pictures within a frame of the sound, every frame shown | pass: within 2 ms of the heard sound (p95 1.6 to 1.7 ms), 0 to 3 of 300 passed over per 5 s |
+| Sync, 720p30 WebM, Opus | the same on `avw.rux` | the same | pass: p95 1.6 ms, none passed over |
+| C.2's cases with sound | play, pause, play to the end, on C.2's page | as in C.2 | pass: held at 2.8 s, `@play @pause @play @pause @ended`, last frame 5.967 s |
+| Out of sight | scroll the playing video away, wait, back | it plays on; nothing drawn for it away; back, it is moving | pass: 60 redraws a second in sight, 20 away (the time notices), 60 back |
+| Loop | `autoplay muted loop`, past the 20 s end | round again | pass (during the out-of-sight run) |
+
+Found by the driving and fixed before the commit: the pictures following
+the mixer's own time showed 35 to 43 ms before their sound, the condvar's
+15.6 ms tick made every picture late, and one thread decoding and keeping
+time dropped up to 11 in 300. Each is written up under C.3 in the plan. Not
+driven: the app put away (Android, no video there yet), an output unplugged
+mid-play, and a sound track this machine cannot decode (none to hand; the
+warning path is the same call as `@error`'s).
+
+## `<video>` controls hiding, and fullscreen, Windows, 2026-10-28
+
+Built after C.3 (plan, C.2's notes). **Driven in the window**, release
+build, `rux-harness/video-el/fs-drive.ps1` on `av.rux` (the 1080p60 clip with
+sound), clicks and pointer moves by `SetCursorPos`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The button | open the page | a fifth button, fullscreen, at the band's end | pass |
+| Hides | click play, move the pointer below the video, wait 4.5 s | the band gone, the picture playing | pass |
+| Comes back | move the pointer over the picture | the band back at once, time counting | pass |
+| Fullscreen | click the fullscreen button | the window borderless over the monitor; the video filling it on black, letterboxed; the button now "exit fullscreen" | pass: the surface went to 1920x1080 and drew 60 frames a second; the picture checked in a build that maximised instead (below) |
+| Hides there too | 4 s idle in fullscreen | the band gone | pass (in the maximised build) |
+| Escape | press Escape | the window as it was, the page under it, still playing | pass |
+
+**The fullscreen window itself could not be photographed**: GDI,
+`PrintWindow` and Desktop Duplication all returned the last composed frame
+once the window was flipped straight to the display. What it showed was
+checked by one build where the button maximised the window instead, which
+the compositor still draws, and by logging the surface's size. Not driven:
+Back on Android, and a key on a focused band button keeping the band up.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
