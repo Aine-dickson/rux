@@ -476,6 +476,10 @@ over the size limit below. Each URL is fetched once per run and kept, a
 failure too. An Android release asks for `INTERNET` when a document or
 stylesheet names an `http:` or `https:` address, and for nothing otherwise.
 
+**`data:` URLs** (2026-10-28): a picture written into the document,
+`src="data:image/png;base64,…"`, or percent-encoded without `;base64`, and the
+same in `url(…)`. Read as a file is, at load, with nothing fetched.
+
 **`@load` and `@error`** (2026-10-28): once per `src`, when the picture is
 there (`event.width`, `event.height`: its own size in pixels) or cannot be
 (`event.message`). A file on the disk fires at the first frame, one from the

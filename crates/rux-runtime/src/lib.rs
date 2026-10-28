@@ -25,6 +25,7 @@
 //! dying on a half-typed edit.
 
 mod modules;
+mod data_url;
 pub mod remote;
 mod source;
 pub mod tailwind;
@@ -2101,6 +2102,10 @@ pub fn remember_url_bytes(url: &str, bytes: Vec<u8>) {
 fn image_bytes(src: &str) -> std::io::Result<Vec<u8>> {
     if let Some(bytes) = URL_BYTES.with(|m| m.borrow().get(src).cloned()) {
         return Ok(bytes.to_vec());
+    }
+    // Written into the document itself.
+    if let Some(bytes) = data_url::bytes(src) {
+        return bytes.map_err(std::io::Error::other);
     }
     // From the network: the first ask starts it, and until it comes this is
     // `WouldBlock`, which the callers take as "not yet" rather than missing.
@@ -7273,6 +7278,29 @@ mod tests {
     /// were read in the document's file with no line, so an editor put a
     /// typo in `header.rux`'s CSS on line 1 of `app.rux`; and `r-for`'s own
     /// warnings named the component and lost the line.
+    /// A picture written into the document, `src="data:image/png;base64,…"`,
+    /// has its size read as a file's is, with nothing on the disk.
+    #[test]
+    fn a_data_url_image_takes_its_pictures_size() {
+        let mut png = Vec::new();
+        image::RgbaImage::new(2, 3)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        const ABC: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut b64 = String::new();
+        for chunk in png.chunks(3) {
+            let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | u32::from(*b) << (16 - 8 * i));
+            for i in 0..=chunk.len() {
+                b64.push(ABC[(n >> (18 - 6 * i) & 63) as usize] as char);
+            }
+        }
+        let doc = Document::from_source(&format!(
+            r#"<template><screen><image src="data:image/png;base64,{b64}" /></screen></template>"#
+        ))
+        .expect("renders");
+        assert_eq!(doc.root.children[0].image.as_ref().unwrap().intrinsic, (2.0, 3.0));
+    }
+
     #[test]
     fn a_tailwind_block_is_read_from_its_compiled_result() {
         use std::fs;
