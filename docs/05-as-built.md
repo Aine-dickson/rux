@@ -1465,6 +1465,36 @@ nothing for a path to be relative to and nothing to read. An include there is
 ignored, with a warning saying exactly that. Driven in
 `examples/shared-style.rux`, which shares `examples/palette.css`.
 
+**Tailwind's directives in a `<style>` block** (2026-10-28, as Vite does it).
+A file's `<style>` that uses `@apply`, `@reference`, `@utility`, `@variant`,
+`@custom-variant`, `@theme`, `@source`, `@plugin`, `@config` or `@tailwind` is
+handed to the `tailwindcss` CLI on PATH, run in the file's folder, and the CSS
+it writes back is used in the block's place, after the includes. A block with
+none never reaches the CLI.
+```html
+<style scoped>
+  @reference "../assets/app.css";
+  .bar { @apply px-4 bg-green-500 hover:bg-green-700; }
+</style>
+```
+- **Cached** in `.rux-build/tailwind/<hash>.css` under the project root,
+  hashed over the block's text and the contents of the files it names by a
+  relative path (`@reference`, `@import`, `@plugin`, `@config`). A file those
+  import in turn, and the CLI's version, are not in the hash: editing one keeps
+  the old result until the block or the named file changes.
+- **Carried by `rux build`** and by `rux run --device`'s hot reload, which
+  compile every block on the machine and send the cache files with the
+  documents. The app finds them under the same path through its embedded
+  source, so a phone or a browser never runs Tailwind.
+- **A failure fails the load**, as a missing stylesheet does: Tailwind's
+  message (`Cannot apply unknown utility class `bg-gren-500``) on the line
+  of the class it names, and a missing CLI on the line of the first
+  directive.
+- **Lines inside a compiled block are lost.** A warning from its CSS names the
+  file and no line, since the rules Rux reads are the CLI's layout of them.
+- **The playground and a document loaded from source** compile nothing: the
+  directive warns, and says to move the rule into Tailwind's input file.
+
 **Custom properties + `var()`:** `--name: value` declarations **inherit** down the
 tree (like `color`), so a palette declared once is readable anywhere below:
 ```css

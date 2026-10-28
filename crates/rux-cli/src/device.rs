@@ -318,7 +318,12 @@ fn dev_handshake_host(stream: &TcpStream, token: &str) -> Result<(), String> {
 /// dials again on its own.
 fn sync(manifest: &Manifest, app: &mut Option<TcpStream>, held: &mut HashMap<String, Vec<u8>>) {
     let Some(stream) = app.as_mut() else { return };
-    let Ok(files) = crate::build::collect(&manifest.root) else { return };
+    let Ok(mut files) = crate::build::collect(&manifest.root) else { return };
+    // Compiled here, as for a build: the phone cannot run Tailwind.
+    match rux_runtime::tailwind::precompile(&manifest.root, &files) {
+        Ok(compiled) => files.extend(compiled),
+        Err(why) => eprintln!("rux: {why}"),
+    }
     let mut wire = Vec::new();
     let mut now: HashMap<String, Vec<u8>> = HashMap::new();
     for file in &files {

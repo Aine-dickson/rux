@@ -26,6 +26,7 @@
 
 mod modules;
 mod source;
+pub mod tailwind;
 pub use source::{reset_source, set_source, FsSource, MemorySource, Source};
 
 use std::collections::{HashMap, HashSet};
@@ -2326,7 +2327,7 @@ impl Document {
         // Resolve `use module::component;` imports relative to this file.
         let base = path.parent().unwrap_or_else(|| Path::new("."));
         MEDIA_BASE.with(|b| *b.borrow_mut() = base.to_path_buf());
-        resolve_style_includes(&mut sfc, base)?;
+        resolve_style_includes(&mut sfc, base, path)?;
         let (main_script, imports) = extract_imports(&sfc.script);
         // A module opened on its own (by `rux check`) is checked as the
         // script it is, held to what a module may say.
@@ -2688,7 +2689,7 @@ impl Document {
                 // unusable from a second directory, which is the point of one.
                 let comp_base =
                     comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
-                resolve_style_includes(&mut comp_sfc, &comp_base)?;
+                resolve_style_includes(&mut comp_sfc, &comp_base, &comp_path)?;
                 let (comp_script, nested) = extract_imports(&comp_sfc.script);
                 // Its props are its caller's to pass, so they leave the script:
                 // a `let` would be state any handler in here could write.
@@ -5942,7 +5943,39 @@ fn node_at_mut<'a>(root: &'a mut LayoutNode, path: &[usize]) -> Option<&'a mut L
 /// like a layout bug rather than a typo in a path. The window keeps the last
 /// good tree on screen and puts the message in the overlay, so the cost of
 /// being strict is a red panel and not a closed window.
-fn resolve_style_includes(sfc: &mut Sfc, base: &Path) -> Result<(), LoadError> {
+///
+/// Then compiles the file's own `<style>` with Tailwind when it uses a
+/// Tailwind directive (see [`tailwind`]). What comes back follows the
+/// includes, where the block's own rules always sat, and has no lines: the
+/// CLI writes its own layout of the rules.
+fn resolve_style_includes(sfc: &mut Sfc, base: &Path, file: &Path) -> Result<(), LoadError> {
+    read_style_includes(sfc, base)?;
+    if !tailwind::uses_directives(&sfc.style) {
+        return Ok(());
+    }
+    let root = workspace_root(base).unwrap_or_else(|| MEDIA_BASE.with(|b| b.borrow().clone()));
+    match tailwind::compile(&sfc.style, base, &root) {
+        tailwind::Outcome::Compiled(css) => {
+            sfc.style_includes.push(StyleInclude { path: "<style> compiled by Tailwind".to_string(), css });
+            sfc.style.clear();
+        }
+        tailwind::Outcome::Unavailable => {}
+        tailwind::Outcome::Failed(why) => {
+            // On the line of the class it names, else of the first directive.
+            let line = tailwind::named_in(&why)
+                .and_then(|class| sfc.style.find(class))
+                .or_else(|| tailwind::first_directive(&sfc.style))
+                .map(|at| sfc.style_line + sfc.style[..at].matches('\n').count());
+            return Err(match line {
+                Some(line) => LoadError::at_line(why, line, file),
+                None => LoadError { file: Some(file.to_path_buf()), ..LoadError::plain(why) },
+            });
+        }
+    }
+    Ok(())
+}
+
+fn read_style_includes(sfc: &mut Sfc, base: &Path) -> Result<(), LoadError> {
     if sfc.style_src.is_empty() {
         return Ok(());
     }
@@ -7151,6 +7184,40 @@ mod tests {
     /// were read in the document's file with no line, so an editor put a
     /// typo in `header.rux`'s CSS on line 1 of `app.rux`; and `r-for`'s own
     /// warnings named the component and lost the line.
+    #[test]
+    fn a_tailwind_block_is_read_from_its_compiled_result() {
+        use std::fs;
+        // What a built app does: the block's result is already in
+        // `.rux-build/tailwind`, so no CLI runs. Found by the block's text and
+        // the referenced file's, so this writes both before hashing.
+        let dir = std::env::temp_dir().join(format!("rux_tw_cached_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("assets")).unwrap();
+        fs::write(dir.join("assets/in.css"), "@import \"tailwindcss\";\n").unwrap();
+        let doc = "<template><screen><view class=\"card\" /></screen></template>\n\
+                   <style>\n@reference \"./assets/in.css\";\n.card { @apply bg-red-500; }\n</style>\n";
+        fs::write(dir.join("app.rux"), doc).unwrap();
+        let style = rux_parser::parse_sfc(doc).unwrap().style;
+        let cached = dir.join(".rux-build/tailwind").join(format!("{}.css", tailwind::hash(&style, &dir)));
+        fs::create_dir_all(cached.parent().unwrap()).unwrap();
+        fs::write(&cached, ".card { background-color: #ff0000; }").unwrap();
+
+        let _ = take_warnings();
+        let doc = Document::load(dir.join("app.rux")).expect("loads from the cache, with no CLI");
+        let card = &doc.root.children[0];
+        assert!(
+            matches!(&card.style.background, Some(rux_layout::Background::Color(c)) if c.r == 1.0 && c.g == 0.0),
+            "{:?}",
+            card.style.background
+        );
+        assert!(
+            !doc.diagnostics.warnings.iter().any(|w| w.message.contains("@apply")),
+            "the compiled CSS has no directive left to warn about: {:?}",
+            doc.diagnostics.warnings
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_components_css_and_directives_warn_at_its_own_lines() {
         use std::fs;

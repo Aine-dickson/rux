@@ -138,20 +138,49 @@ covers them; a component with `<style scoped>` sees none of them and needs its
 own. Your own rules can sit beside it in a second `<style>` block, and they win
 a tie, since an include cascades first.
 
-`@apply`, `@utility` and Tailwind's other directives belong in the **input**
-file, not a `<style>` block: Tailwind compiles only its input, and Rux does not
-run Tailwind over your markup's CSS. Written under the `@import`, a rule needs
-no `@reference`, which only a separate stylesheet does:
+### `@apply` in a `<style>` block
 
-```css
-@import "tailwindcss";
+A `<style>` block can use `@apply` and Tailwind's other directives, as a Vue
+or Svelte component does under Vite. Start the block with `@reference`, naming
+your input file relative to the `.rux` file, so the block knows your theme
+without writing the whole of Tailwind into it again:
 
-.btn {
-  @apply rounded-lg bg-green-500 p-4;
-}
+```html
+<template>
+  <view class="bar"><text>Title</text></view>
+</template>
+
+<style scoped>
+  @reference "../assets/app.css";
+
+  .bar {
+    @apply rounded-lg bg-green-500 px-4 hover:bg-green-700;
+  }
+</style>
 ```
 
-`rux check` says so if it finds one in a `<style>` block.
+`rux run`, `rux check` and `rux build` hand any block that uses a directive to
+the `tailwindcss` CLI, the same one on your PATH, and use the CSS it writes
+back. A block with no directive is left alone, so a project that never writes
+one never needs the CLI for it.
+
+- **Each result is cached** in `.rux-build/tailwind/`, by the block's text
+  and the file its `@reference` names. The first compile takes about half a
+  second; after that the block costs nothing until you edit it or the input
+  file. Deleting the folder starts over.
+- **`rux build` carries the results**, so a release on another machine, a
+  phone or the web never runs Tailwind. Hot reload on a phone
+  (`rux run --device`) compiles on your machine and sends the result too.
+- **Mistakes land on their line.** `@apply bg-gren-500` is reported on the
+  line of the `<style>` it is written on, with Tailwind's own message. So is
+  a block with a directive when the CLI is not on PATH.
+- **No line numbers inside a compiled block.** A warning about a property Rux
+  does not honor, raised from a compiled block, names the file but not the
+  line, because the CSS Rux reads is the CLI's, not yours.
+- **The [playground](@/playground.md) cannot run Tailwind.** There, a
+  directive in a `<style>` block warns and does nothing; put the rule in
+  Tailwind's input file instead, under the `@import`, where it needs no
+  `@reference`.
 
 Then write classes as you would anywhere:
 

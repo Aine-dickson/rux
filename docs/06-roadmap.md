@@ -3182,10 +3182,13 @@ not what we assume.
 
 ---
 
-## Next: Tailwind directives in `<style>` blocks (decided 2026-10-26, not started)
+## Tailwind directives in `<style>` blocks (decided 2026-10-26, BUILT 2026-10-28)
 
-**Decided by the owner: do what Vite does.** Not built yet, on purpose: the
-owner stopped it before it started rather than leave it half done.
+**Decided by the owner: do what Vite does.** Built 2026-10-28 as written
+below; what shipped, and where it differs, is in As Built ("Tailwind's
+directives in a `<style>` block"). One change from the plan: the CLI runs in
+the `.rux` file's folder on stdin, so a relative `@reference` resolves
+without rewriting it.
 
 **The gap.** `@apply` (and `@reference`, `@utility`, `@variant` and the rest)
 only works in Tailwind's input file today, because the Tailwind CLI compiles

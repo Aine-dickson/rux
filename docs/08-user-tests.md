@@ -2926,6 +2926,38 @@ started in a console of its own so stdin is a terminal.
 Not driven: `rux build` (desktop, web, Android) running `before`, and
 `rux run --device` with `watch`; a native/ app's loop.
 
+## Owner's quirks of 2026-10-28: `r-for` index, component warnings, `:dir()`
+
+Desktop, Windows 11, scratch projects.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The owner's nav list | `r-for="(item, index) in navItems" r-if="index != navItems.length - 1"`, rows `{{ index + 1 }}. {{ item }}`, `.row:last-child` tinted | Home, School, Work numbered 1 to 3, Settings left out, Work tinted | pass, screenshot; `rux check` clean, `index.nope` an error on `int` |
+| Three names | `r-for="(a, b, c) in xs"` | a warning naming the form, on its line | pass |
+| A component's mistakes | `header.rux` with `colr: red` in its `<style>`, a bad `r-for`, `r-show` beside `r-for`, used from `app.rux` | each on its line of `header.rux`, none on `app.rux` | pass (before: the CSS one on `app.rux` with no line, which VS Code draws on line 1; the directive ones in `header.rux` with no line) |
+| `:dir()` | `<screen dir="rtl">`, `.a:where(:dir(rtl), [dir="rtl"], [dir="rtl"] *)`, `.b:dir(rtl)`, `.c::rtl` | the first two match with no warning; `::rtl` warns and names `:dir(rtl)` | pass (`rux check`; matching by unit test) |
+
+## Tailwind's directives in `<style>` blocks, 2026-10-28
+
+A scratch project: `assets/input.css` (`@import "tailwindcss"`, a `@theme`
+colour `--color-brand`), `app.rux` with `@reference "./assets/input.css"` and
+`.card { @apply p-4 bg-brand rounded-lg; }`, and `components/header.rux`,
+`<style scoped>`, with `@reference "../assets/input.css"` and
+`.bar { @apply px-4 bg-green-500 hover:bg-green-700; }`. Tailwind v4.3.3
+standalone on PATH. Desktop, Windows 11.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| First check | `rux check app.rux` | both blocks compiled, no problems | pass, 1.9 s (two CLI runs); `.rux-build/tailwind/` holds two files |
+| Cached | the same again | no CLI run | pass, 0.11 s |
+| Window | `rux run app.rux` | green bar padded `px-4`, brand-coloured rounded card | pass, screenshot. `hover:` not driven: injected pointer input does not reach the window here |
+| A misspelt class | `bg-gren-500` in the component | an error on the component's line 6, Tailwind's message | pass |
+| No CLI | PATH without it, a block edited so the cache misses | an error on the line of `@reference`, naming PATH and where the CLI comes from | pass |
+| Release build | `rux build --release`, then `dist/twapp.exe` with `tailwindcss` off PATH and `.rux-build/tailwind` moved aside | the same window, from what the build carried in | **found**: the app failed to load asking for the CLI. The component's `../assets/input.css` is `components/../assets/input.css` in the app's embedded files, which did not resolve the `..`, so its block hashed differently. Fixed (paths resolved before reading), rebuilt: pass, the same window, screenshot |
+
+Not driven: `rux run --device` sending compiled blocks to a phone, and the web
+build. The playground keeps the warning (it has no CLI).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

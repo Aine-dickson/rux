@@ -606,10 +606,15 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
         crate::commands::run_before(&manifest.build_before, &manifest.root)?;
     }
 
-    let files = collect(&manifest.root)?;
+    let mut files = collect(&manifest.root)?;
     if files.is_empty() {
         return Err(format!("{} holds no files to build", manifest.root.display()));
     }
+    // Every `<style>` that uses Tailwind's directives, compiled here and
+    // carried in, so the app never needs the CLI where it runs. The results
+    // sit in `.rux-build`, which the walk above skips, and are found by the
+    // app under the same path. See `rux_runtime::tailwind`.
+    files.extend(rux_runtime::tailwind::precompile(&manifest.root, &files)?);
 
     // Inside the project, and hidden, so the directory walk above skips it and
     // a `.gitignore` does not have to learn a new name.

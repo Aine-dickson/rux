@@ -4534,14 +4534,17 @@ fn warn_at_rule(rule: &CssRule) {
     if name.is_empty() {
         return;
     }
-    // Tailwind's own directives are compiled by Tailwind, which reads its
-    // input file and never a `<style>` block, so the answer is where to move
-    // the rule, not that Rux lacks it.
+    // Tailwind's own directives are compiled by Tailwind: `rux run`, `rux
+    // check` and `rux build` hand a block that uses one to its CLI (see
+    // `rux_runtime::tailwind`). Reaching here means nothing did, which is the
+    // playground, a document loaded from source, or a block edited on a phone
+    // after it was built.
     if matches!(name.as_str(), "apply" | "utility" | "variant" | "custom-variant" | "theme" | "reference" | "source" | "plugin" | "config" | "tailwind") {
         warn_once(format!(
-            "`@{name}` is Tailwind's, and Tailwind compiles only its input file (the one with \
-             `@import \"tailwindcss\"`), not a <style> block: move this rule there and it lands \
-             in the CSS Tailwind writes"
+            "`@{name}` is Tailwind's, and nothing here compiled this <style> with it: `rux run`, \
+             `rux check` and `rux build` do, with the `tailwindcss` CLI, for a document read \
+             from a file. Here, move the rule to Tailwind's input file (the one with \
+             `@import \"tailwindcss\"`) and it lands in the CSS Tailwind writes"
         ));
         return;
     }
