@@ -3113,6 +3113,29 @@ place stirs now. Not a video fault, and not fixed here: the poster, and an
 the `.rux` source and no project files. Not driven: the sound heard (the
 browser plays it), a `blob:` URL from a picked file, Edge.
 
+## `<video>` on Android, 2026-10-28
+
+C.1's Android half (plan). Under test in `rux-video` (`yuv`: I420, NV12 and
+the flexible format, both matrices, a crop, a vendor layout refused).
+**Driven on the `rux_test` emulator** (x86_64) from
+`rux-harness/video-droid` (`droid.sh`: a release APK, taps by
+`adb shell input`, screenshots by `screencap`): `<video controls>` on an
+8 s 854x480 30 fps H.264 file with AAC sound, logging its events and size.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Loaded | open the app | the first picture in its true colours, the band, `0:00 / 0:08`, `size: 854x480` | pass |
+| Play | tap play, 5 s | moving, on time (frame 174 at 5.8 s), `@play`; the band gone after 3 s; the sound output opened (AAudio) | pass |
+| Pause | tap pause | held, the band back, `@pause` | pass |
+| Seek | tap a quarter along the bar, paused | the picture at 2.067 s | pass |
+| Put away | play, Home, back 3 s later | paused where it was (4.233 s), `@pause` | pass |
+| Played out | play to the end | the last frame (239, 7.967 s), `@pause` then `@ended` | pass |
+
+Not driven: the sound heard (the emulator's output is not listened to), a
+phone (none), a `content://` file from the picker, Back leaving
+fullscreen, frame rates worth recording (the emulator cannot show C.0's
+page alone at 60).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

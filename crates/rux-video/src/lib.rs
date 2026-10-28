@@ -5,8 +5,9 @@
 //! thread: the player's, never the UI's, since a frame can take milliseconds.
 //!
 //! **Each platform decodes with its own decoder**, so no codec ships in Rux:
-//! Media Foundation on Windows. Everywhere else opening one is an error of
-//! kind `"unsupported"`, and the element shows its poster.
+//! Media Foundation on Windows, `MediaCodec` on Android. Everywhere else
+//! opening one is an error of kind `"unsupported"`, and the element shows
+//! its poster. (The web plays a video through the browser, never here.)
 //!
 //! A video's sound is read apart, by a [`SoundTrack`] over the same bytes,
 //! since it plays on the audio thread's terms and the pictures on the
@@ -14,8 +15,22 @@
 
 use std::sync::Arc;
 
+#[cfg(target_os = "android")]
+mod android;
 #[cfg(windows)]
 mod windows;
+#[cfg(any(target_os = "android", test))]
+mod yuv;
+
+/// Where Android writes a video's bytes for its extractor to read: the
+/// app's own files. Set by the shell at start; see [`android`].
+#[cfg(target_os = "android")]
+pub use android::set_scratch_dir;
+
+#[cfg(target_os = "android")]
+use android as platform;
+#[cfg(windows)]
+use windows as platform;
 
 /// Where a video's bytes come from.
 #[derive(Clone, Debug)]
@@ -90,8 +105,8 @@ impl std::fmt::Debug for Frame {
 
 /// A video being read.
 pub struct Decoder {
-    #[cfg(windows)]
-    inner: windows::Decoder,
+    #[cfg(any(windows, target_os = "android"))]
+    inner: platform::Decoder,
     info: Info,
 }
 
@@ -105,13 +120,13 @@ impl Decoder {
     /// for the tests, which check both roads.
     #[doc(hidden)]
     pub fn open_on(input: Input, gpu: bool) -> Result<Decoder, VideoError> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         {
-            let inner = windows::Decoder::open(input, gpu)?;
+            let inner = platform::Decoder::open(input, gpu)?;
             let info = inner.info();
             Ok(Decoder { inner, info })
         }
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         {
             let _ = (input, gpu);
             Err(VideoError::new(
@@ -128,17 +143,17 @@ impl Decoder {
     /// The next picture; `None` at the end. After a [`seek`](Self::seek),
     /// the first is the one showing at the time asked for.
     pub fn next_frame(&mut self) -> Result<Option<Frame>, VideoError> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         return self.inner.next_frame();
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         Ok(None)
     }
 
     /// Go to `secs` from the start (clamped to the video).
     pub fn seek(&mut self, secs: f64) -> Result<(), VideoError> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         return self.inner.seek(secs);
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         {
             let _ = secs;
             Ok(())
@@ -152,17 +167,17 @@ impl Decoder {
 /// as the pictures' do. The shell hands it to `rux-audio`'s mixer, whose
 /// clock the pictures then follow.
 pub struct SoundTrack {
-    #[cfg(windows)]
-    inner: windows::SoundTrack,
+    #[cfg(any(windows, target_os = "android"))]
+    inner: platform::SoundTrack,
 }
 
 impl SoundTrack {
     /// Open the sound track of `input`; an error of kind `"unsupported"` when
     /// it has none, or none this machine decodes.
     pub fn open(input: Input) -> Result<SoundTrack, VideoError> {
-        #[cfg(windows)]
-        return Ok(SoundTrack { inner: windows::SoundTrack::open(input)? });
-        #[cfg(not(windows))]
+        #[cfg(any(windows, target_os = "android"))]
+        return Ok(SoundTrack { inner: platform::SoundTrack::open(input)? });
+        #[cfg(not(any(windows, target_os = "android")))]
         {
             let _ = input;
             Err(VideoError::new("unsupported", "video does not play on this platform yet"))
@@ -171,33 +186,33 @@ impl SoundTrack {
 
     /// Frames per second.
     pub fn rate(&self) -> u32 {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         return self.inner.rate;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         0
     }
 
     /// Samples per frame.
     pub fn channels(&self) -> usize {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         return self.inner.channels;
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         0
     }
 
     /// The next stretch of samples; `None` at the end.
     pub fn next_samples(&mut self) -> Result<Option<Vec<f32>>, VideoError> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         return self.inner.next_samples();
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         Ok(None)
     }
 
     /// Go to `secs` from the start: the next samples are the ones at it.
     pub fn seek(&mut self, secs: f64) -> Result<(), VideoError> {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "android"))]
         return self.inner.seek(secs);
-        #[cfg(not(windows))]
+        #[cfg(not(any(windows, target_os = "android")))]
         {
             let _ = secs;
             Ok(())

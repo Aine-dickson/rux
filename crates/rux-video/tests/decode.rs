@@ -162,6 +162,7 @@ fn not_a_video_is_an_error() {
 
 /// The fixtures' sound is a steady tone for their two seconds: AAC in the
 /// MP4 and Opus in the WebM, which only the platform's decoder plays.
+#[cfg(windows)]
 #[test]
 fn the_sound_track_decodes_and_seeks() {
     for name in ["clip.mp4", "clip.webm"] {

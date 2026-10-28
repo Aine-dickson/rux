@@ -400,6 +400,23 @@ What it means for C, for the owner to decide:
   - Not covered yet: HEVC and AV1 (need store extensions this machine may
     lack; they are an `"unsupported"` error, not a crash, without them),
     rotation metadata (a phone's portrait clip), non-square pixels.
+- **Android built 2026-10-28**: `rux-video`'s `android` module, the NDK's
+  `AMediaExtractor` and `AMediaCodec` (API 21, under Rux's 26) for both the
+  pictures and the sound, the sound handed to `rux-audio` as a `Stream`
+  exactly as Windows' is. Decided while building:
+  - **The bytes reach the extractor as a file**, written into the app's own
+    files and unlinked at once, the descriptor keeping them. The in-memory
+    source, `AMediaDataSource`, is API 28, and linking it would stop the
+    app loading at all on Android 8.
+  - **Pictures come back as YUV in a buffer** and are turned into RGBA on
+    the CPU (`rux-video`'s `yuv`, tested on the desktop): I420 and NV12,
+    the two layouts every decoder offers there, with the stream's colour
+    matrix or BT.601 under 720 rows and BT.709 from there. A vendor's tiled
+    layout is an `"unsupported"` error. Decoding into a hardware buffer
+    imported into wgpu (C.0's next step) is not built: it wants a phone to
+    measure, and there is none.
+  - Driven on the `rux_test` emulator (`docs/08-user-tests.md`). Its frame
+    rate says nothing about a phone's (C.0).
 - **The web built 2026-10-28**, as planned: `web_sound`'s element store
   holds a `<video>` as it holds an `<audio>` (a `Video` resource beside
   `Sound`, the same calls under both names), never put in the page and

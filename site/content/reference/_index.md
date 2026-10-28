@@ -98,9 +98,10 @@ the button again, Escape, or Android's Back leave it, before any `@key` sees
 the key. On Android the box covers the activity, which is the whole screen
 already, and the system bars stay.
 
-**Windows and the web for now.** On Windows the picture is decoded by Media
+**Windows, Android and the web for now.** On Windows the picture is decoded by Media
 Foundation, on the GPU where there is one: H.264 always, and VP9, HEVC and
-AV1 when their store extensions are installed. In a browser the browser
+AV1 when their store extensions are installed. On Android by the phone's
+`MediaCodec`, in hardware where it has it, sound included. In a browser the browser
 plays it, in whatever formats it plays, through a `<video>` of its own that
 is never put in the page, and each frame its picture is copied onto the
 canvas on the GPU. Anywhere else, or a format the machine has no decoder

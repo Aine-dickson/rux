@@ -12933,6 +12933,8 @@ fn run_android_with(
     use winit::platform::android::EventLoopBuilderExtAndroid;
     // Settings live in the app's own files, which only the activity knows.
     if let Some(dir) = app.internal_data_path() {
+        // A video's bytes are written here for the platform's extractor.
+        rux_video::set_scratch_dir(dir.clone());
         settings::set_dir(dir);
     }
 
