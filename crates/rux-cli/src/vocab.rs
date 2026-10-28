@@ -94,7 +94,13 @@ const ELEMENTS: &[Entry] = &[
     Entry {
         name: "video",
         detail: "a video, with or without its controls",
-        doc: "`<video src=\"clip.mp4\" controls />` plays a video from the project, or a               picked `File`'s `url`, sized by its picture until CSS says otherwise and               fitted by `object-fit` (`contain` unless set). `poster` shows until it is               played. Decoded by the platform: Media Foundation on Windows; elsewhere,               for now, it shows its poster and fires `@error`. No sound yet.",
+        doc: "`<video src=\"clip.mp4\" controls />` plays a video from the project, or a \
+              picked `File`'s `url`, with its sound, sized by its picture until CSS says \
+              otherwise and fitted by `object-fit` (`contain` unless set). `poster` shows \
+              until it is played. While it plays its controls hide after a few idle seconds, \
+              and their last button fills the screen. Decoded by the platform: Media \
+              Foundation on Windows, the browser on the web; elsewhere, for now, it shows its \
+              poster and fires `@error`.",
     },
     Entry {
         name: "slot",
@@ -199,7 +205,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "@pause", detail: "it stopped playing", doc: "Paused, or at its end (then `@ended` follows)." },
             Entry { name: "@ended", detail: "it played to its end", doc: "After the `@pause` at its end. Not with `loop`." },
             Entry { name: "@timeupdate", detail: "where it is moved", doc: "About four times a second while it plays, and on a seek." },
-            Entry { name: "@error", detail: "it could not be loaded", doc: "`event.kind` (`io`, `unsupported`, `decode`) and `event.message`. A format the machine has no decoder for, or any video off Windows for now, is `unsupported`." },
+            Entry { name: "@error", detail: "it could not be loaded", doc: "`event.kind` (`io`, `unsupported`, `decode`) and `event.message`. A format the machine has no decoder for, or any video off Windows and the web for now, is `unsupported`." },
             Entry { name: "@loadedmetadata", detail: "it is loaded and its size known", doc: "Once per `src`. `event.videoWidth`, `event.videoHeight` and `event.duration`." },
         ],
     ),

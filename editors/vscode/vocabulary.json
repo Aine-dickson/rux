@@ -9,6 +9,7 @@
     { "name": "button", "detail": "a tappable box, announced as a button", "doc": "A tappable box. `<view @tap>` is the same thing to the layout; `<button>` says so to the accessibility tree." },
     { "name": "input", "detail": "text field, textarea, select, checkbox or radio", "doc": "A text field by default. `type=\"textarea\"` is multiline, `type=\"select\"` a combo box, `type=\"checkbox\"` and `type=\"radio\"` carry live checked state. Bind it with `r-model`." },
     { "name": "audio", "detail": "a sound, with or without its controls", "doc": "`<audio src=\"song.mp3\" controls />` plays a sound from the project, or a picked `File`'s `url`. With `controls` it draws play/pause, the time, a seek bar and mute; without them it is nothing on screen, as in a browser. `autoplay` plays only when `muted`, or once the person has pressed something in the app, on every platform. `query(\"audio\")[0].play()` and `.pause()` reach it from script." },
+    { "name": "video", "detail": "a video, with or without its controls", "doc": "`<video src=\"clip.mp4\" controls />` plays a video from the project, or a picked `File`'s `url`, with its sound, sized by its picture until CSS says otherwise and fitted by `object-fit` (`contain` unless set). `poster` shows until it is played. While it plays its controls hide after a few idle seconds, and their last button fills the screen. Decoded by the platform: Media Foundation on Windows, the browser on the web; elsewhere, for now, it shows its poster and fires `@error`." },
     { "name": "slot", "detail": "a component's hole for the caller's children", "doc": "Renders whatever the caller wrote between the component's tags. Children written inside `<slot>…</slot>` are the default, used when the caller passed nothing." },
     { "name": "router", "detail": "renders the one matching route", "doc": "Renders the first `<route>` whose path matches. Leaves no box of its own: the matched view expands in its place." },
     { "name": "route", "detail": "maps a path to a component", "doc": "`<route path=\"/crew/:id\" view=\"crew-detail\" />`. Routes are tried in the order written and the first match wins, so `fallback` can sit anywhere among them." }
@@ -63,7 +64,24 @@
       { "name": "@pause", "detail": "it stopped playing", "doc": "Paused, or at its end (then `@ended` follows). `event.currentTime` and `event.duration`." },
       { "name": "@ended", "detail": "it played to its end", "doc": "After the `@pause` at its end. Not with `loop`." },
       { "name": "@timeupdate", "detail": "where it is moved", "doc": "About four times a second while it plays, and on a seek. `event.currentTime` and `event.duration`." },
-      { "name": "@error", "detail": "it could not be loaded", "doc": "`event.kind` (`io`, `unsupported`, `decode`) and `event.message`. A file Rux cannot decode on the desktop (Opus, WebM) is `unsupported`." }
+      { "name": "@error", "detail": "it could not be loaded", "doc": "`event.kind` (`io`, `unsupported`, `decode`) and `event.message`. A file Rux cannot decode on the desktop (Opus, WebM) is `unsupported`." },
+      { "name": "@loadedmetadata", "detail": "it is loaded and its length known", "doc": "Once per `src`. `event.duration` (`none` when not known)." }
+    ],
+    "video": [
+      { "name": "src", "detail": "the video: a project path or a File's url", "doc": "A path from the project (built into a release), or a picked `File`'s `url`. On Windows, what Media Foundation plays: H.264 always, VP9, HEVC and AV1 with their store extensions. `:src` binds an expression, and a new value is a new video." },
+      { "name": "poster", "detail": "a picture shown until it plays", "doc": "An image path, shown in the video's box until the first play or seek. Without it the first frame shows." },
+      { "name": "controls", "detail": "draw play, time, seek and mute over it", "doc": "The `<audio>` controls in a bar along the bottom of the picture, in white on a dark band." },
+      { "name": "autoplay", "detail": "play once loaded, as a browser allows", "doc": "As `<audio autoplay>`: by itself only when `muted`, or once the person has pressed something in the app." },
+      { "name": "loop", "detail": "start again at the end", "doc": "Plays from the start again at its end, with no `@ended`." },
+      { "name": "muted", "detail": "start silent", "doc": "The volume at nothing. The mute button turns it back on." },
+      { "name": "preload", "detail": "`none`: read nothing until played", "doc": "`none` reads nothing until the first play, and shows only the poster; `auto` and `metadata` (the default) read it at once." },
+      { "name": "playsinline", "detail": "accepted: Rux always plays in the page", "doc": "A phone browser's attribute to keep a video in the page instead of full screen, which is the only way Rux plays one." },
+      { "name": "@play", "detail": "it started playing", "doc": "As `<audio>`'s. `event.currentTime` and `event.duration`." },
+      { "name": "@pause", "detail": "it stopped playing", "doc": "Paused, or at its end (then `@ended` follows)." },
+      { "name": "@ended", "detail": "it played to its end", "doc": "After the `@pause` at its end. Not with `loop`." },
+      { "name": "@timeupdate", "detail": "where it is moved", "doc": "About four times a second while it plays, and on a seek." },
+      { "name": "@error", "detail": "it could not be loaded", "doc": "`event.kind` (`io`, `unsupported`, `decode`) and `event.message`. A format the machine has no decoder for, or any video off Windows and the web for now, is `unsupported`." },
+      { "name": "@loadedmetadata", "detail": "it is loaded and its size known", "doc": "Once per `src`. `event.videoWidth`, `event.videoHeight` and `event.duration`." }
     ],
     "path": [
       { "name": "d", "detail": "SVG path data", "doc": "The full SVG grammar: `M L H V C S Q T A Z`, absolute or relative. Coordinates are in the element's own box. `:d` binds an expression." },

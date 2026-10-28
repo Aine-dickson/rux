@@ -34,7 +34,7 @@
 //! behalf, and a tool it downloaded would be a version nobody chose.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -127,8 +127,8 @@ impl Drop for Watching {
 fn kill_tree(child: &mut Child) {
     let killed = Command::new("taskkill")
         .args(["/T", "/F", "/PID", &child.id().to_string()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
         .status()
         .is_ok_and(|s| s.success());
     if !killed {

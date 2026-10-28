@@ -10038,6 +10038,7 @@ fn os_decimal_separator() -> char {
     '.'
 }
 
+#[cfg(any(windows, target_os = "android", target_arch = "wasm32"))]
 fn decimal_from(c: Option<char>) -> char {
     if c == Some(',') { ',' } else { '.' }
 }
