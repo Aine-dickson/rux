@@ -3078,6 +3078,34 @@ checked by one build where the button maximised the window instead, which
 the compositor still draws, and by logging the surface's size. Not driven:
 Back on Android, and a key on a focused band button keeping the band up.
 
+## `<video>` on the web, 2026-10-28
+
+C.1's web half (plan). **Driven in Brave** over CDP from
+`rux-harness/video-web` (the audio harness's server and driver), release
+wasm, a 420x640 viewport: `<video controls>` on the 720p30 WebM with Opus
+sound logging its events and size, and a `<video poster>` beside an
+`<image>` of the same poster. Read from CDP screenshots, which see the
+WebGPU canvas, and `document.fullscreenElement`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Loaded | open the page | the first picture in a 16:9 box, the band with `0:00 / 0:20` and the fullscreen button; `size: 1280x720` | pass |
+| Play | click play | the picture moving, `0:02`, `@play` | pass |
+| Pause | click pause 4.5 s later | the picture holds at `0:05`, `@pause` | pass |
+| Hides | play, then pointer off the video, 4.5 s | the band gone | pass |
+| Hides with the pointer resting on it | play, leave the pointer on the picture, 4.5 s | the band gone | pass, after a fix (below) |
+| Fullscreen | click the fullscreen button | the canvas fullscreen, the video filling it letterboxed, exit icon | pass: `document.fullscreenElement` is the canvas |
+| The browser leaves | `document.exitFullscreen()`, as its Escape does | the page back, the video in its place, enter icon | pass |
+| Played out | let it run | `@pause` then `@ended`, `0:20 / 0:20` | pass |
+
+Found by the driving and fixed before the commit: the controls never hid
+while the pointer rested on the video, as the browser repeats the
+pointer's place over a canvas drawing every frame; only a move to a new
+place stirs now. Not a video fault, and not fixed here: the poster, and an
+`<image>` of the same file, draw nothing in this harness, whose page holds
+the `.rux` source and no project files. Not driven: the sound heard (the
+browser plays it), a `blob:` URL from a picked file, Edge.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

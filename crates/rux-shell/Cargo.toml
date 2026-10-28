@@ -145,6 +145,8 @@ web-sys = { version = "0.3", features = [
     "BlobPropertyBag",
     "HtmlAudioElement",
     "HtmlMediaElement",
+    # `<video>`: the browser's own, never shown, its picture copied to the GPU.
+    "HtmlVideoElement",
     "MediaError",
     # Network images, fetched by the browser (`rux_runtime::remote`).
     "Response",

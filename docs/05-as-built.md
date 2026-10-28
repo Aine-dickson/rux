@@ -660,10 +660,13 @@ the button again, Escape, or Android's Back leave it, before any `@key` sees
 the key. On Android the box covers the activity, which is the whole screen
 already, and the system bars stay.
 
-**Windows only for now.** The picture is decoded by Media Foundation, on the
-GPU where there is one: H.264 always, and VP9, HEVC and AV1 when their store
-extensions are installed. Anywhere else, or a format the machine has no
-decoder for, `@error` fires with `kind` `"unsupported"` and the poster stays.
+**Windows and the web for now.** On Windows the picture is decoded by Media
+Foundation, on the GPU where there is one: H.264 always, and VP9, HEVC and
+AV1 when their store extensions are installed. In a browser the browser
+plays it, in whatever formats it plays, through a `<video>` of its own that
+is never put in the page, and each frame its picture is copied onto the
+canvas on the GPU. Anywhere else, or a format the machine has no decoder
+for, `@error` fires with `kind` `"unsupported"` and the poster stays.
 
 **Its sound plays, and the picture keeps to it.** The sound is decoded by
 the same Media Foundation (AAC in an MP4, Opus or Vorbis in a WebM, whatever

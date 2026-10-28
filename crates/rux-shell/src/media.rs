@@ -261,14 +261,11 @@ pub(crate) fn fullscreen() -> Option<String> {
 /// leaves it. The shell follows with the window ([`fullscreen`]).
 pub(crate) fn set_fullscreen(key: Option<&str>) {
     let before = std::mem::replace(&mut *FULLSCREEN.lock().unwrap_or_else(|e| e.into_inner()), key.map(str::to_string));
-    #[cfg(not(target_arch = "wasm32"))]
-    for (k, p) in videos() {
+    for (k, h) in video_handles() {
         if Some(k.as_str()) == before.as_deref() || Some(k.as_str()) == key {
-            p.set_fullscreen(Some(k.as_str()) == key);
+            act(&h, "fullscreen=", vec![Any::Bool(Some(k.as_str()) == key)]);
         }
     }
-    #[cfg(target_arch = "wasm32")]
-    let _ = before;
     rux_runtime::native::notify();
 }
 
@@ -285,7 +282,6 @@ pub(crate) fn leave_fullscreen() -> bool {
 /// The pointer is at `(x, y)`, moved or pressed there: each video under it
 /// is stirred, and its controls come up a while. `metrics` is where every
 /// node was laid out.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn stir_at(metrics: &[rux_layout::NodeMetrics], x: f32, y: f32) {
     stir(|path| {
         metrics
@@ -296,26 +292,26 @@ pub(crate) fn stir_at(metrics: &[rux_layout::NodeMetrics], x: f32, y: f32) {
 }
 
 /// A key reached what is focused at `focus`: a video it is inside is stirred.
-#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn stir_focused(focus: &[usize]) {
     stir(|path| focus.starts_with(path));
 }
 
-#[cfg(not(target_arch = "wasm32"))]
+/// Each loaded `<video>` whose tree path `hit` takes is stirred: its
+/// controls come up a while (`Video.stir`).
 fn stir(hit: impl Fn(&[usize]) -> bool) {
-    let players: Vec<_> = {
+    let handles: Vec<Handle> = {
         let guard = sounds();
         let Some(map) = guard.as_ref() else { return };
         map.values()
             .filter(|e| e.video && hit(&e.path))
             .filter_map(|e| match &e.load {
-                Load::Ready(h) => crate::video::player(h),
+                Load::Ready(h) => Some(h.clone()),
                 _ => None,
             })
             .collect()
     };
-    for p in players {
-        p.stir();
+    for h in handles {
+        act(&h, "stir", Vec::new());
     }
 }
 
@@ -361,11 +357,8 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
             if !e.met {
                 e.met = true;
                 // A new `src` while fullscreen stays fullscreen.
-                #[cfg(not(target_arch = "wasm32"))]
                 if e.video && fullscreen().as_deref() == Some(m.key.as_str()) {
-                    if let Some(p) = crate::video::player(&h) {
-                        p.set_fullscreen(true);
-                    }
+                    act(&h, "fullscreen=", vec![Any::Bool(true)]);
                 }
                 // Its pictures play without it, as in a browser, and the
                 // console says why it is silent.
@@ -467,6 +460,19 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
 }
 
 /// Every `<video>` playing now, by key, for the frame's upload.
+/// Every loaded `<video>`'s `Video`, by key.
+pub(crate) fn video_handles() -> Vec<(String, Handle)> {
+    let guard = sounds();
+    let Some(map) = guard.as_ref() else { return Vec::new() };
+    map.iter()
+        .filter(|(_, e)| e.video)
+        .filter_map(|(k, e)| match &e.load {
+            Load::Ready(h) => Some((k.clone(), h.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn videos() -> Vec<(String, std::sync::Arc<crate::video::Player>)> {
     let guard = sounds();

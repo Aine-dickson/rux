@@ -1961,6 +1961,9 @@ struct App {
     metrics: Vec<rux_layout::NodeMetrics>,
     /// The window was put in fullscreen for a `<video>`.
     video_fullscreen: bool,
+    /// A `<video>` in sight is playing in the browser: draw again.
+    #[cfg(target_arch = "wasm32")]
+    video_frames: bool,
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
     /// that follows every state change, so a list doesn't jump back to the top
     /// when you tap something in it.
@@ -2355,6 +2358,8 @@ impl App {
             states: Vec::new(),
             metrics: Vec::new(),
             video_fullscreen: false,
+            #[cfg(target_arch = "wasm32")]
+            video_frames: false,
             #[cfg(target_arch = "wasm32")]
             mirrored: None,
         }
@@ -5379,7 +5384,6 @@ impl App {
             return;
         }
         // A key reaching a control inside a `<video>` brings its controls up.
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(path) = self.focus_index.and_then(|i| self.focusables.get(i)).and_then(|f| f.path.as_deref()) {
             media::stir_focused(path);
         }
@@ -5954,11 +5958,22 @@ impl App {
     /// whole screen and winit has no window mode to change: the video's box
     /// covers it.
     fn follow_fullscreen(&mut self) {
+        // The browser's Escape never reaches the page: it leaves fullscreen
+        // itself, and the video leaves with it.
+        #[cfg(target_arch = "wasm32")]
+        if web_sound::left_fullscreen() && self.video_fullscreen {
+            self.video_fullscreen = false;
+            media::set_fullscreen(None);
+            self.request_redraw();
+            return;
+        }
         let want = media::fullscreen().is_some();
         if want == self.video_fullscreen {
             return;
         }
         self.video_fullscreen = want;
+        #[cfg(target_arch = "wasm32")]
+        web_sound::watch_fullscreen();
         if let Some(state) = self.state.as_ref() {
             #[cfg(not(target_os = "android"))]
             state.window.set_fullscreen(want.then_some(winit::window::Fullscreen::Borderless(None)));
@@ -7451,16 +7466,15 @@ impl App {
         // that draws it is built.
         #[cfg(not(target_arch = "wasm32"))]
         let videos = media::videos();
-        #[cfg(not(target_arch = "wasm32"))]
+        #[cfg(target_arch = "wasm32")]
+        let videos = media::video_handles();
         {
             let device_handle = &context.devices[state.surface.dev_id];
-            video::upload(
-                &videos,
-                &device_handle.device,
-                &device_handle.queue,
-                &mut state.renderer,
-                images,
-            );
+            #[cfg(not(target_arch = "wasm32"))]
+            let upload = video::upload;
+            #[cfg(target_arch = "wasm32")]
+            let upload = web_sound::upload;
+            upload(&videos, &device_handle.device, &device_handle.queue, &mut state.renderer, images);
         }
         // A `filter` or `backdrop-filter` is drawn apart, and run through its
         // passes just before the frame is drawn: see `filter`.
@@ -7471,6 +7485,10 @@ impl App {
         // pictures in until it is back.
         #[cfg(not(target_arch = "wasm32"))]
         video::after_scene(&videos, images);
+        #[cfg(target_arch = "wasm32")]
+        {
+            self.video_frames = web_sound::after_scene(&videos, images);
+        }
         state.scene.reset();
         state
             .scene
@@ -8304,6 +8322,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 self.scroll_wheel(-dx, -dy);
             }
             WindowEvent::CursorMoved { position, .. } => {
+                let moved = self.pointer != (position.x, position.y);
                 self.pointer = (position.x, position.y);
                 let scale = self.scale();
                 let here = ((position.x / scale) as f32, (position.y / scale) as f32);
@@ -8324,9 +8343,12 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.update_pointer_state();
                 }
                 self.bars_follow_pointer();
-                // A `<video>` under the pointer brings its controls up.
-                #[cfg(not(target_arch = "wasm32"))]
-                media::stir_at(&self.metrics, here.0, here.1);
+                // A `<video>` under the pointer brings its controls up, if it
+                // truly moved: a browser repeats the pointer's place over a
+                // canvas that redraws, which kept them up for good.
+                if moved {
+                    media::stir_at(&self.metrics, here.0, here.1);
+                }
             }
             // The pointer left the window entirely, no CursorMoved follows, so
             // hover/active have to be dropped here or they stay lit.
@@ -8347,7 +8369,6 @@ impl ApplicationHandler<RuxEvent> for App {
                 match touch.phase {
                     TouchPhase::Started => {
                         self.keyboard_modality = false;
-                        #[cfg(not(target_arch = "wasm32"))]
                         media::stir_at(&self.metrics, here.0, here.1);
                         // There is no hover on a touchscreen, so the pointer only
                         // exists while a finger is down and has to be set here.
@@ -8602,7 +8623,6 @@ impl ApplicationHandler<RuxEvent> for App {
                     (self.pointer.1 / scale) as f32,
                 );
                 self.keyboard_modality = false;
-                #[cfg(not(target_arch = "wasm32"))]
                 media::stir_at(&self.metrics, here.0, here.1);
                 // A mouse is one finger with id 0 for as long as its button is
                 // held, so a handler written for a phone reads the same here.
@@ -8669,6 +8689,12 @@ impl ApplicationHandler<RuxEvent> for App {
             // is issued on resume, resize, reload, and tap, not every frame.
             WindowEvent::RedrawRequested => {
                 self.render();
+                // A browser's video gives no word of a new picture: while one
+                // in sight plays, every frame is drawn.
+                #[cfg(target_arch = "wasm32")]
+                if self.video_frames {
+                    self.request_redraw();
+                }
                 #[cfg(target_os = "android")]
                 self.sync_text_menu();
                 #[cfg(any(target_os = "android", target_arch = "wasm32"))]

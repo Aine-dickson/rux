@@ -400,6 +400,25 @@ What it means for C, for the owner to decide:
   - Not covered yet: HEVC and AV1 (need store extensions this machine may
     lack; they are an `"unsupported"` error, not a crash, without them),
     rotation metadata (a phone's portrait clip), non-square pixels.
+- **The web built 2026-10-28**, as planned: `web_sound`'s element store
+  holds a `<video>` as it holds an `<audio>` (a `Video` resource beside
+  `Sound`, the same calls under both names), never put in the page and
+  `playsinline`. Before each frame the shell copies each video's current
+  picture into its texture with wgpu's `copy_external_image_to_texture`
+  from the element, and the painter draws it as the desktop's. A browser's
+  video gives no word of a new picture, so while one in sight plays every
+  frame is drawn; paused, it is copied only after it loads or is sought;
+  out of sight, not at all. The browser plays the sound itself, so C.3's
+  clock is the browser's. Fullscreen is the canvas's (winit's
+  `requestFullscreen`), and the browser leaving it by itself (its Escape
+  never reaches the page) is heard from `fullscreenchange`. Stirring and
+  fullscreen reach either platform's `Video` as calls (`Video.stir`,
+  `Video.fullscreen=`), so `media` has no platform branches. Driven in
+  Brave (`docs/08-user-tests.md`). Found while driving: **the browser
+  repeats the pointer's place** over a canvas that redraws every frame,
+  and each repeat stirred the video, so its controls never hid with the
+  pointer resting on it. Only a move to a new place stirs now, on every
+  platform.
 
 ### C.2 `<video>`
 

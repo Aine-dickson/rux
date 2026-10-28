@@ -667,6 +667,17 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
         ("Video.videoHeight".into(), get(|p| Any::Int(i64::from(p.info.height)))),
         ("Video.started".into(), get(|p| Any::Bool(p.state().started))),
         ("Video.controlsShown".into(), get(|p| Any::Bool(p.controls_shown()))),
+        ("Video.stir".into(), act(Player::stir)),
+        (
+            "Video.fullscreen=".into(),
+            set(|p, v| match v {
+                Any::Bool(on) => {
+                    p.set_fullscreen(*on);
+                    Ok(())
+                }
+                _ => Err(Error::new("type", "`true` or `false`")),
+            }),
+        ),
         ("Video.fullscreen".into(), get(|p| Any::Bool(p.fullscreen.load(Ordering::Acquire)))),
         (
             "Video.error".into(),
