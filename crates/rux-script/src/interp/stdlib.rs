@@ -222,6 +222,7 @@ impl Interp {
                 let ask = match text(&argv[1])?.as_ref() {
                     "play" => crate::MediaAsk::Play,
                     "pause" => crate::MediaAsk::Pause,
+                    "fullscreen" => crate::MediaAsk::Fullscreen,
                     _ => crate::MediaAsk::Toggle,
                 };
                 let key = text(&argv[0])?.to_string();

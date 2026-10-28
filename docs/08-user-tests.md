@@ -3056,6 +3056,28 @@ driven: the app put away (Android, no video there yet), an output unplugged
 mid-play, and a sound track this machine cannot decode (none to hand; the
 warning path is the same call as `@error`'s).
 
+## `<video>` controls hiding, and fullscreen, Windows, 2026-10-28
+
+Built after C.3 (plan, C.2's notes). **Driven in the window**, release
+build, `rux-harness/video-el/fs-drive.ps1` on `av.rux` (the 1080p60 clip with
+sound), clicks and pointer moves by `SetCursorPos`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The button | open the page | a fifth button, fullscreen, at the band's end | pass |
+| Hides | click play, move the pointer below the video, wait 4.5 s | the band gone, the picture playing | pass |
+| Comes back | move the pointer over the picture | the band back at once, time counting | pass |
+| Fullscreen | click the fullscreen button | the window borderless over the monitor; the video filling it on black, letterboxed; the button now "exit fullscreen" | pass: the surface went to 1920x1080 and drew 60 frames a second; the picture checked in a build that maximised instead (below) |
+| Hides there too | 4 s idle in fullscreen | the band gone | pass (in the maximised build) |
+| Escape | press Escape | the window as it was, the page under it, still playing | pass |
+
+**The fullscreen window itself could not be photographed**: GDI,
+`PrintWindow` and Desktop Duplication all returned the last composed frame
+once the window was flipped straight to the display. What it showed was
+checked by one build where the button maximised the window instead, which
+the compositor still draws, and by logging the surface's size. Not driven:
+Back on Android, and a key on a focused band button keeping the band up.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

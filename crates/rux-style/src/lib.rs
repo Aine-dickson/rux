@@ -2040,6 +2040,11 @@ const AUDIO_VOLUME: &str = "M15 8a5 5 0 0 1 0 8 M17.7 5a9 9 0 0 1 0 14 \
     M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5";
 const AUDIO_MUTED: &str = "M6 15h-2a1 1 0 0 1 -1 -1v-4a1 1 0 0 1 1 -1h2l3.5 -4.5a.8 .8 0 0 1 1.5 .5v14a.8 .8 0 0 1 -1.5 .5l-3.5 -4.5 \
     M16 10l4 4m0 -4l-4 4";
+/// Tabler's `maximize` and `minimize`: a `<video>`'s fullscreen button.
+const VIDEO_FULL: &str = "M4 8v-2a2 2 0 0 1 2 -2h2 M4 16v2a2 2 0 0 0 2 2h2 \
+    M16 4h2a2 2 0 0 1 2 2v2 M16 20h2a2 2 0 0 0 2 -2v-2";
+const VIDEO_SHRINK: &str = "M15 19v-2a2 2 0 0 1 2 -2h2 M15 5v2a2 2 0 0 0 2 2h2 \
+    M5 15h2a2 2 0 0 1 2 2v2 M5 9h2a2 2 0 0 0 2 -2v-2";
 /// The seek bar's thumb, smaller than a slider's: it shares a row.
 const AUDIO_THUMB: f32 = 12.0;
 
@@ -2172,7 +2177,8 @@ fn build_media(
         );
         if video {
             reads.push_str(&format!(
-                ", {m}(\"{key}\")?.videoWidth, {m}(\"{key}\")?.videoHeight, {m}(\"{key}\")?.started"
+                ", {m}(\"{key}\")?.videoWidth, {m}(\"{key}\")?.videoHeight, {m}(\"{key}\")?.started, \
+                 {m}(\"{key}\")?.controlsShown, {m}(\"{key}\")?.fullscreen"
             ));
         }
         reads.push(']');
@@ -2292,11 +2298,30 @@ fn build_media(
             if silent { "Unmute" } else { "Mute" },
             format!("{m} if __m != none {{ if __m.volume > 0.0 {{ __m.volume = 0.0 }} else {{ __m.volume = 1.0 }} }}"),
         ));
+        if video {
+            let full = now.get(8).is_some_and(Value::is_truthy);
+            parts.push(media_button(
+                &at(4),
+                if full { VIDEO_SHRINK } else { VIDEO_FULL },
+                ink,
+                if full { "Exit fullscreen" } else { "Fullscreen" },
+                format!("{}(\"{key}\", \"fullscreen\")", rux_script::MEDIA_ASK_FN),
+            ));
+        }
         for p in &mut parts {
             p.instance = instance.map(str::to_string);
         }
         if video {
-            video_band(parts, style, instance)
+            // While playing, the band goes after a few idle seconds and comes
+            // back when the pointer moves over the picture, it is pressed, or a
+            // key reaches it (the shell stirs the `Video`). Until the video
+            // is loaded nothing has been read: shown.
+            let shown = now.get(7).is_none_or(|v| v.is_truthy() || matches!(v, Value::Null));
+            if shown {
+                video_band(parts, style, instance)
+            } else {
+                LayoutNode::new(style)
+            }
         } else {
             // A browser's own size, near enough, unless the author gives one.
             if !props.contains_key("width") {
@@ -2407,6 +2432,23 @@ fn video_picture(
     }
     if s.display == Display::Inline {
         s.display = Display::Block;
+    }
+    // Fullscreen: over the whole window and everything on it, on black,
+    // whatever its own box was, as a browser's `:fullscreen` has it.
+    if now.get(8).is_some_and(Value::is_truthy) {
+        s.position = rux_layout::Position::Fixed;
+        s.inset = [Some(Len::Px(0.0)); 4];
+        (s.width, s.height, s.aspect_ratio) = (None, None, None);
+        (s.min_width, s.max_width, s.min_height, s.max_height) = (None, None, None, None);
+        s.margin = Sides::default();
+        s.margin_pct = [None; 4];
+        s.border = Sides::default();
+        s.radius = Default::default();
+        s.radius_pct = [None; 4];
+        s.transform = None;
+        s.opacity = 1.0;
+        s.z_index = Some(i32::MAX);
+        s.background = Some(Background::Color(Rgba::new(0.0, 0.0, 0.0, 1.0)));
     }
     // The poster until it is played or sought, then the picture.
     let poster = match el.attr(":poster") {

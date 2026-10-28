@@ -10469,7 +10469,7 @@ fn wrong() { query(\"text\")[0].play(); }</script>",
         // test may have set for every key: here only that they are there.
         let mut buttons = Vec::new();
         labels_of(&doc.root, rux_layout::AccessRole::Button, &mut buttons);
-        assert_eq!(buttons.len(), 2, "play and mute: {buttons:?}");
+        assert_eq!(buttons.len(), 3, "play, mute and fullscreen: {buttons:?}");
 
         // Without a poster, the picture is the frame the shell puts up.
         let doc = Document::from_source("<template><screen><video src=\"clip.mp4\" /></screen></template>").expect("load");

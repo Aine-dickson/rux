@@ -69,6 +69,8 @@ struct Entry {
     /// A video's own failure part way has been given as `@error`.
     failed_once: bool,
     seen: bool,
+    /// Where the element is in the tree, for what the pointer is over.
+    path: Vec<usize>,
 }
 
 impl Entry {
@@ -87,11 +89,14 @@ impl Entry {
             error: None,
             failed_once: false,
             seen: true,
+            path: Vec::new(),
         }
     }
 }
 
 static SOUNDS: Mutex<Option<HashMap<String, Entry>>> = Mutex::new(None);
+/// The key of the `<video>` filling the window, if one does.
+static FULLSCREEN: Mutex<Option<String>> = Mutex::new(None);
 static NEXT_LOAD: AtomicU64 = AtomicU64::new(1);
 static ACTIVATED: AtomicBool = AtomicBool::new(false);
 
@@ -201,6 +206,14 @@ fn forget(e: Entry) {
 pub(crate) fn ask(key: &str, what: MediaAsk) {
     let mut guard = sounds();
     let Some(e) = guard.as_mut().and_then(|m| m.get_mut(key)) else { return };
+    if what == MediaAsk::Fullscreen {
+        if e.video {
+            let on = fullscreen().as_deref() != Some(key);
+            drop(guard);
+            set_fullscreen(on.then_some(key));
+        }
+        return;
+    }
     // Pressing play is the person's say-so, so nothing waits on `autoplay`.
     e.autoplayed = true;
     match &e.load {
@@ -209,7 +222,7 @@ pub(crate) fn ask(key: &str, what: MediaAsk) {
             let play = match what {
                 MediaAsk::Play => true,
                 MediaAsk::Pause => false,
-                MediaAsk::Toggle => !playing,
+                MediaAsk::Toggle | MediaAsk::Fullscreen => !playing,
             };
             act(h, if play { "play" } else { "pause" }, Vec::new());
         }
@@ -227,13 +240,82 @@ pub(crate) fn ask(key: &str, what: MediaAsk) {
 }
 
 /// Every `<audio>` and `<video>` in the tree, with the instance its
-/// handlers run in.
-fn walk<'a>(node: &'a LayoutNode, out: &mut Vec<(&'a Media, Option<&'a str>)>) {
+/// handlers run in and its tree path.
+fn walk<'a>(node: &'a LayoutNode, path: &mut Vec<usize>, out: &mut Vec<(&'a Media, Option<&'a str>, Vec<usize>)>) {
     if let Some(m) = node.field().media.as_deref() {
-        out.push((m, node.instance.as_deref()));
+        out.push((m, node.instance.as_deref(), path.clone()));
     }
-    for c in &node.children {
-        walk(c, out);
+    for (i, c) in node.children.iter().enumerate() {
+        path.push(i);
+        walk(c, path, out);
+        path.pop();
+    }
+}
+
+/// The key of the `<video>` filling the window.
+pub(crate) fn fullscreen() -> Option<String> {
+    FULLSCREEN.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+/// Put the `<video>` keyed `key` in fullscreen, or none: the one there before
+/// leaves it. The shell follows with the window ([`fullscreen`]).
+pub(crate) fn set_fullscreen(key: Option<&str>) {
+    let before = std::mem::replace(&mut *FULLSCREEN.lock().unwrap_or_else(|e| e.into_inner()), key.map(str::to_string));
+    #[cfg(not(target_arch = "wasm32"))]
+    for (k, p) in videos() {
+        if Some(k.as_str()) == before.as_deref() || Some(k.as_str()) == key {
+            p.set_fullscreen(Some(k.as_str()) == key);
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = before;
+    rux_runtime::native::notify();
+}
+
+/// Leave fullscreen, if a video is in it: Escape, or Back on Android. Says
+/// whether one was.
+pub(crate) fn leave_fullscreen() -> bool {
+    let was = fullscreen().is_some();
+    if was {
+        set_fullscreen(None);
+    }
+    was
+}
+
+/// The pointer is at `(x, y)`, moved or pressed there: each video under it
+/// is stirred, and its controls come up a while. `metrics` is where every
+/// node was laid out.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn stir_at(metrics: &[rux_layout::NodeMetrics], x: f32, y: f32) {
+    stir(|path| {
+        metrics
+            .iter()
+            .find(|m| m.path == path)
+            .is_some_and(|m| x >= m.x && x <= m.x + m.width && y >= m.y && y <= m.y + m.height)
+    });
+}
+
+/// A key reached what is focused at `focus`: a video it is inside is stirred.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) fn stir_focused(focus: &[usize]) {
+    stir(|path| focus.starts_with(path));
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn stir(hit: impl Fn(&[usize]) -> bool) {
+    let players: Vec<_> = {
+        let guard = sounds();
+        let Some(map) = guard.as_ref() else { return };
+        map.values()
+            .filter(|e| e.video && hit(&e.path))
+            .filter_map(|e| match &e.load {
+                Load::Ready(h) => crate::video::player(h),
+                _ => None,
+            })
+            .collect()
+    };
+    for p in players {
+        p.stir();
     }
 }
 
@@ -243,7 +325,7 @@ fn walk<'a>(node: &'a LayoutNode, out: &mut Vec<(&'a Media, Option<&'a str>)>) {
 /// Gives the handlers to run, with their instance and `event`.
 pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
     let mut found = Vec::new();
-    walk(root, &mut found);
+    walk(root, &mut Vec::new(), &mut found);
     let mut out = Vec::new();
     let mut gone = Vec::new();
     {
@@ -255,9 +337,10 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
         for e in map.values_mut() {
             e.seen = false;
         }
-        for (m, instance) in found {
+        for (m, instance, path) in found {
             let e = map.entry(m.key.clone()).or_insert_with(|| Entry::new(&m.src, m.video));
             e.seen = true;
+            e.path = path;
             // A new `src` is a new sound, as a browser has it.
             if e.src != m.src || e.video != m.video {
                 gone.push(std::mem::replace(e, Entry::new(&m.src, m.video)));
@@ -277,6 +360,13 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
             let h = h.clone();
             if !e.met {
                 e.met = true;
+                // A new `src` while fullscreen stays fullscreen.
+                #[cfg(not(target_arch = "wasm32"))]
+                if e.video && fullscreen().as_deref() == Some(m.key.as_str()) {
+                    if let Some(p) = crate::video::player(&h) {
+                        p.set_fullscreen(true);
+                    }
+                }
                 // Its pictures play without it, as in a browser, and the
                 // console says why it is silent.
                 if e.video {
@@ -363,6 +453,10 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
         let keys: Vec<String> = map.iter().filter(|(_, e)| !e.seen).map(|(k, _)| k.clone()).collect();
         for k in keys {
             gone.extend(map.remove(&k));
+        }
+        // A fullscreen video gone from the page leaves the window as it was.
+        if fullscreen().is_some_and(|k| !map.contains_key(&k)) {
+            *FULLSCREEN.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
     }
     // Outside the lock: stopping a sound may wake the window.

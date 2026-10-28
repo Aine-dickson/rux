@@ -433,6 +433,26 @@ What it means for C, for the owner to decide:
     start. A file whose picture truly starts later shows it at once.
   - `loop` starts again with a seek, so there is a frame's pause at the
     joint; seamless looping is not built.
+- **Fullscreen and hiding built 2026-10-28** (the owner approved all of C,
+  so they went in after C.3). The shell owns where the pointer is, so it
+  stirs the `Video` under a pointer move or press, or around a focused
+  button on a key (`media::stir_at`, `stir_focused`, against the laid-out
+  boxes); the player answers `controlsShown`, false while playing and three
+  seconds unstirred, and the element leaves the band out. A fifth button,
+  Tabler's `maximize` and `minimize`, asks `"fullscreen"` of the shell,
+  which keeps the one fullscreen key, tells that player, and puts the window
+  borderless over the monitor; the element, reading `fullscreen`, takes
+  `position: fixed` at inset 0 with the top `z-index` on black and drops its
+  own size, margins, border, radius and transform. Escape (before any
+  `@key`) and Back leave it, and so does the element leaving the page.
+  Found while driving: **a screen grab cannot see a fullscreen window
+  here.** Borderless across the monitor, the swapchain is flipped straight
+  to the display, and GDI, `PrintWindow` and Desktop Duplication
+  (`DXGI_ERROR_ACCESS_LOST`) all gave the last composed frame while the
+  shell drew 60 a second at 1920x1080. The layout was checked in a build
+  that maximised instead (removed after), and the surface size by a resize
+  log. Not built: hiding the pointer with the controls, and Android's
+  immersive mode.
 
 ### C.3 Sound and sync
 

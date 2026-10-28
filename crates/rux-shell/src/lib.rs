@@ -1959,6 +1959,8 @@ struct App {
     /// layout. What turns a `query()` handle into a point, so `tap()` can be
     /// dispatched through the same coordinate path a finger takes.
     metrics: Vec<rux_layout::NodeMetrics>,
+    /// The window was put in fullscreen for a `<video>`.
+    video_fullscreen: bool,
     /// Scroll offset per scrollable box, in tree order. Survives the rebuild
     /// that follows every state change, so a list doesn't jump back to the top
     /// when you tap something in it.
@@ -2352,6 +2354,7 @@ impl App {
             cursor: Some(CursorIcon::Default),
             states: Vec::new(),
             metrics: Vec::new(),
+            video_fullscreen: false,
             #[cfg(target_arch = "wasm32")]
             mirrored: None,
         }
@@ -4601,6 +4604,7 @@ impl App {
         for (key, ask) in self.document.take_media_requests() {
             media::ask(&key, ask);
         }
+        self.follow_fullscreen();
         // Last, so a refused submission's focus on the first bad field is the
         // focus the person ends up with.
         for form in self.document.take_submits() {
@@ -5368,6 +5372,17 @@ impl App {
     /// and outside one reaches the app's own undo, and Ctrl+S, which no field
     /// uses, reaches the app from anywhere (Mava Studio's MS-004).
     fn dispatch_key(&mut self, key: &Key, repeat: bool) {
+        // Escape leaves a fullscreen video before anything else sees it, as
+        // in a browser, where a page cannot keep it.
+        if matches!(key, Key::Named(NamedKey::Escape)) && media::leave_fullscreen() {
+            self.follow_fullscreen();
+            return;
+        }
+        // A key reaching a control inside a `<video>` brings its controls up.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(path) = self.focus_index.and_then(|i| self.focusables.get(i)).and_then(|f| f.path.as_deref()) {
+            media::stir_focused(path);
+        }
         let chain = self.key_chain();
         let event = self.key_event(key, repeat);
         let mut rest = &chain[..];
@@ -5610,6 +5625,12 @@ impl App {
     /// written to block. So the history is asked first, and only a genuinely
     /// empty one is reported as a close.
     fn on_back(&mut self) -> bool {
+        // A fullscreen video is left first, as Back leaves one everywhere on
+        // Android.
+        if media::leave_fullscreen() {
+            self.follow_fullscreen();
+            return true;
+        }
         // A selection is let go of before anything else, as in every Android
         // field: Back with text selected closes the text menu, not the app.
         #[cfg(target_os = "android")]
@@ -5925,6 +5946,26 @@ impl App {
     fn sync_media(&mut self) {
         self.field_events.extend(media::sync(&self.document.root));
         self.field_events.extend(image_events::sync(&self.document.root));
+        self.follow_fullscreen();
+    }
+
+    /// The window fills the screen while a `<video>` does, and goes back to
+    /// what it was when none does. On Android the activity is already the
+    /// whole screen and winit has no window mode to change: the video's box
+    /// covers it.
+    fn follow_fullscreen(&mut self) {
+        let want = media::fullscreen().is_some();
+        if want == self.video_fullscreen {
+            return;
+        }
+        self.video_fullscreen = want;
+        if let Some(state) = self.state.as_ref() {
+            #[cfg(not(target_os = "android"))]
+            state.window.set_fullscreen(want.then_some(winit::window::Fullscreen::Borderless(None)));
+            #[cfg(target_os = "android")]
+            let _ = state;
+        }
+        self.request_redraw();
     }
 
     /// Run the field handlers the last batch of events queued.
@@ -8283,6 +8324,9 @@ impl ApplicationHandler<RuxEvent> for App {
                     self.update_pointer_state();
                 }
                 self.bars_follow_pointer();
+                // A `<video>` under the pointer brings its controls up.
+                #[cfg(not(target_arch = "wasm32"))]
+                media::stir_at(&self.metrics, here.0, here.1);
             }
             // The pointer left the window entirely, no CursorMoved follows, so
             // hover/active have to be dropped here or they stay lit.
@@ -8303,6 +8347,8 @@ impl ApplicationHandler<RuxEvent> for App {
                 match touch.phase {
                     TouchPhase::Started => {
                         self.keyboard_modality = false;
+                        #[cfg(not(target_arch = "wasm32"))]
+                        media::stir_at(&self.metrics, here.0, here.1);
                         // There is no hover on a touchscreen, so the pointer only
                         // exists while a finger is down and has to be set here.
                         // Every helper below reads it.
@@ -8556,6 +8602,8 @@ impl ApplicationHandler<RuxEvent> for App {
                     (self.pointer.1 / scale) as f32,
                 );
                 self.keyboard_modality = false;
+                #[cfg(not(target_arch = "wasm32"))]
+                media::stir_at(&self.metrics, here.0, here.1);
                 // A mouse is one finger with id 0 for as long as its button is
                 // held, so a handler written for a phone reads the same here.
                 self.points.clear();

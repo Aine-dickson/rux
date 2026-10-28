@@ -161,6 +161,10 @@ fn video_items() -> Vec<rux_native::Item> {
         property("started", "bool", false),
         // Why it stopped part way, as `kind` and `message` with a tab between.
         property("error", "string?", false),
+        // Its drawn controls are up: paused, or stirred in the last seconds.
+        property("controlsShown", "bool", false),
+        // It fills the screen.
+        property("fullscreen", "bool", false),
     ]
 }
 

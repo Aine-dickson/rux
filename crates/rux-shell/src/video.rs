@@ -37,6 +37,10 @@ use rux_video::{Decoder, Frame, Info, SoundTrack};
 /// controls and `@timeupdate`.
 const TICK: Duration = Duration::from_millis(100);
 
+/// How long a playing video's controls stay up after it was last stirred:
+/// about what a browser's do.
+const CONTROLS_IDLE: Duration = Duration::from_secs(3);
+
 /// How far the pictures' clock may be from the sound's before it is set to
 /// it: more than the sound clock's own jitter between the mixer's steps, and
 /// well under the 45 ms by which a picture ahead of its sound starts to show.
@@ -76,6 +80,11 @@ pub(crate) struct Player {
     sound_error: Option<rux_video::VideoError>,
     /// The painter drew its picture in the last frame.
     shown: AtomicBool,
+    /// When the pointer, a tap or a key last stirred it: its controls stay
+    /// up for [`CONTROLS_IDLE`] after.
+    stirred: Mutex<Instant>,
+    /// It fills the window ([`crate::media`] decides which one does).
+    fullscreen: AtomicBool,
     state: Mutex<State>,
     /// Rung whenever the state changes, for the threads waiting on it.
     wake: Condvar,
@@ -149,6 +158,8 @@ impl Player {
         s.started = true;
         self.start_sound(&mut s);
         drop(s);
+        // Up for a while as it starts, then out of the way.
+        *self.stirred.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
         crate::sound::refocus();
         self.wake.notify_all();
         rux_runtime::native::notify();
@@ -233,6 +244,29 @@ impl Player {
         self.wake.notify_all();
         self.room.notify_all();
         rux_runtime::native::notify();
+    }
+
+    /// Whether its drawn controls are up: always while paused, and while
+    /// playing for [`CONTROLS_IDLE`] after it was last stirred.
+    fn controls_shown(&self) -> bool {
+        !self.state().playing || self.stirred.lock().unwrap_or_else(|e| e.into_inner()).elapsed() < CONTROLS_IDLE
+    }
+
+    /// The pointer moved over it, it was pressed, or a key reached it: its
+    /// controls come up, and stay a while.
+    pub(crate) fn stir(&self) {
+        let hidden = !self.controls_shown();
+        *self.stirred.lock().unwrap_or_else(|e| e.into_inner()) = Instant::now();
+        if hidden {
+            rux_runtime::native::notify();
+        }
+    }
+
+    pub(crate) fn set_fullscreen(&self, on: bool) {
+        if self.fullscreen.swap(on, Ordering::AcqRel) != on {
+            self.stir();
+            rux_runtime::native::notify();
+        }
     }
 
     /// The picture showing now, and its number.
@@ -568,6 +602,8 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
                                     sound,
                                     sound_error,
                                     shown: AtomicBool::new(true),
+                                    stirred: Mutex::new(Instant::now()),
+                                    fullscreen: AtomicBool::new(false),
                                     state: Mutex::new(State {
                                         playing: false,
                                         looping: false,
@@ -630,6 +666,8 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
         ("Video.videoWidth".into(), get(|p| Any::Int(i64::from(p.info.width)))),
         ("Video.videoHeight".into(), get(|p| Any::Int(i64::from(p.info.height)))),
         ("Video.started".into(), get(|p| Any::Bool(p.state().started))),
+        ("Video.controlsShown".into(), get(|p| Any::Bool(p.controls_shown()))),
+        ("Video.fullscreen".into(), get(|p| Any::Bool(p.fullscreen.load(Ordering::Acquire)))),
         (
             "Video.error".into(),
             get(|p| match p.state().error.clone() {

@@ -1259,6 +1259,8 @@ pub enum MediaAsk {
     Pause,
     /// Play it if it is paused, else pause it: its play button.
     Toggle,
+    /// A `<video>` into fullscreen, or out of it: its fullscreen button.
+    Fullscreen,
 }
 
 /// The function an `<audio>`'s drawn controls read its sound through, by the
