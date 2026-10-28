@@ -8,7 +8,9 @@
 //! Media Foundation on Windows. Everywhere else opening one is an error of
 //! kind `"unsupported"`, and the element shows its poster.
 //!
-//! Only the pictures come from here. A video's sound is C.3's.
+//! A video's sound is read apart, by a [`SoundTrack`] over the same bytes,
+//! since it plays on the audio thread's terms and the pictures on the
+//! player's.
 
 use std::sync::Arc;
 
@@ -133,6 +135,65 @@ impl Decoder {
     }
 
     /// Go to `secs` from the start (clamped to the video).
+    pub fn seek(&mut self, secs: f64) -> Result<(), VideoError> {
+        #[cfg(windows)]
+        return self.inner.seek(secs);
+        #[cfg(not(windows))]
+        {
+            let _ = secs;
+            Ok(())
+        }
+    }
+}
+
+/// A video's sound, read as interleaved `f32` samples at the file's own rate
+/// by the same platform decoder as its pictures (C.3), so any sound the
+/// platform plays (Opus in a WebM, AAC in an MP4) plays. Its times start at 0
+/// as the pictures' do. The shell hands it to `rux-audio`'s mixer, whose
+/// clock the pictures then follow.
+pub struct SoundTrack {
+    #[cfg(windows)]
+    inner: windows::SoundTrack,
+}
+
+impl SoundTrack {
+    /// Open the sound track of `input`; an error of kind `"unsupported"` when
+    /// it has none, or none this machine decodes.
+    pub fn open(input: Input) -> Result<SoundTrack, VideoError> {
+        #[cfg(windows)]
+        return Ok(SoundTrack { inner: windows::SoundTrack::open(input)? });
+        #[cfg(not(windows))]
+        {
+            let _ = input;
+            Err(VideoError::new("unsupported", "video does not play on this platform yet"))
+        }
+    }
+
+    /// Frames per second.
+    pub fn rate(&self) -> u32 {
+        #[cfg(windows)]
+        return self.inner.rate;
+        #[cfg(not(windows))]
+        0
+    }
+
+    /// Samples per frame.
+    pub fn channels(&self) -> usize {
+        #[cfg(windows)]
+        return self.inner.channels;
+        #[cfg(not(windows))]
+        0
+    }
+
+    /// The next stretch of samples; `None` at the end.
+    pub fn next_samples(&mut self) -> Result<Option<Vec<f32>>, VideoError> {
+        #[cfg(windows)]
+        return self.inner.next_samples();
+        #[cfg(not(windows))]
+        Ok(None)
+    }
+
+    /// Go to `secs` from the start: the next samples are the ones at it.
     pub fn seek(&mut self, secs: f64) -> Result<(), VideoError> {
         #[cfg(windows)]
         return self.inner.seek(secs);

@@ -62,7 +62,7 @@ fn input(src: &str) -> Result<rux_audio::Input, Error> {
 /// given back when none does. `2` for a long sound, `1` for a short one,
 /// `0` for none (`RuxActivity.ruxAudioFocus`). A sound playing at volume 0
 /// holds none: a silent sound has no business pausing the person's music.
-fn refocus() {
+pub(crate) fn refocus() {
     #[cfg(target_os = "android")]
     crate::android_audio_focus(i32::from(rux_audio::audible()));
 }

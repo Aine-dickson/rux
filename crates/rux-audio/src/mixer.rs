@@ -8,9 +8,8 @@
 use std::sync::mpsc::{self, Receiver, Sender, SyncSender, TryRecvError};
 use std::sync::{Arc, Weak};
 
-use crate::decode::Decoding;
 use crate::resample::Resampler;
-use crate::{AudioError, Input, Pcm, Shared, Source};
+use crate::{AudioError, Opener, Pcm, Shared, Source, Stream};
 
 /// The sounds playing into one output.
 pub struct Mixer {
@@ -22,6 +21,9 @@ pub struct Mixer {
     /// Whether a sound played in the last [`Mixer::mix`], to tell when the
     /// last one stops.
     was_playing: bool,
+    /// How long after a [`Mixer::mix`] the output plays what it gave, as the
+    /// output last said.
+    latency: std::time::Duration,
 }
 
 /// A sound the mixer knows, and where its samples come from.
@@ -87,7 +89,7 @@ impl Voice {
                 };
                 Feed::Whole { pcm, frame: 0 }
             }
-            Source::Stream(input) => Feed::Stream(stream(input.clone(), Arc::downgrade(shared), rate)?),
+            Source::Stream(open) => Feed::Stream(stream(Arc::clone(open), Arc::downgrade(shared), rate)?),
         };
         let mut feed = feed;
         // Made again for a sound part way through (a new output, or one
@@ -101,24 +103,34 @@ impl Voice {
     }
 }
 
-/// Start the thread that reads `input` ahead, at `rate`.
-fn stream(input: Input, sound: Weak<Shared>, rate: u32) -> Result<StreamFeed, AudioError> {
-    let mut d = Decoding::open(&input)?;
-    let channels = d.channels.max(1);
+/// Start the thread that opens the sound's stream and reads it ahead, at
+/// `rate`. Opened there, not here: a platform decoder may belong to the
+/// thread that made it.
+fn stream(open: Opener, sound: Weak<Shared>, rate: u32) -> Result<StreamFeed, AudioError> {
     let (tx, rx) = mpsc::sync_channel::<Chunk>(READ_AHEAD);
     let (ctl, ctl_rx) = mpsc::channel::<Ctl>();
+    let (opened_tx, opened) = mpsc::channel::<Result<usize, AudioError>>();
     std::thread::Builder::new()
         .name("rux-audio-read".into())
-        .spawn(move || read_ahead(&mut d, rate, &tx, &ctl_rx, &sound))
+        .spawn(move || match open() {
+            Ok(mut d) => {
+                let _ = opened_tx.send(Ok(d.channels().max(1)));
+                read_ahead(&mut *d, rate, &tx, &ctl_rx, &sound);
+            }
+            Err(e) => {
+                let _ = opened_tx.send(Err(e));
+            }
+        })
         .map_err(|e| AudioError::new("io", format!("cannot start reading the sound: {e}")))?;
+    let channels = opened.recv().map_err(|_| AudioError::new("decode", "the sound stopped opening"))??;
     Ok(StreamFeed { rx, ctl, channels, gen: 0, cur: Vec::new(), offset: 0, ended: false })
 }
 
 /// The reading thread: decode, resample, send, until the sound is dropped.
-fn read_ahead(d: &mut Decoding, rate: u32, tx: &SyncSender<Chunk>, ctl: &Receiver<Ctl>, sound: &Weak<Shared>) {
-    let mut rs = Resampler::new(d.rate, rate, d.channels.max(1));
+fn read_ahead(d: &mut dyn Stream, rate: u32, tx: &SyncSender<Chunk>, ctl: &Receiver<Ctl>, sound: &Weak<Shared>) {
+    let mut rs = Resampler::new(d.rate(), rate, d.channels().max(1));
     let mut gen = 0;
-    let seek = |d: &mut Decoding, rs: &mut Resampler, secs: f64| {
+    let seek = |d: &mut dyn Stream, rs: &mut Resampler, secs: f64| {
         rs.reset();
         d.seek(secs)
     };
@@ -277,7 +289,14 @@ fn add(src: &[f32], sch: usize, out: &mut [f32], och: usize, volume: f32) {
 
 impl Mixer {
     pub fn new(rate: u32, channels: usize) -> Self {
-        Mixer { rate, channels: channels.max(1), voices: Vec::new(), since_notify: 0, was_playing: false }
+        Mixer {
+            rate,
+            channels: channels.max(1),
+            voices: Vec::new(),
+            since_notify: 0,
+            was_playing: false,
+            latency: std::time::Duration::ZERO,
+        }
     }
 
     pub(crate) fn has(&self, id: u64) -> bool {
@@ -315,6 +334,12 @@ impl Mixer {
     /// Fill `out`, interleaved at the output's channels, with every playing
     /// sound summed.
     pub fn mix(&mut self, out: &mut [f32]) {
+        self.mix_heard_after(out, self.latency);
+    }
+
+    /// [`Mixer::mix`], for an output that plays `out` `latency` from now.
+    pub fn mix_heard_after(&mut self, out: &mut [f32], latency: std::time::Duration) {
+        self.latency = latency;
         out.fill(0.0);
         let och = self.channels;
         let frames = out.len() / och;
@@ -334,6 +359,7 @@ impl Mixer {
             }
             any_playing = true;
             let volume = st.volume;
+            let from = st.current;
             let mut done = 0;
             while done < frames {
                 match v.feed.pull(&mut out[done * och..], och, frames - done, volume) {
@@ -374,6 +400,9 @@ impl Mixer {
                     Pulled::Starved => break,
                 }
             }
+            // When this stretch is heard, so the time heard can be read
+            // between stretches.
+            st.heard = (done > 0 && st.playing).then(|| (from, std::time::Instant::now() + self.latency));
         }
         if any_playing {
             self.since_notify += frames;
@@ -441,7 +470,7 @@ mod tests {
         assert_eq!(m.lock().unwrap().audible(), 1, "a short sound");
         let song = Sound(Arc::new(Shared {
             id: crate::NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-            source: Source::Stream(Input::Bytes { bytes: Vec::new().into(), hint: None }),
+            source: Source::Stream(Arc::new(|| Err(AudioError::new("io", "never read")))),
             duration: None,
             state: Mutex::new(State::new()),
         }));

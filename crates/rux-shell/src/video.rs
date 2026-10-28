@@ -3,10 +3,21 @@
 //! picture when its time comes, and the `Video` resource the element's
 //! controls and `query()` reach it by, shaped as a `Sound` is.
 //!
-//! **The clock is the wall's until C.3** gives the video its sound: playing
-//! from `t` at instant `i`, the time is `t + (now - i)`. A picture is put up
-//! once the clock reaches it and passed over when the one after it is due
-//! too, so a slow decode drops pictures rather than falling behind.
+//! **The sound is the clock** (C.3). A video's sound track is decoded by
+//! the platform ([`rux_video::SoundTrack`]) and played through `rux-audio`'s
+//! mixer as any `Sound` is, and the pictures follow where the mixer has got
+//! to: the player keeps its own clock (playing from `t` at instant `i`, the
+//! time is `t + (now - i)`) and sets it to the sound's whenever the two are
+//! more than [`SLACK`] apart. So the pictures wait while the output opens,
+//! and a sound clock that runs a little fast or slow takes them with it. A
+//! video with no sound, or one this machine cannot decode, runs on the wall's
+//! clock alone. A picture is put up once the clock reaches it and passed over
+//! when the one after it is due too, so a slow decode drops pictures rather
+//! than falling behind.
+//!
+//! **Out of sight, a video plays on and draws nothing**: the painter says
+//! which pictures it drew ([`after_scene`]), and one it did not draw is not
+//! written into its texture or asked a redraw for, while its sound plays on.
 //!
 //! **Pictures reach the screen by C.0's texture road** ([`upload`]): one
 //! texture per video, registered with vello, each new picture written into
@@ -20,11 +31,25 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use rux_runtime::native::{Any, Call, Error, Handle, Resource};
-use rux_video::{Decoder, Frame, Info};
+use rux_video::{Decoder, Frame, Info, SoundTrack};
 
 /// How often a playing video tells the document its time moved, for the
 /// controls and `@timeupdate`.
 const TICK: Duration = Duration::from_millis(100);
+
+/// How far the pictures' clock may be from the sound's before it is set to
+/// it: more than the sound clock's own jitter between the mixer's steps, and
+/// well under the 45 ms by which a picture ahead of its sound starts to show.
+const SLACK: f64 = 0.02;
+
+/// Within this of the sound, the pictures' clock is drawn to it a tenth of
+/// the gap at a time rather than set: unnoticed, and it leaves no lasting
+/// offset of up to [`SLACK`] after the last time it was set.
+const NUDGE: f64 = 0.002;
+
+/// How long before a picture is due the thread stops waiting on its condvar
+/// and sleeps the rest: more than the system tick it would otherwise land on.
+const PRECISE: f64 = 0.02;
 
 /// A loaded video, as Rux holds it. When the last of it goes, its thread
 /// stops.
@@ -38,14 +63,26 @@ impl Drop for VideoRes {
     fn drop(&mut self) {
         self.0.state().quit = true;
         self.0.wake.notify_all();
+        self.0.room.notify_all();
     }
 }
 
 pub(crate) struct Player {
     info: Info,
+    /// Its sound, played through the mixer; `None` without one.
+    sound: Option<rux_audio::Sound>,
+    /// Why its sound does not play, for a warning: the video plays on
+    /// without it, as a browser's does.
+    sound_error: Option<rux_video::VideoError>,
+    /// The painter drew its picture in the last frame.
+    shown: AtomicBool,
     state: Mutex<State>,
-    /// Rung whenever the state changes, for the thread waiting on it.
+    /// Rung whenever the state changes, for the threads waiting on it.
     wake: Condvar,
+    pictures: Mutex<Pictures>,
+    /// Rung when a picture is added or taken, a seek is asked for, or the
+    /// video goes.
+    room: Condvar,
 }
 
 struct State {
@@ -68,11 +105,22 @@ struct State {
     started: bool,
     error: Option<rux_video::VideoError>,
     quit: bool,
+    /// The sound was started with the pictures and is expected to be
+    /// playing: its clock is followed, and it stopping by anything but its
+    /// end pauses the pictures too.
+    with_sound: bool,
+    /// How many times the sound had ended when it was started.
+    sound_ended: u64,
 }
 
 impl Player {
+    /// Taken before [`Player::pictures`] when both are.
     fn state(&self) -> MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    fn pictures(&self) -> MutexGuard<'_, Pictures> {
+        self.pictures.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     fn current_time(s: &State, info: &Info) -> f64 {
@@ -99,9 +147,50 @@ impl Player {
             s.since = Some(Instant::now());
         }
         s.started = true;
+        self.start_sound(&mut s);
         drop(s);
+        crate::sound::refocus();
         self.wake.notify_all();
         rux_runtime::native::notify();
+    }
+
+    /// Start the sound with the pictures, from where they are. A sound that
+    /// will not start (no output) leaves the pictures on the wall's clock.
+    fn start_sound(&self, s: &mut State) {
+        let Some(sound) = &self.sound else { return };
+        let at = Self::current_time(s, &self.info);
+        if (sound.current_time() - at).abs() > SLACK {
+            sound.seek(at);
+        }
+        s.with_sound = sound.play().is_ok();
+        s.sound_ended = sound.ended();
+    }
+
+    /// Bring the pictures' clock to the sound's, or pause them with it.
+    fn follow_sound(&self, s: &mut State) {
+        let Some(sound) = self.sound.as_ref().filter(|_| s.with_sound && s.playing) else { return };
+        if sound.playing() {
+            let heard = sound.heard_time();
+            let gap = heard - Self::current_time(s, &self.info);
+            if gap.abs() > SLACK {
+                s.position = heard;
+                s.since = Some(Instant::now());
+            } else if gap.abs() > NUDGE {
+                s.position += gap / 10.0;
+            }
+        } else if sound.ended() != s.sound_ended || sound.error().is_some() {
+            // The sound is shorter than the pictures, or failed: they go on
+            // by the wall's clock.
+            s.with_sound = false;
+        } else {
+            // Paused from outside: the app was put away, another app took
+            // the sound, the output went. The pictures pause with it.
+            s.position = Self::current_time(s, &self.info);
+            s.playing = false;
+            s.since = None;
+            s.with_sound = false;
+            rux_runtime::native::notify();
+        }
     }
 
     pub(crate) fn pause(&self) {
@@ -109,9 +198,22 @@ impl Player {
         s.position = Self::current_time(&s, &self.info);
         s.playing = false;
         s.since = None;
+        s.with_sound = false;
         drop(s);
+        if let Some(sound) = &self.sound {
+            sound.pause();
+        }
+        crate::sound::refocus();
         self.wake.notify_all();
         rux_runtime::native::notify();
+    }
+
+    fn set_volume(&self, v: f64) {
+        self.state().volume = v;
+        if let Some(sound) = &self.sound {
+            sound.set_volume(v as f32);
+        }
+        crate::sound::refocus();
     }
 
     pub(crate) fn seek(&self, secs: f64) {
@@ -125,7 +227,11 @@ impl Player {
             s.since = Some(Instant::now());
         }
         drop(s);
+        if let Some(sound) = &self.sound {
+            sound.seek(secs);
+        }
         self.wake.notify_all();
+        self.room.notify_all();
         rux_runtime::native::notify();
     }
 
@@ -136,68 +242,111 @@ impl Player {
     }
 }
 
-/// How many pictures the thread keeps decoded ahead of the one showing:
-/// room for a slow decode without a missed frame. At 1080p60 a decode took
-/// 7.6 ms at the median and up to 60 ms, and with one frame ahead 3 to 5 in
-/// a hundred were missed.
+/// How many pictures are kept decoded ahead of the one showing: room for a
+/// slow decode without a missed frame. At 1080p60 a decode took 7.6 ms at
+/// the median and up to 60 ms, and with one frame ahead 3 to 5 in a hundred
+/// were missed.
 const AHEAD: usize = 4;
 
-/// Decode the next picture into `queue`, or say there are no more. A picture
-/// stamped at or past the length the file states is past its end: the clock
-/// stops at that length, so it would never come due.
-fn fill(player: &Player, decoder: &mut Decoder, queue: &mut VecDeque<Frame>, done: &mut bool) {
+/// Pictures decoded and not yet shown: filled by the decoding thread,
+/// emptied by the clock's.
+struct Pictures {
+    queue: VecDeque<Frame>,
+    /// The decoder has no more: at its end, or failed.
+    done: bool,
+}
+
+/// The next picture, or `None` at the end. A picture stamped at or past the
+/// length the file states is past its end: the clock stops at that length,
+/// so it would never come due.
+fn next(player: &Player, decoder: &mut Decoder) -> Option<Frame> {
     match decoder.next_frame() {
-        Ok(Some(f)) if !player.info.duration.is_some_and(|d| f.time >= d - 1e-3) => queue.push_back(f),
-        Ok(_) => *done = true,
+        Ok(Some(f)) if !player.info.duration.is_some_and(|d| f.time >= d - 1e-3) => Some(f),
+        Ok(_) => None,
         Err(e) => {
             // What was decoded still plays; then it ends, as at its end.
-            *done = true;
             fail(player, e);
+            None
         }
     }
 }
 
-/// The decoding thread: keep a few pictures decoded ahead, and put each up
-/// when the clock reaches it.
-fn run(player: Arc<Player>, mut decoder: Decoder) {
-    let mut queue = VecDeque::with_capacity(AHEAD);
-    let mut done = false;
+/// The decoding thread: keep [`AHEAD`] pictures decoded, and make seeks.
+///
+/// **Decoding and showing are two threads.** As one, a thread that waits
+/// for a picture's time decodes at most one picture between two shown, so
+/// at 1080p60 (a 7.6 ms decode in a 16.7 ms frame) it never caught up after
+/// a slow one, and 2 to 4 pictures in a hundred were missed.
+fn decode(player: Arc<Player>, mut decoder: Decoder) {
     // The first picture is up at once, as a browser shows a video's first
     // frame before it plays.
-    fill(&player, &mut decoder, &mut queue, &mut done);
-    if let Some(f) = queue.pop_front() {
-        put_up(&player, f);
+    match next(&player, &mut decoder) {
+        Some(f) => put_up(&player, f),
+        None => player.pictures().done = true,
     }
-    let mut told = Instant::now();
     loop {
         let mut s = player.state();
         if s.quit {
             return;
         }
         if let Some(t) = s.seek.take() {
+            // Emptied under the state's lock, so the clock never sees a
+            // picture from before the seek once it is taken.
+            let mut p = player.pictures();
+            p.queue.clear();
+            p.done = false;
+            drop(p);
             drop(s);
-            queue.clear();
-            done = false;
-            if let Err(e) = decoder.seek(t) {
-                done = true;
-                fail(&player, e);
-                continue;
+            match decoder.seek(t) {
+                // The picture at the new time is up at once, playing or not.
+                Ok(()) => match next(&player, &mut decoder) {
+                    Some(f) => put_up(&player, f),
+                    None => player.pictures().done = true,
+                },
+                Err(e) => {
+                    player.pictures().done = true;
+                    fail(&player, e);
+                }
             }
-            // The picture at the new time is up at once, playing or not.
-            fill(&player, &mut decoder, &mut queue, &mut done);
-            if let Some(f) = queue.pop_front() {
-                put_up(&player, f);
-            }
+            player.wake.notify_all();
             continue;
         }
-        let room = queue.len() < AHEAD && !done;
+        drop(s);
+        let p = player.pictures();
+        if p.done || p.queue.len() >= AHEAD {
+            // Until a picture is taken, a seek is asked for, or it goes.
+            let _unused = player.room.wait_timeout(p, Duration::from_millis(250));
+            continue;
+        }
+        drop(p);
+        let f = next(&player, &mut decoder);
+        // One decoded while a seek was asked for is from before it: the
+        // clock waits while a seek is pending, and the seek empties it.
+        let mut p = player.pictures();
+        match f {
+            Some(f) => p.queue.push_back(f),
+            None => p.done = true,
+        }
+        drop(p);
+        player.room.notify_all();
+    }
+}
+
+/// The clock's thread: put each picture up when its time comes, follow the
+/// sound, and end or go round at the end.
+fn keep_time(player: Arc<Player>) {
+    let mut told = Instant::now();
+    loop {
+        let mut s = player.state();
+        if s.quit {
+            return;
+        }
+        if !s.playing || s.seek.is_some() {
+            let _unused = player.wake.wait_timeout(s, Duration::from_millis(250));
+            continue;
+        }
+        player.follow_sound(&mut s);
         if !s.playing {
-            if room {
-                drop(s);
-                fill(&player, &mut decoder, &mut queue, &mut done);
-            } else {
-                let _unused = player.wake.wait(s);
-            }
             continue;
         }
         let now = Player::current_time(&s, &player.info);
@@ -205,45 +354,68 @@ fn run(player: Arc<Player>, mut decoder: Decoder) {
             told = Instant::now();
             rux_runtime::native::notify();
         }
-        let Some(front) = queue.front() else {
-            if !done {
+        let mut p = player.pictures();
+        let Some(due) = p.queue.front().map(|f| f.time) else {
+            if !p.done {
+                // The decoder is behind: woken by its next picture.
                 drop(s);
-                fill(&player, &mut decoder, &mut queue, &mut done);
+                let _unused = player.room.wait_timeout(p, Duration::from_millis(50));
                 continue;
             }
-            // The end: around again, or stopped there.
+            drop(p);
+            // The end: around again, or stopped there, the sound with it.
             if s.looping {
                 s.seek = Some(0.0);
                 s.position = 0.0;
                 s.since = Some(Instant::now());
+                if let Some(sound) = &player.sound {
+                    sound.seek(0.0);
+                }
+                player.start_sound(&mut s);
+                drop(s);
+                player.room.notify_all();
             } else {
                 s.playing = false;
                 s.at_end = true;
                 s.position = player.info.duration.unwrap_or(now);
                 s.since = None;
+                s.with_sound = false;
                 drop(s);
+                if let Some(sound) = &player.sound {
+                    sound.pause();
+                }
+                crate::sound::refocus();
                 rux_runtime::native::notify();
             }
             continue;
         };
-        if front.time > now {
-            // Not yet: decode ahead while there is room, else wait for it,
-            // or for a pause or a seek.
-            if room {
-                drop(s);
-                fill(&player, &mut decoder, &mut queue, &mut done);
-            } else {
-                let wait = Duration::from_secs_f64((front.time - now).min(0.25));
+        if due > now {
+            drop(p);
+            let wait = due - now;
+            if wait > PRECISE {
+                // Until nearly due, or a pause or a seek.
+                let wait = Duration::from_secs_f64((wait - PRECISE).min(0.25));
                 let _unused = player.wake.wait_timeout(s, wait);
+            } else {
+                // The last stretch is slept, not waited on the condvar,
+                // whose wait on Windows lands on the 15.6 ms system tick:
+                // every picture went up 8 to 25 ms late, and 1 to 3 in a
+                // hundred too late to show. A pause or seek in this short
+                // while is seen at its end.
+                drop(s);
+                std::thread::sleep(Duration::from_secs_f64(wait));
             }
             continue;
         }
+        let frame = p.queue.pop_front().expect("looked at above");
+        let after = p.queue.front().map(|n| n.time);
+        drop(p);
         drop(s);
+        player.room.notify_all();
         // Due: up at once. One so late that the picture after it is due too
         // is passed over, so a decoder that fell behind catches up rather
         // than showing the past.
-        let frame = queue.pop_front().expect("looked at above");
-        let lasts = queue.front().map(|n| n.time - frame.time).filter(|d| *d > 0.0).unwrap_or(1.0 / 30.0);
+        let lasts = after.map(|n| n - frame.time).filter(|d| *d > 0.0).unwrap_or(1.0 / 30.0);
         if frame.time + lasts > player.time() {
             put_up(&player, frame);
         }
@@ -255,7 +427,9 @@ fn put_up(player: &Player, frame: Frame) {
     s.frame = Some(Arc::new(frame));
     s.serial += 1;
     drop(s);
-    wake_for_frame();
+    if player.shown.load(Ordering::Acquire) {
+        wake_for_frame();
+    }
 }
 
 fn fail(player: &Player, e: rux_video::VideoError) {
@@ -313,6 +487,41 @@ fn input(src: &str) -> Result<rux_video::Input, Error> {
     Ok(rux_video::Input::Bytes { bytes: bytes.into(), hint })
 }
 
+/// A video's sound track as a `Sound` the mixer plays, read from the same
+/// bytes as its pictures.
+fn sound_of(input: rux_video::Input, duration: Option<f64>) -> Result<rux_audio::Sound, rux_video::VideoError> {
+    let open = move || -> Result<Box<dyn rux_audio::Stream>, rux_audio::AudioError> {
+        Ok(Box::new(Track(SoundTrack::open(input.clone()).map_err(heard)?)))
+    };
+    rux_audio::Sound::from_stream(open, duration)
+        .map_err(|e| rux_video::VideoError { kind: e.kind, message: e.message })
+}
+
+fn heard(e: rux_video::VideoError) -> rux_audio::AudioError {
+    rux_audio::AudioError::new(e.kind, e.message)
+}
+
+/// A [`SoundTrack`] as the mixer reads a stream.
+struct Track(SoundTrack);
+
+impl rux_audio::Stream for Track {
+    fn rate(&self) -> u32 {
+        self.0.rate()
+    }
+
+    fn channels(&self) -> usize {
+        self.0.channels()
+    }
+
+    fn next(&mut self) -> Result<Option<Vec<f32>>, rux_audio::AudioError> {
+        self.0.next_samples().map_err(heard)
+    }
+
+    fn seek(&mut self, secs: f64) -> Result<(), rux_audio::AudioError> {
+        self.0.seek(secs).map_err(heard)
+    }
+}
+
 /// The calls behind `<video>`, keyed as the module's are. `loadVideo` is the
 /// element's alone: no script names it, as the module does not declare it.
 pub(crate) fn calls() -> Vec<(String, Call)> {
@@ -345,10 +554,20 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
                     // Foundation's reader belongs to the thread it is made on.
                     std::thread::Builder::new()
                         .name("rux-video".into())
-                        .spawn(move || match Decoder::open(input) {
+                        .spawn(move || match Decoder::open(input.clone()) {
                             Ok(decoder) => {
+                                let (sound, sound_error) = match decoder.info().has_audio {
+                                    true => match sound_of(input, decoder.info().duration) {
+                                        Ok(s) => (Some(s), None),
+                                        Err(e) => (None, Some(e)),
+                                    },
+                                    false => (None, None),
+                                };
                                 let player = Arc::new(Player {
                                     info: decoder.info().clone(),
+                                    sound,
+                                    sound_error,
+                                    shown: AtomicBool::new(true),
                                     state: Mutex::new(State {
                                         playing: false,
                                         looping: false,
@@ -362,11 +581,23 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
                                         started: false,
                                         error: None,
                                         quit: false,
+                                        with_sound: false,
+                                        sound_ended: 0,
                                     }),
                                     wake: Condvar::new(),
+                                    pictures: Mutex::new(Pictures { queue: VecDeque::with_capacity(AHEAD), done: false }),
+                                    room: Condvar::new(),
                                 });
+                                let clock = player.clone();
+                                if let Err(e) = std::thread::Builder::new()
+                                    .name("rux-video-clock".into())
+                                    .spawn(move || keep_time(clock))
+                                {
+                                    let _ = tx.send(Err(Error::new("io", format!("cannot start a video: {e}"))));
+                                    return;
+                                }
                                 let _ = tx.send(Ok(player.clone()));
-                                run(player, decoder);
+                                decode(player, decoder);
                             }
                             Err(e) => {
                                 let _ = tx.send(Err(Error::new(e.kind, e.message)));
@@ -406,7 +637,17 @@ pub(crate) fn calls() -> Vec<(String, Call)> {
                 None => Any::None,
             }),
         ),
-        ("Video.volume=".into(), set(|p, v| Ok(p.state().volume = number(Some(v))?.clamp(0.0, 1.0)))),
+        (
+            "Video.soundError".into(),
+            get(|p| p.sound_error.as_ref().map_or(Any::None, |e| Any::Str(e.message.clone()))),
+        ),
+        (
+            "Video.volume=".into(),
+            set(|p, v| {
+                p.set_volume(number(Some(v))?.clamp(0.0, 1.0));
+                Ok(())
+            }),
+        ),
         (
             "Video.loop=".into(),
             set(|p, v| match v {
@@ -464,6 +705,11 @@ pub(crate) fn upload(
             keep
         });
         for (key, player) in players {
+            // Out of sight: written in only once, so it has a picture when it
+            // comes back.
+            if !player.shown.load(Ordering::Acquire) && on.contains_key(key) {
+                continue;
+            }
             let Some((frame, serial)) = player.frame() else { continue };
             let size = wgpu::Extent3d { width: frame.width, height: frame.height, depth_or_array_layers: 1 };
             if let Some(gpu) = on.get(key) {
@@ -508,6 +754,32 @@ pub(crate) fn upload(
             );
         }
     });
+}
+
+/// After a frame's scene is built: each video learns whether the painter drew
+/// it. One that came into sight with a newer picture than it drew asks for
+/// another frame at once.
+pub(crate) fn after_scene(players: &[(String, Arc<Player>)], images: &mut rux_paint::ImageCache) {
+    let drawn = images.take_frames_drawn();
+    for (key, player) in players {
+        let shown = drawn.contains(&format!("{}{key}", rux_layout::VIDEO_FRAME));
+        let was = player.shown.swap(shown, Ordering::AcqRel);
+        let behind = || {
+            let serial = player.state().serial;
+            ON_GPU.with(|on| on.borrow().get(key).is_none_or(|g| g.serial != serial))
+        };
+        if shown && !was && behind() {
+            wake_for_frame();
+        }
+    }
+}
+
+/// Pause every video, as when the app is put away.
+#[cfg(target_os = "android")]
+pub(crate) fn pause_all(players: &[(String, Arc<Player>)]) {
+    for (_, p) in players {
+        p.pause();
+    }
 }
 
 /// The player behind a `Video` handle.

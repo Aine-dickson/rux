@@ -144,9 +144,11 @@ where
     device
         .build_output_stream::<T, _, _>(
             *config,
-            move |data: &mut [T], _| {
+            move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
                 scratch.resize(data.len(), 0.0);
-                mixer.lock().unwrap_or_else(|e| e.into_inner()).mix(&mut scratch);
+                let when = info.timestamp();
+                let latency = when.playback.duration_since(when.callback);
+                mixer.lock().unwrap_or_else(|e| e.into_inner()).mix_heard_after(&mut scratch, latency);
                 for (d, s) in data.iter_mut().zip(&scratch) {
                     *d = T::from_sample(s.clamp(-1.0, 1.0));
                 }

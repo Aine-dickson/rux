@@ -5,7 +5,7 @@
 
 use std::sync::Arc;
 
-use rux_video::{Decoder, Frame, Input};
+use rux_video::{Decoder, Frame, Input, SoundTrack};
 
 fn fixture(name: &str) -> Input {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -158,4 +158,37 @@ fn not_a_video_is_an_error() {
     .err()
     .expect("an error");
     assert_eq!(e.kind, "unsupported", "{e}");
+}
+
+/// The fixtures' sound is a steady tone for their two seconds: AAC in the
+/// MP4 and Opus in the WebM, which only the platform's decoder plays.
+#[test]
+fn the_sound_track_decodes_and_seeks() {
+    for name in ["clip.mp4", "clip.webm"] {
+        let mut s = SoundTrack::open(fixture(name)).unwrap();
+        let (rate, ch) = (s.rate() as f64, s.channels());
+        assert!(rate > 0.0 && ch > 0, "{name}: {rate} Hz, {ch} channels");
+        let mut all = Vec::new();
+        while let Some(chunk) = s.next_samples().unwrap() {
+            all.extend(chunk);
+        }
+        let secs = all.len() as f64 / ch as f64 / rate;
+        assert!((secs - 2.0).abs() < 0.1, "{name}: {secs} s of sound");
+        let loudest = all.iter().fold(0f32, |m, x| m.max(x.abs()));
+        assert!(loudest > 0.05, "{name}: the tone is there, at most {loudest}");
+
+        s.seek(1.5).unwrap();
+        let mut rest = 0;
+        while let Some(chunk) = s.next_samples().unwrap() {
+            rest += chunk.len();
+        }
+        let rest = rest as f64 / ch as f64 / rate;
+        assert!((rest - 0.5).abs() < 0.06, "{name}: {rest} s after a seek to 1.5");
+    }
+}
+
+#[test]
+fn a_video_with_no_sound_has_no_sound_track() {
+    let e = SoundTrack::open(fixture("silent.mp4")).err().expect("no sound");
+    assert_eq!(e.kind, "unsupported", "{e:?}");
 }

@@ -7409,10 +7409,12 @@ impl App {
         // Each `<video>`'s newest picture into its texture, before the scene
         // that draws it is built.
         #[cfg(not(target_arch = "wasm32"))]
+        let videos = media::videos();
+        #[cfg(not(target_arch = "wasm32"))]
         {
             let device_handle = &context.devices[state.surface.dev_id];
             video::upload(
-                &media::videos(),
+                &videos,
                 &device_handle.device,
                 &device_handle.queue,
                 &mut state.renderer,
@@ -7424,6 +7426,10 @@ impl App {
         let (content, apart) = profile::time(Phase::Scene, || {
             rux_paint::build_scene_apart(&layout.paints, text, images, caret_visible, surface, scale as f32)
         });
+        // Which videos were drawn: one out of sight stops writing its
+        // pictures in until it is back.
+        #[cfg(not(target_arch = "wasm32"))]
+        video::after_scene(&videos, images);
         state.scene.reset();
         state
             .scene
@@ -7817,6 +7823,8 @@ impl ApplicationHandler<RuxEvent> for App {
     #[cfg(target_os = "android")]
     fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         rux_audio::pause_all();
+        // A video with no sound has no mixer to be paused by.
+        video::pause_all(&media::videos());
         android_audio_focus(0);
         rux_runtime::native::notify();
         if let Some(state) = self.state.take() {
@@ -12112,6 +12120,7 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeAudioFocusLost(
     _class: *mut std::ffi::c_void,
 ) {
     rux_audio::pause_all();
+    video::pause_all(&media::videos());
     rux_runtime::native::notify();
 }
 

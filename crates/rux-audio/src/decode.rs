@@ -156,6 +156,24 @@ impl Decoding {
     }
 }
 
+impl crate::Stream for Decoding {
+    fn rate(&self) -> u32 {
+        self.rate
+    }
+
+    fn channels(&self) -> usize {
+        self.channels
+    }
+
+    fn next(&mut self) -> Result<Option<Vec<f32>>, AudioError> {
+        Decoding::next(self)
+    }
+
+    fn seek(&mut self, secs: f64) -> Result<(), AudioError> {
+        Decoding::seek(self, secs)
+    }
+}
+
 /// The whole of a sound, decoded.
 pub(crate) fn decode_all(d: &mut Decoding) -> Result<Vec<f32>, AudioError> {
     let mut all = Vec::new();

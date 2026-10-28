@@ -277,6 +277,13 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
             let h = h.clone();
             if !e.met {
                 e.met = true;
+                // Its pictures play without it, as in a browser, and the
+                // console says why it is silent.
+                if e.video {
+                    if let Any::Str(why) = on(&h, "soundError") {
+                        rux_runtime::warn_script(format!("`<video src=\"{}\">` plays without its sound: {why}", e.src));
+                    }
+                }
                 let size = |what| match on(&h, what) {
                     Any::Int(n) => n,
                     _ => 0,

@@ -162,13 +162,7 @@ fn reader(
     gpu: Option<&IMFDXGIDeviceManager>,
 ) -> Result<IMFSourceReader, VideoError> {
     unsafe {
-        let stream = SHCreateMemStream(Some(bytes))
-            .ok_or_else(|| VideoError::new("io", "no memory for the video"))?;
-        let bytestream =
-            MFCreateMFByteStreamOnStream(&stream).map_err(err("io", "cannot read the video"))?;
-        if let (Some(ty), Ok(attrs)) = (content_type(hint), bytestream.cast::<IMFAttributes>()) {
-            let _ = attrs.SetString(&MF_BYTESTREAM_CONTENT_TYPE, &HSTRING::from(ty));
-        }
+        let bytestream = byte_stream(bytes, hint)?;
         let mut attrs = None;
         MFCreateAttributes(&mut attrs, 3).map_err(err("io", "cannot read the video"))?;
         let attrs = attrs.ok_or_else(|| VideoError::new("io", "cannot read the video"))?;
@@ -210,6 +204,20 @@ fn reader(
             no_rate_conversion(&reader);
         }
         Ok(reader)
+    }
+}
+
+/// `bytes` as a byte stream Media Foundation reads, typed by `hint`.
+fn byte_stream(bytes: &[u8], hint: Option<&str>) -> Result<IMFByteStream, VideoError> {
+    unsafe {
+        let stream = SHCreateMemStream(Some(bytes))
+            .ok_or_else(|| VideoError::new("io", "no memory for the video"))?;
+        let bytestream =
+            MFCreateMFByteStreamOnStream(&stream).map_err(err("io", "cannot read the video"))?;
+        if let (Some(ty), Ok(attrs)) = (content_type(hint), bytestream.cast::<IMFAttributes>()) {
+            let _ = attrs.SetString(&MF_BYTESTREAM_CONTENT_TYPE, &HSTRING::from(ty));
+        }
+        Ok(bytestream)
     }
 }
 
@@ -464,6 +472,161 @@ impl Decoder {
         }
         self.held = None;
         self.seeking = Some(raw);
+        Ok(())
+    }
+}
+
+/// A video's sound: a second source reader over the same bytes, its sound
+/// stream alone selected and set to hand out 32-bit float samples, which
+/// Media Foundation decodes to with whatever decoder the machine has.
+pub(crate) struct SoundTrack {
+    reader: IMFSourceReader,
+    pub rate: u32,
+    pub channels: usize,
+    /// As the pictures' [`Decoder::offset`]: the first sample's time, taken
+    /// off every time so the sound starts at 0.
+    offset: f64,
+    /// A seek's target, until the samples at it are read.
+    seeking: Option<f64>,
+    /// The first samples, read at open to learn the offset.
+    held: Option<Vec<f32>>,
+}
+
+impl SoundTrack {
+    pub fn open(input: Input) -> Result<SoundTrack, VideoError> {
+        start()?;
+        let Input::Bytes { bytes, hint } = input;
+        unsafe {
+            let bytestream = byte_stream(&bytes, hint.as_deref())?;
+            let reader = MFCreateSourceReaderFromByteStream(&bytestream, None)
+                .map_err(err("unsupported", "not a video Rux can read"))?;
+            reader
+                .SetStreamSelection(MF_SOURCE_READER_ALL_STREAMS.0 as u32, false)
+                .ok();
+            reader
+                .SetStreamSelection(AUDIO, true)
+                .map_err(|_| VideoError::new("unsupported", "it has no sound in it"))?;
+            let ty = MFCreateMediaType().map_err(err("io", "cannot read the video"))?;
+            ty.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio).ok();
+            ty.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_Float).ok();
+            reader.SetCurrentMediaType(AUDIO, None, &ty).map_err(|_| {
+                VideoError::new(
+                    "unsupported",
+                    "its sound is in a format this machine cannot decode",
+                )
+            })?;
+            let ty = reader
+                .GetCurrentMediaType(AUDIO)
+                .map_err(err("decode", "its sound has no format"))?;
+            let rate = ty.GetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND).unwrap_or(0);
+            let channels = ty.GetUINT32(&MF_MT_AUDIO_NUM_CHANNELS).unwrap_or(0) as usize;
+            if rate == 0 || channels == 0 {
+                return Err(VideoError::new("decode", "its sound has no rate or channels"));
+            }
+            let mut track = SoundTrack {
+                reader,
+                rate,
+                channels,
+                offset: 0.0,
+                seeking: None,
+                held: None,
+            };
+            if let Some((time, samples)) = track.read()? {
+                if time > 0.0 && time < START_SHIFT {
+                    track.offset = time;
+                }
+                track.held = Some(samples);
+            }
+            Ok(track)
+        }
+    }
+
+    pub fn next_samples(&mut self) -> Result<Option<Vec<f32>>, VideoError> {
+        if let Some(first) = self.held.take() {
+            return Ok(Some(first));
+        }
+        loop {
+            let Some((time, mut samples)) = self.read()? else {
+                self.seeking = None;
+                return Ok(None);
+            };
+            if let Some(target) = self.seeking {
+                // A seek lands before its target: what comes before it is
+                // dropped, to the frame.
+                let time = time - self.offset;
+                let frames = samples.len() / self.channels;
+                let skip = ((target - time) * self.rate as f64).round().max(0.0) as usize;
+                if skip >= frames {
+                    continue;
+                }
+                samples.drain(..skip * self.channels);
+                self.seeking = None;
+            }
+            if !samples.is_empty() {
+                return Ok(Some(samples));
+            }
+        }
+    }
+
+    /// The next decoded samples and when they start, as the reader stamps
+    /// them; `None` at the end.
+    fn read(&mut self) -> Result<Option<(f64, Vec<f32>)>, VideoError> {
+        loop {
+            let mut flags = 0u32;
+            let mut ticks = 0i64;
+            let mut sample = None;
+            unsafe {
+                self.reader
+                    .ReadSample(
+                        AUDIO,
+                        0,
+                        None,
+                        Some(&mut flags),
+                        Some(&mut ticks),
+                        Some(&mut sample),
+                    )
+                    .map_err(err("decode", "its sound stopped decoding"))?;
+            }
+            let has = |f: MF_SOURCE_READER_FLAG| flags & f.0 as u32 != 0;
+            if has(MF_SOURCE_READERF_ERROR) {
+                return Err(VideoError::new("decode", "its sound stopped decoding"));
+            }
+            let Some(sample) = sample else {
+                if has(MF_SOURCE_READERF_ENDOFSTREAM) {
+                    return Ok(None);
+                }
+                continue;
+            };
+            let samples = unsafe {
+                let buffer = sample
+                    .ConvertToContiguousBuffer()
+                    .map_err(err("decode", "its sound did not decode"))?;
+                let (mut base, mut len) = (std::ptr::null_mut(), 0u32);
+                buffer
+                    .Lock(&mut base, None, Some(&mut len))
+                    .map_err(err("decode", "its sound did not decode"))?;
+                let n = len as usize / 4 / self.channels * self.channels;
+                // Not assumed aligned: read sample by sample.
+                let out = (0..n)
+                    .map(|i| std::ptr::read_unaligned((base as *const f32).add(i)))
+                    .collect::<Vec<f32>>();
+                buffer.Unlock().ok();
+                out
+            };
+            return Ok(Some((ticks as f64 / TICKS, samples)));
+        }
+    }
+
+    pub fn seek(&mut self, secs: f64) -> Result<(), VideoError> {
+        let secs = secs.max(0.0);
+        let at = PROPVARIANT::from(((secs + self.offset) * TICKS) as i64);
+        unsafe {
+            self.reader
+                .SetCurrentPosition(&windows::core::GUID::zeroed(), &at)
+                .map_err(err("decode", "cannot seek in its sound"))?;
+        }
+        self.held = None;
+        self.seeking = Some(secs);
         Ok(())
     }
 }

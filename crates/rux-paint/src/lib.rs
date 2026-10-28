@@ -29,7 +29,7 @@
 //! platform's highlight otherwise, which the shell hands over through
 //! [`set_default_selection`]. The composition underline is the text's colour.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use rux_layout::filter::FilterOp;
 use rux_layout::{
@@ -89,6 +89,9 @@ const PREEDIT_RULE: f32 = rux_text::CARET_WIDTH;
 pub struct ImageCache {
     images: HashMap<String, Option<Picture>>,
     arrived: u64,
+    /// The `<video>` pictures drawn since [`ImageCache::take_frames_drawn`]:
+    /// one out of sight is culled before it is looked up, so is not here.
+    frames_drawn: HashSet<String>,
 }
 
 /// A decoded picture: pixels, or an SVG kept as vectors so it is drawn sharp
@@ -135,6 +138,9 @@ impl ImageCache {
 
     fn picture(&mut self, src: &str) -> Option<&Picture> {
         if src.starts_with(rux_layout::VIDEO_FRAME) {
+            if !self.frames_drawn.contains(src) {
+                self.frames_drawn.insert(src.to_string());
+            }
             return self.images.get(src).and_then(Option::as_ref);
         }
         let arrived = rux_layout::images_arrived();
@@ -146,6 +152,12 @@ impl ImageCache {
             .entry(src.to_string())
             .or_insert_with(|| decode(src))
             .as_ref()
+    }
+
+    /// Which `<video>` pictures were drawn since this was last asked, so a
+    /// video out of sight stops writing its pictures in.
+    pub fn take_frames_drawn(&mut self) -> HashSet<String> {
+        std::mem::take(&mut self.frames_drawn)
     }
 
     /// The picture as pixels, for what only pixels can do (a mask); an SVG

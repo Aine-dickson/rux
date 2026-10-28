@@ -442,6 +442,49 @@ What it means for C, for the owner to decide:
   frame clock.
 - Off screen (scrolled away, or under `content-visibility`) it keeps playing
   its sound and stops uploading frames.
+- **Built 2026-10-28 on Windows.** The sound is decoded by the platform, not
+  symphonia: `rux-video`'s `SoundTrack` is a second Media Foundation reader
+  over the same bytes, asked for float samples, so a WebM's Opus plays
+  (symphonia has no Opus, and ffmpeg's WebM sound is Opus by default).
+  `rux-audio` takes any `Stream` (rate, channels, next, seek) through
+  `Sound::from_stream`, opened on its reading thread since a platform
+  decoder seldom moves between threads; its own symphonia reading is one
+  such stream. Driven in the window (`docs/08-user-tests.md`). Found while
+  building:
+  - **The mixer's time is not what is heard.** It moves a sound on by a
+    whole output buffer at a time, and leads the speakers by what the
+    output holds: on the dev machine it raced 80 ms ahead in its first
+    tenth of a second, filling the device, and stayed 35 to 43 ms ahead.
+    Pictures following it showed early. The mixer now stamps each stretch
+    it mixes with when the output will play it (cpal's `playback`
+    instant), and `Sound::heard_time` reads the sound's place in what is
+    heard, smoothly between stretches.
+  - **The pictures keep their own clock and are drawn to the sound's**:
+    set to it when more than 20 ms apart (once, at the start, as the output
+    opens), and nudged a tenth of the gap at a time when more than 2 ms
+    apart. Pictures then went up within 2 ms of the sound (p95 1.7 ms).
+  - **Every picture went up 8 to 25 ms late** while the thread waited on a
+    condvar, which on Windows lands on the 15.6 ms system tick. The last
+    20 ms before a picture is due are slept (`thread::sleep` uses a
+    high-resolution timer there).
+  - **Decoding and showing became two threads.** One thread that waits for
+    a picture's time decodes at most one picture between two shown, so at
+    1080p60 it never caught up after one slow decode: 2 to 4 pictures in a
+    hundred were passed over. A decoding thread now keeps four ahead and a
+    clock thread shows them; 0 to 3 in 300, as with no sound in C.2.
+  - **A sound paused from outside pauses the picture**: the player sees its
+    sound stop with no end reached and pauses too, so the app put away, an
+    audio-focus loss or a lost output all hold the picture. A video with no
+    sound is paused by the shell itself when Android puts the app away.
+  - Off screen: the image cache records which video pictures the painter
+    drew (one out of sight is culled before it is looked up), and a video
+    not drawn is neither written into its texture nor asks for redraws.
+    Scrolled away, a 60 fps video's window went from 60 redraws a second to
+    20, the 20 being the ten-a-second time notices from the player and from
+    the mixer that a playing `<audio>` makes too.
+  - Not built yet: Android's sound track (a `MediaCodec` `Stream` into the
+    same mixer) and the web's (the browser's own `<video>` plays it), both
+    with the rest of C.1.
 
 ### C.4 Driven
 

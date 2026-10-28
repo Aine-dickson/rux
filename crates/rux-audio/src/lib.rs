@@ -51,7 +51,7 @@ pub struct AudioError {
 }
 
 impl AudioError {
-    pub(crate) fn new(kind: &'static str, message: impl Into<String>) -> Self {
+    pub fn new(kind: &'static str, message: impl Into<String>) -> Self {
         AudioError { kind, message: message.into() }
     }
 }
@@ -77,8 +77,29 @@ pub(crate) struct Pcm {
 
 pub(crate) enum Source {
     Whole(Arc<Pcm>),
-    Stream(Input),
+    Stream(Opener),
 }
+
+/// A sound's samples read in order, from wherever they come: symphonia's
+/// reading of a file, or a platform's decoder for a video's sound track
+/// ([`Sound::from_stream`]). Opened and read on a thread of its own, a little
+/// ahead of where the sound plays, and never moved off it, so it need not be
+/// `Send`: a platform's decoder seldom is.
+pub trait Stream {
+    /// Frames per second.
+    fn rate(&self) -> u32;
+    /// Samples per frame.
+    fn channels(&self) -> usize;
+    /// The next stretch of samples, interleaved; `None` at the end.
+    fn next(&mut self) -> Result<Option<Vec<f32>>, AudioError>;
+    /// Go to `secs` from the start: the next samples are the ones at it.
+    fn seek(&mut self, secs: f64) -> Result<(), AudioError>;
+}
+
+/// How a streamed sound's [`Stream`] is opened: once per voice, on the thread
+/// that reads it, since a sound is read again from where it was whenever the
+/// output is opened again.
+pub(crate) type Opener = Arc<dyn Fn() -> Result<Box<dyn Stream>, AudioError> + Send + Sync>;
 
 /// What a sound and the mixer playing it share.
 pub(crate) struct Shared {
@@ -109,6 +130,10 @@ pub(crate) struct State {
     pub ended: u64,
     /// Why it stopped, when reading it failed part way.
     pub error: Option<AudioError>,
+    /// Where it was at the start of the last stretch the mixer gave the
+    /// output, and when the output plays that stretch: what is heard now is
+    /// worked out from it ([`Sound::heard_time`]).
+    pub heard: Option<(f64, std::time::Instant)>,
 }
 
 impl State {
@@ -123,6 +148,7 @@ impl State {
             at_end: false,
             ended: 0,
             error: None,
+            heard: None,
         }
     }
 }
@@ -207,14 +233,30 @@ impl Sound {
             // Read once more to be sure it decodes, so a broken file fails at
             // `load` and not partway through playing.
             d.next()?;
-            (Source::Stream(input), d.duration)
+            let open: Opener = Arc::new(move || Ok(Box::new(decode::Decoding::open(&input)?) as Box<dyn Stream>));
+            (Source::Stream(open), d.duration)
         };
-        Ok(Sound(Arc::new(Shared {
+        Ok(Self::new(source, duration))
+    }
+
+    /// A sound read from `open`'s [`Stream`] as it plays, never decoded
+    /// whole: a video's sound track, decoded by the platform. Opened once
+    /// here and read from, so one that cannot be read fails now.
+    pub fn from_stream(
+        open: impl Fn() -> Result<Box<dyn Stream>, AudioError> + Send + Sync + 'static,
+        duration: Option<f64>,
+    ) -> Result<Sound, AudioError> {
+        open()?.next()?;
+        Ok(Self::new(Source::Stream(Arc::new(open)), duration))
+    }
+
+    fn new(source: Source, duration: Option<f64>) -> Sound {
+        Sound(Arc::new(Shared {
             id: NEXT_ID.fetch_add(1, Ordering::Relaxed),
             source,
             duration,
             state: Mutex::new(State::new()),
-        })))
+        }))
     }
 
     /// Whether it is short enough to have been decoded whole (under ten
@@ -231,6 +273,28 @@ impl Sound {
     /// Where it is, in seconds.
     pub fn current_time(&self) -> f64 {
         self.0.state().current
+    }
+
+    /// Where it is in what the person hears now: the clock a video's
+    /// pictures follow. [`Sound::current_time`] is how far the mixer has got,
+    /// which leads what is heard by everything the output holds; on the dev
+    /// machine the mixer ran 80 ms ahead in its first tenth of a second,
+    /// filling the device. Worked out from when the output said it would
+    /// play the mixer's last stretch, so it moves smoothly between the
+    /// mixer's steps, and never past what has been mixed.
+    pub fn heard_time(&self) -> f64 {
+        let st = self.0.state();
+        match st.heard {
+            Some((t, at)) if st.playing => {
+                let now = std::time::Instant::now();
+                let since = match now.checked_duration_since(at) {
+                    Some(d) => d.as_secs_f64(),
+                    None => -at.duration_since(now).as_secs_f64(),
+                };
+                (t + since).clamp(0.0, st.current)
+            }
+            _ => st.current,
+        }
     }
 
     pub fn playing(&self) -> bool {
@@ -292,7 +356,9 @@ impl Sound {
     }
 
     pub fn pause(&self) {
-        self.0.state().playing = false;
+        let mut st = self.0.state();
+        st.playing = false;
+        st.heard = None;
     }
 
     /// Pause, and go back to the start.
@@ -302,6 +368,7 @@ impl Sound {
         st.at_end = false;
         st.current = 0.0;
         st.seek = Some(0.0);
+        st.heard = None;
     }
 
     /// Go to `secs`, clamped to the sound.
@@ -312,6 +379,7 @@ impl Sound {
         st.at_end = false;
         st.current = secs;
         st.seek = Some(secs);
+        st.heard = None;
     }
 }
 
