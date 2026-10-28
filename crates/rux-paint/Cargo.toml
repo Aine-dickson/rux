@@ -14,3 +14,7 @@ vello.workspace = true
 image.workspace = true
 rux-layout.workspace = true
 rux-text.workspace = true
+# SVG pictures, drawn as vectors so they stay sharp at any size. 0.10 is the
+# one built on vello 0.9. Its raster formats are off: a bitmap inside an SVG
+# is not drawn.
+vello_svg = { version = "0.10", default-features = false }

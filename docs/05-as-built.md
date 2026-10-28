@@ -464,7 +464,16 @@ mistake was being written the way HTML is written.
 `<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
 (not the working directory), and `:src` binds an expression. With no CSS size it
 lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
-Formats: PNG, JPEG, GIF, WebP. A missing file logs to stderr and paints nothing.
+Formats: PNG, JPEG, GIF, WebP, and SVG. A missing file logs to stderr and paints nothing.
+
+**SVG** (2026-10-28): told from its bytes, not its name, so a `data:` URL or a
+server's answer works too. Its size is its `width` and `height`, or its
+`viewBox`; it is drawn as vectors (`vello_svg`), so it stays sharp at any
+size, in an `<image>` and in `background-image`, where Tailwind's form styles
+put their checkmarks. Like a browser's `<img>`, it is a picture: its
+`currentColor` is black, not the colour around it, and nothing in it can be
+styled from outside. **Not yet:** an SVG as `mask-image` (a mask needs
+pixels), and a bitmap embedded inside an SVG, which is not drawn.
 
 **From the network** (2026-10-28): `src="https://…"` (or `http:`), and the same
 in `background-image: url(…)`. The window does not wait: the box lays out with

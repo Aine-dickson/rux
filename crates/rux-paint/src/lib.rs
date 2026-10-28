@@ -87,8 +87,32 @@ const PREEDIT_RULE: f32 = rux_text::CARET_WIDTH;
 /// may have been one still on its way.
 #[derive(Default)]
 pub struct ImageCache {
-    images: HashMap<String, Option<ImageBrush>>,
+    images: HashMap<String, Option<Picture>>,
     arrived: u64,
+}
+
+/// A decoded picture: pixels, or an SVG kept as vectors so it is drawn sharp
+/// at whatever size its box is.
+enum Picture {
+    Bitmap(ImageBrush),
+    Vector { scene: Scene, width: f64, height: f64 },
+}
+
+impl Picture {
+    fn size(&self) -> (f64, f64) {
+        match self {
+            Picture::Bitmap(b) => (b.image.width as f64, b.image.height as f64),
+            Picture::Vector { width, height, .. } => (*width, *height),
+        }
+    }
+
+    /// Draw it with its own pixels mapped through `transform`.
+    fn draw(&self, scene: &mut Scene, transform: Affine) {
+        match self {
+            Picture::Bitmap(brush) => scene.draw_image(brush, transform),
+            Picture::Vector { scene: drawing, .. } => scene.append(drawing, Some(transform)),
+        }
+    }
 }
 
 impl ImageCache {
@@ -96,20 +120,29 @@ impl ImageCache {
         Self::default()
     }
 
-    fn get(&mut self, src: &str) -> Option<&ImageBrush> {
+    fn picture(&mut self, src: &str) -> Option<&Picture> {
         let arrived = rux_layout::images_arrived();
         if arrived != self.arrived {
             self.arrived = arrived;
-            self.images.retain(|_, brush| brush.is_some());
+            self.images.retain(|_, picture| picture.is_some());
         }
         self.images
             .entry(src.to_string())
             .or_insert_with(|| decode(src))
             .as_ref()
     }
+
+    /// The picture as pixels, for what only pixels can do (a mask); an SVG
+    /// has none.
+    fn get(&mut self, src: &str) -> Option<&ImageBrush> {
+        match self.picture(src)? {
+            Picture::Bitmap(brush) => Some(brush),
+            Picture::Vector { .. } => None,
+        }
+    }
 }
 
-fn decode(src: &str) -> Option<ImageBrush> {
+fn decode(src: &str) -> Option<Picture> {
     // Bytes first, path second. The runtime installs a reader that resolves a
     // `src` the same way it resolves a component or a stylesheet, which is what
     // lets an embedded build draw at all: inside an executable there is no file
@@ -123,18 +156,30 @@ fn decode(src: &str) -> Option<ImageBrush> {
             .map_err(|e| eprintln!("rux: cannot load image {src}: {e}"))
             .ok()?,
     };
+    if rux_layout::is_svg(&bytes) {
+        return decode_svg(&bytes).map_err(|e| eprintln!("rux: cannot read SVG {src}: {e}")).ok();
+    }
     let decoded = decode_bounded(&bytes)
         .map_err(|e| eprintln!("rux: cannot decode image {src}: {e}"))
         .ok()?
         .into_rgba8();
     let (width, height) = decoded.dimensions();
-    Some(ImageBrush::new(ImageData {
+    Some(Picture::Bitmap(ImageBrush::new(ImageData {
         data: Blob::new(std::sync::Arc::new(decoded.into_raw())),
         format: ImageFormat::Rgba8,
         alpha_type: ImageAlphaType::Alpha,
         width,
         height,
-    }))
+    })))
+}
+
+/// An SVG as a scene of its own, drawn into the frame's scene where it is
+/// placed. Its size is what its `width` and `height` say, or its `viewBox`.
+fn decode_svg(bytes: &[u8]) -> Result<Picture, String> {
+    use vello_svg::usvg;
+    let tree = usvg::Tree::from_data(bytes, &usvg::Options::default()).map_err(|e| e.to_string())?;
+    let size = tree.size();
+    Ok(Picture::Vector { scene: vello_svg::render_tree(&tree), width: size.width() as f64, height: size.height() as f64 })
 }
 
 /// Decode an image, refusing one whose header claims more than
@@ -300,8 +345,8 @@ fn fill_background(
             draw_background(scene, cur, &b, images);
         }
         Background::Image(src) => {
-            if let Some(brush) = images.get(src) {
-                let (iw, ih) = (brush.image.width as f64, brush.image.height as f64);
+            if let Some(picture) = images.picture(src) {
+                let (iw, ih) = picture.size();
                 if iw > 0.0 && ih > 0.0 {
                     // `cover`: scale to fill the box, centre, and
                     // clip to the box's rounded corners.
@@ -311,7 +356,7 @@ fn fill_background(
                     let oy = y as f64 + (height as f64 - sh) / 2.0;
                     let tf = Affine::scale(scale).then_translate(Vec2::new(ox, oy));
                     scene.push_clip_layer(Fill::NonZero, cur, &shape);
-                    scene.draw_image(brush, cur * tf);
+                    picture.draw(scene, cur * tf);
                     scene.pop_layer();
                 }
             }
@@ -375,10 +420,8 @@ fn draw_layer(scene: &mut Scene, cur: Affine, b: &PaintBackground, layer: &BgLay
     };
     let (ax, ay, aw, ah) = area;
     let natural = match &layer.image {
-        Background::Image(src) => match images.get(src) {
-            Some(brush) if brush.image.width > 0 && brush.image.height > 0 => {
-                Some((brush.image.width as f32, brush.image.height as f32))
-            }
+        Background::Image(src) => match images.picture(src).map(Picture::size) {
+            Some((w, h)) if w > 0.0 && h > 0.0 => Some((w as f32, h as f32)),
             // Not drawn, as a browser draws nothing for an image it cannot load.
             _ => return,
         },
@@ -447,9 +490,11 @@ fn draw_layer(scene: &mut Scene, cur: Affine, b: &PaintBackground, layer: &BgLay
     match &layer.image {
         // An image repeated on both axes is one fill with a repeating brush,
         // however many tiles that is.
+        // An SVG has no pixels to repeat, so it is drawn tile by tile below.
         Background::Image(src)
             if matches!(layer.repeat[0], BgRepeat::Repeat | BgRepeat::Round)
-                && matches!(layer.repeat[1], BgRepeat::Repeat | BgRepeat::Round) =>
+                && matches!(layer.repeat[1], BgRepeat::Repeat | BgRepeat::Round)
+                && images.get(src).is_some() =>
         {
             let brush = images.get(src).expect("loaded above").clone().with_extend(Extend::Repeat);
             let (iw, ih) = natural.expect("an image has a size");
@@ -476,11 +521,11 @@ fn draw_layer(scene: &mut Scene, cur: Affine, b: &PaintBackground, layer: &BgLay
                             scene.fill(Fill::NonZero, cur, &brush, None, &rect);
                         }
                         Background::Image(src) => {
-                            let brush = images.get(src).expect("loaded above");
+                            let picture = images.picture(src).expect("loaded above");
                             let (iw, ih) = natural.expect("an image has a size");
                             let tf = Affine::scale_non_uniform((tw / iw) as f64, (th / ih) as f64)
                                 .then_translate(Vec2::new(tx as f64, ty as f64));
-                            scene.draw_image(brush, cur * tf);
+                            picture.draw(scene, cur * tf);
                         }
                         _ => {}
                     }
@@ -1525,10 +1570,10 @@ fn build(
             }
             // Scale the decoded pixels to fill the box layout gave the element.
             Paint::Image(img) => {
-                let Some(decoded) = images.get(&img.content.src) else {
+                let Some(decoded) = images.picture(&img.content.src) else {
                     continue;
                 };
-                let (iw, ih) = (decoded.image.width as f64, decoded.image.height as f64);
+                let (iw, ih) = decoded.size();
                 if iw <= 0.0 || ih <= 0.0 {
                     continue;
                 }
@@ -1542,7 +1587,7 @@ fn build(
                     let bounds = Rect::new(img.x as f64, img.y as f64, (img.x + img.width) as f64, (img.y + img.height) as f64);
                     scene.push_clip_layer(Fill::NonZero, cur, &bounds);
                 }
-                scene.draw_image(decoded, cur * transform);
+                decoded.draw(&mut scene, cur * transform);
                 if spills {
                     scene.pop_layer();
                 }

@@ -2161,17 +2161,29 @@ pub fn image_state(src: &str) -> ImageState {
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return ImageState::Loading,
         Err(e) => return ImageState::Failed(e.to_string()),
     };
-    let size = image::ImageReader::new(std::io::Cursor::new(bytes))
-        .with_guessed_format()
-        .map_err(|e| e.to_string())
-        .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()));
-    match size {
-        Ok((w, h)) => match rux_layout::image_too_large(w, h) {
+    match picture_size(&bytes) {
+        Ok((w, h)) => match rux_layout::image_too_large(w.ceil() as u32, h.ceil() as u32) {
             Some(why) => ImageState::Failed(why),
-            None => ImageState::Ready(w, h),
+            None => ImageState::Ready(w.round() as u32, h.round() as u32),
         },
         Err(why) => ImageState::Failed(format!("it is not a picture Rux can read: {why}")),
     }
+}
+
+/// A picture's own size from its bytes: a bitmap's header, which is all that
+/// is read of it, or an SVG's `width` and `height` (or `viewBox`), which
+/// takes parsing the whole of it, as the painter will again.
+fn picture_size(bytes: &[u8]) -> Result<(f32, f32), String> {
+    if rux_layout::is_svg(bytes) {
+        let tree = usvg::Tree::from_data(bytes, &usvg::Options::default()).map_err(|e| e.to_string())?;
+        return Ok((tree.size().width(), tree.size().height()));
+    }
+    let (w, h) = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())?
+        .into_dimensions()
+        .map_err(|e| e.to_string())?;
+    Ok((w as f32, h as f32))
 }
 
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
@@ -2185,12 +2197,10 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
         if is_url(&img.src) {
             let read = image_bytes(&img.src);
             let waiting = read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock);
-            match read.ok().and_then(|bytes| {
-                image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
-            }) {
+            match read.ok().and_then(|bytes| picture_size(&bytes).ok()) {
                 Some((w, h)) => {
-                    img.intrinsic = (w as f32, h as f32);
-                    if let Some(why) = rux_layout::image_too_large(w, h) {
+                    img.intrinsic = (w, h);
+                    if let Some(why) = rux_layout::image_too_large(w.ceil() as u32, h.ceil() as u32) {
                         rux_style::warn_stylesheet(format!("`<image src=\"{}\">` will not be drawn: {why}", img.src));
                     }
                 }
@@ -2203,22 +2213,13 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
         } else if !img.src.is_empty() {
             let path = base.join(&img.src);
             // Read through the provider rather than by path, because `path` is
-            // a key and not necessarily a file. `image_dimensions` only takes a
-            // path, so the header is parsed from the bytes instead; the format
-            // is guessed the same way, and only the header is touched either
-            // way, since `into_dimensions` stops before the pixels.
-            match source::read_bytes(&path).ok().and_then(|bytes| {
-                image::ImageReader::new(std::io::Cursor::new(bytes))
-                    .with_guessed_format()
-                    .ok()?
-                    .into_dimensions()
-                    .ok()
-            }) {
+            // a key and not necessarily a file. See `picture_size`.
+            match source::read_bytes(&path).ok().and_then(|bytes| picture_size(&bytes).ok()) {
                 Some((w, h)) => {
-                    img.intrinsic = (w as f32, h as f32);
+                    img.intrinsic = (w, h);
                     // Said here, where it can be a diagnostic with the image's
                     // name, rather than only by the painter, which can print.
-                    if let Some(why) = rux_layout::image_too_large(w, h) {
+                    if let Some(why) = rux_layout::image_too_large(w.ceil() as u32, h.ceil() as u32) {
                         rux_style::warn_stylesheet(format!(
                             "`<image src=\"{}\">` will not be drawn: {why}",
                             img.src
@@ -5407,10 +5408,8 @@ impl Document {
         }
         fn walk(node: &mut LayoutNode) {
             if let Some(img) = node.image.as_mut().filter(|i| remote::is_remote(&i.src) && i.intrinsic == (0.0, 0.0)) {
-                if let Some((w, h)) = image_bytes(&img.src).ok().and_then(|bytes| {
-                    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
-                }) {
-                    img.intrinsic = (w as f32, h as f32);
+                if let Some((w, h)) = image_bytes(&img.src).ok().and_then(|bytes| picture_size(&bytes).ok()) {
+                    img.intrinsic = (w, h);
                 }
             }
             for child in &mut node.children {

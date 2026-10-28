@@ -2013,6 +2013,32 @@ pub fn is_remote(src: &str) -> bool {
     lower.starts_with("http://") || lower.starts_with("https://")
 }
 
+/// Whether `bytes` are an SVG rather than pixels: its text, after any byte
+/// order mark, white space, `<?xml …?>` declaration, comment or doctype,
+/// opens with `<svg`. Read from the bytes and not the name, as a browser
+/// reads a `data:` URL or a server's answer.
+pub fn is_svg(bytes: &[u8]) -> bool {
+    let head = &bytes[..bytes.len().min(4096)];
+    let text = match std::str::from_utf8(head) {
+        Ok(text) => text,
+        Err(e) => std::str::from_utf8(&head[..e.valid_up_to()]).unwrap_or_default(),
+    };
+    let mut rest = text.trim_start_matches('\u{feff}').trim_start();
+    loop {
+        if rest.starts_with("<svg") {
+            return true;
+        }
+        let Some(open) = ["<!--", "<?", "<!"].into_iter().find(|open| rest.starts_with(open)) else {
+            return false;
+        };
+        let close = if open == "<!--" { "-->" } else { ">" };
+        match rest.find(close) {
+            Some(end) => rest = rest[end + close.len()..].trim_start(),
+            None => return false,
+        }
+    }
+}
+
 /// The bytes for `src`, or `None` when no reader is installed or it has none.
 ///
 /// `None` and "installed but empty-handed" are deliberately the same answer:

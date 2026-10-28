@@ -2970,6 +2970,7 @@ Desktop, Windows 11, a scratch document, the network live.
 | `@load` | a local PNG, the network logo | `event.width`/`height`: `619x925`, `128x128` | pass, screenshot |
 | `@error` | the invalid host | `event.message`: `io: No such host is known. (os error 11001)` | pass |
 | `data:` | the 21 KB `examples/assets/logo.png` as base64 in `src` and in `background-image: url("data:…")` | both drawn | pass, screenshot |
+| SVG | a Tabler-style 24x24 star file at its size and at 120x120; Tailwind forms' checkmark as `data:image/svg+xml` in `background-image` | sharp at both sizes, `@load` 24x24, the check drawn | pass, screenshot |
 | `@load` misspelt as a plain `let` | handlers writing a plain `let` | the checker says to make it a signal | pass (and `@load` is no longer "not an event") |
 
 Not driven: the web (builds; the browser's `fetch` not yet run in a page) and
