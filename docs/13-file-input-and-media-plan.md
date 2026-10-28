@@ -287,8 +287,9 @@ Read before planning, because three facts shape the steps:
 
 ## Part C: video
 
-**Paused 2026-10-26 by the owner**, after C.0's numbers (below). Nothing
-past C.0 is built until it is taken up again.
+**Paused 2026-10-26 by the owner**, after C.0's numbers (below), and
+**taken up again 2026-10-28** ("carry on the video work"), starting at C.1
+on Windows, the platform C.0 cleared.
 
 ### C.0 Spike: one frame path, measured
 
@@ -367,6 +368,38 @@ What it means for C, for the owner to decide:
   choice for the owner); macOS is AVFoundation and wants a Mac to drive.
   On both, `<video>` shows its poster and fires `@error` of kind
   `"unsupported"`.
+- **Windows built 2026-10-28**: the `rux-video` crate, a `Decoder` that
+  opens a video's bytes and hands out RGBA frames with their times, and
+  seeks to the frame showing at a time (not just the key frame before it).
+  Media Foundation's source reader, asked for RGB32. Tested on ffmpeg-made
+  H.264 and VP9 clips whose colours show a picture upside down, with its
+  channels swapped, or from the wrong time.
+  Found while building:
+  - **Software decoding does not hold 1080p60.** Median per frame, release
+    build, the dev machine (C.0's), 10 s ffmpeg test clips:
+
+    | | 720p30 H.264 | 1080p60 H.264 | 720p30 VP9 | 1080p60 VP9 |
+    |---|---|---|---|---|
+    | software | 7.33 ms (p95 9.89) | 16.28 (20.56) | 7.94 (10.47) | 17.48 (20.14) |
+    | on the GPU | 4.73 (7.23) | 7.56 (10.13) | 5.05 (9.81) | 8.39 (16.27) |
+
+    So it decodes on the GPU (a D3D11 device handed to Media Foundation),
+    with software where there is no such device. The frame still comes back
+    to the CPU (about 2.4 ms of the 7.6 is reading and reordering it), which
+    is C.0's texture road; a decoder texture shared straight into wgpu is not
+    needed at these numbers. The device is one per process: the first open
+    takes about 200 ms, the next 26.
+  - **A WebM claims no frame rate**, Media Foundation guesses 5 fps, and its
+    GPU video processor then dropped every other frame to match. Its frame
+    rate conversion is switched off; frames are shown by their own times.
+  - **An untagged file's colours depend on the decoder**: Media Foundation
+    takes untagged H.264 as BT.601 and untagged VP9 as BT.709, so the same
+    pure green came out 255 from one and 215 from the other. Tagged files
+    agree; the fixtures are tagged BT.709. Browsers guess too, and not all
+    alike, so this is written down, not corrected.
+  - Not covered yet: HEVC and AV1 (need store extensions this machine may
+    lack; they are an `"unsupported"` error, not a crash, without them),
+    rotation metadata (a phone's portrait clip), non-square pixels.
 
 ### C.2 `<video>`
 

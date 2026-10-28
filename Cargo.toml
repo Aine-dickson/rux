@@ -10,6 +10,7 @@ members = [
     "crates/rux-runtime",
     "crates/rux-text",
     "crates/rux-audio",
+    "crates/rux-video",
     "crates/rux-web",
     "crates/rux-highlight",
     "crates/rux-fmt",
@@ -80,6 +81,7 @@ rux-parser = { version = "0.9.0-dev", path = "crates/rux-parser" }
 rux-reactive = { version = "0.9.0-dev", path = "crates/rux-reactive" }
 rux-text = { version = "0.9.0-dev", path = "crates/rux-text" }
 rux-audio = { version = "0.9.0-dev", path = "crates/rux-audio" }
+rux-video = { version = "0.9.0-dev", path = "crates/rux-video" }
 rux-layout = { version = "0.9.0-dev", path = "crates/rux-layout" }
 rux-fmt = { version = "0.9.0-dev", path = "crates/rux-fmt" }
 rux-script = { version = "0.9.0-dev", path = "crates/rux-script" }
