@@ -2898,7 +2898,7 @@ input tap`, focus read from `dumpsys audio`). Not judged by ear.
 |---|---|---|---|
 | Loaded | open the page | controls drawn, `0:00 / 0:12`; `@error` for the missing file | web: pass (`kind` `"unsupported"`: the test server answers an unknown path with the page itself); Android: pass (`"io"`) |
 | Unmuted `autoplay` | open the page | waits, says why | web, Android: pass |
-| Muted `autoplay` | open the page | plays at once, `@play` | Android: pass, **holding no audio focus** (after the fix below; before it, `GAIN` for 12 s). Web: **refused by the browser** in Edge and Brave, as Chromium allows muted autoplay for video only; the console says so. For the owner (plan B.4) |
+| Muted `autoplay` | open the page | plays at once, `@play` | Android: pass, **holding no audio focus** (after the fix below; before it, `GAIN` for 12 s). Web: **refused by the browser** in Edge and Brave, as Chromium allows muted autoplay for video only; the console says so. Owner chose 2026-10-28 to leave it as it is, written down (plan B.4 (c)) |
 | Play, mute | tap play, then the speaker twice | pause icon, time counting, `@play`, `@timeupdate`; crossed speaker | web (Edge, Brave), Android: pass |
 | Muted focus | Android: mute the playing song, then unmute | focus given back, then `GAIN` again | Android: pass |
 | Seek to the end | tap the bar at 90% | `0:12 / 0:12`, `@pause` then `@ended` | web (Edge, Brave), Android: pass |

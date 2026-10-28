@@ -282,6 +282,8 @@ Read before planning, because three facts shape the steps:
     at the first press, which is silent so nobody hears the difference;
     (b) one rule everywhere, Chromium's: `autoplay` only after a press,
     muted or not; (c) leave it as it is, written down.
+    **Decided 2026-10-28: (c).** The difference stays and is written down in
+    As Built (`<audio>`, "In Edge and Brave a muted `autoplay` waits too").
 
 ## Part C: video
 
