@@ -2958,6 +2958,22 @@ standalone on PATH. Desktop, Windows 11.
 Not driven: `rux run --device` sending compiled blocks to a phone, and the web
 build. The playground keeps the warning (it has no CLI).
 
+## Network images and `@load` / `@error`, desktop, 2026-10-28
+
+Desktop, Windows 11, a scratch document, the network live.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| `https://` image | `<image src="https://www.rust-lang.org/logos/rust-logo-256x256.png">` (answers 301 first) | the window opens at once, the box takes the logo's size when it comes | pass, screenshot |
+| Background | `background-image: url(https://…/rust-logo-128x128.png)` on a 120x60 box | the logo, `cover` | pass |
+| A host that does not exist | `src="https://example.invalid/x.png"` with a red border | an empty box, no crash | pass |
+| `@load` | a local PNG, the network logo | `event.width`/`height`: `619x925`, `128x128` | pass, screenshot |
+| `@error` | the invalid host | `event.message`: `io: No such host is known. (os error 11001)` | pass |
+| `@load` misspelt as a plain `let` | handlers writing a plain `let` | the checker says to make it a signal | pass (and `@load` is no longer "not an event") |
+
+Not driven: the web (builds; the browser's `fetch` not yet run in a page) and
+Android (the cross-compile of `ring` checked; the APK not yet run).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

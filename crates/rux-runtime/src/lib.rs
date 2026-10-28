@@ -25,6 +25,7 @@
 //! dying on a half-typed edit.
 
 mod modules;
+pub mod remote;
 mod source;
 pub mod tailwind;
 pub use source::{reset_source, set_source, FsSource, MemorySource, Source};
@@ -335,6 +336,9 @@ const FILE_EVENT_NAMES: &[&str] = &["cancel"];
 /// The events only an `<audio>` has: what its sound does.
 const MEDIA_EVENT_NAMES: &[&str] = &rux_layout::Media::EVENTS;
 
+/// The events only an `<image>` has: its picture came, or could not.
+const IMAGE_EVENT_NAMES: &[&str] = &rux_layout::ImageEvents::EVENTS;
+
 /// The events only a `role="form"` has: a submission that passed its checks,
 /// and one that did not.
 const FORM_EVENT_NAMES: &[&str] = &["submit", "invalid"];
@@ -370,7 +374,9 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
             let screen = el.tag == "screen";
             let file = field && el.attr("type") == Some("file");
             let media = el.tag == "audio";
+            let image = el.tag == "image";
             if is_component
+                || (image && IMAGE_EVENT_NAMES.contains(&event))
                 || EVENT_NAMES.contains(&event)
                 || KEY_EVENT_NAMES.contains(&event)
                 || (field && FIELD_EVENT_NAMES.contains(&event))
@@ -389,6 +395,7 @@ fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
                 .chain(FORM_EVENT_NAMES.iter().filter(|_| form))
                 .chain(SCREEN_EVENT_NAMES.iter().filter(|_| screen))
                 .chain(MEDIA_EVENT_NAMES.iter().filter(|_| media))
+                .chain(IMAGE_EVENT_NAMES.iter().filter(|_| image))
                 .map(|n| format!("`@{n}`"))
                 .collect::<Vec<_>>()
                 .join(", ");
@@ -1005,6 +1012,9 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
         }
         // Why it could not be played: `kind` as a `Sound`'s errors have it.
         "error" if el.tag == "audio" => "{ kind: string, message: string }".to_string(),
+        // The picture's own size, as `naturalWidth` and `naturalHeight`.
+        "load" if el.tag == "image" => "{ width: int, height: int }".to_string(),
+        "error" if el.tag == "image" => "{ message: string }".to_string(),
         // Every failure, by field; one that passed is not there at all.
         "submit" | "invalid" => {
             let mut fields = vec![rux_script::types::Field {
@@ -2092,6 +2102,15 @@ fn image_bytes(src: &str) -> std::io::Result<Vec<u8>> {
     if let Some(bytes) = URL_BYTES.with(|m| m.borrow().get(src).cloned()) {
         return Ok(bytes.to_vec());
     }
+    // From the network: the first ask starts it, and until it comes this is
+    // `WouldBlock`, which the callers take as "not yet" rather than missing.
+    if remote::is_remote(src) {
+        return match remote::bytes(src) {
+            Some(Ok(bytes)) => Ok(bytes.to_vec()),
+            Some(Err(why)) => Err(std::io::Error::other(why)),
+            None => Err(std::io::ErrorKind::WouldBlock.into()),
+        };
+    }
     match file_url_path(src) {
         Some(path) => std::fs::read(path),
         None => source::read_bytes(Path::new(src)),
@@ -2115,6 +2134,41 @@ pub fn read_media(src: &str) -> std::io::Result<Vec<u8>> {
     source::read_bytes(&base.join(src))
 }
 
+/// Where an image is: what `@load` and `@error` are fired from.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ImageState {
+    /// On its way from the network.
+    Loading,
+    /// There, this many pixels across and down.
+    Ready(u32, u32),
+    /// Not there, or not a picture, and why.
+    Failed(String),
+}
+
+/// The state of the image at `src`, resolved as the tree holds it: from the
+/// network store, a picked file's bytes, or the source. Reads only the header.
+pub fn image_state(src: &str) -> ImageState {
+    if src.is_empty() {
+        return ImageState::Failed("it has no `src`".to_string());
+    }
+    let bytes = match image_bytes(src) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => return ImageState::Loading,
+        Err(e) => return ImageState::Failed(e.to_string()),
+    };
+    let size = image::ImageReader::new(std::io::Cursor::new(bytes))
+        .with_guessed_format()
+        .map_err(|e| e.to_string())
+        .and_then(|r| r.into_dimensions().map_err(|e| e.to_string()));
+    match size {
+        Ok((w, h)) => match rux_layout::image_too_large(w, h) {
+            Some(why) => ImageState::Failed(why),
+            None => ImageState::Ready(w, h),
+        },
+        Err(why) => ImageState::Failed(format!("it is not a picture Rux can read: {why}")),
+    }
+}
+
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
 /// size, so a sizeless `<image>` lays out at its natural pixel dimensions. Only
 /// the file header is read, not the pixels; the painter decodes and caches those.
@@ -2124,10 +2178,21 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
         // .rux file, and stays a URL: the reader below and the painter's
         // both take it as it is.
         if is_url(&img.src) {
-            match image_bytes(&img.src).ok().and_then(|bytes| {
+            let read = image_bytes(&img.src);
+            let waiting = read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock);
+            match read.ok().and_then(|bytes| {
                 image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
             }) {
-                Some((w, h)) => img.intrinsic = (w as f32, h as f32),
+                Some((w, h)) => {
+                    img.intrinsic = (w as f32, h as f32);
+                    if let Some(why) = rux_layout::image_too_large(w, h) {
+                        rux_style::warn_stylesheet(format!("`<image src=\"{}\">` will not be drawn: {why}", img.src));
+                    }
+                }
+                // Laid out with no size until it comes, as a browser does.
+                None if waiting => {}
+                // A failed fetch has said why where it failed.
+                None if remote::is_remote(&img.src) => {}
                 None => eprintln!("rux: cannot read image {}", img.src),
             }
         } else if !img.src.is_empty() {
@@ -5325,6 +5390,30 @@ impl Document {
             ran |= self.apply_handler_in(&body, instance.as_deref());
         }
         ran
+    }
+
+    /// Read the size of every network image that has come since this last
+    /// asked, so its box takes the picture's size. Says whether any came, and
+    /// so whether to lay out and paint again. The shell calls this when it
+    /// wakes, as for an answer.
+    pub fn take_arrived_images(&mut self) -> bool {
+        if !remote::take_arrived() {
+            return false;
+        }
+        fn walk(node: &mut LayoutNode) {
+            if let Some(img) = node.image.as_mut().filter(|i| remote::is_remote(&i.src) && i.intrinsic == (0.0, 0.0)) {
+                if let Some((w, h)) = image_bytes(&img.src).ok().and_then(|bytes| {
+                    image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+                }) {
+                    img.intrinsic = (w as f32, h as f32);
+                }
+            }
+            for child in &mut node.children {
+                walk(child);
+            }
+        }
+        walk(&mut self.root);
+        true
     }
 
     /// Go on with every waiting `async fn` whose answer has come, each in the

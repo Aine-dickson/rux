@@ -8068,6 +8068,10 @@ fn build_node_inner(
             .or_else(|| el.attr("src").map(str::to_string))
             .unwrap_or_default();
         let mut image = ImageContent::new(src);
+        let on = rux_layout::ImageEvents::EVENTS.map(|e| el.attr(&format!("@{e}")).map(|h| bind_locals(h, baked)));
+        if on.iter().any(Option::is_some) {
+            image.events = Some(Box::new(rux_layout::ImageEvents { key: media_key(instance, tpl_path, row), on }));
+        }
         if let Some(v) = props.get("object-fit") {
             image.fit = match v.trim() {
                 "fill" => ObjectFit::Fill,

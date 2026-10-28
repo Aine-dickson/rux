@@ -75,7 +75,7 @@ pub fn pack(
     let dex = build_dex(toolchain, &staging)?;
 
     let manifest_xml = staging.join("AndroidManifest.xml");
-    std::fs::write(&manifest_xml, android_manifest(manifest, dev))
+    std::fs::write(&manifest_xml, android_manifest(manifest, dev, uses_network(&manifest.root)))
         .map_err(|e| format!("writing {}: {e}", manifest_xml.display()))?;
 
     // One invocation for the whole tree, whatever is in it: `--dir` walks it and
@@ -458,9 +458,13 @@ fn dirs_home() -> PathBuf {
 ///   to raise the keyboard. That is now answered properly, by the view saying
 ///   it is not an editor until Rux focuses a field, and `stateHidden` turned
 ///   out to suppress the keyboard afterwards as well.
-/// - **`INTERNET`, in a dev build only.** Hot reload is a socket to the host
-///   through `adb reverse`, and Android refuses to open one without it. A
-///   release build asks for nothing, because nothing in it connects anywhere.
+/// - **`INTERNET`, in a dev build, or when the app names an address.** Hot
+///   reload is a socket to the host through `adb reverse`, and Android refuses
+///   to open one without it. A release build asks for it only when a document
+///   or stylesheet names an `http:` or `https:` address, which is what a
+///   network image is (see [`uses_network`]); otherwise nothing in it connects
+///   anywhere and it asks for nothing. Android grants it at install, without
+///   asking the person.
 /// - **`launchMode="singleTask"`, whether or not the app takes links.** By
 ///   default an intent from another app, a link tapped in a browser most of
 ///   all, builds a second instance of the activity inside that app's task and,
@@ -489,9 +493,23 @@ pub fn version_code(version: &str) -> u32 {
     (major * 1_000_000 + minor * 1_000 + patch).max(1)
 }
 
-fn android_manifest(manifest: &Manifest, dev: bool) -> String {
-    let internet = if dev {
-        "\n    <!-- A dev build only: hot reload is a socket to the host, through adb. -->\n    \
+/// Whether a document or stylesheet of the project names a network address,
+/// so the app fetches something and needs `INTERNET`. A plain read of the text
+/// rather than of the documents: an address a script builds from pieces is
+/// missed, and one in a comment is counted, which costs a permission Android
+/// grants silently.
+fn uses_network(root: &Path) -> bool {
+    let Ok(files) = crate::build::collect(root) else { return false };
+    files
+        .iter()
+        .filter(|f| f.extension().is_some_and(|e| e == "rux" || e == "css"))
+        .filter_map(|f| std::fs::read_to_string(root.join(f)).ok())
+        .any(|text| text.contains("http://") || text.contains("https://"))
+}
+
+fn android_manifest(manifest: &Manifest, dev: bool, network: bool) -> String {
+    let internet = if dev || network {
+        "\n    <!-- Hot reload (a dev build) and network images. -->\n    \
          <uses-permission android:name=\"android.permission.INTERNET\" />"
     } else {
         ""
@@ -680,13 +698,13 @@ mod tests {
         // `Task List` is `task-list` as a filename and `task_list` as a library,
         // and the activity loads it by the second name. Getting this wrong gives
         // an app that installs, starts and finds nothing to run.
-        let xml = android_manifest(&manifest("Task List"), false);
+        let xml = android_manifest(&manifest("Task List"), false, false);
         assert!(xml.contains(r#"android:value="task_list""#), "{xml}");
     }
 
     #[test]
     fn an_apostrophe_in_a_name_does_not_break_the_manifest() {
-        let xml = android_manifest(&manifest("Bob's Tools"), false);
+        let xml = android_manifest(&manifest("Bob's Tools"), false, false);
         assert!(xml.contains("Bob&apos;s Tools"), "{xml}");
         assert!(!xml.contains("Bob's Tools"), "{xml}");
     }
@@ -696,7 +714,7 @@ mod tests {
         // Both would be references to resources that were never compiled, and
         // `aapt2 link` fails on one of those rather than ignoring it, so an app
         // without art would not package at all.
-        let xml = android_manifest(&manifest("Task List"), false);
+        let xml = android_manifest(&manifest("Task List"), false, false);
         assert!(!xml.contains("android:icon"), "{xml}");
         assert!(!xml.contains("android:theme"), "{xml}");
     }
@@ -709,7 +727,7 @@ mod tests {
             background: "#7c3aed".into(),
             splash: "#7c3aed".into(),
         });
-        let xml = android_manifest(&with_icon, false);
+        let xml = android_manifest(&with_icon, false, false);
         // Against the generator rather than a literal: the names are written in
         // two files, and that is exactly how the activity class drifted once.
         assert!(xml.contains(&crate::icon::manifest_reference()), "{xml}");
@@ -721,7 +739,7 @@ mod tests {
         // These two go together and are wrong apart. `hasCode="true"` without a
         // dex makes the platform look for code that is not there, and naming
         // our activity without the dex is the same failure by another road.
-        let xml = android_manifest(&manifest("Task List"), false);
+        let xml = android_manifest(&manifest("Task List"), false, false);
         assert!(xml.contains(r#"android:hasCode="true""#), "{xml}");
         assert!(xml.contains(&format!(r#"android:name="{ACTIVITY_CLASS}""#)), "{xml}");
     }
@@ -762,19 +780,21 @@ mod tests {
 
     #[test]
     fn the_floor_and_the_target_are_both_declared_and_are_not_the_same() {
-        let xml = android_manifest(&manifest("Task List"), false);
+        let xml = android_manifest(&manifest("Task List"), false, false);
         assert!(xml.contains(&format!(r#"android:minSdkVersion="{MIN_API}""#)), "{xml}");
         assert!(xml.contains(&format!(r#"android:targetSdkVersion="{TARGET_API}""#)), "{xml}");
         assert!(MIN_API < TARGET_API, "the floor must be below the target");
     }
 
-    /// Hot reload needs a socket, and a socket needs `INTERNET`. A release
-    /// build connects to nothing and must not ask for it.
+    /// Hot reload needs a socket, and a socket needs `INTERNET`, as does a
+    /// network image. A release build that names no address connects to
+    /// nothing and must not ask for it.
     #[test]
-    fn only_a_dev_build_asks_for_the_network() {
+    fn only_a_dev_build_or_an_address_asks_for_the_network() {
         let internet = "android.permission.INTERNET";
-        assert!(android_manifest(&manifest("Task List"), true).contains(internet));
-        assert!(!android_manifest(&manifest("Task List"), false).contains(internet));
+        assert!(android_manifest(&manifest("Task List"), true, false).contains(internet));
+        assert!(android_manifest(&manifest("Task List"), false, true).contains(internet));
+        assert!(!android_manifest(&manifest("Task List"), false, false).contains(internet));
     }
 
     /// Each release has a larger `versionCode` than the one before, or Play
@@ -789,7 +809,7 @@ mod tests {
         assert_eq!(version_code("0.0.0"), 1, "Android wants at least 1");
         let mut m = manifest("Task List");
         m.version = "1.2.3".into();
-        assert!(android_manifest(&m, false).contains(r#"android:versionCode="1002003""#));
+        assert!(android_manifest(&m, false, false).contains(r#"android:versionCode="1002003""#));
     }
 
     /// A dev build is debuggable, so `rux run --device` can put hot reload's
@@ -797,8 +817,8 @@ mod tests {
     #[test]
     fn only_a_dev_build_is_debuggable() {
         let debuggable = r#"android:debuggable="true""#;
-        assert!(android_manifest(&manifest("Task List"), true).contains(debuggable));
-        assert!(!android_manifest(&manifest("Task List"), false).contains(debuggable));
+        assert!(android_manifest(&manifest("Task List"), true, false).contains(debuggable));
+        assert!(!android_manifest(&manifest("Task List"), false, false).contains(debuggable));
     }
 
     /// XML forbids `--` inside a comment, and `aapt2` refuses the whole
@@ -811,7 +831,7 @@ mod tests {
         linked.scheme = Some("my--app".into());
         linked.link_hosts = vec!["example.com".into()];
         for (m, dev) in [(manifest("Task List"), false), (manifest("Task List"), true), (linked, false)] {
-            let xml = android_manifest(&m, dev);
+            let xml = android_manifest(&m, dev, false);
             for comment in xml.split("<!--").skip(1) {
                 let body = comment.split("-->").next().unwrap_or_default();
                 assert!(!body.contains("--"), "a comment with `--` in it: {body}");
@@ -823,7 +843,7 @@ mod tests {
     /// same process, which winit cannot survive.
     #[test]
     fn every_configuration_change_is_claimed() {
-        let xml = android_manifest(&manifest("Task List"), false);
+        let xml = android_manifest(&manifest("Task List"), false, false);
         for flag in ["fontScale", "locale", "keyboard|", "navigation", "smallestScreenSize"] {
             assert!(xml.contains(flag), "{flag} missing: {xml}");
         }
@@ -838,7 +858,7 @@ mod tests {
 
     #[test]
     fn an_app_without_links_has_no_view_filter_and_is_still_single_task() {
-        let xml = android_manifest(&manifest("Task List"), false);
+        let xml = android_manifest(&manifest("Task List"), false, false);
         assert!(!xml.contains("android.intent.action.VIEW"), "{xml}");
         // Not only for links: any intent from another app would otherwise
         // build a second activity in this process, and a second EventLoop.
@@ -847,7 +867,7 @@ mod tests {
 
     #[test]
     fn a_scheme_gets_a_browsable_filter_that_is_not_verified() {
-        let xml = android_manifest(&with_links(Some("tasks"), &[]), false);
+        let xml = android_manifest(&with_links(Some("tasks"), &[]), false, false);
         assert!(xml.contains("<data android:scheme=\"tasks\" />"), "{xml}");
         assert!(xml.contains("android.intent.category.BROWSABLE"), "{xml}");
         assert!(!xml.contains("autoVerify"), "a custom scheme cannot be verified: {xml}");
@@ -855,7 +875,7 @@ mod tests {
 
     #[test]
     fn hosts_share_one_verified_https_filter_apart_from_the_scheme() {
-        let xml = android_manifest(&with_links(Some("tasks"), &["example.com", "*.example.org"]), false);
+        let xml = android_manifest(&with_links(Some("tasks"), &["example.com", "*.example.org"]), false, false);
         assert_eq!(xml.matches("android.intent.action.VIEW").count(), 2, "{xml}");
         let verified = xml.split("android:autoVerify=\"true\"").nth(1).expect("a verified filter");
         let verified = verified.split("</intent-filter>").next().unwrap();

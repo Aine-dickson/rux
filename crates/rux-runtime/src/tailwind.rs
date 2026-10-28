@@ -224,6 +224,7 @@ fn run_cli(css: &str, base: &Path) -> Result<Option<String>, String> {
 
 /// The line of the CLI's complaint that says what is wrong, without its
 /// colours and box drawing: `Cannot apply unknown utility class `bg-gren-500``.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn cli_error(stderr: &str) -> String {
     let plain = strip_ansi(stderr);
     let said = plain
@@ -234,6 +235,7 @@ fn cli_error(stderr: &str) -> String {
     format!("Tailwind could not compile this <style>: {}", said.unwrap_or_else(|| plain.trim().to_string()))
 }
 
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn strip_ansi(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut chars = text.chars();
@@ -254,6 +256,7 @@ fn strip_ansi(text: &str) -> String {
 
 /// Without the `/*! tailwindcss … */` licence line, which is one per block
 /// and says nothing a reader of the app needs.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn strip_banner(css: &str) -> String {
     match css.trim_start().strip_prefix("/*!") {
         Some(rest) if rest.trim_start().starts_with("tailwindcss") => match rest.find("*/") {

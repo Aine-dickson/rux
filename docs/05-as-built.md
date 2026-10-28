@@ -466,6 +466,24 @@ mistake was being written the way HTML is written.
 lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
 Formats: PNG, JPEG, GIF, WebP. A missing file logs to stderr and paints nothing.
 
+**From the network** (2026-10-28): `src="https://…"` (or `http:`), and the same
+in `background-image: url(…)`. The window does not wait: the box lays out with
+no size until the bytes come, as a browser's does, then takes the picture's
+size and paints it. Fetched on a thread with `ureq` (rustls, its own root
+certificates) on the desktop and Android, and by the browser's `fetch` on the
+web. Redirects are followed; a body over 32 MB is refused, and so is a picture
+over the size limit below. Each URL is fetched once per run and kept, a
+failure too. An Android release asks for `INTERNET` when a document or
+stylesheet names an `http:` or `https:` address, and for nothing otherwise.
+
+**`@load` and `@error`** (2026-10-28): once per `src`, when the picture is
+there (`event.width`, `event.height`: its own size in pixels) or cannot be
+(`event.message`). A file on the disk fires at the first frame, one from the
+network when it comes, and a new `:src` fires again.
+```rux
+<image :src="avatarUrl" @load="ready = true" @error="avatarUrl = `assets/placeholder.png`" />
+```
+
 ### `<path>`: vector geometry
 A leaf that draws Bézier geometry, so a Rux app is not limited to boxes and
 images. The renderer was always past that ceiling; until v0.7 the language was

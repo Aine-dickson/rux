@@ -153,8 +153,10 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     (
         "image",
         &[
-            Entry { name: "src", detail: "path, relative to this .rux file", doc: "Resolved relative to the document, not the working directory. `:src` binds an expression." },
+            Entry { name: "src", detail: "path, relative to this .rux file, or a URL", doc: "Resolved relative to the document, not the working directory. An `https://` address is fetched without holding the window up. `:src` binds an expression." },
             Entry { name: "alt", detail: "accessible description", doc: "What the image is, for the accessibility tree." },
+            Entry { name: "@load", detail: "the picture is there", doc: "Once per `src`. `event.width` and `event.height` are its own size in pixels." },
+            Entry { name: "@error", detail: "the picture could not be had", doc: "Once per `src`: missing, refused by the network, or not a picture. `event.message` says which." },
         ],
     ),
     (

@@ -44,8 +44,10 @@
   ],
   "elementAttributes": {
     "image": [
-      { "name": "src", "detail": "path, relative to this .rux file", "doc": "Resolved relative to the document, not the working directory. `:src` binds an expression." },
-      { "name": "alt", "detail": "accessible description", "doc": "What the image is, for the accessibility tree." }
+      { "name": "src", "detail": "path, relative to this .rux file, or a URL", "doc": "Resolved relative to the document, not the working directory. An `https://` address is fetched without holding the window up. `:src` binds an expression." },
+      { "name": "alt", "detail": "accessible description", "doc": "What the image is, for the accessibility tree." },
+      { "name": "@load", "detail": "the picture is there", "doc": "Once per `src`. `event.width` and `event.height` are its own size in pixels." },
+      { "name": "@error", "detail": "the picture could not be had", "doc": "Once per `src`: missing, refused by the network, or not a picture. `event.message` says which." }
     ],
     "audio": [
       { "name": "src", "detail": "the sound: a project path or a File's url", "doc": "Read as `loadSound` reads it: a path from the project (built into a release), or a picked `File`'s `url`. WAV, MP3, AAC, FLAC and Ogg Vorbis everywhere; a browser plays what it plays. `:src` binds an expression, and a new value is a new sound." },

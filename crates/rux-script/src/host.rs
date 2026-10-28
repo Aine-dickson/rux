@@ -66,6 +66,15 @@ pub(crate) fn abandon(tickets: impl IntoIterator<Item = u64>) {
     set.extend(tickets.into_iter().filter(|t| !answered.contains(t)));
 }
 
+/// Wake the window with no answer queued: something it shows arrived from
+/// another thread, a network image (`rux_runtime::remote`).
+pub fn wake() {
+    let waker = WAKER.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some(waker) = waker {
+        waker();
+    }
+}
+
 /// Whether any answer is queued, for anyone.
 pub fn has_answers() -> bool {
     !ANSWERS.lock().unwrap_or_else(|e| e.into_inner()).is_empty()

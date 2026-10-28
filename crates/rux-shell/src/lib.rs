@@ -29,6 +29,7 @@
 mod dialogs;
 /// `<audio>`: the sound each element plays, and its events.
 mod media;
+mod image_events;
 #[cfg(not(target_arch = "wasm32"))]
 mod sound;
 #[cfg(target_arch = "wasm32")]
@@ -5917,6 +5918,7 @@ impl App {
     /// sounds gave since the last look. See [`media::sync`].
     fn sync_media(&mut self) {
         self.field_events.extend(media::sync(&self.document.root));
+        self.field_events.extend(image_events::sync(&self.document.root));
     }
 
     /// Run the field handlers the last batch of events queued.
@@ -7874,7 +7876,9 @@ impl ApplicationHandler<RuxEvent> for App {
             RuxEvent::Answered => {
                 let settled = self.document.settle_tasks();
                 let moved = self.document.refresh_native_signals();
-                if settled || moved {
+                // A network image came: its size is read and it is painted.
+                let pictured = self.document.take_arrived_images();
+                if settled || moved || pictured {
                     self.request_redraw();
                 }
             }
@@ -10911,6 +10915,39 @@ fn install_rux_modules() {
     // too, or a call made then is dropped unanswered.
     #[cfg(target_arch = "wasm32")]
     rux_runtime::native::set_spawner(|task| wasm_bindgen_futures::spawn_local(task));
+    // A network image is the browser's to fetch: a page has no sockets, and
+    // the browser has the cache. See `rux_runtime::remote`.
+    #[cfg(target_arch = "wasm32")]
+    rux_runtime::remote::set_fetcher(|url| wasm_bindgen_futures::spawn_local(fetch_image(url)));
+}
+
+/// Fetch `url` with the browser's `fetch` and hand the runtime what came.
+#[cfg(target_arch = "wasm32")]
+async fn fetch_image(url: String) {
+    use wasm_bindgen::JsCast;
+    async fn get(url: &str) -> Result<Vec<u8>, String> {
+        let said = |e: wasm_bindgen::JsValue| e.as_string().unwrap_or_else(|| format!("{e:?}"));
+        let window = web_sys::window().ok_or("no window")?;
+        let response: web_sys::Response = wasm_bindgen_futures::JsFuture::from(window.fetch_with_str(url))
+            .await
+            .map_err(said)?
+            .dyn_into()
+            .map_err(said)?;
+        if !response.ok() {
+            return Err(format!("{} {}", response.status(), response.status_text()));
+        }
+        let buffer = wasm_bindgen_futures::JsFuture::from(response.array_buffer().map_err(said)?).await.map_err(said)?;
+        let bytes = js_sys::Uint8Array::new(&buffer);
+        if u64::from(bytes.length()) > rux_runtime::remote::MAX_BYTES {
+            return Err(format!("it is over {} MB", rux_runtime::remote::MAX_BYTES / 1024 / 1024));
+        }
+        Ok(bytes.to_vec())
+    }
+    let result = get(&url).await;
+    if let Err(why) = &result {
+        web_sys::console::warn_1(&format!("rux: cannot load image {url}: {why}").into());
+    }
+    rux_runtime::remote::deliver(&url, result);
 }
 
 /// Wake `event_loop` whenever a host function an `async fn` awaits

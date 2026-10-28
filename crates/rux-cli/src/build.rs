@@ -694,6 +694,17 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
                 literal(&toolchain.clang(*abi).display().to_string()),
             ));
         }
+        // And which C compiler, for a dependency with C in it: `ring`, under
+        // the TLS a network image is fetched over, compiles some. `cc` reads
+        // `CC_<target>` and `AR_<target>`.
+        text.push_str("[env]\n");
+        for abi in &abis {
+            let clang = toolchain.clang(*abi);
+            let ar = clang.with_file_name(if cfg!(windows) { "llvm-ar.exe" } else { "llvm-ar" });
+            let var = abi.rust_target.replace('-', "_");
+            text.push_str(&format!("CC_{var} = {}\n", literal(&clang.display().to_string())));
+            text.push_str(&format!("AR_{var} = {}\n", literal(&ar.display().to_string())));
+        }
         std::fs::write(config.join("config.toml"), text)
             .map_err(|e| format!("writing the generated cargo config: {e}"))?;
     }

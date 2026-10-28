@@ -1809,13 +1809,30 @@ pub struct ImageContent {
     /// `object-position`, across then down: where it sits in the room the
     /// fit leaves. The centre unless set.
     pub position: [BgPos; 2],
+    /// `@load` and `@error`, when either is written: most images have
+    /// neither, so they carry one empty pointer.
+    pub events: Option<Box<ImageEvents>>,
+}
+
+/// An `<image>`'s `@load` and `@error`, and which element it is from one
+/// build to the next, so each fires once for each `src`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ImageEvents {
+    pub key: String,
+    /// `@load`, `@error`, in that order.
+    pub on: [Option<String>; 2],
+}
+
+impl ImageEvents {
+    /// The events [`ImageEvents::on`] holds, in its order.
+    pub const EVENTS: [&'static str; 2] = ["load", "error"];
 }
 
 impl ImageContent {
     /// An image as CSS has it with nothing said: stretched to its box.
     pub fn new(src: String) -> Self {
         let centre = BgPos { pct: 50.0, px: 0.0 };
-        ImageContent { src, intrinsic: (0.0, 0.0), fit: ObjectFit::Fill, position: [centre; 2] }
+        ImageContent { src, intrinsic: (0.0, 0.0), fit: ObjectFit::Fill, position: [centre; 2], events: None }
     }
 
     /// Where the picture goes, `(x, y, width, height)`, in a content box at
@@ -1972,6 +1989,28 @@ pub fn set_image_reader(reader: ImageReader) {
 /// Forget the reader, so the painter reads paths again.
 pub fn clear_image_reader() {
     IMAGE_READER.with(|r| *r.borrow_mut() = None);
+}
+
+/// How many times an image has arrived from the network. The painter keeps
+/// what it could not draw as a miss, and drops those when this moves, so a
+/// picture that came late is drawn rather than remembered as missing.
+static IMAGES_ARRIVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Say that an image arrived. See [`images_arrived`].
+pub fn image_arrived() {
+    IMAGES_ARRIVED.fetch_add(1, std::sync::atomic::Ordering::Release);
+}
+
+/// The count [`image_arrived`] moves.
+pub fn images_arrived() -> u64 {
+    IMAGES_ARRIVED.load(std::sync::atomic::Ordering::Acquire)
+}
+
+/// Whether `src` is fetched from the network (`http:` or `https:`) rather than
+/// read, so the painter waits for it instead of looking on the disk.
+pub fn is_remote(src: &str) -> bool {
+    let lower = src.get(..8).unwrap_or(src).to_ascii_lowercase();
+    lower.starts_with("http://") || lower.starts_with("https://")
 }
 
 /// The bytes for `src`, or `None` when no reader is installed or it has none.

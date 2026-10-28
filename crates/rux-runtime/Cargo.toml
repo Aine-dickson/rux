@@ -32,3 +32,10 @@ rux-ir.workspace = true
 # both are required. No effect on native builds.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { version = "0.3", features = ["wasm_js"] }
+
+# Network images (`src="https://…"`), fetched on a thread. Not on the web,
+# where the shell hands the fetch to the browser. rustls with its webpki
+# roots, so nothing is asked of the system's certificate store. See
+# src/remote.rs.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ureq = { version = "3.5", default-features = false, features = ["rustls"] }

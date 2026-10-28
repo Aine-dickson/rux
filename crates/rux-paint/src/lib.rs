@@ -82,10 +82,13 @@ const PREEDIT_RULE: f32 = rux_text::CARET_WIDTH;
 
 /// Decoded images, keyed by the `src` path. Decoding is the expensive part, and
 /// we repaint on every event, so an image is read from disk at most once. A src
-/// that fails to decode is remembered as a miss and not retried.
+/// that fails to decode is remembered as a miss and not retried, until an
+/// image arrives from the network ([`rux_layout::images_arrived`]): the miss
+/// may have been one still on its way.
 #[derive(Default)]
 pub struct ImageCache {
     images: HashMap<String, Option<ImageBrush>>,
+    arrived: u64,
 }
 
 impl ImageCache {
@@ -94,6 +97,11 @@ impl ImageCache {
     }
 
     fn get(&mut self, src: &str) -> Option<&ImageBrush> {
+        let arrived = rux_layout::images_arrived();
+        if arrived != self.arrived {
+            self.arrived = arrived;
+            self.images.retain(|_, brush| brush.is_some());
+        }
         self.images
             .entry(src.to_string())
             .or_insert_with(|| decode(src))
@@ -109,6 +117,8 @@ fn decode(src: &str) -> Option<ImageBrush> {
     // bare `rux-paint` test and `rux run` both keep working.
     let bytes = match rux_layout::read_image_bytes(src) {
         Some(bytes) => bytes,
+        // On its way, or failed and said so where it was fetched.
+        None if rux_layout::is_remote(src) => return None,
         None => std::fs::read(src)
             .map_err(|e| eprintln!("rux: cannot load image {src}: {e}"))
             .ok()?,
