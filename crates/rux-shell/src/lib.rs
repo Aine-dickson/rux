@@ -1730,18 +1730,76 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
     Some(Overlay { paints: out, rect: (x, y, panel_w, panel_h) })
 }
 
-/// Whether the overlay should be on screen: there is something to say, and it
-/// has not been dismissed *for these particular diagnostics*.
+/// What the overlay shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum OverlayMode {
+    Hidden,
+    /// The panel: what is wrong, and what was printed.
+    Panel,
+    /// Only prints, and the panel not opened: one line in a corner.
+    Badge,
+}
+
+/// What the overlay should show: the panel while there is a problem it has
+/// not been dismissed for, otherwise a corner badge while anything was
+/// printed, which a tap opens into the panel.
 ///
-/// Comparing the whole `Diagnostics` rather than holding a flag is what makes
-/// the panel come back on its own. Dismissing "3 warnings" and then introducing
-/// a parse error must not leave the window silent about it, which a boolean
-/// would do until the next restart.
-fn overlay_visible(
+/// Dismissal is held against the problems, not a flag, which is what makes the
+/// panel come back on its own: dismissing "3 warnings" and then introducing a
+/// parse error must not leave the window silent about it. Prints are not part
+/// of that comparison: each `print` brought the whole panel back over the app,
+/// and the next tap went to dismissing it (Tracer's AW-016).
+fn overlay_mode(
     diag: &rux_runtime::Diagnostics,
     dismissed: Option<&rux_runtime::Diagnostics>,
-) -> bool {
-    !diag.is_empty() && dismissed != Some(diag)
+    prints_open: bool,
+) -> OverlayMode {
+    let problems = diag.error.is_some() || !diag.warnings.is_empty();
+    let dismissed_these = dismissed.is_some_and(|d| d.error == diag.error && d.warnings == diag.warnings);
+    if problems && !dismissed_these {
+        OverlayMode::Panel
+    } else if diag.prints.is_empty() {
+        OverlayMode::Hidden
+    } else if prints_open {
+        OverlayMode::Panel
+    } else {
+        OverlayMode::Badge
+    }
+}
+
+/// The prints' badge: how many, and the last, on one line in the bottom right
+/// corner, where it covers the least of the app.
+fn print_badge(diag: &rux_runtime::Diagnostics, width: f32, height: f32) -> Option<Overlay> {
+    let last = diag.prints.last()?;
+    let w = (width - OVERLAY_PAD * 2.0).clamp(120.0, 380.0);
+    let h = OVERLAY_LINE_H + OVERLAY_PAD;
+    let (x, y) = (width - w - OVERLAY_PAD, height - h - OVERLAY_PAD);
+    let n = diag.prints.len();
+    let mut line = format!("› {n} printed: {last}");
+    let fits = ((w - OVERLAY_PAD * 1.5) / 7.3) as usize;
+    if line.chars().count() > fits {
+        line = line.chars().take(fits.saturating_sub(1)).collect::<String>() + "…";
+    }
+    let paints = vec![
+        Paint::Rect(PaintRect {
+            x,
+            y,
+            width: w,
+            height: h,
+            background: Some(Background::Color(Rgba::new(0.11, 0.14, 0.22, 0.95))),
+            radius: [8.0; 4],
+            border: Sides::uniform(1.0),
+            border_color: Some(Rgba::new(0.54, 0.71, 0.98, 1.0)),
+        }),
+        Paint::Text(PaintText {
+            x: x + OVERLAY_PAD * 0.75,
+            y: y + OVERLAY_PAD * 0.5,
+            width: w - OVERLAY_PAD * 1.5,
+            height: OVERLAY_LINE_H,
+            content: overlay_text(line, 13.0, 400, Rgba::new(0.85, 0.88, 0.95, 1.0)),
+        }),
+    ];
+    Some(Overlay { paints, rect: (x, y, w, h) })
 }
 
 fn file_name(path: &Path) -> String {
@@ -2156,6 +2214,11 @@ struct App {
     /// Where the overlay was drawn last frame, in logical px, for hit testing.
     /// `None` when it is not on screen.
     overlay_rect: Option<(f32, f32, f32, f32)>,
+    /// Whether what was drawn there is the prints' corner badge rather than the
+    /// panel, which a tap opens rather than dismisses.
+    overlay_badge: bool,
+    /// Whether the prints have been opened from their badge into the panel.
+    prints_open: bool,
     /// The IME composition in flight, if any. `None` covers every keyboard that
     /// commits directly, which is most of them most of the time.
     preedit: Option<Preedit>,
@@ -2336,6 +2399,8 @@ impl App {
             anchor: 0,
             overlay_dismissed: None,
             overlay_rect: None,
+            overlay_badge: false,
+            prints_open: false,
             preedit: None,
             text_drag: false,
             touch_text: None,
@@ -4186,7 +4251,12 @@ impl App {
         if !self.overlay_covers(fx, fy) {
             return false;
         }
-        self.overlay_dismissed = Some(self.document.diagnostics().clone());
+        if self.overlay_badge {
+            self.prints_open = true;
+        } else {
+            self.overlay_dismissed = Some(self.document.diagnostics().clone());
+            self.prints_open = false;
+        }
         self.overlay_rect = None;
         self.request_redraw();
         true
@@ -7247,6 +7317,8 @@ impl App {
             metrics,
             overlay_dismissed,
             overlay_rect,
+            overlay_badge,
+            prints_open,
             caret,
             anchor,
             text_scroll,
@@ -7630,18 +7702,21 @@ impl App {
         // one thing and breaking another brings the panel straight back rather
         // than leaving it hidden until restart.
         *overlay_rect = None;
-        if overlay_visible(diagnostics, overlay_dismissed.as_ref()) {
+        let mode = overlay_mode(diagnostics, overlay_dismissed.as_ref(), *prints_open);
+        *overlay_badge = mode == OverlayMode::Badge;
+        let panel = match mode {
+            OverlayMode::Hidden => None,
+            OverlayMode::Badge => print_badge(diagnostics, logical.0 as f32, logical.1 as f32),
             #[cfg(not(target_arch = "wasm32"))]
-            let panel = overlay_paints(diagnostics, path, logical.0 as f32);
+            OverlayMode::Panel => overlay_paints(diagnostics, path, logical.0 as f32),
             // No file on the web, so the overlay titles itself after the editor.
             #[cfg(target_arch = "wasm32")]
-            let panel =
-                overlay_paints(diagnostics, Path::new("playground.rux"), logical.0 as f32);
-            if let Some(panel) = panel {
-                let scene = rux_paint::build_scene(&panel.paints, text, images, false);
-                state.scene.append(&scene, Some(Affine::scale(scale)));
-                *overlay_rect = Some(panel.rect);
-            }
+            OverlayMode::Panel => overlay_paints(diagnostics, Path::new("playground.rux"), logical.0 as f32),
+        };
+        if let Some(panel) = panel {
+            let scene = rux_paint::build_scene(&panel.paints, text, images, false);
+            state.scene.append(&scene, Some(Affine::scale(scale)));
+            *overlay_rect = Some(panel.rect);
         }
 
         // Publish the accessibility tree for this frame. `update_if_active` skips
@@ -13230,8 +13305,8 @@ mod tests {
     #[test]
     fn dismissing_the_overlay_hides_it() {
         let diag = warned("float does nothing");
-        assert!(overlay_visible(&diag, None), "shown before it is dismissed");
-        assert!(!overlay_visible(&diag, Some(&diag)), "hidden after");
+        assert!(overlay_mode(&diag, None, false) == OverlayMode::Panel, "shown before it is dismissed");
+        assert!(overlay_mode(&diag, Some(&diag), false) == OverlayMode::Hidden, "hidden after");
     }
 
     /// And it must come back on its own when what is wrong changes, or
@@ -13241,7 +13316,7 @@ mod tests {
         let dismissed = warned("float does nothing");
 
         let another_warning = warned("`:nope` is not supported");
-        assert!(overlay_visible(&another_warning, Some(&dismissed)));
+        assert!(overlay_mode(&another_warning, Some(&dismissed), false) == OverlayMode::Panel);
 
         let now_broken = Diagnostics {
             error: Some("parse error".into()),
@@ -13250,7 +13325,7 @@ mod tests {
             prints: Vec::new(),
         };
         assert!(
-            overlay_visible(&now_broken, Some(&dismissed)),
+            overlay_mode(&now_broken, Some(&dismissed), false) == OverlayMode::Panel,
             "an error arriving after a dismissed warning must show"
         );
     }
@@ -13260,8 +13335,25 @@ mod tests {
     #[test]
     fn nothing_wrong_means_no_overlay() {
         let clean = Diagnostics::default();
-        assert!(!overlay_visible(&clean, None));
-        assert!(!overlay_visible(&clean, Some(&warned("old"))));
+        assert!(overlay_mode(&clean, None, false) == OverlayMode::Hidden);
+        assert!(overlay_mode(&clean, Some(&warned("old")), false) == OverlayMode::Hidden);
+    }
+
+    /// Prints alone are a corner badge, a tap opens them, and a new print
+    /// does not bring back a panel dismissed for its problems (Tracer's AW-016).
+    #[test]
+    fn prints_wait_in_a_badge() {
+        let printed = |lines: &[&str], warnings: &Diagnostics| Diagnostics {
+            prints: lines.iter().map(|l| l.to_string()).collect(),
+            ..warnings.clone()
+        };
+        let clean = Diagnostics::default();
+        assert_eq!(overlay_mode(&printed(&["a"], &clean), None, false), OverlayMode::Badge);
+        assert_eq!(overlay_mode(&printed(&["a"], &clean), None, true), OverlayMode::Panel);
+        let warned = warned("float does nothing");
+        let dismissed = printed(&["a"], &warned);
+        assert_eq!(overlay_mode(&printed(&["a", "b"], &warned), Some(&dismissed), false), OverlayMode::Badge);
+        assert!(print_badge(&printed(&["a", "b"], &clean), 800.0, 600.0).is_some_and(|b| b.rect.1 > 500.0));
     }
 
     /// A 200x200 box holding 500px-tall content: it scrolls down, not sideways.

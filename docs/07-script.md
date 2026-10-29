@@ -1096,7 +1096,7 @@ records are equal when their fields are, whatever order they were written in.
 
 | Call | Does |
 |---|---|
-| `print(x)`, `debug(x)` | Printf-debugging. Reaches the **dev overlay**, not just stderr, because nobody running a GUI is watching stderr |
+| `print(x)`, `debug(x)` | Printf-debugging. Reaches the **dev overlay**, not just stderr, because nobody running a GUI is watching stderr: a badge in the bottom right corner with the last line, which a tap opens into the full list. A print never brings back a panel dismissed for warnings |
 | `module.name(…)` | A native function, from `use native::module;`. See [Native code](#native-code) |
 | `emit("name")`, `emit("name", payload)` | A component telling its caller something happened |
 | `navigate(path)`, `replace(path)` | Router. `replace` is the only way to redirect: `navigate` leaves the redirecting page in the history, so Back returns to it and redirects again |
