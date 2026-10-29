@@ -12,8 +12,9 @@
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Tokens;
-use quote::{format_ident, quote};
+use quote::{format_ident, quote, quote_spanned};
 use rux_bindgen::{fn_descriptor, fn_info, result_ok, struct_fields, type_name, FnInfo, METHODS_DESCRIPTOR, TYPE_DESCRIPTOR};
+use syn::spanned::Spanned;
 use syn::{parse_macro_input, Attribute, ImplItem, Item};
 
 /// Export a function, a struct (a value Rux copies) or an `impl` block's
@@ -145,13 +146,16 @@ fn export_static(mut s: syn::ItemStatic) -> syn::Result<Tokens> {
     let ident = &s.ident;
     let descriptor = format_ident!("{}", fn_descriptor(&ident.to_string()));
     let vis = &s.vis;
+    // At the static's type, so a value that cannot be a signal's is reported
+    // there, in `SignalValue`'s words.
+    let read = quote_spanned! {s.ty.span()=> ::rux::__private::read_exported(&#ident) };
     Ok(quote! {
         #s
 
         #[doc(hidden)]
         #[allow(non_snake_case)]
         #vis fn #descriptor() -> ::std::vec::Vec<::rux::Export> {
-            ::std::vec![::rux::Export::signal(#name, #ty, || #ident.__read())]
+            ::std::vec![::rux::Export::signal(#name, #ty, || #read)]
         }
     })
 }

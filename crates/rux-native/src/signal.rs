@@ -99,6 +99,25 @@ impl<T: Clone + IntoRux> Signal<T> {
     }
 }
 
+/// What an exported signal may hold. It is `Clone` and nothing more; the
+/// trait is here to say so in words when it is not, where the bound on
+/// [`Signal::__read`] named a generated method (Tracer's AW-001).
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` is held by an exported Rux signal, so it needs `#[derive(Clone)]`",
+    label = "a signal's value is copied to Rux on every read",
+    note = "add `#[derive(Clone)]` to `{Self}`"
+)]
+pub trait SignalValue: Clone {}
+
+impl<T: Clone> SignalValue for T {}
+
+/// [`Signal::__read`], as the export's getter calls it: a function, so a
+/// value that is not `Clone` is reported by [`SignalValue`].
+#[doc(hidden)]
+pub fn read_exported<T: SignalValue + IntoRux>(signal: &Signal<T>) -> Result<Any, Error> {
+    signal.__read()
+}
+
 impl<T> Default for Signal<T> {
     fn default() -> Self {
         Signal::new()

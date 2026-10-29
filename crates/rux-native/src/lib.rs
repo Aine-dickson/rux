@@ -20,7 +20,7 @@ mod signal;
 mod value;
 
 pub use exec::{block_on, panic_text, set_spawner, spawn, CatchUnwind, Task};
-pub use signal::{notify, set_signal_waker, signal_epoch, Signal};
+pub use signal::{notify, set_signal_waker, signal_epoch, Signal, SignalValue};
 pub use registry::{install, BoxFuture, Call, Export, FieldSig, Interface, Item, ItemKind, Module, Sig};
 pub use value::{field, Any, Error, FromRux, FromRuxRef, Handle, IntoRux, Resource};
 
@@ -31,6 +31,7 @@ pub use rux_native_macros::{export, init, resource};
 #[doc(hidden)]
 pub mod __private {
     pub use crate::exec::CatchUnwind;
+    pub use crate::signal::read_exported;
     pub use std::collections::BTreeMap;
     pub use std::sync::Arc;
 
