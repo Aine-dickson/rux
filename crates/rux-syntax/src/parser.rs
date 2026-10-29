@@ -567,7 +567,7 @@ impl<'t> Parser<'t> {
         };
         let name = match self.peek() {
             Tok::Ident(n) => Ident { name: n.to_string(), span: self.bump().span },
-            Tok::Reserved(r) => return self.error(format!("`{r}` is a reserved word, so a function cannot take it as its name")),
+            Tok::Reserved(r) => return self.error(format!("`{r}` is a reserved word, so a function cannot take it as its name{}", instead(r))),
             Tok::Kw(k) => return self.error(format!("`{k}` is a keyword, so a function cannot take it as its name")),
             _ => return self.error("expecting the function's name after `fn`"),
         };
@@ -620,7 +620,7 @@ impl<'t> Parser<'t> {
                     let ty = if self.eat_punct(":") { Some(self.take_type("`:`")?) } else { None };
                     params.push(Param { name: Ident { name: n.to_string(), span }, ty });
                 }
-                Tok::Reserved(r) => return self.error(format!("`{r}` is a reserved word, so a parameter cannot take it as its name")),
+                Tok::Reserved(r) => return self.error(format!("`{r}` is a reserved word, so a parameter cannot take it as its name{}", instead(r))),
                 Tok::Kw(k) => return self.error(format!("`{k}` is a keyword, so a parameter cannot take it as its name")),
                 _ => return self.error(format!("expecting `)` to close the parameters of `{fn_name}`")),
             }
@@ -1227,7 +1227,7 @@ impl<'t> Parser<'t> {
                     self.bump();
                     Expr { id: self.next_id(), kind: ExprKind::This, span: start }
                 } else {
-                    return self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here"));
+                    return self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here{}", instead(r)));
                 }
             }
             other => return self.error(format!("{} cannot start an expression", other.describe())),
@@ -1347,7 +1347,7 @@ impl<'t> Parser<'t> {
                             Ident { name: r.to_string(), span: self.bump().span }
                         }
                         Tok::Reserved(r) => {
-                            return self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here"))
+                            return self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here{}", instead(r)))
                         }
                         other => return self.error(format!("expecting a field name after `{d}`, found {}", other.describe())),
                     };
@@ -1542,7 +1542,7 @@ impl<'t> Parser<'t> {
                         params.push(Param { name: Ident { name: n.to_string(), span: t.span }, ty: None });
                     }
                     Tok::Reserved(r) => {
-                        return Err(SyntaxError { message: format!("`{r}` is a reserved word, so a parameter cannot take it as its name"), span: t.span })
+                        return Err(SyntaxError { message: format!("`{r}` is a reserved word, so a parameter cannot take it as its name{}", instead(r)), span: t.span })
                     }
                     Tok::Kw(k) => {
                         return Err(SyntaxError { message: format!("`{k}` is a keyword, so a parameter cannot take it as its name"), span: t.span })
@@ -1594,7 +1594,7 @@ impl<'t> Parser<'t> {
     fn var_name(&mut self) -> PResult<Ident> {
         match self.peek() {
             Tok::Ident(n) => Ok(Ident { name: n.to_string(), span: self.bump().span }),
-            Tok::Reserved(r) => self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here")),
+            Tok::Reserved(r) => self.error(format!("`{r}` is a reserved word, so it cannot be used as a name here{}", instead(r))),
             other => self.error(format!("expecting a name, found {}", other.describe())),
         }
     }
@@ -1908,6 +1908,17 @@ impl<'t> Parser<'t> {
             _ => unreachable!("checked by the recognizer"),
         };
         TypeExpr { span: start.to(self.prev_span()), kind }
+    }
+}
+
+/// What to write in place of a reserved word another language spells that
+/// way, as the end of a sentence; empty for the rest.
+fn instead(word: &str) -> &'static str {
+    match word {
+        "var" => "; declare a name with `let`",
+        "nil" => "; the empty value is `none`",
+        "new" => "; build a value with a literal, `{ id: 1 }`, or call a function that returns one",
+        _ => "",
     }
 }
 

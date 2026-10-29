@@ -119,14 +119,19 @@ fn keyword(word: &str) -> Option<&'static str> {
     })
 }
 
-/// Words the fork reserves. `exit` is on its list but not reserved.
+/// Words that cannot be a name, though no statement starts with them: what the
+/// language plans for (`use`, `is`, `match`), the habits of other languages
+/// that are answered with Rux's spelling (`null`, `this`, `var`, `new`), and
+/// the names of built-in functions. The rest of the fork's list (`spawn`,
+/// `default`, `case`, `static` and the like) meant nothing once the fork was
+/// gone, and they are ordinary names now: an API tool names a function
+/// `default` (Tracer's AW-003). `docs/07-script.md`, "Reserved words", lists
+/// these.
 fn is_reserved_word(word: &str) -> bool {
     matches!(
         word,
-        "use" | "case" | "public" | "package" | "super" | "var" | "protected" | "spawn"
-            | "shared" | "is" | "sync" | "curry" | "static" | "default" | "print" | "this"
-            | "is_def_var" | "thread" | "yield" | "new" | "call" | "match" | "eval"
-            | "null" | "debug" | "type_of" | "with" | "void" | "nil" | "module" | "Fn"
+        "use" | "is" | "match" | "yield" | "var" | "curry" | "print" | "this" | "is_def_var"
+            | "new" | "call" | "eval" | "null" | "debug" | "type_of" | "void" | "nil" | "Fn"
     )
 }
 
@@ -729,6 +734,16 @@ mod tests {
         assert_eq!(toks("0..3"), [Tok::Int(0), Tok::Punct(".."), Tok::Int(3), Tok::Eof]);
         assert_eq!(toks("1.foo"), [Tok::Int(1), Tok::Punct("."), Tok::Ident("foo".into()), Tok::Eof]);
         assert_eq!(toks("(1.)"), [Tok::Punct("("), Tok::Float(1.0), Tok::Punct(")"), Tok::Eof]);
+    }
+
+    #[test]
+    fn only_what_rux_means_something_by_is_reserved() {
+        for word in ["default", "case", "static", "spawn", "thread", "sync", "shared", "package", "module", "with"] {
+            assert_eq!(toks(word)[0], Tok::Ident(word.into()), "{word}");
+        }
+        for word in ["use", "is", "match", "null", "this", "var", "new", "print"] {
+            assert_eq!(toks(word)[0], Tok::Reserved(word), "{word}");
+        }
     }
 
     #[test]
