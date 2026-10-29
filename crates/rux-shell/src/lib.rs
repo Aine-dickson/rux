@@ -4037,16 +4037,7 @@ impl App {
     #[cfg(not(target_arch = "wasm32"))]
     fn preview_size(event_loop: &ActiveEventLoop, profile: DeviceProfile) -> (f64, f64) {
         let (want_w, want_h) = (profile.width as f64, profile.height as f64);
-        let Some(monitor) = event_loop.primary_monitor() else { return (want_w, want_h) };
-        let scale = monitor.scale_factor();
-        let size = monitor.size();
-        // Nine tenths, because the monitor's full height is not available to a
-        // window: a title bar sits above the client area and a taskbar usually
-        // sits below the desktop. winit does not report the work area, and
-        // guessing low is the failure that is easy to recover from by dragging.
-        let (max_w, max_h) =
-            (size.width as f64 / scale * 0.9, size.height as f64 / scale * 0.9);
-        let (w, h) = (want_w.min(max_w), want_h.min(max_h));
+        let (w, h) = Self::fit_to_monitor(event_loop, want_w, want_h);
         if w < want_w || h < want_h {
             eprintln!(
                 "rux: this monitor fits {} by {} logical pixels, not the {} by {} of `{}`, \
@@ -4056,6 +4047,37 @@ impl App {
             );
         }
         (w, h)
+    }
+
+    /// `want_w` by `want_h` logical pixels, made small enough for the primary
+    /// monitor.
+    ///
+    /// Nine tenths of it, because the monitor's full height is not available
+    /// to a window: a title bar sits above the client area and a taskbar
+    /// usually sits below the desktop. winit does not report the work area, and
+    /// guessing low is the failure that is easy to recover from by dragging. A
+    /// `rux.toml` asking for 1280 by 800 on a 1080p screen at 1.5x opened 1200
+    /// physical pixels tall, its bottom off the screen (Tracer's AW-015).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn fit_to_monitor(event_loop: &ActiveEventLoop, want_w: f64, want_h: f64) -> (f64, f64) {
+        let Some(monitor) = event_loop.primary_monitor() else { return (want_w, want_h) };
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let (max_w, max_h) = (size.width as f64 / scale * 0.9, size.height as f64 / scale * 0.9);
+        (want_w.min(max_w), want_h.min(max_h))
+    }
+
+    /// Where a window of `w` by `h` logical pixels sits centred on the primary
+    /// monitor, for one made smaller than asked: the system's own placement
+    /// had put its bottom off the screen.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn centred(event_loop: &ActiveEventLoop, w: f64, h: f64) -> Option<winit::dpi::PhysicalPosition<i32>> {
+        let monitor = event_loop.primary_monitor()?;
+        let scale = monitor.scale_factor();
+        let (at, size) = (monitor.position(), monitor.size());
+        let x = at.x + ((size.width as f64 - w * scale) / 2.0).max(0.0) as i32;
+        let y = at.y + ((size.height as f64 - h * scale) / 2.0).max(0.0) as i32;
+        Some(winit::dpi::PhysicalPosition::new(x, y))
     }
 
     /// Whether the operating system is asking for light or dark surfaces.
@@ -7791,14 +7813,26 @@ impl ApplicationHandler<RuxEvent> for App {
         // manifest, since it was asked for on this run; everything else at the
         // manifest's size, or the size this shell has always used.
         let settings = &self.window_settings;
-        let (open_w, open_h) = match self.preview {
-            Some(profile) => Self::preview_size(event_loop, profile),
-            None => (settings.width.unwrap_or(420.0), settings.height.unwrap_or(640.0)),
+        let (open_w, open_h, shrunk) = match self.preview {
+            Some(profile) => {
+                let (w, h) = Self::preview_size(event_loop, profile);
+                (w, h, false)
+            }
+            None => {
+                let want = (settings.width.unwrap_or(420.0), settings.height.unwrap_or(640.0));
+                let (w, h) = Self::fit_to_monitor(event_loop, want.0, want.1);
+                (w, h, w < want.0 || h < want.1)
+            }
         };
         let mut attributes = Window::default_attributes()
             .with_title(title)
             .with_visible(false)
             .with_inner_size(winit::dpi::LogicalSize::new(open_w, open_h));
+        if shrunk {
+            if let Some(at) = Self::centred(event_loop, open_w, open_h) {
+                attributes = attributes.with_position(at);
+            }
+        }
         if self.preview.is_none() {
             if settings.min_width.is_some() || settings.min_height.is_some() {
                 attributes = attributes.with_min_inner_size(winit::dpi::LogicalSize::new(
