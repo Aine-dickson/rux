@@ -28,7 +28,7 @@ const BUILTINS: &[&str] = &[
     "clearInterval", "__interval", "Ok", "Err", "parseInt", "parseFloat", "Number", "String", "isNaN", "intDiv",
     "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan", "atan2", "exp",
     "ln", "log", "log10", "keys", "values", "range", "path_for", "pathFor", "type_of", "to_string", "to_int",
-    "to_float", "parse_int", "parse_float", "is_def_var", "is_def_fn",
+    "to_float", "parse_int", "parse_float", "is_def_var", "is_def_fn", "now",
 ];
 
 /// Lower `script`, whose text is `src`, as the checker recorded it.

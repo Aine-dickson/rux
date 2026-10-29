@@ -3334,6 +3334,7 @@ dependencies = [
  "rux-native",
  "rux-reactive",
  "rux-syntax",
+ "web-time",
 ]
 
 [[package]]

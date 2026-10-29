@@ -18,7 +18,7 @@ pub const FUNCTIONS: &[&str] = &[
     crate::SUBMIT_FN, crate::ANSWER_FN, crate::MEDIA_FN, crate::MEDIA_ASK_FN, "query", "clearInterval", "setInterval", "__interval", "Ok", "Err", "Number", "parseInt",
     "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
     "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
-    "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var",
+    "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var", "now",
 ];
 
 /// Every method [`Interp::method`] answers on some kind of value.
@@ -331,6 +331,7 @@ impl Interp {
                     V::Float(number(&best)?)
                 }
             }
+            ("now", 0) => V::Float(crate::now_ms()),
             ("sqrt", 1) => V::Float(number(&argv[0])?.sqrt()),
             ("sin", 1) => V::Float(number(&argv[0])?.sin()),
             ("cos", 1) => V::Float(number(&argv[0])?.cos()),

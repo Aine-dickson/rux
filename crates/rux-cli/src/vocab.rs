@@ -371,6 +371,7 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "Number", detail: "Number(text)", doc: "The whole text as a number: `Number(\"2\")` is 2, `Number(\"\")` is 0, `Number(\"12px\")` is `NaN`. How a route parameter, which is always text, meets a numeric id." },
     Entry { name: "parseInt", detail: "parseInt(text, radix): int?", doc: "The whole number that leads the text: `parseInt(\"42px\")` is 42, and `parseInt(\"px\")` is `none`, so read it with `??`: `parseInt(s) ?? 0`. The radix is optional." },
     Entry { name: "parseFloat", detail: "parseFloat(text): float?", doc: "The number that leads the text: `parseFloat(\"12.5px\")` is 12.5, and `parseFloat(\"px\")` is `none`, so check it with `?? 0` or `if`." },
+    Entry { name: "now", detail: "now(): float", doc: "Milliseconds on a clock that only goes forward. Only the difference between two reads means anything: `let started = now();` and later `now() - started` is how long it took." },
     Entry { name: "Ok", detail: "Ok(value): Result<T, E>", doc: "A `Result` that holds a value: `{ ok: true, value }`. Read it with `if r.ok { r.value }`, or `r.unwrap()`." },
     Entry { name: "Err", detail: "Err(error): Result<T, E>", doc: "A `Result` that holds an error kept as an answer: `{ ok: false, error }`. `r.unwrap()` on it throws the error." },
     Entry { name: "intDiv", detail: "intDiv(a, b): int", doc: "Division that keeps an `int`, cutting toward zero: `intDiv(7, 2)` is 3, where `7 / 2` is 3.5. Dividing by zero is an error." },

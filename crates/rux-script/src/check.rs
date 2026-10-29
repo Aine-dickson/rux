@@ -2857,6 +2857,8 @@ impl<'a> Checker<'a> {
                 self.infer_all(args);
                 return Type::Float.optional();
             }
+            // Milliseconds on a clock that only goes forward.
+            ("now", 0) => return Type::Float,
             // `int` in and out, and a `float` as soon as one comes in.
             ("max" | "min" | "abs", _) => {
                 let mut all_int = !args.is_empty();

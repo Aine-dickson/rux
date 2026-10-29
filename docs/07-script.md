@@ -1063,6 +1063,18 @@ to read one. `isNaN(x)` asks of a `float`. `String(x)` goes the other way. A
 route parameter is always text, so this is how `/task/:id` meets a list whose
 ids are numbers: `tasks.find(t => t.id == parseInt(params.id))`.
 
+**`now()` is a clock**: milliseconds, as a `float`, on a clock that only goes
+forward. Only the difference between two reads means anything, so it times
+things rather than telling the time:
+
+```rux
+fn send() {
+  let started = now();
+  // …
+  took = now() - started;
+}
+```
+
 **`.length` is a property, not `len()`.** Arrays and strings only: JavaScript has
 no `length` on a plain object, and inventing one for maps would be making up a
 rule rather than matching a known one. Use `keys(m)` and `values(m)` for maps.

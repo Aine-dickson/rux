@@ -589,6 +589,14 @@ fn types_declared_in(script: &rux_syntax::ast::Script, src: &str) -> Vec<(String
 }
 
 
+/// `now()`: milliseconds on a clock that only goes forward, counted from the
+/// first time anything in the program asks. Only the difference between two
+/// reads means anything, as with `performance.now()` (Tracer's AW-009).
+pub fn now_ms() -> f64 {
+    static START: std::sync::OnceLock<web_time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(web_time::Instant::now).elapsed().as_secs_f64() * 1000.0
+}
+
 /// JavaScript's `Number(text)`: the whole text, trimmed, as a number, 0 for
 /// nothing, `NaN` for anything that is not one. `Infinity` is JS's word for
 /// it; Rust's `inf` and `nan` are not, so they are `NaN` here as there.
@@ -3013,6 +3021,18 @@ mod tests {
         // It is a literal, not state: it never reaches the signal set, so
         // nothing can subscribe to it.
         assert!(!e.declares("null"));
+    }
+
+    /// `now()` is milliseconds that only go forward, and a name of its own
+    /// still shadows it (Tracer's AW-009).
+    #[test]
+    fn now_is_a_clock_that_goes_forward() {
+        let mut e = engine();
+        let Some(Value::Number(a)) = e.eval_value("now()", &[]) else { panic!("not a float") };
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let Some(Value::Number(b)) = e.eval_value("now()", &[]) else { panic!("not a float") };
+        assert!(b - a >= 4.0, "{a} then {b}");
+        assert_eq!(e.eval_display("{ let now = 5; now + 1 }", &[]), "6");
     }
 
     /// `null` leaves script as `Value::Null`, not the empty text, and comes
