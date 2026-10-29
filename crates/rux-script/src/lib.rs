@@ -1848,7 +1848,20 @@ impl Engine {
     /// function parameters are filtered out. This is the read half of fine-grained
     /// reactivity: a binding subscribes to exactly the signals it touches.
     pub fn eval_value_tracked(&mut self, src: &str, locals: &[(String, Value)]) -> (Option<Value>, HashSet<String>) {
-        self.reading(|e| e.eval_value(src, locals))
+        // In a component, its own state is handed in as locals, and a change
+        // to it is patched by name like a signal's: those names are kept.
+        if !locals.iter().any(|(n, _)| n == SCOPE_LOCAL) {
+            return self.reading(|e| e.eval_value(src, locals));
+        }
+        READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+        let noting = std::mem::replace(&mut self.ir.noting_given, true);
+        let out = self.eval_value(src, locals);
+        self.ir.noting_given = noting;
+        let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+        reads.retain(|n| {
+            self.ir.has_global(n) || n == native::PROPERTIES_READ || locals.iter().any(|(l, _)| l == n)
+        });
+        (out, reads)
     }
 
     /// Evaluate a `{{ }}` binding to its display string *and* report its signal

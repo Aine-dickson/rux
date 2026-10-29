@@ -3965,6 +3965,7 @@ impl Document {
         // spelled out, because text is somebody's typing and may hold a quote
         // or a backslash.
         let key = key.to_string();
+        let before = self.instances[&key].state.clone();
         let mut locals = self.scope_for(model, row, Some(&key));
         let target = rux_style::model_target(model, &locals);
         locals.push((rux_script::ASSIGNED.to_string(), value.clone()));
@@ -3979,10 +3980,7 @@ impl Document {
         if !changed.is_empty() {
             self.apply_change(&changed);
         }
-        if !moved.is_empty() {
-            // Instance state is not a signal, so no patch can find it: the
-            // rebuild is the only thing that reads it again. A component is a
-            // subtree, so this is bounded.
+        if !moved.is_empty() && !self.patch_instance(&key, &before) {
             self.rebuild();
         }
     }
@@ -5030,6 +5028,7 @@ impl Document {
         };
 
         let entry = &self.instances[key];
+        let before = entry.state.clone();
         let mut locals = entry.state.clone();
         locals.extend(entry.props.iter().cloned());
         locals.extend(event);
@@ -5075,21 +5074,124 @@ impl Document {
             // The document signals first, through the reactive pipeline, so
             // computeds refresh and effects fire.
             self.apply_change(&changed);
-            if moved {
-                // A patch is driven by which document signals changed, and an
-                // instance's own names are not among them: a handler that wrote
-                // both used to show the document's half and leave its own half
-                // stale on screen. The rebuild is the only thing that reads
-                // instance state again.
+            // A patch is driven by which document signals changed, and an
+            // instance's own names are not among them: a handler that wrote
+            // both used to show the document's half and leave its own half
+            // stale on screen. They are patched on their own terms.
+            if moved && !self.patch_instance(key, &before) {
                 self.rebuild();
             }
             return true;
         }
         if moved {
-            self.rebuild();
+            if !self.patch_instance(key, &before) {
+                self.rebuild();
+            }
             return true;
         }
         fired
+    }
+
+    /// Put what instance `key`'s state became, from `before`, on the screen in
+    /// place, as [`Document::patch`] does for the document's signals. Says
+    /// whether it could; when not, the caller rebuilds, and nothing has moved.
+    ///
+    /// Each binding keeps the locals it was built with, which inside a
+    /// component start with that instance's state, so the ones written in this
+    /// instance are given its state as it is now before anything reads them.
+    /// A binding elsewhere that reads a name spelled the same is read again
+    /// for nothing, and shows what it showed. Until this, any change to a
+    /// component's own state rebuilt the whole document: 21.6 ms for one
+    /// counter on a page with a list of 1,000, against 0.47 ms for the same
+    /// counter in the `<screen>` (Tracer's AW-012).
+    /// Every instance's state as it is, for [`Document::patch_instances`].
+    fn instance_states(&self) -> Vec<(String, Vec<(String, rux_reactive::Value)>)> {
+        self.instances.iter().map(|(k, e)| (k.clone(), e.state.clone())).collect()
+    }
+
+    /// [`Document::patch_instance`] for each instance whose state moved since
+    /// `before`. An instance that has gone since has nothing to show.
+    fn patch_instances(&mut self, before: &[(String, Vec<(String, rux_reactive::Value)>)]) -> bool {
+        for (key, was) in before {
+            let moved = self.instances.get(key).is_some_and(|e| e.state != *was);
+            if moved && !self.patch_instance(key, was) {
+                return false;
+            }
+        }
+        true
+    }
+
+    fn patch_instance(&mut self, key: &str, before: &[(String, rux_reactive::Value)]) -> bool {
+        let Some(now) = self.instances.get(key).map(|e| e.state.clone()) else { return false };
+        let moved: HashSet<String> = now
+            .iter()
+            .filter(|(n, v)| before.iter().find(|(b, _)| b == n).map(|(_, bv)| bv) != Some(v))
+            .map(|(n, _)| n.clone())
+            .collect();
+        if moved.is_empty() {
+            return true;
+        }
+        // Read where a patch cannot follow (a prop handed to a component
+        // inside, which is copied into that instance).
+        if !self.registry.structural.is_disjoint(&moved) {
+            return false;
+        }
+        rux_script::profile::time(rux_script::profile::Phase::Patch, || {
+            // Whose a binding is: the instance of the innermost node on its way
+            // there. Its locals cannot say: every instance of a component has
+            // the same scope.
+            let root = &self.root;
+            let mine = |path: &[usize]| {
+                let mut node = root;
+                let mut on = node.instance.as_deref();
+                for &i in path {
+                    let Some(next) = node.children.get(i) else { break };
+                    node = next;
+                    if node.instance.is_some() {
+                        on = node.instance.as_deref();
+                    }
+                }
+                on == Some(key)
+            };
+            let refresh = |locals: &mut [(String, rux_reactive::Value)]| {
+                // The state comes first, in its own order; a row's names after
+                // it may be spelled the same and are not the state's.
+                for (slot, (name, value)) in locals.iter_mut().zip(&now) {
+                    if slot.0 != *name {
+                        break;
+                    }
+                    slot.1 = value.clone();
+                }
+            };
+            for b in &mut self.registry.text {
+                if !b.deps.is_disjoint(&moved) && mine(&b.path) {
+                    refresh(&mut b.locals);
+                }
+            }
+            // An input's locals are also the scope its typing is written in
+            // (`scope_for`), after the live state, so every one of this
+            // instance's is brought up to date, whatever it reads.
+            for b in &mut self.registry.value {
+                if b.instance.as_deref() == Some(key) {
+                    refresh(&mut b.locals);
+                }
+            }
+            for b in &mut self.registry.show {
+                if !b.deps.is_disjoint(&moved) && mine(&b.path) {
+                    refresh(&mut b.locals);
+                }
+            }
+            for b in self.registry.src.iter_mut().chain(self.registry.options.iter_mut()) {
+                if !b.deps.is_disjoint(&moved) && mine(&b.path) {
+                    refresh(&mut b.locals);
+                }
+            }
+            // `r-if`, `r-for`, `:class`, `:style` and components inside it are
+            // built again from the live state, which is what reconciling does.
+            self.reconcile(&moved);
+            self.patch_values(&moved);
+        });
+        true
     }
 
     /// Reflect a set of changed signals: patch in place, or rebuild when the change
@@ -5937,14 +6039,15 @@ impl Document {
         // An instance's own computeds are refreshed before the tree is touched,
         // for the same reason the document's are: a binding that reads one must
         // read what this change made it, not what it was.
+        let before = self.instance_states();
         let instance_moved = self.refresh_instance_computeds(Some(&changed));
         // A patch is chosen by which document signals moved, and instance state
-        // is not among them, so a computed that moved has to force the rebuild
-        // itself or the screen keeps the old number.
-        let patched = !instance_moved && self.patch(&changed);
+        // is not among them, so what a computed moved is patched on its own.
+        let patched = self.patch(&changed) && (!instance_moved || self.patch_instances(&before));
         if !patched {
             self.rebuild();
         }
+        let before = self.instance_states();
         let mut writes = self.run_effects(&changed);
         let (instance_writes, own) = self.run_instance_effects(Wake::Signals(&changed));
         writes.extend(instance_writes);
@@ -5964,7 +6067,9 @@ impl Document {
         // screen. Its computeds may derive from what it just wrote, too.
         if instance_state_moved {
             self.refresh_instance_computeds(None);
-            self.rebuild();
+            if !self.patch_instances(&before) {
+                self.rebuild();
+            }
         }
         if !writes.is_empty() {
             if depth + 1 >= MAX_EFFECT_ROUNDS {
@@ -10789,6 +10894,36 @@ fn flip() { rts_flag.on = true; }</script>",
         assert_eq!(text_of(&doc.root).join(""), "[...]");
         settle_one(&mut doc);
         assert_eq!(text_of(&doc.root).join(""), "[note 1]");
+    }
+
+    /// Started by a tap, as Tracer's probe 3 sends: what the task writes after
+    /// its `await` is on screen when the answer is settled (Tracer's AW-017).
+    #[test]
+    fn a_tapped_async_fn_shows_what_it_wrote_after_its_await() {
+        native_later("rt2b_send", 10, |_| Ok(rux_native::Any::Str("200".into())));
+        let mut doc = with_component(
+            "<template><view><view @tap=\"send()\"><text>{{ if busy { \"Sending\" } else { \"Send\" } }}</text></view>\
+             <text>[{{ res }}]</text></view></template>\n\
+             <script>\nuse native::rt2b_send;\nlet busy = signal(false);\nlet res = signal(\"\");\n\
+             async fn send() { if busy { return; } busy = true; try { res = await rt2b_send.call(1); } catch e { res = \"failed\"; } busy = false; }\n</script>",
+            "<template><screen><router><route path=\"/\" view=\"card\" /></router></screen></template>\n\
+             <script>\nuse components::card;\n</script>",
+        );
+        fn tappable(n: &LayoutNode) -> Option<&LayoutNode> {
+            if n.on_tap.is_some() {
+                return Some(n);
+            }
+            n.children.iter().find_map(tappable)
+        }
+        let button = tappable(&doc.root).expect("the button").clone();
+        assert!(doc.apply_handler_in(&button.on_tap.clone().unwrap(), button.instance.as_deref()));
+        assert_eq!(text_of(&doc.root).join("|"), "Sending|[]");
+        // The frames drawn while it waits read what Rust set, as the shell's do.
+        rux_native::notify();
+        let _ = doc.refresh_native_signals();
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        assert!(doc.settle_tasks());
+        assert_eq!(text_of(&doc.root).join("|"), "Send|[200]");
     }
 
     /// An instance that goes takes its waiting tasks with it: the answer
