@@ -817,7 +817,8 @@ fn on_step(frame: Frame) {
   the document reads what is there when it next settles: a simulation setting
   a frame five hundred times between two paints is drawn once, with the
   newest. A status works the same way, and an `effect` reading it runs when it
-  changes.
+  changes. For values that must each arrive, use a
+  [channel](#channels-from-rust).
 - **A handler reads what the Rust it called just set.** After every call into
   Rust, and when an `await` on one comes back, the signals are read again if
   anything set one. So `studio.newProject(); if mava.view.dirty { … }` tests
@@ -826,6 +827,43 @@ fn on_step(frame: Frame) {
   read at the next call, or when the document next settles.
 - `get`, `clear` and `update` are there too. A check does not run the app's
   Rust, so a signal read while a document is checked holds `none`.
+
+### Channels from Rust
+
+**A `#[rux::export] pub static` of type `rux::Channel<T>` delivers every
+value Rust pushes, in order**: a socket's messages, a log, a benchmark's
+samples, where a signal would keep only the newest.
+
+```rust
+// native/src/feed.rs
+#[rux::export]
+pub static EVENTS: rux::Channel<Event> = rux::Channel::new();
+
+fn on_message(event: Event) {
+    EVENTS.push(event);   // any thread; `extend` pushes several
+}
+```
+
+```rux
+<script>
+  use native::feed;
+  let log: Event[] = signal([]);
+
+  effect {
+    for e in feed.events { log.push(e); }
+  }
+</script>
+```
+
+- **Script reads it as a list, `T[]`, of what was pushed since the document
+  last looked**, which is once a frame. An `effect` that reads it runs once for
+  each list with anything in it, so every value reaches it exactly once, and a
+  burst of a thousand is one update rather than a thousand.
+- **Read it in an `effect`** to keep what arrives. Between arrivals it still
+  holds the last list, so a binding shows the latest batch; the batch before it
+  is gone.
+- A check does not run the app's Rust, so a channel read while a document is
+  checked is the empty list.
 
 `host::name()`, which reached a function a Rust program registered by hand, is
 retired and is an error that points here. A program that runs the shell itself
@@ -1070,6 +1108,18 @@ to read one. `isNaN(x)` asks of a `float`. `String(x)` goes the other way. A
 route parameter is always text, so this is how `/task/:id` meets a list whose
 ids are numbers: `tasks.find(t => t.id == parseInt(params.id))`.
 
+**`now()` is a clock**: milliseconds, as a `float`, on a clock that only goes
+forward. Only the difference between two reads means anything, so it times
+things rather than telling the time:
+
+```rux
+fn send() {
+  let started = now();
+  // …
+  took = now() - started;
+}
+```
+
 **`.length` is a property, not `len()`.** Arrays and strings only: JavaScript has
 no `length` on a plain object, and inventing one for maps would be making up a
 rule rather than matching a known one. Use `keys(m)` and `values(m)` for maps.
@@ -1091,7 +1141,7 @@ records are equal when their fields are, whatever order they were written in.
 
 | Call | Does |
 |---|---|
-| `print(x)`, `debug(x)` | Printf-debugging. Reaches the **dev overlay**, not just stderr, because nobody running a GUI is watching stderr |
+| `print(x)`, `debug(x)` | Printf-debugging. Reaches the **dev overlay**, not just stderr, because nobody running a GUI is watching stderr: a badge in the bottom right corner with the last line, which a tap opens into the full list. A print never brings back a panel dismissed for warnings |
 | `module.name(…)` | A native function, from `use native::module;`. See [Native code](#native-code) |
 | `emit("name")`, `emit("name", payload)` | A component telling its caller something happened |
 | `navigate(path)`, `replace(path)` | Router. `replace` is the only way to redirect: `navigate` leaves the redirecting page in the history, so Back returns to it and redirects again |
