@@ -124,6 +124,53 @@ impl<T> Default for Signal<T> {
     }
 }
 
+/// Values Rust sends and Rux receives every one of, in order: a stream of
+/// events, a socket's messages, a benchmark's samples (Tracer's AW-011). A
+/// [`Signal`] keeps only the newest, which is right for a status and wrong
+/// for these.
+///
+/// Rux reads it as a list, `T[]`, of what was pushed since the document last
+/// looked, which is once a frame: an `effect` that reads it runs once for
+/// each list that has anything in it, so every value reaches it, and a burst
+/// of a thousand costs one update.
+pub struct Channel<T> {
+    queue: Mutex<Vec<T>>,
+}
+
+impl<T> Channel<T> {
+    /// An empty channel, for a `static`.
+    pub const fn new() -> Self {
+        Channel { queue: Mutex::new(Vec::new()) }
+    }
+
+    /// Send `value`, from any thread, and wake the window.
+    pub fn push(&self, value: T) {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).push(value);
+        moved();
+    }
+
+    /// Send every value of `values`, in order, with one wake.
+    pub fn extend(&self, values: impl IntoIterator<Item = T>) {
+        self.queue.lock().unwrap_or_else(|e| e.into_inner()).extend(values);
+        moved();
+    }
+}
+
+impl<T: IntoRux> Channel<T> {
+    /// What was pushed since the last take, taken, as Rux reads it.
+    #[doc(hidden)]
+    pub fn __take(&self) -> Result<Any, Error> {
+        let taken = std::mem::take(&mut *self.queue.lock().unwrap_or_else(|e| e.into_inner()));
+        Ok(Any::Array(taken.into_iter().map(IntoRux::into_rux).collect::<Result<_, _>>()?))
+    }
+}
+
+impl<T> Default for Channel<T> {
+    fn default() -> Self {
+        Channel::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

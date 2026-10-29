@@ -148,14 +148,20 @@ fn export_static(mut s: syn::ItemStatic) -> syn::Result<Tokens> {
     let vis = &s.vis;
     // At the static's type, so a value that cannot be a signal's is reported
     // there, in `SignalValue`'s words.
-    let read = quote_spanned! {s.ty.span()=> ::rux::__private::read_exported(&#ident) };
+    let channel = matches!(&*s.ty, syn::Type::Path(p) if p.path.segments.last().is_some_and(|seg| seg.ident == "Channel"));
+    let export = if channel {
+        quote! { ::rux::Export::channel(#name, #ty, || #ident.__take()) }
+    } else {
+        let read = quote_spanned! {s.ty.span()=> ::rux::__private::read_exported(&#ident) };
+        quote! { ::rux::Export::signal(#name, #ty, || #read) }
+    };
     Ok(quote! {
         #s
 
         #[doc(hidden)]
         #[allow(non_snake_case)]
         #vis fn #descriptor() -> ::std::vec::Vec<::rux::Export> {
-            ::std::vec![::rux::Export::signal(#name, #ty, || #read)]
+            ::std::vec![#export]
         }
     })
 }

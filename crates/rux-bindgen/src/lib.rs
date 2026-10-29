@@ -346,12 +346,14 @@ fn option_inner(ty: &Type) -> Option<&Type> {
 /// What an exported `static NAME: rux::Signal<T>` is in Rux: its name
 /// (`FRAME` as `frame`, `SAVE_STATE` as `saveState`, or `#[rux(name)]`) and
 /// its type, `T`'s made optional, since a signal holds `none` until Rust
-/// first sets it.
+/// first sets it. A `rux::Channel<T>` is read as `T[]`, what was pushed since
+/// the last look, and is never `none`.
 pub fn signal_info(item: &syn::ItemStatic) -> syn::Result<(String, String)> {
-    let wrong = || syn::Error::new_spanned(&item.ty, "an exported `static` is a `rux::Signal<T>`");
+    let wrong = || syn::Error::new_spanned(&item.ty, "an exported `static` is a `rux::Signal<T>` or a `rux::Channel<T>`");
     let Type::Path(p) = &*item.ty else { return Err(wrong()) };
     let seg = p.path.segments.last().ok_or_else(wrong)?;
-    if seg.ident != "Signal" {
+    let channel = seg.ident == "Channel";
+    if seg.ident != "Signal" && !channel {
         return Err(wrong());
     }
     let inner = type_args(&seg.arguments).first().copied().ok_or_else(wrong)?;
@@ -359,7 +361,13 @@ pub fn signal_info(item: &syn::ItemStatic) -> syn::Result<(String, String)> {
         return Err(syn::Error::new_spanned(&item.ident, "an exported signal is a plain `static`, not `static mut`: `set` takes `&self`"));
     }
     let ty = rux_type(inner).map_err(|e| syn::Error::new_spanned(inner, e))?;
-    let ty = if ty.ends_with('?') { ty } else { format!("{ty}?") };
+    let ty = if channel {
+        if ty.ends_with('?') { format!("({ty})[]") } else { format!("{ty}[]") }
+    } else if ty.ends_with('?') {
+        ty
+    } else {
+        format!("{ty}?")
+    };
     let name = match rux_attr(&item.attrs)?.name {
         Some(n) => n,
         None => camel(&item.ident.to_string().to_lowercase()),

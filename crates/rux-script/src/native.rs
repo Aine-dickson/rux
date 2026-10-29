@@ -563,6 +563,11 @@ pub fn call_of(key: &str) -> Result<rux_native::Call, String> {
 
 /// What native signal `key` holds now, as the interpreter's own value; `none`
 /// if it cannot be read.
+/// Whether the native signal `key` is a channel: see [`rux_native::Channel`].
+pub fn is_channel(key: &str) -> bool {
+    call_of(key).is_ok_and(|c| rux_native::is_channel(&c))
+}
+
 pub fn read_signal(key: &str) -> V {
     let read = match call_of(key) {
         Ok(rux_native::Call::Sync(read)) => read(Vec::new()).ok(),

@@ -207,6 +207,17 @@ impl Export {
         }
     }
 
+    /// A [`crate::Channel`], from Rust written by hand: `ty` is the list it
+    /// reads as (`Event[]`), and `take` takes what was pushed. To a checker
+    /// it is a signal of that list; [`is_channel`] tells them apart.
+    pub fn channel(name: &str, ty: &str, take: impl Fn() -> Result<Any, Error> + Send + Sync + 'static) -> Export {
+        let call = Call::sync(move |_| take());
+        if let Call::Sync(f) = &call {
+            CHANNELS.lock().unwrap_or_else(|e| e.into_inner()).push(Arc::as_ptr(f) as *const () as usize);
+        }
+        Export { item: Item { name: name.to_string(), kind: ItemKind::Signal(ty.to_string()) }, call: Some(call) }
+    }
+
     /// A record type, from Rust written by hand. A field whose type ends in
     /// `?` may be left out.
     pub fn record(name: &str, fields: &[(&str, &str)]) -> Export {
@@ -276,6 +287,22 @@ struct Entry {
 }
 
 static MODULES: Mutex<BTreeMap<String, Entry>> = Mutex::new(BTreeMap::new());
+
+/// The reads [`Export::channel`] made, by address.
+static CHANNELS: Mutex<Vec<usize>> = Mutex::new(Vec::new());
+
+/// Whether `call` is a channel's take rather than a signal's read: each read
+/// of it takes what it holds, and a list with anything in it is news even when
+/// it equals the last.
+pub fn is_channel(call: &Call) -> bool {
+    match call {
+        Call::Sync(f) => {
+            let at = Arc::as_ptr(f) as *const () as usize;
+            CHANNELS.lock().unwrap_or_else(|e| e.into_inner()).contains(&at)
+        }
+        Call::Async(_) => false,
+    }
+}
 
 /// Counted up whenever a module is installed, declared or forgotten, so what
 /// was worked out from the modules can tell when to work it out again.
@@ -358,8 +385,11 @@ pub fn declare(i: Interface) -> Result<(), String> {
     let mut calls = HashMap::new();
     for item in &i.items {
         // A signal read from source holds nothing: no Rust runs to set it.
-        if let ItemKind::Signal(_) = &item.kind {
-            calls.insert(item.key(), Call::sync(|_| Ok(Any::None)));
+        // A channel (a signal whose type is a list, never `none`) has had
+        // nothing pushed.
+        if let ItemKind::Signal(ty) = &item.kind {
+            let channel = !ty.ends_with('?');
+            calls.insert(item.key(), Call::sync(move |_| Ok(if channel { Any::Array(Vec::new()) } else { Any::None })));
             continue;
         }
         if let ItemKind::Property { ty, .. } = &item.kind {

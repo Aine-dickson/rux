@@ -405,6 +405,11 @@ impl Interp {
         }
         let names = Rc::clone(&self.native_signals);
         for name in names.iter() {
+            // A channel is taken once a frame, by the document: what is taken
+            // here would be gone before an effect ran for it.
+            if crate::native::is_channel(name) {
+                continue;
+            }
             let v = crate::native::read_signal(name);
             match self.by_name.get(name).copied() {
                 Some(g) if self.set[g.0 as usize] => {

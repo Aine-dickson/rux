@@ -183,3 +183,20 @@ fn a_module_installs_and_is_found_by_its_rux_name() {
     assert!(i.render().contains("export fn total(items: Product[], label: string): string;"), "{}", i.render());
     assert!(rux::registry::call("native/shop_t", "Counter.bump").is_some());
 }
+
+#[rux::export]
+pub static SAMPLES: rux::Channel<f64> = rux::Channel::new();
+
+/// `#[rux::export]` on a `Channel` exports a list Rux reads, taken each read.
+#[test]
+fn an_exported_channel_is_taken_on_each_read() {
+    let exports = __rux_export_SAMPLES();
+    let e = &exports[0];
+    assert!(matches!(&e.item.kind, rux::ItemKind::Signal(t) if t == "float[]"), "{:?}", e.item.kind);
+    let call = e.call.clone().unwrap();
+    assert!(rux::is_channel(&call));
+    SAMPLES.extend([1.0, 2.0]);
+    let rux::Call::Sync(take) = &call else { panic!() };
+    assert!(matches!(take(Vec::new()), Ok(rux::Any::Array(a)) if a.len() == 2));
+    assert!(matches!(take(Vec::new()), Ok(rux::Any::Array(a)) if a.is_empty()));
+}

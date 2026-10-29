@@ -2206,6 +2206,17 @@ impl Engine {
         }
         for name in &names {
             let v = native::read_signal(name);
+            // A channel's list is what arrived since the last look: news when
+            // it holds anything, however like the last it is, and nothing to
+            // say when it is empty, so the last stays readable.
+            if native::is_channel(name) {
+                let arrived = matches!(&v, interp::V::Array(a) if !a.is_empty());
+                if arrived || !self.ir.has_global(name) {
+                    moved.insert(name.clone());
+                    self.ir.set_global(name, v);
+                }
+                continue;
+            }
             if self.signal_value(name).as_ref() != Some(&v.to_value()) || !self.ir.has_global(name) {
                 moved.insert(name.clone());
             }
