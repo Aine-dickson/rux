@@ -328,6 +328,25 @@ is deliberate: a two-finger gesture arrives later without changing what any
 handler already written reads. A finger outside the element has negative
 coordinates rather than being left out.
 
+**A function that takes the event annotates it by name**, and every script
+can name these without a `use`:
+
+| Type | Handed over by | Adds to `x`, `y`, `pageX`, `pageY`, `width`, `height`, `touches` |
+|---|---|---|
+| `TapEvent` | `@tap`, `@press`, `@release`, `@longpress` | nothing |
+| `DragEvent` | `@drag` | `totalX`, `totalY`, `moveX`, `moveY`, `phase` |
+| `SwipeEvent` | `@swipe` | `totalX`, `totalY`, `moveX`, `moveY`, `direction` |
+| `KeyEvent` | `@key` | none of those, only `key`, `ctrl`, `shift`, `alt`, `meta`, `primary`, `repeat` |
+
+```rux
+<view @key="onKey(event)">
+<script>
+  fn onKey(e: KeyEvent) { if e.primary && e.key == "Enter" { send(); } }
+</script>
+```
+
+`rux check` names the one to write when a parameter is left without a type.
+
 ## Intervals
 
 `setInterval(ms) { … }` runs a block on a period and hands back a handle.
@@ -759,6 +778,12 @@ updates when Rust sets it, from any thread. Nothing else wakes the window:
 ```rust
 // native/src/sim.rs
 #[rux::export]
+#[derive(Clone)]
+pub struct Frame {
+    pub tick: u32,
+}
+
+#[rux::export]
 pub static FRAME: rux::Signal<Frame> = rux::Signal::new();
 
 fn on_step(frame: Frame) {
@@ -776,6 +801,9 @@ fn on_step(frame: Frame) {
 - **Its name follows the `static`'s**, lowercased and camelCased (`FRAME` is
   `frame`, `SAVE_STATE` is `saveState`), or `#[rux(name = "…")]`. Its type is
   `T?`: it holds `none` until Rust first sets it.
+- **What it holds is `Clone`.** Every read copies the value out to Rux, so
+  `T` needs `#[derive(Clone)]`, and the compiler's error says so at the
+  `static`.
 - **Only Rust writes it.** Assigning to `sim.frame` in script is an error
   that says so; to change it from script, export a function that sets it.
 - **The latest value wins.** `set` stores the value and wakes the window, and
@@ -1169,6 +1197,36 @@ and a reserved word all say what they mean in this language's vocabulary.
 `print` output is kept apart from warnings. A leftover `print` is not something
 wrong with the document and must not fail a build.
 
+## Reserved words
+
+These cannot name a variable, a function or a parameter. A map key that is
+one is written as a string, `{ "for": 1 }`.
+
+```text
+as async await break catch const continue do else export false fn for if
+import in let loop none private return switch throw true try until while _
+```
+
+These are not keywords, and are still not names. `use` and `is` are a
+statement and an operator that already work; `match` and `yield` are held for
+the language. `this` is the value a method-style function is called on.
+`null` still reads as `none`, which `rux fmt` writes; `nil`, `var` and `new`
+are other languages' spellings, and their error says what Rux writes instead.
+`void` is a type. `print`, `debug`, `type_of`, `eval`, `call`, `curry`,
+`is_def_var` and `Fn` are built-in functions: they can be called, not declared.
+
+```text
+use is match yield null nil this var new void
+print debug type_of eval call curry is_def_var Fn
+```
+
+`signal`, `computed`, `effect`, `mounted`, `unmounted` and `prop` mean
+something only at the start of a top-level statement, so `let effect = 1;`
+inside a function is an ordinary name.
+
+Everything else is a name, including words other languages reserve:
+`default`, `case`, `static`, `spawn`, `module` and `with` are all free.
+
 ## Deliberately absent
 
 - **Tree mutation.** No setting a property, no adding or removing children. A
@@ -1177,11 +1235,11 @@ wrong with the document and must not fail a build.
   moment decided by an unrelated handler. The tree is a function of state, and
   state is how it changes.
 - **`setTimeout`.** Animation absorbs the cases behind it.
-- **`setInterval`.** Deferred rather than declined, and it will not be spelled
-  this way: a free-floating repeating timer is a one-line declaration that the
-  app never idles again, which nobody notices on a desktop and which is the whole
-  battery story on a phone. What fits is a repeating timer the runtime owns and
-  ties to a component instance, cancelled when that instance goes away.
+- **A free-floating repeating timer.** A callback on a period that nothing
+  owns never lets the app idle again, which nobody notices on a desktop and
+  which is the whole battery story on a phone. What Rux has instead is
+  [`setInterval(ms) { … }`](#intervals): a block, owned by the component
+  instance that started it and stopped when that instance goes.
 - **Bare `{ }` object literals.** See above.
 
 ## If you know rhai
