@@ -74,9 +74,9 @@ fn several_files_are_counted() {
     let mut d = doc(r#"<input type="file" r-model="docs" multiple />"#, "let docs: File[] = signal([]);", "");
     assert!(!problems(&d).contains("level: Error"), "{}", problems(&d));
     assert_eq!(shown(&d, "docs"), ("Choose files".to_string(), "No file chosen".to_string()));
-    d.apply_value_in("docs", None, None, &Value::List(vec![a_file("a.png")]));
+    d.apply_value_in("docs", None, None, &Value::list(vec![a_file("a.png")]));
     assert_eq!(shown(&d, "docs").1, "a.png");
-    d.apply_value_in("docs", None, None, &Value::List(vec![a_file("a.png"), a_file("b.png"), a_file("c.png")]));
+    d.apply_value_in("docs", None, None, &Value::list(vec![a_file("a.png"), a_file("b.png"), a_file("c.png")]));
     assert_eq!(shown(&d, "docs").1, "3 files");
 }
 
@@ -132,7 +132,7 @@ fn a_required_file_needs_a_file() {
     );
     assert!(red(&d, "one") && red(&d, "many"));
     d.apply_value_in("one", None, None, &a_file("a.png"));
-    d.apply_value_in("many", None, None, &Value::List(vec![a_file("a.png")]));
+    d.apply_value_in("many", None, None, &Value::list(vec![a_file("a.png")]));
     assert!(!red(&d, "one") && !red(&d, "many"));
 }
 

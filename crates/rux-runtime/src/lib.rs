@@ -4853,10 +4853,12 @@ impl Document {
             // A name used twice (a field in every row of a list) sends every
             // value under it, in order, rather than keeping only the last.
             match values.iter_mut().find(|(k, _)| *k == name) {
-                Some((_, rux_reactive::Value::List(items))) => items.push(value),
+                Some((_, rux_reactive::Value::List(items))) => {
+                    *items = items.iter().cloned().chain([value]).collect();
+                }
                 Some((_, existing)) => {
                     let first = std::mem::replace(existing, rux_reactive::Value::Bool(false));
-                    *existing = rux_reactive::Value::List(vec![first, value]);
+                    *existing = rux_reactive::Value::list(vec![first, value]);
                 }
                 None => values.push((name, value)),
             }
@@ -11017,7 +11019,7 @@ async fn go() {
             ("y".to_string(), Value::Number(4.0)),
             (
                 "touches".to_string(),
-                Value::List(vec![
+                Value::list(vec![
                     Value::Map(vec![
                         ("id".to_string(), Value::Number(0.0)),
                         ("x".to_string(), Value::Number(12.0)),
@@ -11051,7 +11053,7 @@ async fn go() {
             ("y".to_string(), Value::Number(0.0)),
             (
                 "touches".to_string(),
-                Value::List(vec![Value::Map(vec![
+                Value::list(vec![Value::Map(vec![
                     ("id".to_string(), Value::Number(7.0)),
                     ("x".to_string(), Value::Number(1.0)),
                     ("y".to_string(), Value::Number(2.0)),

@@ -4646,7 +4646,7 @@ impl App {
             ("pageY".to_string(), Value::Number(fy as f64)),
             ("width".to_string(), Value::Number(size.0 as f64)),
             ("height".to_string(), Value::Number(size.1 as f64)),
-            ("touches".to_string(), Value::List(touches)),
+            ("touches".to_string(), Value::list(touches)),
         ])
     }
 
@@ -5870,7 +5870,7 @@ impl App {
             self.queue_field_event_in(input.on_cancel.as_deref(), input.instance, rux_reactive::Value::Null);
         } else {
             let value = if input.multiple {
-                rux_reactive::Value::List(chosen)
+                rux_reactive::Value::list(chosen)
             } else {
                 chosen.into_iter().next().unwrap_or(rux_reactive::Value::Null)
             };

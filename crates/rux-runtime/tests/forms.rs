@@ -166,7 +166,7 @@ fn a_name_in_every_row_sends_every_row() {
     let report = d.check_form(&form).expect("a form");
     assert_eq!(
         get(&report.values, "names"),
-        Some(&Value::List(vec![Value::Text("a".into()), Value::Text("".into())]))
+        Some(&Value::list(vec![Value::Text("a".into()), Value::Text("".into())]))
     );
     assert_eq!(report.failures.len(), 1, "only the empty row fails");
     assert_eq!(report.failures[0].focus.as_ref().and_then(|f| f.1.clone()), Some("2".into()));

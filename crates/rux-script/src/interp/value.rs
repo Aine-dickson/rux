@@ -193,7 +193,7 @@ impl V {
             V::Int(i) => Value::Number(*i as f64),
             V::Float(f) => Value::Number(*f),
             V::Str(s) => Value::Text(s.to_string()),
-            V::Array(items) => Value::List(items.iter().map(V::to_value).collect()),
+            V::Array(items) => converted::out(items),
             V::Map(m) => Value::Map(m.iter().map(|(k, v)| (k.clone(), v.to_value())).collect()),
             V::Rec(r) => Value::Map(r.entries().map(|(k, v)| (k.to_string(), v.to_value())).collect()),
             V::Range(a, b) => Value::List((*a..*b).map(|i| Value::Number(i as f64)).collect()),
@@ -216,7 +216,7 @@ impl V {
             Value::Bool(b) => V::Bool(*b),
             Value::Number(n) => V::Float(*n),
             Value::Text(s) => V::str(s.as_str()),
-            Value::List(items) => V::array(items.iter().map(V::from_value).collect()),
+            Value::List(items) => converted::into(items),
             Value::Map(entries) => {
                 let shape = Shape::open(entries.iter().map(|(k, _)| k.as_str()));
                 // A name twice: a map, the later entry replacing the earlier.
@@ -320,5 +320,110 @@ impl Checkable for V {
             V::Rec(r) => Some(f(r.shape.slot(name).filter(|i| r.shows(*i)).map(|i| &r.vals[i]))),
             _ => None,
         }
+    }
+}
+
+/// Long lists converted between [`Value`] and [`V`], remembered by the list
+/// they came from, so the same list handed in again is the same `V`.
+///
+/// A component's state goes to every binding of every row of its `r-for`, and
+/// converting its list each time made a list of N rows cost N squared
+/// (Tracer's AW-012). Neither side is changed where it is shared: a `Value`'s
+/// list never is, and a `V`'s is copied on write, which `Rc::make_mut` does
+/// whenever a `Weak` is held. So a pointer that still upgrades still holds
+/// what was converted.
+mod converted {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::{Rc, Weak};
+
+    use rux_reactive::Value;
+
+    use super::V;
+
+    /// Shorter lists convert faster than they are looked up.
+    const LONG: usize = 16;
+    /// Past this many, the remembered lists are forgotten and begun again.
+    const CAP: usize = 4096;
+
+    thread_local! {
+        static INTO: RefCell<HashMap<usize, (Weak<[Value]>, V)>> = RefCell::new(HashMap::new());
+        static OUT: RefCell<HashMap<usize, (Weak<Vec<V>>, Value)>> = RefCell::new(HashMap::new());
+    }
+
+    pub(super) fn into(items: &Rc<[Value]>) -> V {
+        if items.len() < LONG {
+            return V::array(items.iter().map(V::from_value).collect());
+        }
+        let key = Rc::as_ptr(items) as *const Value as usize;
+        let hit = INTO.with(|m| {
+            m.borrow().get(&key).filter(|(w, _)| w.upgrade().is_some_and(|r| Rc::ptr_eq(&r, items))).map(|(_, v)| v.clone())
+        });
+        if let Some(v) = hit {
+            return v;
+        }
+        let v = V::array(items.iter().map(V::from_value).collect());
+        INTO.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.len() >= CAP {
+                m.retain(|_, (w, _)| w.strong_count() > 0);
+                if m.len() >= CAP {
+                    m.clear();
+                }
+            }
+            m.insert(key, (Rc::downgrade(items), v.clone()));
+        });
+        v
+    }
+
+    pub(super) fn out(items: &Rc<Vec<V>>) -> Value {
+        if items.len() < LONG {
+            return Value::List(items.iter().map(V::to_value).collect());
+        }
+        let key = Rc::as_ptr(items) as usize;
+        let hit = OUT.with(|m| {
+            m.borrow().get(&key).filter(|(w, _)| w.upgrade().is_some_and(|r| Rc::ptr_eq(&r, items))).map(|(_, v)| v.clone())
+        });
+        if let Some(v) = hit {
+            return v;
+        }
+        let v = Value::List(items.iter().map(V::to_value).collect());
+        OUT.with(|m| {
+            let mut m = m.borrow_mut();
+            if m.len() >= CAP {
+                m.retain(|_, (w, _)| w.strong_count() > 0);
+                if m.len() >= CAP {
+                    m.clear();
+                }
+            }
+            m.insert(key, (Rc::downgrade(items), v.clone()));
+        });
+        v
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A long list handed in twice is converted once, both ways, and a copy
+    /// of a `Value` holding it copies no rows (Tracer's AW-012).
+    #[test]
+    fn a_long_list_is_converted_once() {
+        let list = Value::list((0..100).map(|i| Value::Number(i as f64)).collect());
+        let copy = list.clone();
+        let (Value::List(a), Value::List(b)) = (&list, &copy) else { unreachable!() };
+        assert!(Rc::ptr_eq(a, b), "a copy shares its rows");
+        let (V::Array(x), V::Array(y)) = (V::from_value(&list), V::from_value(&copy)) else { panic!() };
+        assert!(Rc::ptr_eq(&x, &y), "converted once");
+        let v = V::Array(x);
+        let (Value::List(p), Value::List(q)) = (v.to_value(), v.to_value()) else { panic!() };
+        assert!(Rc::ptr_eq(&p, &q), "and back once");
+        // Changed, it is a new list, converted again.
+        let mut changed = v.clone();
+        if let V::Array(items) = &mut changed {
+            Rc::make_mut(items).push(V::Int(1));
+        }
+        assert_eq!(changed.to_value().as_list().map(<[Value]>::len), Some(101));
     }
 }

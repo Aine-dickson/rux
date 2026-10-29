@@ -1758,7 +1758,13 @@ impl Engine {
                 (None, locals.iter().map(|(_, v)| v.clone()).collect())
             }
             Ok((result, after, _)) => {
-                let after: Vec<Value> = after.iter().map(interp::V::to_value).collect();
+                // Only a handler writes what it was handed; an expression's
+                // locals are not read back, and converting a component's whole
+                // state for every binding was half of Tracer's AW-012.
+                let after: Vec<Value> = match said {
+                    Said::Handler => after.iter().map(interp::V::to_value).collect(),
+                    Said::Expression => Vec::new(),
+                };
                 match result {
                     Ok(v) => (Some(v), after),
                     Err(f) => {
@@ -2686,7 +2692,7 @@ mod tests {
     fn arrow_functions() {
         let mut e = engine();
         let _ = take_warnings();
-        let nums = Value::List(vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)]);
+        let nums = Value::list(vec![Value::Number(1.0), Value::Number(2.0), Value::Number(3.0)]);
         let locals = [("nums".to_string(), nums)];
 
         // `x => …`, the form nearly every callback is written in.
@@ -2729,7 +2735,7 @@ mod tests {
     fn bare_brace_maps() {
         let mut e = engine();
         let _ = take_warnings();
-        let nums = Value::List(vec![Value::Number(1.0), Value::Number(2.0)]);
+        let nums = Value::list(vec![Value::Number(1.0), Value::Number(2.0)]);
         let locals = [("nums".to_string(), nums)];
 
         assert_eq!(e.eval_display("let m = { a: 1, b: \"two\" }; m.b", &[]), "two");
@@ -2770,7 +2776,7 @@ mod tests {
     fn annotations_are_erased() {
         let mut e = engine();
         let _ = take_warnings();
-        let nums = Value::List(vec![Value::Number(1.0), Value::Number(2.0)]);
+        let nums = Value::list(vec![Value::Number(1.0), Value::Number(2.0)]);
         let locals = [("nums".to_string(), nums)];
 
         assert_eq!(e.eval_display("let n: int = 2; n + 1", &[]), "3");
@@ -2850,7 +2856,7 @@ mod tests {
     #[test]
     fn for_each_with_an_arrow() {
         let mut e = engine();
-        let items = Value::List(vec![Value::Text("a".into()), Value::Text("b".into())]);
+        let items = Value::list(vec![Value::Text("a".into()), Value::Text("b".into())]);
         let locals = [("items".to_string(), items)];
         let _ = take_logs();
 
@@ -2963,11 +2969,11 @@ mod tests {
     #[test]
     fn an_empty_collection_is_truthy() {
         let mut e = engine();
-        let empty = [("rows".to_string(), Value::List(Vec::new()))];
+        let empty = [("rows".to_string(), Value::list(Vec::new()))];
         assert!(e.eval_bool("rows", &empty), "JS: every object is truthy");
         assert!(!e.eval_bool("rows.length", &empty), "and this is how to ask");
 
-        let full = [("rows".to_string(), Value::List(vec![Value::Number(1.0)]))];
+        let full = [("rows".to_string(), Value::list(vec![Value::Number(1.0)]))];
         assert!(e.eval_bool("rows", &full));
         assert!(e.eval_bool("rows.length", &full));
     }
@@ -3000,7 +3006,7 @@ mod tests {
         let mut e = engine();
         let _ = take_warnings();
         let locals = [
-            ("rows".to_string(), Value::List(vec![
+            ("rows".to_string(), Value::list(vec![
                 Value::Text("a".into()),
                 Value::Text("b".into()),
                 Value::Text("c".into()),
@@ -3055,7 +3061,7 @@ mod tests {
     #[test]
     fn js_collection_and_string_names_work() {
         let mut e = engine();
-        let items = Value::List(vec![
+        let items = Value::list(vec![
             Value::Text("a".into()),
             Value::Text("b".into()),
             Value::Text("c".into()),
@@ -3102,7 +3108,7 @@ mod tests {
     #[test]
     fn for_each_runs_a_callback_per_item() {
         let mut e = engine();
-        let items = Value::List(vec![Value::Number(1.0), Value::Number(2.0)]);
+        let items = Value::list(vec![Value::Number(1.0), Value::Number(2.0)]);
         let locals = [("items".to_string(), items)];
         let _ = take_logs();
 

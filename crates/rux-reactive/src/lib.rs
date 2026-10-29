@@ -152,7 +152,10 @@ pub enum Value {
     Number(f64),
     Text(String),
     Bool(bool),
-    List(Vec<Value>),
+    /// Shared, so copying a value that holds a long list (a component's state,
+    /// handed to every row of its `r-for`) copies a pointer, not the list:
+    /// Tracer's AW-012. Changing one makes a new list.
+    List(std::rc::Rc<[Value]>),
     /// A rhai object map (`#{ key: value }`), key order as rhai yields it. Backs the
     /// object forms of `:class` (`#{ active: cond }`) and `:style` (`#{ bg: c }`).
     Map(Vec<(String, Value)>),
@@ -166,6 +169,11 @@ pub enum Value {
 }
 
 impl Value {
+    /// A list of `items`.
+    pub fn list(items: Vec<Value>) -> Value {
+        Value::List(items.into())
+    }
+
     /// How the value appears when interpolated into text.
     pub fn to_display(&self) -> String {
         match self {
@@ -303,7 +311,7 @@ mod tests {
         assert_eq!(Value::Number(82.0).to_display(), "82"); // whole floats lose the .0
         assert_eq!(Value::Number(8.2).to_display(), "8.2");
         assert_eq!(
-            Value::List(vec![Value::Text("a".into()), Value::Number(2.0)]).to_display(),
+            Value::list(vec![Value::Text("a".into()), Value::Number(2.0)]).to_display(),
             "a, 2"
         );
 
@@ -319,7 +327,7 @@ mod tests {
         // to be falsy. JS says every object is truthy, and a rule that is almost
         // JavaScript is worse than one that is or is not. `items.length` is how
         // you ask whether there are any.
-        assert!(Value::List(Vec::new()).is_truthy());
+        assert!(Value::list(Vec::new()).is_truthy());
         assert!(Value::Map(Vec::new()).is_truthy());
         assert!(!Value::Null.is_truthy());
         assert_eq!(Value::Null.to_display(), "", "null shows as nothing");
@@ -337,7 +345,7 @@ mod tests {
             "\"say \\\"hi\\\"\\\\n\""
         );
         assert_eq!(
-            Value::List(vec![Value::Number(1.0), Value::Text("a".into())]).to_rhai_literal(),
+            Value::list(vec![Value::Number(1.0), Value::Text("a".into())]).to_rhai_literal(),
             "[1, \"a\"]"
         );
     }

@@ -10617,7 +10617,7 @@ fn build_children(
                     let place = row_place(coll, locals);
                     for (index, item) in items.into_iter().enumerate() {
                         let mut child_locals = locals.clone();
-                        child_locals.push((var.to_string(), item));
+                        child_locals.push((var.to_string(), item.clone()));
                         // Before the row's place, which `build_row` expects
                         // last; the index is compared by value like the item,
                         // so a kept row that moved is built again.
@@ -10863,7 +10863,7 @@ fn count_rendered(
                         Some(cond) => {
                             for (index, item) in items.into_iter().enumerate() {
                                 let mut row = locals.clone();
-                                row.push((var.to_string(), item));
+                                row.push((var.to_string(), item.clone()));
                                 if let Some(name) = index_name {
                                     row.push((name.to_string(), Value::Number(index as f64)));
                                 }
