@@ -205,7 +205,7 @@ pub fn default_rux_source() -> Option<PathBuf> {
 /// `rux run` for an app with a `native/` crate: build it as a dev build (its
 /// documents are read from disk and hot reload as ever), run it, and build and
 /// run it again whenever its Rust changes.
-pub fn run(entry: &Path, c: &NativeCrate) -> std::process::ExitCode {
+pub fn run(entry: &Path, c: &NativeCrate, route: Option<&str>, preview: Option<&str>) -> std::process::ExitCode {
     use notify::Watcher;
     use std::process::ExitCode;
     use std::sync::mpsc;
@@ -261,7 +261,18 @@ pub fn run(entry: &Path, c: &NativeCrate) -> std::process::ExitCode {
                 continue;
             }
         };
-        let mut child = match std::process::Command::new(&exe).spawn() {
+        // `--route` and `--preview` reach the build as what its `main` reads
+        // (`build::ROUTE_VAR`, `build::PREVIEW_VAR`), on every start, rebuilds
+        // included (Tracer's AW-010).
+        let mut command = std::process::Command::new(&exe);
+        command.env_remove(crate::build::ROUTE_VAR).env_remove(crate::build::PREVIEW_VAR);
+        if let Some(route) = route {
+            command.env(crate::build::ROUTE_VAR, route);
+        }
+        if let Some(preview) = preview {
+            command.env(crate::build::PREVIEW_VAR, preview);
+        }
+        let mut child = match command.spawn() {
             Ok(child) => child,
             Err(e) => {
                 eprintln!("rux: could not start {}: {e}", exe.display());

@@ -409,10 +409,7 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
     // An app with Rust of its own runs as a build of itself, since the Rust
     // has to be compiled in; its documents still hot reload from disk.
     if let Some(native) = native::find_above(&path) {
-        if route.is_some() || preview.is_some() {
-            eprintln!("rux: `--route` and `--preview` are not passed to an app with a native/ crate yet");
-        }
-        return native::run(&path, &native);
+        return native::run(&path, &native, route.as_deref(), preview.map(|p| p.name));
     }
     let window = match &manifest {
         Some(m) => {

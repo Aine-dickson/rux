@@ -41,6 +41,12 @@ use std::path::{Path, PathBuf};
 
 use crate::manifest::Manifest;
 
+/// The route a dev build opens on, which `rux run --route` sets for the build
+/// it starts.
+pub const ROUTE_VAR: &str = "RUX_RUN_ROUTE";
+/// The device profile a dev build previews, from `rux run --preview`.
+pub const PREVIEW_VAR: &str = "RUX_RUN_PREVIEW";
+
 pub struct Options {
     pub release: bool,
     pub target: Target,
@@ -489,8 +495,14 @@ fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> St
             "    let root = std::path::PathBuf::from({});\n",
             literal(&root.display().to_string())
         ));
+        // What `rux run --route` and `--preview` asked for, handed over by
+        // `native::run`.
+        out.push_str(&format!("    let route = std::env::var({ROUTE_VAR:?}).ok();\n"));
         out.push_str(&format!(
-            "    rux_shell::run_windowed(root.join({}), None, None, {});\n",
+            "    let preview = std::env::var({PREVIEW_VAR:?}).ok().and_then(|n| rux_shell::DeviceProfile::by_name(&n));\n"
+        ));
+        out.push_str(&format!(
+            "    rux_shell::run_windowed(root.join({}), route, preview, {});\n",
             literal(&entry),
             window_settings(manifest)
         ));
@@ -839,6 +851,10 @@ mod tests {
         assert!(!main.contains("include_bytes!"), "a dev build must not embed: {main}");
         assert!(!main.contains("MemorySource"), "a dev build reads the disk: {main}");
         assert!(main.contains("rux_shell::run"), "{main}");
+        // What `rux run --route` and `--preview` hand the build it starts.
+        assert!(main.contains(&format!("std::env::var({ROUTE_VAR:?})")), "{main}");
+        assert!(main.contains(&format!("std::env::var({PREVIEW_VAR:?})")), "{main}");
+        assert!(main.contains("route, preview,"), "{main}");
     }
 
     #[test]
