@@ -1802,8 +1802,8 @@ an earlier rule said still applies, and it warns:
 
 | You wrote | It says |
 |---|---|
-| `grid-template-rows: minmax 1fr` | ``` `grid-template-rows: minmax 1fr` is not valid CSS, so it is ignored, as a browser ignores it; an earlier rule for `grid-template-rows` still applies. `minmax` is a function and takes its arguments in brackets, like `minmax(…)` ``` |
-| `style="width: wide"` | ``` `width: wide` is not valid CSS, so it is ignored, … ``` |
+| `grid-template-rows: minmax 1fr` | ``` `grid-template-rows: minmax 1fr` is not a value `grid-template-rows` takes, so this declaration is skipped and any earlier rule for `grid-template-rows` still applies. `minmax` is a function and takes its arguments in brackets, like `minmax(…)` ``` |
+| `style="width: wide"` | ``` `width: wide` is not a value `width` takes, so this declaration is skipped … ``` |
 
 lightningcss gives the verdict for the properties it has a parser for; the
 rest (`touch-action`, `scrollbar-width`, `scroll-snap-type`, `column-count`,

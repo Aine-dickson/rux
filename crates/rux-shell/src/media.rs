@@ -410,9 +410,9 @@ pub(crate) fn sync(root: &LayoutNode) -> Vec<(String, Option<String>, Value)> {
                         act(&h, "play", Vec::new());
                     } else {
                         rux_runtime::warn_script(format!(
-                            "`<{} autoplay src=\"{}\">` did not play: it plays by itself only \
-                             when it is `muted` or once the person has pressed something, as a browser \
-                             has it. Add `muted`, or play it from a tap",
+                            "`<{} autoplay src=\"{}\">` did not play: `autoplay` starts only when \
+                             it is `muted` or once the person has pressed something in the app. \
+                             Add `muted`, or call `.play()` from a tap handler",
                             if m.video { "video" } else { "audio" },
                             m.src
                         ));

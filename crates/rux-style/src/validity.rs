@@ -79,8 +79,8 @@ pub(crate) fn problem(name: &str, value: &str, unparsed: Option<bool>) -> Option
         return None;
     }
     let mut message = format!(
-        "`{name}: {value}` is not valid CSS, so it is ignored, as a browser ignores it; an \
-         earlier rule for `{name}` still applies"
+        "`{name}: {value}` is not a value `{name}` takes, so this declaration is skipped and \
+         any earlier rule for `{name}` still applies"
     );
     if let Some(f) = v.split_whitespace().find(|w| FUNCTION_NAMES.contains(w)) {
         message.push_str(&format!(

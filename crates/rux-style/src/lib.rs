@@ -2152,8 +2152,9 @@ fn build_media(
         located(Some(el.line), || {
             warn(
                 format!(
-                    "what is written inside a `<{0}>` is never shown: a browser shows it only \
-                     when it cannot play {0} at all. Give the file as `src`",
+                    "what is written inside a `<{0}>` is never shown. Give the file as `src` \
+                     (`<{0} src=\"…\" />`), and put any text meant for people beside it, in \
+                     a `<text>`",
                     el.tag
                 ),
             )
@@ -14929,7 +14930,11 @@ fn line_clamp(props: &HashMap<String, String>) -> Option<u32> {
     let v = props.get("-webkit-line-clamp")?;
     let boxed = props.get("display").is_some_and(|d| matches!(d.trim(), "-webkit-box" | "-webkit-inline-box"));
     if !boxed {
-        warn("`-webkit-line-clamp` clamps only a box with `display: -webkit-box`, as in a browser".to_string());
+        warn(
+            "`-webkit-line-clamp` clamps nothing without `display: -webkit-box` on the same \
+             element. Write `line-clamp: 2` on its own, or add `display: -webkit-box`"
+                .to_string(),
+        );
         return None;
     }
     count(v)
@@ -15585,8 +15590,8 @@ fn interpret_border(p: &HashMap<String, String>, st: &mut Style) {
             .find_map(|k| p.get(*k).map(|v| format!("`{k}: {v}`")))
             .unwrap_or_else(|| "A border width".to_string());
         warn_once(format!(
-            "{named} draws no border: with no style it is `none`, as in CSS. Add `solid` \
-             (`border: 2px solid red`). Rux drew it solid before v0.9."
+            "{named} draws no border, because a border with no style is `none`. Give it a \
+             style, like `solid` (`border: 2px solid red`). Rux drew it solid before v0.9."
         ));
     }
     for i in 0..4 {
@@ -20429,7 +20434,7 @@ mod invalid_declaration_tests {
              <style>.w { width: 40px; }</style>",
         );
         assert!(matches!(root.children[0].style.width, Some(Len::Px(v)) if v == 40.0));
-        assert!(warnings.iter().any(|w| w.message.contains("`width: wide` is not valid CSS")), "{warnings:?}");
+        assert!(warnings.iter().any(|w| w.message.contains("`width: wide` is not a value `width` takes")), "{warnings:?}");
     }
 
     #[test]
