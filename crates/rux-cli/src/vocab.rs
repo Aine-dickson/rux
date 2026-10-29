@@ -89,7 +89,12 @@ const ELEMENTS: &[Entry] = &[
     Entry {
         name: "audio",
         detail: "a sound, with or without its controls",
-        doc: "`<audio src=\"song.mp3\" controls />` plays a sound from the project, or a               picked `File`'s `url`. With `controls` it draws play/pause, the time, a seek               bar and mute; without them it is nothing on screen, as in a browser.               `autoplay` plays only when `muted`, or once the person has pressed something               in the app, on every platform. `query(\"audio\")[0].play()` and `.pause()`               reach it from script.",
+        doc: "`<audio src=\"song.mp3\" controls />` plays a sound from the project, or a \
+              picked `File`'s `url`. With `controls` it draws play/pause, the time, a seek \
+              bar and mute; without them it takes no space, so drive it from your own \
+              buttons. `autoplay` plays only when `muted`, or once the person has pressed \
+              something in the app, on every platform. `query(\"audio\")[0].play()` and \
+              `.pause()` reach it from script.",
     },
     Entry {
         name: "video",
@@ -141,7 +146,7 @@ const GLOBAL_ATTRIBUTES: &[Entry] = &[
     Entry { name: "to", detail: "make this element a link", doc: "Tapping navigates to this path, the element announces as a link, and it matches `:current` when it names the path you are on. `:to` is the bound form." },
     Entry { name: "@submit", detail: "the form was sent, and every field passed", doc: "On a `role=\"form\"` only. Sent by a `<button type=\"submit\">` inside it or by the action key in its last field. `event.values` maps each field's `name` (or its `r-model`) to its value." },
     Entry { name: "@invalid", detail: "the form was sent, and a field failed", doc: "On a `role=\"form\"` only. Runs instead of `@submit`: the first failing field takes the caret and every field matches `:user-invalid` from then on. `event.errors` maps each failing field's name to a sentence saying why; `event.values` is as for `@submit`." },
-    Entry { name: "@key", detail: "a key was pressed here", doc: "Runs while focus is on this element or inside it. `event.key` is the key by the browser's names (`\"s\"`, `\"Enter\"`, `\"Escape\"`), with `event.ctrl`, `shift`, `alt`, `meta`, `primary` (Ctrl, or Cmd on macOS) and `repeat`. **`false` takes the key**: no handler further out runs, and the shell does nothing with it. A focused text field handles the keys it uses (text, editing, its Ctrl chords) before the `@key`s around it." },
+    Entry { name: "@key", detail: "a key was pressed here", doc: "Runs while focus is on this element or inside it. `event.key` names the key: the character it types (`\"s\"`), or its name (`\"Enter\"`, `\"Escape\"`, `\"ArrowUp\"`), with `event.ctrl`, `shift`, `alt`, `meta`, `primary` (Ctrl, or Cmd on macOS) and `repeat`. **`false` takes the key**: no handler further out runs, and the shell does nothing with it. A focused text field handles the keys it uses (text, editing, its Ctrl chords) before the `@key`s around it." },
     Entry { name: "@close", detail: "the person asked to close the app", doc: "On the app's `<screen>` only. Runs when the window's close button is pressed, or Android's Back has no page left. **`false` keeps the app open**, as a route guard's `false` refuses; anything else lets it close, and one that fails lets it close too. Open your own \"save changes?\" and call `close()` from it. Must answer at once, so an `async fn` cannot refuse. Not asked on the web yet." },
 ];
 
@@ -176,9 +181,9 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     (
         "audio",
         &[
-            Entry { name: "src", detail: "the sound: a project path or a File's url", doc: "Read as `loadSound` reads it: a path from the project (built into a release), or a picked `File`'s `url`. WAV, MP3, AAC, FLAC and Ogg Vorbis everywhere; a browser plays what it plays. `:src` binds an expression, and a new value is a new sound." },
+            Entry { name: "src", detail: "the sound: a project path or a File's url", doc: "Read as `loadSound` reads it: a path from the project (built into a release), or a picked `File`'s `url`. WAV, MP3, AAC, FLAC and Ogg Vorbis on desktop and Android; on the web, MP3 and AAC are the safe choice. `:src` binds an expression, and a new value is a new sound." },
             Entry { name: "controls", detail: "draw play, time, seek and mute", doc: "Play/pause, the time, a seek bar to tap or drag, and mute, in the element's `color` and `accent-color`. 300 by 40 unless CSS sizes it." },
-            Entry { name: "autoplay", detail: "play once loaded, as a browser allows", doc: "Plays by itself only when `muted`, or once the person has pressed something in the app; otherwise it waits for a tap and says why. The browser's rule, on every platform." },
+            Entry { name: "autoplay", detail: "play once loaded, when muted or after a tap", doc: "Plays by itself only when `muted`, or once the person has pressed something in the app; otherwise it waits for a tap and says why. The same on every platform, so add `muted` for a sound that must start alone, or call `.play()` from a tap." },
             Entry { name: "loop", detail: "start again at the end", doc: "Plays from the start again at its end, with no `@ended`." },
             Entry { name: "muted", detail: "start silent", doc: "The volume at nothing. The mute button turns it back on." },
             Entry { name: "preload", detail: "`none`: read nothing until played", doc: "`none` reads nothing until the first play; `auto` and `metadata` (the default) read it at once." },
@@ -196,11 +201,11 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "src", detail: "the video: a project path or a File's url", doc: "A path from the project (built into a release), or a picked `File`'s `url`. On Windows, what Media Foundation plays: H.264 always, VP9, HEVC and AV1 with their store extensions. `:src` binds an expression, and a new value is a new video." },
             Entry { name: "poster", detail: "a picture shown until it plays", doc: "An image path, shown in the video's box until the first play or seek. Without it the first frame shows." },
             Entry { name: "controls", detail: "draw play, time, seek and mute over it", doc: "The `<audio>` controls in a bar along the bottom of the picture, in white on a dark band." },
-            Entry { name: "autoplay", detail: "play once loaded, as a browser allows", doc: "As `<audio autoplay>`: by itself only when `muted`, or once the person has pressed something in the app." },
+            Entry { name: "autoplay", detail: "play once loaded, when muted or after a tap", doc: "As `<audio autoplay>`: by itself only when `muted`, or once the person has pressed something in the app." },
             Entry { name: "loop", detail: "start again at the end", doc: "Plays from the start again at its end, with no `@ended`." },
             Entry { name: "muted", detail: "start silent", doc: "The volume at nothing. The mute button turns it back on." },
             Entry { name: "preload", detail: "`none`: read nothing until played", doc: "`none` reads nothing until the first play, and shows only the poster; `auto` and `metadata` (the default) read it at once." },
-            Entry { name: "playsinline", detail: "accepted: Rux always plays in the page", doc: "A phone browser's attribute to keep a video in the page instead of full screen, which is the only way Rux plays one." },
+            Entry { name: "playsinline", detail: "accepted: Rux always plays in the page", doc: "Nothing to turn on: a video always plays where it sits, and its controls' last button fills the screen. Accepted so copied markup needs no edit." },
             Entry { name: "@play", detail: "it started playing", doc: "As `<audio>`'s. `event.currentTime` and `event.duration`." },
             Entry { name: "@pause", detail: "it stopped playing", doc: "Paused, or at its end (then `@ended` follows)." },
             Entry { name: "@ended", detail: "it played to its end", doc: "After the `@pause` at its end. Not with `loop`." },
@@ -226,21 +231,21 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "name", detail: "radio group, and the key a form sends it under", doc: "Radios sharing a `name` are one group, so choosing one clears the others. In a `role=\"form\"`, `event.values` carries the field under this name; without one, under its `r-model`." },
             Entry { name: "required", detail: "must have a value to submit", doc: "Valueless, or bound with `:required`. Empty text, or a checkbox or switch that is off, fails it. Matched by `:required`, and by `:invalid` while it fails." },
             Entry { name: "minlength", detail: "the fewest characters it takes", doc: "Checked when its form is submitted, counted like `maxlength`. An empty field fails only `required`." },
-            Entry { name: "pattern", detail: "a regular expression the value matches", doc: "Matches the whole value, as HTML's does: `pattern=\"\\d{4}\"` takes `1906` and refuses `19064`. An empty field fails only `required`." },
+            Entry { name: "pattern", detail: "a regular expression the value matches", doc: "Must match the whole value, so no `^` or `$` is needed: `pattern=\"\\d{4}\"` takes `1906` and refuses `19064`. An empty field fails only `required`." },
             Entry { name: "options", detail: "the choices for a select", doc: "For `type=\"select\"`. `:options` binds an array." },
             Entry { name: "disabled", detail: "cannot be focused, tapped or changed", doc: "On whenever it is written, so `disabled=\"false\"` is still disabled: bind it with `:disabled=\"expr\"` instead. Matched by `:disabled`. Also on `<button>`." },
             Entry { name: "readonly", detail: "can be selected and copied, not changed", doc: "The caret and the selection work and no keyboard opens. `:readonly` binds it." },
             Entry { name: "min", detail: "the lowest value or earliest day", doc: "A number for `type=\"slider\"` (0 when left off), a `YYYY-MM-DD` day for `type=\"date\"`. On `type=\"number\"`, a check its form's submission makes." },
             Entry { name: "max", detail: "the highest value or latest day", doc: "A number above `min` for `type=\"slider\"` (100 when left off), a `YYYY-MM-DD` day for `type=\"date\"`. On `type=\"number\"`, a check its form's submission makes." },
             Entry { name: "step", detail: "what a slider's value moves by", doc: "For `type=\"slider\"`. 1 when left off; `any` for no steps. The value is rounded to as many decimal places as the step is written with." },
-            Entry { name: "maxlength", detail: "the most characters it takes", doc: "Counted as HTML counts them, in UTF-16 units. Typing past it is refused and a paste is cut short." },
+            Entry { name: "maxlength", detail: "the most characters it takes", doc: "Counted in UTF-16 units, so an emoji can count as two. Typing past it is refused and a paste is cut short." },
             Entry { name: "inputmode", detail: "text | numeric | decimal | tel | email | url | search | none", doc: "Which keyboard a phone raises. The field is still a text field and its value still text: a PIN or a phone number is `inputmode=\"numeric\"`, not a number." },
             Entry { name: "enterkeyhint", detail: "enter | done | go | next | previous | search | send", doc: "What the keyboard's action key says. `next` and `previous` move focus like Tab, `done` closes the field, and in a form every other one submits it; every one commits the field first, which fires `@change`. Left off in a form, it is `next` on each typing field and `go` on the last." },
-            Entry { name: "autocomplete", detail: "what the field holds, for autofill", doc: "HTML's field names: `username`, `current-password`, `new-password`, `email`, `tel`, `name`, `postal-code`, `cc-number`, `one-time-code` and the rest. A phone's password manager fills the fields of the focused field's form from them, and offers to save after `@submit`. `off` keeps the field away from autofill. Without it, a password, an email keyboard and a phone keyboard are recognised anyway." },
+            Entry { name: "autocomplete", detail: "what the field holds, for autofill", doc: "The standard field names: `username`, `current-password`, `new-password`, `email`, `tel`, `name`, `postal-code`, `cc-number`, `one-time-code` and the rest. A phone's password manager fills the fields of the focused field's form from them, and offers to save after `@submit`. `off` keeps the field away from autofill. Without it, a password, an email keyboard and a phone keyboard are recognised anyway." },
             Entry { name: "autofocus", detail: "take focus when it appears", doc: "Valueless. Focuses the field when it first appears, a route or an `r-if` bringing it in included, unless something already has focus." },
-            Entry { name: "accept", detail: "which files a file input offers", doc: "For `type=\"file\"`, as HTML's: extensions (`.png`), media types (`application/pdf`) and families (`image/*`, `video/*`, `audio/*`), comma-separated. A hint to the picker, not a check: `File.type` says what was picked." },
+            Entry { name: "accept", detail: "which files a file input offers", doc: "For `type=\"file\"`: extensions (`.png`), media types (`application/pdf`) and families (`image/*`, `video/*`, `audio/*`), comma-separated. A hint to the picker, not a check: `File.type` says what was picked." },
             Entry { name: "multiple", detail: "more than one file", doc: "Valueless, for `type=\"file\"`. The bound signal holds a `File[]`, empty until something is chosen." },
-            Entry { name: "capture", detail: "a phone's camera or recorder", doc: "For `type=\"file\"`: `environment` (the back camera) or `user` (the front), with `accept` saying photo, video or sound. A desktop opens the picker, as a desktop browser does." },
+            Entry { name: "capture", detail: "a phone's camera or recorder", doc: "For `type=\"file\"`: `environment` (the back camera) or `user` (the front), with `accept` saying photo, video or sound. A desktop opens the file picker instead, so offer a way to choose a file there too." },
             Entry { name: "@input", detail: "the text changed", doc: "After every change, however it was made. `event.value` is the new text." },
             Entry { name: "@change", detail: "a changed value was committed", doc: "When the field is left with a different value than it had, or Enter is pressed in a one-line field. A select fires it on choosing, a checkbox or radio on toggling. `event.value` is the value." },
             Entry { name: "@focus", detail: "the field gained focus", doc: "`event.value` is its text." },
@@ -302,7 +307,7 @@ const ATTRIBUTE_VALUES: &[(&str, &[(&str, &[Entry])])] = &[(
             Entry { name: "password", detail: "a masked field", doc: "Shows bullets, refuses Copy and Cut, and asks a phone's keyboard not to learn what is typed. The bound signal holds the real text." },
             Entry { name: "search", detail: "a field whose action key searches", doc: "A one-line field in every other respect." },
             Entry { name: "number", detail: "a number field", doc: "The bound signal always holds a number. While what is typed is not one yet (`-`, `1.`, nothing) the signal keeps its last number and the field shows the typing; leaving the field shows the number again. A phone raises a signed decimal keyboard." },
-            Entry { name: "date", detail: "a day", doc: "The bound signal holds `YYYY-MM-DD`, as HTML's does, or is empty. A phone opens the platform's date picker; a desktop types the date, and only a real day inside `min` and `max` reaches the signal." },
+            Entry { name: "date", detail: "a day", doc: "The bound signal holds `YYYY-MM-DD`, or is empty; start it as `\"\"` or a date in that form. A phone opens the platform's date picker; a desktop types the date, and only a real day inside `min` and `max` reaches the signal." },
             Entry { name: "select", detail: "a dropdown", doc: "Shows the bound value and opens a list on tap. Takes its choices from `:options`." },
             Entry { name: "checkbox", detail: "a tap-toggle", doc: "No caret and no focus of its own: a tap flips the bound value, and `:checked` matches it. Space or Enter activates it when tabbed to." },
             Entry { name: "switch", detail: "an on/off switch", doc: "A checkbox that draws as a track and a thumb and is announced as a switch. `:checked` matches it on; `accent-color` colours the track when on." },
@@ -353,7 +358,7 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "pickFile", detail: "await pickFile({ title, filters, folder })", doc: "Ask for one file with the platform's own dialog: a `File` (`name`, `size`, `type`, `url`, `path`, `await file.text()`), or `none` if cancelled. Awaited from an `async fn`. `filters` is `[{ name, extensions }]`. On the web, call it in a tap handler before any other `await`, or it throws `gesture`; there and on Android a `File` has no `path`." },
     Entry { name: "pickFiles", detail: "await pickFiles({ title, filters, folder })", doc: "Ask for any number of files: a `File[]`, `[]` if cancelled. Awaited from an `async fn`." },
     Entry { name: "pickSaveFile", detail: "await pickSaveFile({ title, filters, folder, name })", doc: "Ask where to save, with the platform's own dialog: the path, or `none` if cancelled. `name` is the file name it suggests. Awaited from an `async fn`." },
-    Entry { name: "loadSound", detail: "await loadSound(src)", doc: "Load a sound: a path beside the document, or a picked `File`'s `url`. A `Sound`: `play()`, `pause()`, `stop()`, `seek(seconds)`, and `volume`, `loop`, `currentTime`, `duration`, `playing`, which follow it as it plays. WAV, MP3, AAC, FLAC, Ogg Vorbis; not Opus. In a browser, the browser's own audio, after a tap." },
+    Entry { name: "loadSound", detail: "await loadSound(src)", doc: "Load a sound: a path beside the document, or a picked `File`'s `url`. A `Sound`: `play()`, `pause()`, `stop()`, `seek(seconds)`, and `volume`, `loop`, `currentTime`, `duration`, `playing`, which follow it as it plays. WAV, MP3, AAC, FLAC, Ogg Vorbis; not Opus. On the web, load and play it from a tap handler, since sound starts only after the person has pressed something." },
     Entry { name: "settings", detail: "settings.get(key) / .set(key, value) / .remove(key)", doc: "An app's own small values, kept between runs: `get` gives `any?` (`none` if never set), `set` writes at once, `remove` forgets. Kept per `[app] id`, in the platform's app-data folder (localStorage on the web)." },
     Entry { name: "close", detail: "close()", doc: "Close the app for good, without asking `@close` again: the app has decided. Every `unmounted` runs first. Does nothing on the web, where a page cannot close its own tab." },
     Entry { name: "path_for", detail: "path_for(\"route\", { … })", doc: "Build a path from a named route and its parameters." },
@@ -363,9 +368,9 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "clearInterval", detail: "clearInterval(handle)", doc: "Stop a timer started by `setInterval`. The handle is what `setInterval` returned." },
     Entry { name: "print", detail: "print(x)", doc: "Printf-debugging. Reaches the dev overlay, not just stderr." },
     Entry { name: "debug", detail: "debug(x)", doc: "Like `print`, with the value's structure shown." },
-    Entry { name: "Number", detail: "Number(text)", doc: "The whole text as a number, as JavaScript reads it: `Number(\"2\")` is 2, `Number(\"\")` is 0, `Number(\"12px\")` is `NaN`. How a route parameter, which is always text, meets a numeric id." },
+    Entry { name: "Number", detail: "Number(text)", doc: "The whole text as a number: `Number(\"2\")` is 2, `Number(\"\")` is 0, `Number(\"12px\")` is `NaN`. How a route parameter, which is always text, meets a numeric id." },
     Entry { name: "parseInt", detail: "parseInt(text, radix): int?", doc: "The whole number that leads the text: `parseInt(\"42px\")` is 42, and `parseInt(\"px\")` is `none`, so read it with `??`: `parseInt(s) ?? 0`. The radix is optional." },
-    Entry { name: "parseFloat", detail: "parseFloat(text): float?", doc: "The number that leads the text: `parseFloat(\"12.5px\")` is 12.5, and `parseFloat(\"px\")` is `none`, where JavaScript says `NaN`." },
+    Entry { name: "parseFloat", detail: "parseFloat(text): float?", doc: "The number that leads the text: `parseFloat(\"12.5px\")` is 12.5, and `parseFloat(\"px\")` is `none`, so check it with `?? 0` or `if`." },
     Entry { name: "Ok", detail: "Ok(value): Result<T, E>", doc: "A `Result` that holds a value: `{ ok: true, value }`. Read it with `if r.ok { r.value }`, or `r.unwrap()`." },
     Entry { name: "Err", detail: "Err(error): Result<T, E>", doc: "A `Result` that holds an error kept as an answer: `{ ok: false, error }`. `r.unwrap()` on it throws the error." },
     Entry { name: "intDiv", detail: "intDiv(a, b): int", doc: "Division that keeps an `int`, cutting toward zero: `intDiv(7, 2)` is 3, where `7 / 2` is 3.5. Dividing by zero is an error." },
@@ -404,7 +409,7 @@ const PSEUDO_CLASSES: &[Entry] = &[
     Entry { name: "is", detail: "`:is(a, b)`: matches any of these", doc: "Takes full selectors, combinators included (`.x:is(.group:hover *)`), and counts as specific as the most specific of them. A forgiving list, as in CSS: an argument that does not parse is dropped, not the whole rule." },
     Entry { name: "where", detail: "`:where(a, b)`: as `:is()`, with no weight", doc: "Matches what `:is()` matches and adds nothing to specificity, so any later rule overrides it. The usual way a reset or a library keeps out of the author's way." },
     Entry { name: "dir", detail: "the element's text direction", doc: "`:dir(rtl)` or `:dir(ltr)`: what the `dir` attribute says, on the element or its nearest ancestor that has one, and `ltr` where none does. Tailwind's `rtl:` and `ltr:` are written with it. `dir=\"auto\"` counts as saying nothing." },
-    Entry { name: "root", detail: "the top element of the app", doc: "The screen's own element, so `:root { --accent: #89b4fa; }` sets a variable for everything under it, as on a web page." },
+    Entry { name: "root", detail: "the top element of the app", doc: "The screen's own element, so `:root { --accent: #89b4fa; }` sets a variable for everything under it: the place for an app's colours and sizes." },
 ];
 
 /// Keyword values, per property, for the properties whose values are a closed
@@ -557,7 +562,7 @@ const VALUE_METHODS: &[Entry] = &[
     Entry { name: "findIndex", detail: "findIndex(x => …)", doc: "Where the first item that passed is, or -1." },
     Entry { name: "some", detail: "some(x => …)", doc: "Whether any item passes." },
     Entry { name: "every", detail: "every(x => …)", doc: "Whether every item passes." },
-    Entry { name: "sort", detail: "sort((a, b) => a - b)", doc: "Sorts by the comparison and **returns** the sorted array, as JavaScript's does. The receiver is sorted too." },
+    Entry { name: "sort", detail: "sort((a, b) => a - b)", doc: "Sorts by the comparison and **returns** the sorted array. The receiver is sorted too, so sort a copy (`items.slice(0).sort(…)`) to keep the original order." },
     Entry { name: "includes", detail: "includes(x)", doc: "Whether the array or string contains it." },
     Entry { name: "indexOf", detail: "indexOf(x)", doc: "Where it first occurs, or -1." },
     Entry { name: "slice", detail: "slice(start, end)", doc: "A section, without changing the original." },
@@ -798,8 +803,8 @@ const CSS_PROPERTY_DOCS: &[Entry] = &[
     Entry { name: "text-wrap", detail: "whether and how lines wrap", doc: "`nowrap` keeps the text on one line, as `white-space: nowrap` does, and `wrap` lets it wrap again. Inherited. `balance` evens the lines out, as many as wrapping makes, the box keeping its width. `pretty` and `stable` wrap as `wrap` does, which CSS allows." },
     Entry { name: "text-wrap-mode", detail: "whether lines wrap", doc: "`wrap` or `nowrap`: the wrapping half of `white-space`. Inherited." },
     Entry { name: "text-wrap-style", detail: "how wrapped lines are chosen", doc: "`balance` evens the lines out, as many as wrapping makes; `auto`, `pretty` and `stable` wrap as usual. Inherited." },
-    Entry { name: "user-select", detail: "whether the person can select this text", doc: "`none` and `auto` are honoured as they are: text outside a field cannot be selected yet, and a field's text always can, as in a browser. `text` and `all` warn, since there is nothing yet for them to turn on." },
-    Entry { name: "line-clamp", detail: "the most lines a text may wrap to", doc: "`line-clamp: 2` keeps two lines, the second ending in `…`, and the text is as tall as the two. Tailwind's `line-clamp-2` writes it as `-webkit-line-clamp: 2` beside `display: -webkit-box`, which is read too; the prefixed one alone does nothing, as in a browser. On a `<text>`; text with runs is not cut yet." },
+    Entry { name: "user-select", detail: "whether the person can select this text", doc: "`none` and `auto` are honoured as they are: text outside a field cannot be selected yet, and a field's text always can. `text` and `all` warn, since there is nothing yet for them to turn on." },
+    Entry { name: "line-clamp", detail: "the most lines a text may wrap to", doc: "`line-clamp: 2` keeps two lines, the second ending in `…`, and the text is as tall as the two. Tailwind's `line-clamp-2` writes it as `-webkit-line-clamp: 2` beside `display: -webkit-box`, which is read too; the prefixed one needs that `display` beside it, so prefer `line-clamp`. On a `<text>`; text with runs is not cut yet." },
     Entry { name: "font-variant", detail: "small capitals, numerals and ligatures", doc: "Any of the `font-variant-*` keywords; the font's own OpenType features." },
     Entry { name: "font-variant-caps", detail: "small capitals", doc: "`small-caps`, `all-small-caps`, `petite-caps` and the rest, when the font has them." },
     Entry { name: "font-variant-numeric", detail: "how numerals are drawn", doc: "`tabular-nums` for columns that line up, `oldstyle-nums`, fractions, `ordinal`, `slashed-zero`." },
@@ -1197,7 +1202,7 @@ fn css_reference_page() -> String {
          described in the words the editor shows on hover. Anything else is parsed, ignored \
          and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves \
          in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the \
-         places it does not answer as a browser would.\n\n\
+         places Rux behaves differently and what to write there.\n\n\
          {} properties and {} pseudo-classes, as of `rux {}`.\n\n",
         CSS_PROPERTY_DOCS.len(),
         PSEUDO_CLASSES.len(),
