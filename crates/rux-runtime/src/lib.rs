@@ -3628,12 +3628,17 @@ impl Document {
             }
         }
         // `:src`: rewrite the image source and re-resolve it (path + intrinsic size).
+        // `:d` rides with it: a `<path>`'s geometry, parsed again.
         for binding in &self.registry.src {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
             let raw = rux_style::eval_src_binding(binding, &mut self.engine);
             if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+                if node.path.is_some() {
+                    node.path = Some(rux_layout::PathContent::parse(&raw));
+                    continue;
+                }
                 if let Some(img) = node.image.as_mut() {
                     img.src = raw;
                 }

@@ -8538,13 +8538,20 @@ fn build_node_inner(
             .attr(":d")
             .map(|e| {
                 let (v, deps) = engine.eval_display_tracked(e, locals);
-                // A rebuild rather than a patch. Changing `d` can change the
-                // element's size, since a path given no CSS box takes the size
-                // of its own geometry, so there is no in-place edit that is
-                // always correct. It is also what lets a shape animate at all:
+                // Patched in place, as `:src` is: a path that takes its size
+                // from its geometry is laid out again from the new geometry,
+                // since that size is part of the style the layout compares.
+                // A rebuild only where the shape animates (`transition: d`):
                 // the animator compares a node against what it was on the
                 // previous build, and a patched attribute never reaches it.
-                reg.structural.extend(deps);
+                // A chart fed 30 times a second rebuilt the document each
+                // time: 3.7 ms a sample against 0.43 ms patched (Tracer's
+                // AW-013).
+                if style.transitions.iter().any(|t| t.property == rux_layout::AnimProp::PathData) {
+                    reg.structural.extend(deps);
+                } else {
+                    reg.src.push(AttrBinding { path: path.to_vec(), expr: e.to_string(), locals: locals.clone(), deps });
+                }
                 v
             })
             .or_else(|| el.attr("d").map(str::to_string))

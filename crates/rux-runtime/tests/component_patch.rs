@@ -6,7 +6,9 @@ use rux_runtime::Document;
 use rux_script::profile::{self, Phase};
 
 fn project(files: &[(&str, &str)]) -> std::path::PathBuf {
-    let dir = std::env::temp_dir().join(format!("rux_component_patch_{}", std::process::id()));
+    static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let dir = std::env::temp_dir().join(format!("rux_component_patch_{}_{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     for (rel, body) in files {
         let path = dir.join(rel);
@@ -95,4 +97,51 @@ fn a_components_own_state_is_patched() {
     }
     assert!(texts(&doc.root).contains(&"typed 2".to_string()), "{:?}", texts(&doc.root));
     assert_eq!(rebuilds(), 0, "typing did not rebuild either");
+}
+
+/// A bound `:d` is patched too, sized by CSS or by its own geometry; only a
+/// path that animates `d` rebuilds, so the animator sees it (Tracer's AW-013).
+#[test]
+fn a_bound_path_is_patched_unless_it_animates() {
+    std::env::set_var("RUX_PROFILE", "1");
+    let app = "<template><screen>\
+          <view @tap=\"n += 1\"><text>step</text></view>\
+          <path class=\"sized\" :d=\"`M 0 0 L ${n * 10} 10`\" />\
+          <path class=\"free\" :d=\"`M 0 0 L ${n * 10} ${n * 5}`\" />\
+          <text>after</text>\
+        </screen></template>\n\
+        <style>.sized { width: 100px; height: 20px; stroke: red; } .free { stroke: blue; }</style>\n\
+        <script>\nlet n = signal(1);\n</script>";
+    let dir = project(&[("app.rux", app)]);
+    let mut doc = Document::load(dir.join("app.rux")).expect("loads");
+    // Where the text after the paths sits: below the free path, whose box is
+    // its geometry's.
+    let after = |doc: &Document| {
+        let layout = rux_layout::layout(&doc.root, 400.0, 400.0, &mut |_, _| (40.0, 16.0));
+        layout
+            .paints
+            .iter()
+            .find_map(|p| match p {
+                rux_layout::Paint::Text(t) if t.content.text.contains("after") => Some(t.y),
+                _ => None,
+            })
+            .expect("the text after")
+    };
+    let before = after(&doc);
+    let _ = rebuilds();
+    tap(&mut doc, "step");
+    tap(&mut doc, "step");
+    assert_eq!(rebuilds(), 0, "a path's geometry is patched");
+    assert_eq!(after(&doc) - before, 10.0, "the free path is laid out at its new height");
+    let paths: Vec<_> = doc.root.children.iter().filter_map(|c| c.path.as_ref()).collect();
+    assert_eq!(paths.len(), 2);
+    let bounds = paths[1].bounds().expect("geometry");
+    assert_eq!((bounds.2, bounds.3), (30.0, 15.0), "the new geometry: {bounds:?}");
+
+    let animated = app.replace(".free { stroke: blue; }", ".free { stroke: blue; transition: d 200ms; }");
+    let dir = project(&[("app.rux", &animated)]);
+    let mut doc = Document::load(dir.join("app.rux")).expect("loads");
+    let _ = rebuilds();
+    tap(&mut doc, "step");
+    assert!(rebuilds() > 0, "a path that animates `d` is rebuilt, so the animator sees it");
 }
