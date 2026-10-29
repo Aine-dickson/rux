@@ -294,10 +294,12 @@ pub fn resolve(script: &mut Script, aliases: &[Alias], exports: &HashMap<String,
                                 name.name
                             ),
                         });
+                        // Skipped, so its `cart` is not reported a second time.
+                        return false;
                     }
                 }
-                // Skipped, so its `cart` is not reported a second time.
-                false
+                // `chart.series?.seq`: its base is linked like any other.
+                true
             }
             ExprKind::Var(local) => {
                 if let Some((module, member)) = member_of(local) {
@@ -447,6 +449,14 @@ mod tests {
         let (names, problems) = run("fn f(p: int) { cart.add(p); put(p); let n = cart.items.length; }");
         assert!(problems.is_empty(), "{problems:?}");
         assert_eq!(names, "stores/cart::add() p stores/cart::add() p stores/cart::items");
+    }
+
+    #[test]
+    fn a_member_read_through_question_dot_is_linked_too() {
+        // Tracer's AW-004: `?.` on a module's signal left `cart` unlinked.
+        let (names, problems) = run("let n = cart.items?.length ?? 0; let m = cart.items?.at(cart.items);");
+        assert!(problems.is_empty(), "{problems:?}");
+        assert_eq!(names, "stores/cart::items stores/cart::items stores/cart::items");
     }
 
     #[test]
