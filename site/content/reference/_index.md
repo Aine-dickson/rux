@@ -311,6 +311,17 @@ The key is evaluated once per row with that row's loop variable in scope.
 Duplicate keys warn (two rows claiming one identity is worse than none), and so
 does an `r-key` on an element with no `r-for`.
 
+**Without `r-key`, a row is identified by its position** (2026-10-29), as Vue
+patches an unkeyed list in place. An input in row two is not the input in row
+three, so focusing one no longer puts a caret in every row. Position is not
+identity, though: remove the first item and the second row's text field, with
+its caret and anything half typed, now belongs to what was the third item. So
+an unkeyed `r-for` whose rows hold state of their own warns, naming what it
+found: an `<input>`, an `r-model`, a `<video>` or `<audio>`, or a component
+holding any of those. A list of plain text does not warn, since position
+identifies it well enough. The positional identity is not the row's key:
+reconciling and row reuse still treat the list as unkeyed.
+
 **A key is what makes an input inside a list work at all.** An `r-model` is
 stored **as written**, so every row of a list carries the same one, and an
 identity taken from it alone cannot tell two rows apart. Everything that
@@ -622,6 +633,37 @@ happened, because they are not the same problem:
 The middle case is the one worth having. Until v0.7.1 a typo got the same "not
 yet honored" line a real unbuilt property got, so it read as a feature on its
 way and an author could wait for a release that was never going to fix it.
+
+**An invalid value is thrown away before the cascade, as a browser throws it
+away** (2026-10-29). Until then each property's reader guessed:
+`grid-template-rows: minmax 1fr` (the function without its brackets) became
+the tracks `auto 1fr`, and since it was the later rule it replaced Tailwind's
+`grid-rows-2`, where a browser ignores it and keeps the two equal rows. Now the
+declaration is dropped from its rule, or from `style` / `:style`, so whatever
+an earlier rule said still applies, and it warns:
+
+| You wrote | It says |
+|---|---|
+| `grid-template-rows: minmax 1fr` | ``` `grid-template-rows: minmax 1fr` is not valid CSS, so it is ignored, as a browser ignores it; an earlier rule for `grid-template-rows` still applies. `minmax` is a function and takes its arguments in brackets, like `minmax(…)` ``` |
+| `style="width: wide"` | ``` `width: wide` is not valid CSS, so it is ignored, … ``` |
+
+lightningcss gives the verdict for the properties it has a parser for; the
+rest (`touch-action`, `scrollbar-width`, `scroll-snap-type`, `column-count`,
+`anchor-name` and the others in `crates/rux-style/src/validity.rs`) are checked
+against their CSS grammar there. The grammar is CSS's, not Rux's: a valid
+keyword Rux does nothing with is kept. A few valid values lightningcss cannot
+parse (`inherit`, `text-shadow: none`, `anchor()`, `color-mix()`, a 3-value
+`transform-origin`) are listed as valid there; they were found by running
+every sheet in the test suites through it. Open-ended properties (`content`,
+`font-feature-settings`, `will-change`) are not judged.
+
+A value with `var()` or `env()` cannot be judged until it is substituted. If
+it is invalid then, the property is left at its initial value, which is what
+CSS does with a value invalid at computed-value time. The grid readers now
+answer that way too: a track list or placement is taken whole or not at all
+(`minmax()` needs two arguments and a minimum that is not an `fr`), and one
+Rux cannot use says so and leaves the initial value instead of an `auto`
+standing in for the word it did not know.
 
 Real CSS Rux has not built includes `hyphens: auto`, `writing-mode`,
 `column-span` and `::first-letter` / `::first-line`. Scroll snapping,
