@@ -6107,6 +6107,29 @@ struct Walk {
 /// A rectangle as `(x, y, width, height)`.
 type Rect4 = (f32, f32, f32, f32);
 
+/// What the clips leave in view, `None` when there are none.
+fn seen_through(clips: &[Clip]) -> Option<Rect4> {
+    let mut clips = clips.iter();
+    let first = clips.next()?;
+    let (mut l, mut t, mut r, mut b) = (first.x, first.y, first.x + first.width, first.y + first.height);
+    for c in clips {
+        (l, t, r, b) = (l.max(c.x), t.max(c.y), r.min(c.x + c.width), b.min(c.y + c.height));
+    }
+    Some((l, t, r - l, b - t))
+}
+
+/// `rect` cut to `view`, or `None` when nothing of it is inside. A box that
+/// only touches the view's edge is not inside: it would win a pointer on
+/// that edge from the box it is hidden behind. One with no width or height
+/// of its own keeps its line.
+fn cut(rect: Rect4, view: Rect4) -> Option<Rect4> {
+    let (l, t) = (rect.0.max(view.0), rect.1.max(view.1));
+    let (r, b) = ((rect.0 + rect.2).min(view.0 + view.2), (rect.1 + rect.3).min(view.1 + view.3));
+    let across = r > l || rect.2 == 0.0 && r >= l;
+    let down = b > t || rect.3 == 0.0 && b >= t;
+    (across && down).then_some((l, t, r - l, b - t))
+}
+
 /// Give every scroller that will be drawn an id, in tree order.
 ///
 /// **Not in the order painting reaches them.** The shell keeps each scroller's
@@ -6694,6 +6717,7 @@ fn collect(
             });
         }
     }
+    let (hits_from, states_from) = (out.hits.len(), out.states.len());
     if !walk.dry && !at.invisible {
         // A `for=` label targeting a text input: a focus region at the label's box,
         // carrying the *target's* model, so tapping the label focuses that input.
@@ -6924,6 +6948,37 @@ fn collect(
         for (part, rects) in &placed {
             let owners = at.stack.reach.unwrap_or_default();
             inline::part_regions(part, rects, child_xform, at.stack.seq, owners, inside_scroll, out, walk);
+        }
+
+        // **What `overflow` cuts away cannot be pointed at**, as in CSS. A
+        // row scrolled up out of its list lay over the header above it,
+        // invisible, and took the header's taps and its hover. Cut to the
+        // clips the box is inside, and dropped where none of it is left.
+        // Only where nothing above is transformed: a clip pushed outside a
+        // transform is in other coordinates than the box.
+        if let Some(seen) = seen_through(&walk.clips).filter(|_| xform.is_none()) {
+            let mut kept = hits_from;
+            for i in hits_from..out.hits.len() {
+                let h = &out.hits[i];
+                if let Some((x, y, width, height)) = cut((h.x, h.y, h.width, h.height), seen) {
+                    out.hits.swap(kept, i);
+                    let h = &mut out.hits[kept];
+                    (h.x, h.y, h.width, h.height) = (x, y, width, height);
+                    kept += 1;
+                }
+            }
+            out.hits.truncate(kept);
+            let mut kept = states_from;
+            for i in states_from..out.states.len() {
+                let r = &out.states[i];
+                if let Some((x, y, width, height)) = cut((r.x, r.y, r.width, r.height), seen) {
+                    out.states.swap(kept, i);
+                    let r = &mut out.states[kept];
+                    (r.x, r.y, r.width, r.height) = (x, y, width, height);
+                    kept += 1;
+                }
+            }
+            out.states.truncate(kept);
         }
     }
 
