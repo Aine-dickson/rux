@@ -7218,6 +7218,9 @@ impl App {
     }
 
     fn render(&mut self) {
+        // What Rust set since the last frame, all of it at once: see
+        // `RuxEvent::Answered`.
+        self.document.refresh_native_signals();
         // The phone's own highlight and accent, so a Rux field selects like
         // every other field on it. Retried until the activity has been handed
         // over, which can be after the first frame.
@@ -8070,7 +8073,12 @@ impl ApplicationHandler<RuxEvent> for App {
             RuxEvent::PickedFiles { files } => self.picked_files(files),
             RuxEvent::Answered => {
                 let settled = self.document.settle_tasks();
-                let moved = self.document.refresh_native_signals();
+                // What Rust set is read once a frame, when the frame is drawn
+                // (`render`), not once a set: at 30 sets a second, a rebuild
+                // per set that took longer than the gap kept these events
+                // coming faster than they were handled, and no paint or input
+                // ever had a turn again (Tracer's AW-013).
+                let moved = self.document.native_signals_moved();
                 // A network image came: its size is read and it is painted.
                 let pictured = self.document.take_arrived_images();
                 if settled || moved || pictured {

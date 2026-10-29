@@ -2896,7 +2896,7 @@ pub fn build_styled_tree_stateful(
     // [`parse_component_rules`]): until 2026-10-28 it was read in the
     // document's, unplaced, and an editor put its warnings on line 1 of the
     // page that used it.
-    let rules = rux_script::profile::time(rux_script::profile::Phase::Css, || parse_document_rules(sfc, env));
+    let rules = parsed_once(false, sfc, env, || parse_document_rules(sfc, env));
 
     // What `env()` reads, for the length of this build. Set here rather than
     // threaded, beside the two other build-scoped registers below.
@@ -2935,7 +2935,7 @@ pub fn build_styled_tree_stateful(
     let comps: Components = components
         .iter()
         .map(|(tag, c)| {
-            let own = rux_script::profile::time(rux_script::profile::Phase::Css, || parse_component_rules(c, env));
+            let own = parsed_once(true, c, env, || parse_component_rules(c, env));
             let merged = if c.style_scoped {
                 own
             } else {
@@ -4850,6 +4850,55 @@ fn sheet_position_tries(sfc: &Sfc, env: Environment) -> HashMap<String, String> 
     }
     tries.extend(position_try_rules(&sfc.style, env));
     tries
+}
+
+thread_local! {
+    /// Each sheet a whole build has parsed, by what it read: see [`parsed_once`].
+    static PARSED: std::cell::RefCell<HashMap<(bool, u64, Option<std::path::PathBuf>), (Environment, Vec<Rule>, Vec<Warning>)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// `parse` for a document's sheets (`component` false) or a component's,
+/// once for as long as they read the same and the environment is the same,
+/// with the warnings that parse raised raised again each time.
+///
+/// A whole build parsed every stylesheet, every component's whether on
+/// screen or not, so a Rust signal driving a rebuild 30 times a second parsed
+/// the probe app's seven sheets 18 times a frame (Tracer's AW-013).
+fn parsed_once(component: bool, sfc: &Sfc, env: Environment, parse: impl FnOnce() -> Vec<Rule>) -> Vec<Rule> {
+    let key = (component, rules_print(sfc), sfc.file.clone());
+    let kept = PARSED.with(|p| p.borrow().get(&key).filter(|(e, _, _)| *e == env).map(|(_, r, w)| (r.clone(), w.clone())));
+    if let Some((rules, warnings)) = kept {
+        WARNINGS.with(|sink| {
+            let mut sink = sink.borrow_mut();
+            for w in warnings {
+                if !sink.contains(&w) {
+                    sink.push(w);
+                }
+            }
+        });
+        return rules;
+    }
+    // What this parse raises, taken apart from what was already said.
+    let before = WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()));
+    let rules = rux_script::profile::time(rux_script::profile::Phase::Css, parse);
+    let raised = WARNINGS.with(|w| std::mem::replace(&mut *w.borrow_mut(), before));
+    WARNINGS.with(|sink| {
+        let mut sink = sink.borrow_mut();
+        for w in &raised {
+            if !sink.contains(w) {
+                sink.push(w.clone());
+            }
+        }
+    });
+    PARSED.with(|p| {
+        let mut p = p.borrow_mut();
+        if p.len() >= 256 {
+            p.clear();
+        }
+        p.insert(key, (env, rules.clone(), raised));
+    });
+    rules
 }
 
 /// What [`parse_document_rules`] reads, hashed, so rules kept from an

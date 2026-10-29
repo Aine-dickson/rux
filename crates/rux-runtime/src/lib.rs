@@ -5799,6 +5799,12 @@ impl Document {
         rux_script::take_answered_false()
     }
 
+    /// Whether Rust has set a signal since [`Document::refresh_native_signals`]
+    /// last looked: a load and a compare, for deciding whether a frame is due.
+    pub fn native_signals_moved(&self) -> bool {
+        rux_native::signal_epoch() != self.native_epoch
+    }
+
     /// Native code set a [`rux_native::Signal`]: give the document what each
     /// one it reads holds now, and update whatever read one that moved, as an
     /// answer to an `await` would. Says whether anything moved. Cheap when
