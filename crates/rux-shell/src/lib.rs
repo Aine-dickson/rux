@@ -637,6 +637,19 @@ fn grip_paints(r: &ResizeRegion) -> Vec<Paint> {
 /// frame, before the layout: a rebuild makes the tree again from the
 /// document, and the size is the window's, not the document's, so it is
 /// written back each time rather than kept in the tree.
+/// Whether every box resized by hand already has the size it was dragged to,
+/// which it keeps until a rebuild hands back the authored one.
+fn resized_applied(root: &rux_layout::Node, resized: &HashMap<Vec<usize>, (Option<f32>, Option<f32>)>) -> bool {
+    resized.iter().all(|(path, (w, h))| {
+        let Some(node) = path.iter().try_fold(root, |node, &i| node.children.get(i)) else {
+            return true;
+        };
+        node.style.box_sizing == rux_layout::BoxSizing::BorderBox
+            && w.is_none_or(|w| node.style.width == Some(rux_layout::Len::Px(w)))
+            && h.is_none_or(|h| node.style.height == Some(rux_layout::Len::Px(h)))
+    })
+}
+
 fn apply_resized(root: &mut rux_layout::Node, resized: &HashMap<Vec<usize>, (Option<f32>, Option<f32>)>) {
     for (path, (w, h)) in resized {
         let mut node = &mut *root;
@@ -2264,6 +2277,8 @@ struct App {
     /// per-frame fact does: a build throws the tree away and rebuilds it, so
     /// anything remembering the *previous* frame has to outlive the tree.
     anim: rux_runtime::Animator,
+    /// The revision of the tree the animator last walked. See `render`.
+    anim_seen: Option<u64>,
     /// When the next animation frame is due. `None` when nothing is animating,
     /// which is what lets an idle app go back to waiting on real events.
     anim_deadline: Option<Instant>,
@@ -2415,6 +2430,7 @@ impl App {
             caret_visible: true,
             blink_deadline: None,
             anim: rux_runtime::Animator::new(),
+            anim_seen: None,
             anim_deadline: None,
             epoch: Instant::now(),
             pointer: (0.0, 0.0),
@@ -5588,7 +5604,7 @@ impl App {
             trail.pop();
             false
         }
-        let root = &self.document.root;
+        let root: &rux_layout::Node = &self.document.root;
         let mut trail: Vec<&rux_layout::Node> = Vec::new();
         if let Some(model) = self.focused.as_deref() {
             let target = (model, self.focused_row.as_deref(), self.focused_instance.as_deref());
@@ -7252,7 +7268,18 @@ impl App {
         // where the departing element's `unmounted` fires.
         let next = profile::time(Phase::Animate, || {
             let swap_next = self.document.advance_swaps(now);
-            match (self.anim.apply(&mut self.document.root, now), swap_next) {
+            // Only while something moves, or when the tree has changed since
+            // the animator last read it: it walks the tree to write, and a
+            // write is what tells the layout the tree is not as it was.
+            let root = &mut self.document.root;
+            let animated = if !self.anim.is_idle() || self.anim_seen != Some(root.revision()) {
+                let next = self.anim.apply(root.get_mut(), now);
+                self.anim_seen = Some(root.revision());
+                next
+            } else {
+                None
+            };
+            match (animated, swap_next) {
                 (Some(a), Some(b)) => Some(a.min(b)),
                 (a, b) => a.or(b),
             }
@@ -7293,8 +7320,8 @@ impl App {
         } else {
             (sel_start, sel_end)
         };
-        if !self.resized.is_empty() {
-            apply_resized(&mut self.document.root, &self.resized);
+        if !self.resized.is_empty() && !resized_applied(&self.document.root, &self.resized) {
+            apply_resized(self.document.root.get_mut(), &self.resized);
         }
         // Split borrows so the text engine (used both to measure during layout
         // and to draw during paint) doesn't conflict with the render state.
@@ -7361,8 +7388,9 @@ impl App {
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
         let mut layout = profile::time(Phase::Layout, || {
-            layout_state.lay_out_text(
+            layout_state.lay_out_revision(
                 &document.root,
+                document.root.revision(),
                 logical.0 as f32,
                 logical.1 as f32,
                 offsets,
@@ -7873,6 +7901,10 @@ impl ApplicationHandler<RuxEvent> for App {
         if self.state.is_some() {
             return;
         }
+        // A debug build's proofs that what Rux kept is what it would have
+        // built are for Rux's own tests; in an app's window each one is the
+        // whole document again.
+        rux_layout::set_self_checks(std::env::var_os("RUX_SELF_CHECK").is_some());
 
         // The app's own name when its `rux.toml` gives one; a bare file run
         // with no manifest is still named after the file.
@@ -8011,6 +8043,7 @@ impl ApplicationHandler<RuxEvent> for App {
     #[cfg(target_arch = "wasm32")]
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         use winit::platform::web::WindowAttributesExtWebSys;
+        rux_layout::set_self_checks(false);
 
         if self.state.is_some() || self.starting {
             return;

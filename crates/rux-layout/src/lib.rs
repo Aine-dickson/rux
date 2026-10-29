@@ -67,7 +67,7 @@ impl Rgba {
 }
 
 /// Per-side box-model lengths (padding / margin / border widths).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Sides {
     pub top: f32,
     pub right: f32,
@@ -353,7 +353,7 @@ pub struct GridAreas {
 
 /// How a node lays out its children. Defaults to `Row` to match CSS's
 /// `flex-direction` initial value.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub enum Axis {
     #[default]
     Row,
@@ -361,7 +361,7 @@ pub enum Axis {
 }
 
 /// Main-axis distribution (`justify-content`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Justify {
     Start,
     Center,
@@ -371,7 +371,7 @@ pub enum Justify {
 }
 
 /// Cross-axis alignment (`align-items`).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Align {
     Start,
     Center,
@@ -960,7 +960,7 @@ pub enum GridPlace {
 }
 
 /// A box background: a flat colour, a gradient, or an image.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Background {
     Color(Rgba),
     Gradient(Gradient),
@@ -977,7 +977,7 @@ pub enum Background {
 
 /// A box's background layers. The first is on top, and the colour is under
 /// them all, cut to the last layer's `background-clip`, as in CSS.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct BgLayers {
     pub color: Option<Rgba>,
     pub layers: Vec<BgLayer>,
@@ -991,7 +991,7 @@ impl BgLayers {
 }
 
 /// One background layer.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct BgLayer {
     /// A [`Background::Gradient`] or [`Background::Image`].
     pub image: Background,
@@ -1078,7 +1078,7 @@ pub enum BgAttachment {
 }
 
 /// A CSS gradient reduced to what the painter needs: a shape and colour stops.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Gradient {
     pub kind: GradientKind,
     /// Colour stops as `(colour, offset)` with offset in 0..=1, in order.
@@ -1116,7 +1116,7 @@ pub enum HueWay {
     Decreasing,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GradientKind {
     /// `linear-gradient(<angle>, …)`: angle in radians, CSS convention (0 = to
     /// top, increasing clockwise).
@@ -1126,7 +1126,7 @@ pub enum GradientKind {
 }
 
 /// One `box-shadow`. Offsets, blur and spread are logical px.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BoxShadow {
     pub dx: f32,
     pub dy: f32,
@@ -1214,7 +1214,7 @@ pub(crate) fn shadow_paints(
 /// It follows the box's `border-radius`, as it does in every current browser:
 /// an outline `offset + width` outside a rounded corner is rounded by that much
 /// more. A corner with no radius stays square, except in `auto`.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Outline {
     /// Logical px. The line's thickness, drawn outward from `offset`.
     pub width: f32,
@@ -1240,7 +1240,7 @@ impl Outline {
 
 /// The style properties hardly any box sets, kept behind one pointer on
 /// [`Style`] so each costs a box nothing until it is written (watchlist #41).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rare {
     /// `border-top-color` and the other sides, top, right, bottom, left,
     /// over `border_color`. `None` for a side takes `border_color`.
@@ -1388,7 +1388,7 @@ impl Generated {
 
 /// One `animation` on a box, as the build worked it out: its timing, and its
 /// keyframes as styles of their own.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KeyframeAnimation {
     /// The `@keyframes` name, which is its identity: a box that keeps the
     /// name keeps the animation running, and a new name starts it again.
@@ -1413,7 +1413,7 @@ pub struct KeyframeAnimation {
 
 /// One keyframe: where it sits, from 0 to 1, the properties it sets, and the
 /// box's style with them set.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct KeyframeStep {
     pub offset: f32,
     /// `animation-timing-function` inside the keyframe: the easing from here
@@ -1489,7 +1489,7 @@ impl Style {
 }
 
 /// The style subset M-series understands (a stand-in for the CSS `ComputedStyle`).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Style {
     pub display: Display,
     pub width: Option<Len>,
@@ -1800,7 +1800,7 @@ impl Default for Style {
 /// An image carried by a leaf node. `src` is resolved to a path the painter can
 /// open; the intrinsic size is filled in by the runtime (it reads the file's
 /// header) and sizes the box when CSS gives no width/height.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ImageContent {
     pub src: String,
     pub intrinsic: (f32, f32),
@@ -2230,7 +2230,7 @@ impl TextTransform {
 }
 
 /// One `text-shadow`: the glyphs again, moved, softened, in one colour.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct TextShadow {
     pub dx: f32,
     pub dy: f32,
@@ -2241,7 +2241,7 @@ pub struct TextShadow {
 }
 
 /// Text carried by a leaf node.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TextContent {
     pub text: String,
     pub font_size: f32,
@@ -2346,7 +2346,7 @@ pub const POP_ISOLATE: &str = "\u{2069}";
 /// `::selection` gets a background and a text colour and nothing else, which
 /// matches what browsers apply to a highlight: nothing that would move the
 /// text.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SelectionStyle {
     pub background: Option<Rgba>,
     pub color: Option<Rgba>,
@@ -2870,7 +2870,7 @@ pub struct Checks {
 
 /// A node in the view tree: a style, optional text, children, and an optional
 /// `@tap` handler (raw handler source, run by the shell on tap).
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Node {
     pub style: Style,
     /// Boxed: a `TextContent` is some 300 bytes and most nodes have none,
@@ -3264,7 +3264,7 @@ pub enum Paint {
 
 /// `mask-image`: how much of the box and its subtree shows, at each point,
 /// from an image or a gradient laid over its border box.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Mask {
     pub image: Background,
     /// `mask-mode: luminance`: how light the mask is, rather than how
@@ -3523,7 +3523,7 @@ pub enum SnapAlign {
 /// A box its scroller can come to rest on: `scroll-snap-align` (block, then
 /// inline), `scroll-snap-stop: always`, and `scroll-margin`, which grows the
 /// box for snapping alone.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct SnapArea {
     pub align: [SnapAlign; 2],
     pub always: bool,
@@ -4765,37 +4765,41 @@ struct At {
 
 /// The lists `build` fills and the index into them, which is everything
 /// `collect` reads about a node besides its box.
-struct Built<'a> {
-    paint: &'a [(NodeId, PaintKind)],
-    handlers: &'a [Handler],
-    models: &'a [Bound],
-    focus_labels: &'a [(NodeId, String, Option<String>)],
-    transforms: &'a [(NodeId, Transform, [Len; 2], Option<[Len; 2]>)],
-    opacities: &'a [(NodeId, f32, BlendMode)],
-    states: &'a [(NodeId, Vec<usize>)],
-    access: &'a [(NodeId, Access, Option<String>)],
-    paths: &'a [(NodeId, Vec<usize>)],
-    stickies: &'a [(NodeId, [Option<f32>; 4])],
+struct Built {
+    paint: Vec<(NodeId, PaintKind)>,
+    handlers: Vec<Handler>,
+    models: Vec<Bound>,
+    focus_labels: Vec<(NodeId, String, Option<String>)>,
+    transforms: Vec<(NodeId, Transform, [Len; 2], Option<[Len; 2]>)>,
+    opacities: Vec<(NodeId, f32, BlendMode)>,
+    states: Vec<(NodeId, Vec<usize>)>,
+    access: Vec<(NodeId, Access, Option<String>)>,
+    paths: Vec<(NodeId, Vec<usize>)>,
+    stickies: Vec<(NodeId, [Option<f32>; 4])>,
     /// The boxes a scroller can snap to. See `SnapArea`.
-    snaps: &'a [(NodeId, SnapArea)],
+    snaps: Vec<(NodeId, SnapArea)>,
     /// Each multi-column box's rule: how it is drawn, where across, and from
     /// where down how far. See `Columns`.
-    rules: &'a IdMap<(ColumnRule, Vec<f32>, f32, f32)>,
+    rules: IdMap<(ColumnRule, Vec<f32>, f32, f32)>,
     /// The boxes with `content-visibility`, and whether each was skipped.
-    contained: &'a [(NodeId, bool)],
+    contained: Vec<(NodeId, bool)>,
     at: IdMap<At>,
     /// Each visible scroller's id. See `number_scrollers`.
     scroll_ids: IdMap<usize>,
-    anchoring: &'a Anchoring,
+    anchoring: Anchoring,
 }
 
-impl Built<'_> {
+impl Built {
     fn at(&self, id: NodeId) -> At {
         self.at.get(&id).copied().unwrap_or_default()
     }
 
     fn paints(&self, id: NodeId) -> &[(NodeId, PaintKind)] {
-        let (start, len) = self.at(id).paint;
+        self.paints_at(self.at(id))
+    }
+
+    fn paints_at(&self, at: At) -> &[(NodeId, PaintKind)] {
+        let (start, len) = at.paint;
         &self.paint[start as usize..(start + len) as usize]
     }
 }
@@ -6229,6 +6233,7 @@ fn collect(
 ) {
     let layout = tree.layout(id).expect("layout");
     let at = b.at(id);
+    let own = b.paints_at(at);
     let mut x = origin_x + layout.location.x;
     let mut y = origin_y + layout.location.y;
 
@@ -6353,7 +6358,7 @@ fn collect(
         (alpha, blend)
     });
     // And a mask, which keeps only some of the layer before it is closed.
-    let mask = b.paints(id).iter().find_map(|(_, k)| match k {
+    let mask = own.iter().find_map(|(_, k)| match k {
         PaintKind::Mask(m) => Some(m),
         _ => None,
     });
@@ -6398,7 +6403,7 @@ fn collect(
     let child_dim = dim * alpha;
     // `clip-path` cuts the box and everything in it, its shadow and outline
     // included, to a shape over one of its boxes.
-    let shape_clip = b.paints(id).iter().find_map(|(_, k)| match k {
+    let shape_clip = own.iter().find_map(|(_, k)| match k {
         PaintKind::ClipPath(c) => Some(c),
         _ => None,
     });
@@ -6420,13 +6425,13 @@ fn collect(
     }
     // `backdrop-filter` under the box's own paint, and `filter` around all of
     // it, inside the shape it is cut to, as CSS orders them.
-    let filters = b.paints(id).iter().find_map(|(_, k)| match k {
+    let filters = own.iter().find_map(|(_, k)| match k {
         PaintKind::Filters(f) => Some(f),
         _ => None,
     });
     let filtered = filters.is_some_and(|f| !f.filter.is_empty());
     if let Some(f) = filters.filter(|f| !f.backdrop.is_empty()) {
-        let radius = b.paints(id).iter().find_map(|(_, k)| match k {
+        let radius = own.iter().find_map(|(_, k)| match k {
             PaintKind::Box { radius, radius_pct, .. } => {
                 Some(resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height))
             }
@@ -6457,14 +6462,14 @@ fn collect(
     // The walk that only finds where anchors are drawn (see `Anchoring`) needs
     // a box's clip and nothing it paints or answers taps with.
     if walk.dry {
-        for (_, kind) in b.paints(id) {
+        for (_, kind) in own {
             if let PaintKind::Box { radius, radius_pct, clip: c, .. } = kind {
                 clip = *c;
                 clip_radius = resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
             }
         }
     } else {
-        for (_, kind) in b.paints(id) {
+        for (_, kind) in own {
             match kind {
                 PaintKind::Box {
                     bg,
@@ -7048,7 +7053,9 @@ fn collect(
         scroll_extent(layout, at.scroll_rtl).0.max(layout.size.width),
         scroll_extent(layout, at.scroll_rtl).1.max(layout.size.height),
     );
-    for &child in tree.children(id).expect("children").iter() {
+    // By index: `children` hands back a copy of the list, one allocation per
+    // box per frame.
+    for child in (0..tree.child_count(id)).map(|i| tree.child_at_index(id, i).expect("child")) {
         let ca = b.at(child);
         if ca.hidden {
             continue;
@@ -7094,7 +7101,7 @@ fn collect(
     // clip, so it slides, fades and scrolls out of view with the element: the
     // focus ring used to be drawn by the shell as a separate layer and had to
     // be taught each of those one at a time.
-    for (_, kind) in b.paints(id).iter().filter(|_| !at.invisible) {
+    for (_, kind) in own.iter().filter(|_| !at.invisible) {
         if let PaintKind::Outline(o) = kind {
             out.paints.push(outline_paint(o, x, y, layout.size.width, layout.size.height, clip_radius));
         }
@@ -7204,7 +7211,7 @@ pub fn layout_scrolled(
 /// list and its ancestors, and Taffy answers for every row from its cache.
 ///
 /// Debug builds lay every frame out again from scratch and panic if the two
-/// differ in anything, paints, regions or metrics.
+/// differ in anything, paints, regions or metrics, while [`self_checking`].
 pub struct LayoutState {
     tree: TaffyTree<TextContent>,
     kept: Option<Kept>,
@@ -7218,6 +7225,53 @@ pub struct LayoutState {
     /// `contain-intrinsic-size: auto`. By path. See [`Layout::contained`].
     shown: HashMap<Vec<usize>, bool>,
     sizes: HashMap<Vec<usize>, (f32, f32)>,
+    /// The last frame's laid-out tree, kept whole with what it was laid out
+    /// from, for a frame that only scrolls (AW-018).
+    prepared: Option<Prepared>,
+    /// The revision of the tree this call lays out, when the caller keeps
+    /// one. See [`LayoutState::lay_out_revision`].
+    revision: Option<u64>,
+}
+
+/// A frame's layout short of where the scroll offsets put it: the boxes
+/// Taffy placed and what the walk reads off them, with the inputs that
+/// decided them. When the next frame's inputs are equal, its layout is the
+/// same, and only `collect` runs again.
+///
+/// Before this, a list of 1,000 rows laid itself out from the top on every
+/// frame of a scroll: 16.8 ms a frame in a release build, nearly all of it
+/// in rebuilding the Taffy tree and the text geometry nothing had changed.
+struct Prepared {
+    /// What it was laid out from: the tree's revision when the caller gave
+    /// one, and otherwise a copy of the tree to compare with.
+    revision: Option<u64>,
+    root: Option<Node>,
+    vp: (f32, f32),
+    shown: HashMap<Vec<usize>, bool>,
+    sizes: HashMap<Vec<usize>, (f32, f32)>,
+    root_id: NodeId,
+    built: Built,
+    geometry: std::rc::Rc<IdMap<std::sync::Arc<InlineGeometry>>>,
+}
+
+static SELF_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+/// Turn Rux's own proofs on or off in a debug build: each kept layout laid
+/// out again whole, each list built alone built again with the document,
+/// each reused row built again from nothing, and the two compared.
+///
+/// On by default, so Rux's tests prove every frame and every reconcile they
+/// drive. The window turns them off unless `RUX_SELF_CHECK` is set: each is
+/// the whole document again, and an app's debug build with a list of 1,000
+/// rows spent 400 ms a frame scrolling it and 10 s loading it (AW-018).
+pub fn set_self_checks(on: bool) {
+    SELF_CHECKS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Whether a debug build proves what it kept. Always false in a release
+/// build, which proves nothing. See [`set_self_checks`].
+pub fn self_checking() -> bool {
+    cfg!(debug_assertions) && SELF_CHECKS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 impl Default for LayoutState {
@@ -7243,6 +7297,8 @@ impl LayoutState {
             tried: HashMap::new(),
             shown: HashMap::new(),
             sizes: HashMap::new(),
+            prepared: None,
+            revision: None,
         }
     }
 
@@ -7284,7 +7340,7 @@ impl LayoutState {
     ) -> Layout {
         let out = self.lay_out(root, avail_w, avail_h, offsets, measure);
         #[cfg(debug_assertions)]
-        {
+        if self_checking() {
             let mut fresh = LayoutState::new();
             fresh.tried = self.tried.clone();
             fresh.shown = self.shown.clone();
@@ -7310,6 +7366,25 @@ impl LayoutState {
                 self.sizes.insert(c.path.clone(), size);
             }
         }
+        out
+    }
+
+    /// [`LayoutState::lay_out_text`] for a caller that numbers its tree: the
+    /// same `revision` promises the same tree, so a frame that only scrolled
+    /// is known for one without comparing the trees. The shell lays out
+    /// through this, with the revision of the document's `Root`.
+    pub fn lay_out_revision(
+        &mut self,
+        root: &Node,
+        revision: u64,
+        avail_w: f32,
+        avail_h: f32,
+        offsets: &[Offset],
+        measure: &mut dyn TextMeasure,
+    ) -> Layout {
+        self.revision = Some(revision);
+        let out = self.lay_out_text(root, avail_w, avail_h, offsets, measure);
+        self.revision = None;
         out
     }
 
@@ -7354,9 +7429,92 @@ impl LayoutState {
         measure: &mut dyn TextMeasure,
         shown: &HashMap<Vec<usize>, bool>,
     ) -> Layout {
+        let vp = (avail_w, avail_h);
+        // A frame that only scrolled lays out nothing: every box is where it
+        // was, and only the walk below, which applies the offsets, is redone.
+        // The same tree is known by its revision when the caller numbers it,
+        // and otherwise by comparing it with the last one.
+        let same = self.prepared.as_ref().is_some_and(|p| {
+            p.vp == vp
+                && p.shown == *shown
+                && p.sizes == self.sizes
+                && match (self.revision, p.revision) {
+                    (Some(now), Some(then)) => now == then,
+                    _ => p.root.as_ref() == Some(root),
+                }
+        });
+        match self.prepared.as_mut() {
+            // Found the same by comparing, and numbered now: the number is
+            // enough from here on.
+            Some(p) if same && self.revision.is_some() && p.revision != self.revision => {
+                (p.revision, p.root) = (self.revision, None);
+            }
+            Some(_) if same => {}
+            _ => {
+                self.prepared = None;
+                let prepared = self.prepare(root, vp, measure, shown);
+                self.prepared = Some(prepared);
+            }
+        }
+        let Prepared { root_id, built, geometry, .. } = self.prepared.as_ref().expect("prepared above");
+        let (root_id, tree, tried_before) = (*root_id, &self.tree, &self.tried);
+        let tried_before = std::rc::Rc::new(tried_before.clone());
+        let walk_once = |known: Option<HashMap<String, AnchorBox>>, dry: bool| {
+            let mut out = Layout::default();
+            let mut walk = Walk {
+                scrolls: vec![None; built.scroll_ids.len()],
+                known,
+                dry,
+                tried_before: std::rc::Rc::clone(&tried_before),
+                inline: std::rc::Rc::clone(geometry),
+                ..Walk::default()
+            };
+            // The root is the outermost stacking context. This one only holds
+            // its place: the root makes its own, as every context does.
+            let mut outer = Stacking::new(&out, 0);
+            collect(
+                tree, root_id, 0.0, 0.0, built, offsets, vp,
+                // The root is held by the window.
+                (0.0, 0.0, vp.0, vp.1),
+                None, None, 1.0, true, &mut out, &mut walk, &mut outer,
+            );
+            debug_assert!(outer.pending.is_empty() && walk.clips.is_empty());
+            (out, walk)
+        };
+        // Anything anchored is drawn by a second walk, against where the
+        // first one drew its anchors. See `Anchoring`.
+        let anchored = !built.anchoring.boxes.is_empty();
+        let (mut out, mut walk) = walk_once(None, anchored);
+        if anchored {
+            (out, walk) = walk_once(Some(std::mem::take(&mut walk.seen)), false);
+            walk.misses.sort();
+            walk.misses.dedup();
+            out.anchor_misses = std::mem::take(&mut walk.misses);
+            walk.tried.sort();
+            out.position_tries = std::mem::take(&mut walk.tried);
+        }
+        out.contained = std::mem::take(&mut walk.contained);
+        out.scrolls = walk.scrolls.into_iter().flatten().collect();
+        debug_assert!(out.scrolls.iter().enumerate().all(|(i, s)| s.id == i), "every numbered scroller is drawn");
+        // Painting order is not reading order. Tab and assistive technology
+        // follow the document, whatever is drawn over what.
+        out.focusables = in_order(std::mem::take(&mut out.focusables), &walk.focus_seq);
+        out.access = in_order(std::mem::take(&mut out.access), &walk.access_seq);
+        out
+    }
+
+    /// Everything a frame's layout is but the walk that places it on the
+    /// screen: the Taffy tree built and laid out, and what the walk reads.
+    fn prepare(
+        &mut self,
+        root: &Node,
+        vp: (f32, f32),
+        measure: &mut dyn TextMeasure,
+        shown: &HashMap<Vec<usize>, bool>,
+    ) -> Prepared {
+        let (avail_w, avail_h) = vp;
         let mut skipping = Skipping { shown, sizes: &self.sizes, intrinsic: IdMap::default(), boxes: Vec::new() };
         let tree = &mut self.tree;
-        let tried_before = &self.tried;
         let mut paint = Vec::new();
         let mut handlers = Vec::new();
         let mut models = Vec::new();
@@ -7368,7 +7526,6 @@ impl LayoutState {
         let mut states = Vec::new();
         let mut access = Vec::new();
         let mut paths = Vec::new();
-        let vp = (avail_w, avail_h);
         let mut caps: IdMap<f32> = IdMap::default();
         let mut stickies: Vec<(NodeId, [Option<f32>; 4])> = Vec::new();
         let mut snaps: Vec<(NodeId, SnapArea)> = Vec::new();
@@ -7661,28 +7818,6 @@ impl LayoutState {
         for (i, (id, _)) in skipping.boxes.iter().enumerate() {
             at.entry(*id).or_default().contained = Some(i as u32);
         }
-        let built = Built {
-            paint: &paint,
-            handlers: &handlers,
-            models: &models,
-            focus_labels: &focus_labels,
-            transforms: &transforms,
-            opacities: &opacities,
-            states: &states,
-            access: &access,
-            paths: &paths,
-            stickies: &stickies,
-            snaps: &snaps,
-            rules: &rules,
-            contained: &skipping.boxes,
-            scroll_ids: {
-                let mut ids = IdMap::default();
-                number_scrollers(&tree, root_id, &at, &mut ids);
-                ids
-            },
-            anchoring: &anchoring,
-            at,
-        };
         // Where the parts of each sentence landed, now that each has the width
         // it is drawn at. Its `Text` paint comes just before its `Inline` one.
         let mut geometry: IdMap<std::sync::Arc<InlineGeometry>> = IdMap::default();
@@ -7699,51 +7834,40 @@ impl LayoutState {
                 _ => {}
             }
         }
-        // Shared by the walks, of which there are two when anything is anchored.
-        let geometry = std::rc::Rc::new(geometry);
-        let tried_before = std::rc::Rc::new(tried_before.clone());
-        let walk_once = |known: Option<HashMap<String, AnchorBox>>, dry: bool| {
-            let mut out = Layout::default();
-            let mut walk = Walk {
-                scrolls: vec![None; built.scroll_ids.len()],
-                known,
-                dry,
-                tried_before: std::rc::Rc::clone(&tried_before),
-                inline: std::rc::Rc::clone(&geometry),
-                ..Walk::default()
-            };
-            // The root is the outermost stacking context. This one only holds
-            // its place: the root makes its own, as every context does.
-            let mut outer = Stacking::new(&out, 0);
-            collect(
-                &tree, root_id, 0.0, 0.0, &built, offsets, vp,
-                // The root is held by the window.
-                (0.0, 0.0, vp.0, vp.1),
-                None, None, 1.0, true, &mut out, &mut walk, &mut outer,
-            );
-            debug_assert!(outer.pending.is_empty() && walk.clips.is_empty());
-            (out, walk)
+        let scroll_ids = {
+            let mut ids = IdMap::default();
+            number_scrollers(tree, root_id, &at, &mut ids);
+            ids
         };
-        // Anything anchored is drawn by a second walk, against where the
-        // first one drew its anchors. See `Anchoring`.
-        let anchored = !anchoring.boxes.is_empty();
-        let (mut out, mut walk) = walk_once(None, anchored);
-        if anchored {
-            (out, walk) = walk_once(Some(std::mem::take(&mut walk.seen)), false);
-            walk.misses.sort();
-            walk.misses.dedup();
-            out.anchor_misses = std::mem::take(&mut walk.misses);
-            walk.tried.sort();
-            out.position_tries = std::mem::take(&mut walk.tried);
+        let built = Built {
+            paint,
+            handlers,
+            models,
+            focus_labels,
+            transforms,
+            opacities,
+            states,
+            access,
+            paths,
+            stickies,
+            snaps,
+            rules,
+            contained: skipping.boxes,
+            scroll_ids,
+            anchoring,
+            at,
+        };
+        Prepared {
+            revision: self.revision,
+            root: self.revision.is_none().then(|| root.clone()),
+            vp,
+            shown: shown.clone(),
+            sizes: self.sizes.clone(),
+            root_id,
+            built,
+            // Shared by the walks, of which there are two when anything is anchored.
+            geometry: std::rc::Rc::new(geometry),
         }
-        out.contained = std::mem::take(&mut walk.contained);
-        out.scrolls = walk.scrolls.into_iter().flatten().collect();
-        debug_assert!(out.scrolls.iter().enumerate().all(|(i, s)| s.id == i), "every numbered scroller is drawn");
-        // Painting order is not reading order. Tab and assistive technology
-        // follow the document, whatever is drawn over what.
-        out.focusables = in_order(std::mem::take(&mut out.focusables), &walk.focus_seq);
-        out.access = in_order(std::mem::take(&mut out.access), &walk.access_seq);
-        out
     }
 }
 

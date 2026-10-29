@@ -240,7 +240,15 @@ fn scroll_cost(src: &str, label: &str) {
     for f in 0..frames {
         let offsets = [rux_layout::Offset { x: 0.0, y: f as f32 * 37.0 }];
         let t = Instant::now();
-        let out = kept.lay_out_text(&doc.root, 800.0, 600.0, &offsets, &mut rux_paint::EngineMeasure(&mut text));
+        // As the shell lays out: the document's revision says nothing changed.
+        let out = kept.lay_out_revision(
+            &doc.root,
+            doc.root.revision(),
+            800.0,
+            600.0,
+            &offsets,
+            &mut rux_paint::EngineMeasure(&mut text),
+        );
         layout_us.push(t.elapsed().as_secs_f64() * 1e6);
         let t = Instant::now();
         let scene = rux_paint::build_scene_within(&out.paints, &mut text, &mut images, false, (800.0, 600.0));

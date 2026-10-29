@@ -400,6 +400,77 @@ fn mutate(r: &mut Rng, node: &mut Node, depth: u32) {
     }
 }
 
+/// [`wrap`] as a text engine, counting what it is asked.
+struct Counted<'a>(&'a mut usize);
+
+impl TextMeasure for Counted<'_> {
+    fn measure(&mut self, tc: &TextContent, max: Option<f32>) -> (f32, f32) {
+        *self.0 += 1;
+        wrap(&tc.text, max)
+    }
+}
+
+/// A list of rows in a box 120 high that scrolls.
+fn scrolled_rows(n: usize) -> Node {
+    let rows = (0..n)
+        .map(|i| {
+            let mut row = boxed(
+                Style { shrink: 0.0, padding: Sides::uniform(4.0), ..flex_row() },
+                vec![label(&format!("row {i}")), label(&format!("some words for row {i}"))],
+            );
+            row.key = Some(i.to_string());
+            row
+        })
+        .collect();
+    let list = boxed(Style { height: Some(Len::Px(120.0)), overflow: Overflow::Scroll, ..column() }, rows);
+    boxed(column(), vec![label("title"), list])
+}
+
+/// A frame that only scrolls is the last frame's layout walked again at the
+/// new offsets (AW-018): nothing is measured, and it is what a whole layout
+/// at those offsets is, whether the tree is known the same by comparing it
+/// or by its revision.
+#[test]
+fn a_frame_that_only_scrolls_lays_out_nothing_again() {
+    let tree = scrolled_rows(40);
+    for numbered in [false, true] {
+        let mut kept = LayoutState::new();
+        for (frame, y) in [0.0, 0.0, 13.5, 200.0, 999.0, 40.0].into_iter().enumerate() {
+            let offsets = [Offset { x: 0.0, y }];
+            let mut whole_calls = 0;
+            let whole = layout_scrolled(&tree, 300.0, 400.0, &offsets, &mut |tc, max| {
+                whole_calls += 1;
+                wrap(&tc.text, max)
+            });
+            let mut calls = 0;
+            let out = if numbered {
+                kept.lay_out_revision(&tree, 7, 300.0, 400.0, &offsets, &mut Counted(&mut calls))
+            } else {
+                kept.lay_out_text(&tree, 300.0, 400.0, &offsets, &mut Counted(&mut calls))
+            };
+            assert_eq!(format!("{out:#?}"), format!("{whole:#?}"), "frame {frame} at {y}, numbered: {numbered}");
+            let own = calls - if cfg!(debug_assertions) { whole_calls } else { 0 };
+            if frame > 0 {
+                assert_eq!(own, 0, "frame {frame} measured {own} texts for a scroll, numbered: {numbered}");
+            }
+        }
+    }
+}
+
+/// A new revision is a new tree, laid out again, even where the tree it
+/// numbers looks the same to the last one.
+#[test]
+fn a_new_revision_is_laid_out_again() {
+    let mut kept = LayoutState::new();
+    let mut calls = 0;
+    let tree = keyed_rows(&[0, 1, 2]);
+    kept.lay_out_revision(&tree, 1, 300.0, 400.0, &[], &mut Counted(&mut calls));
+    let changed = keyed_rows(&[0, 1, 2, 3]);
+    let out = kept.lay_out_revision(&changed, 2, 300.0, 400.0, &[], &mut Counted(&mut calls));
+    let whole = layout(&changed, 300.0, 400.0, &mut |tc, max| wrap(&tc.text, max));
+    assert_eq!(format!("{out:#?}"), format!("{whole:#?}"));
+}
+
 /// Random trees changed one random thing a frame, with now and then a resize.
 /// The cases above are the ones thought of; this is for the rest.
 #[test]

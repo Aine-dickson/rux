@@ -239,7 +239,68 @@ pub struct Document {
     /// Everything else in the shell goes through its one `set_focus_range`
     /// funnel, and so must this.
     pending_focus: Option<Option<Focus>>,
-    pub root: LayoutNode,
+    /// The tree as it stands. Read it as a `Node`; write it through
+    /// [`Root::get_mut`], which is what tells the layout it changed.
+    pub root: Root,
+}
+
+/// The document's tree, with a number that moves whenever it is written.
+///
+/// A frame that only scrolls hands the layout the same tree it laid out
+/// last frame, and the layout keeps what it found rather than walking a
+/// tree of a thousand rows to learn that nothing moved (AW-018). The number
+/// says so without the walk. Reading goes through `Deref`, so only a write
+/// has to say what it is, and the compiler finds every one.
+///
+/// Numbers come from one counter for the whole process, so a document
+/// loaded afresh, as a hot reload does, never repeats the number of the
+/// one it replaced.
+pub struct Root {
+    node: LayoutNode,
+    revision: u64,
+}
+
+fn next_revision() -> u64 {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+impl Root {
+    pub fn new(node: LayoutNode) -> Self {
+        Self { node, revision: next_revision() }
+    }
+
+    /// The tree, to change. Counts as a change whether or not anything is.
+    pub fn get_mut(&mut self) -> &mut LayoutNode {
+        self.revision = next_revision();
+        &mut self.node
+    }
+
+    /// Put a whole new tree in place.
+    pub fn set(&mut self, node: LayoutNode) {
+        self.revision = next_revision();
+        self.node = node;
+    }
+
+    /// A number that is the same only while the tree has not been written.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+}
+
+/// The tree alone: two documents that show the same are equal in a dump,
+/// whatever their numbers.
+impl std::fmt::Debug for Root {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.node.fmt(f)
+    }
+}
+
+impl std::ops::Deref for Root {
+    type Target = LayoutNode;
+    fn deref(&self) -> &LayoutNode {
+        &self.node
+    }
 }
 
 /// Compile every event handler and route guard in a template once, at load, and
@@ -3040,7 +3101,7 @@ impl Document {
             pending_submits: Vec::new(),
             pending_media: Vec::new(),
             pending_focus: None,
-            root,
+            root: Root::new(root),
         };
         doc.init_reactive();
         Ok(doc)
@@ -3194,7 +3255,7 @@ impl Document {
             pending_submits: Vec::new(),
             pending_media: Vec::new(),
             pending_focus: None,
-            root,
+            root: Root::new(root),
         };
         doc.init_reactive();
         Ok(doc)
@@ -3278,7 +3339,7 @@ impl Document {
             self.patch_values(&deps);
         }
         let real = self.focused_shown();
-        apply_focus(&mut self.root, self.focus.as_ref(), real.as_ref());
+        apply_focus(self.root.get_mut(), self.focus.as_ref(), real.as_ref());
     }
 
     /// Show `draft` in the focused field instead of its value, or stop.
@@ -3308,7 +3369,7 @@ impl Document {
             }
         }
         let real = self.focused_shown();
-        apply_focus(&mut self.root, self.focus.as_ref(), real.as_ref());
+        apply_focus(self.root.get_mut(), self.focus.as_ref(), real.as_ref());
     }
 
     /// The pointer/focus state pseudo-class selectors match against.
@@ -3445,7 +3506,7 @@ impl Document {
             let fresh_node = fresh.clone();
             let row = row_at(&fresh_root, path);
             let real = self.focused_shown();
-            if let Some(live) = node_at_mut(&mut self.root, path) {
+            if let Some(live) = node_at_mut(self.root.get_mut(), path) {
                 *live = fresh_node;
                 apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
             }
@@ -3538,7 +3599,7 @@ impl Document {
             let real = self.focused_shown();
             apply_focus(&mut root, self.focus.as_ref(), real.as_ref());
             self.registry = registry;
-            self.root = root;
+            self.root.set(root);
             // Refresh what the overlay lists: a rebuild re-runs the cascade and
             // every binding, so it re-raises exactly what this document still has
             // wrong.
@@ -3590,7 +3651,7 @@ impl Document {
             // loaded since is read through from here on.
             let (text, deps) = rux_style::eval_text_binding_tracked(binding, &mut self.engine);
             binding.deps = deps;
-            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+            if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 if let Some(content) = node.text.as_mut() {
                     content.text = text;
                 }
@@ -3604,7 +3665,7 @@ impl Document {
                 continue;
             }
             let (text, color) = rux_style::eval_value_binding(binding, &mut self.engine);
-            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+            if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 if let Some(content) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
                     content.text = text;
                     content.color = color;
@@ -3615,7 +3676,7 @@ impl Document {
         // the number a keystroke just wrote, which the loop above painted.
         if self.draft.is_some() {
             let real = self.focused_shown();
-            apply_focus(&mut self.root, self.focus.as_ref(), real.as_ref());
+            apply_focus(self.root.get_mut(), self.focus.as_ref(), real.as_ref());
         }
         // `r-show` only flips paint on/off, rewrite the `hidden` bool in place.
         for binding in &self.registry.show {
@@ -3623,7 +3684,7 @@ impl Document {
                 continue;
             }
             let visible = self.engine.eval_bool(&binding.cond, &binding.locals);
-            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+            if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 node.hidden = !visible;
             }
         }
@@ -3634,7 +3695,7 @@ impl Document {
                 continue;
             }
             let raw = rux_style::eval_src_binding(binding, &mut self.engine);
-            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+            if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 if node.path.is_some() {
                     node.path = Some(rux_layout::PathContent::parse(&raw));
                     continue;
@@ -3651,7 +3712,7 @@ impl Document {
                 continue;
             }
             let opts = rux_style::eval_options_binding(binding, &mut self.engine);
-            if let Some(node) = node_at_mut(&mut self.root, &binding.path) {
+            if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 node.options = Some(opts);
             }
         }
@@ -3738,7 +3799,7 @@ impl Document {
                 std::mem::take(&mut fresh.children)
             };
             let real = self.focused_shown();
-            if let Some(live) = node_at_mut(&mut self.root, p) {
+            if let Some(live) = node_at_mut(self.root.get_mut(), p) {
                 live.children = fresh_children;
                 // Put the caret back only within this rebuilt subtree. The rows
                 // carry their own keys, so a caret in a row that moved lands in
@@ -3754,7 +3815,7 @@ impl Document {
             }
             if let Some(fresh) = node_at(&fresh_root, p) {
                 let fresh_node = fresh.clone();
-                if let Some(live) = node_at_mut(&mut self.root, p) {
+                if let Some(live) = node_at_mut(self.root.get_mut(), p) {
                     *live = fresh_node;
                 }
             }
@@ -3769,7 +3830,7 @@ impl Document {
                 let fresh_node = fresh.clone();
                 let row = row_at(&fresh_root, p);
                 let real = self.focused_shown();
-                if let Some(live) = node_at_mut(&mut self.root, p) {
+                if let Some(live) = node_at_mut(self.root.get_mut(), p) {
                     *live = fresh_node;
                     apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
                 }
@@ -3818,12 +3879,12 @@ impl Document {
             parents.push(parent.clone());
         }
         #[cfg(debug_assertions)]
-        let before = self.root.clone();
+        let before = rux_layout::self_checking().then(|| LayoutNode::clone(&self.root));
         for parent in &parents {
             let p = &parent.tree_path;
             // The rows being replaced go to the build, which moves the ones
             // it reuses back into place instead of copying them.
-            let live_children = node_at_mut(&mut self.root, p).map(|n| std::mem::take(&mut n.children)).unwrap_or_default();
+            let live_children = node_at_mut(self.root.get_mut(), p).map(|n| std::mem::take(&mut n.children)).unwrap_or_default();
             let taken = self.registry.take_under(p);
             let Some(rebuilt) = rux_style::rebuild_children(
                 &self.sfc,
@@ -3847,7 +3908,7 @@ impl Document {
             }
             let row = row_at(&self.root, p);
             let real = self.focused_shown();
-            if let Some(live) = node_at_mut(&mut self.root, p) {
+            if let Some(live) = node_at_mut(self.root.get_mut(), p) {
                 live.children = children;
                 apply_focus_in(live, self.focus.as_ref(), row.as_deref(), real.as_ref());
             }
@@ -3855,7 +3916,9 @@ impl Document {
         }
         self.diagnostics.warnings = self.fresh_warnings();
         #[cfg(debug_assertions)]
-        self.prove_lists(before, roots);
+        if let Some(before) = before {
+            self.prove_lists(before, roots);
+        }
         self.lists_alone += 1;
         self.settle_lifecycle(0);
         true
@@ -5145,7 +5208,7 @@ impl Document {
             // Whose a binding is: the instance of the innermost node on its way
             // there. Its locals cannot say: every instance of a component has
             // the same scope.
-            let root = &self.root;
+            let root: &LayoutNode = &self.root;
             let mine = |path: &[usize]| {
                 let mut node = root;
                 let mut on = node.instance.as_deref();
@@ -5571,7 +5634,7 @@ impl Document {
                 walk(child);
             }
         }
-        walk(&mut self.root);
+        walk(self.root.get_mut());
         true
     }
 
@@ -12414,7 +12477,7 @@ use components::about;
         let mut anim = Animator::new();
         let frame = |doc: &mut Document, anim: &mut Animator, now: f64| {
             let _ = doc.advance_swaps(now);
-            let _ = anim.apply(&mut doc.root, now);
+            let _ = anim.apply(doc.root.get_mut(), now);
             let painted = opacity_of(&doc.root, 1.0, "home");
             let _ = doc.settle_swaps();
             painted

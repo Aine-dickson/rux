@@ -11145,7 +11145,7 @@ pub fn build_styled_tree_cached(
     // and the test suite is what drives it. Skipped mid-swap, where a second
     // build would advance the swap and differ for that reason alone.
     #[cfg(debug_assertions)]
-    if cache.hits > 0 && swaps.is_empty() {
+    if cache.hits > 0 && swaps.is_empty() && rux_layout::self_checking() {
         if let Ok((node, reg)) = &out {
             let mut instances = instances.clone();
             let mut swaps = swaps.clone();

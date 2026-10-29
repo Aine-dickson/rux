@@ -10,7 +10,7 @@
 use crate::Rgba;
 
 /// One step of a filter, in the order written.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FilterOp {
     /// `blur()`: a Gaussian with this standard deviation, in logical px.
     Blur(f32),
@@ -24,7 +24,7 @@ pub enum FilterOp {
 
 /// A box's `filter` and `backdrop-filter`, boxed together on a `Style`
 /// (watchlist #41).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct Filters {
     pub filter: Vec<FilterOp>,
     pub backdrop: Vec<FilterOp>,
