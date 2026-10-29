@@ -121,8 +121,11 @@ impl Type {
                 }
             }
         }
-        // A member a wider one already covers says nothing: `int | float` is
-        // `float`, and `"a" | string` is `string`.
+        // A member a wider one already covers says nothing: `int | any` is
+        // `any`, `int | float` is `float`, and `"a" | string` is `string`.
+        if out.contains(&Type::Any) {
+            return Type::Any;
+        }
         if out.contains(&Type::Float) {
             out.retain(|t| *t != Type::Int);
         }
