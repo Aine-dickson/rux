@@ -3149,6 +3149,28 @@ in every row. Injected clicks do not reach the window here; it is under test
 only: `an_unkeyed_row_is_its_position` in `crates/rux-runtime/tests/list_rows.rs`
 edits the second unkeyed row and finds the first untouched.
 
+## Long lists scrolled, and rows scrolled out of view, 2026-10-29
+
+Tracer's AW-018: 1,000 rows of a JSON viewer scrolled at about 2 fps in a debug
+build. Two documents: Tracer's own probe 2 (`probes/`, a debug app built by
+`rux run` against this checkout, 1,002 coloured lines), and the same rows
+written alone in `rux-harness/aw018/app.rux` (run by `rux run`, release and
+debug). Driven with `measure.ps1` and `probe.ps1` there: 40 wheel notches over
+the list with `RUX_PROFILE=each`, CPU read from the process. Desktop, Windows 11.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Scrolling, release | `app.rux`, 1,000 rows, 40 notches | layout a frame well under 16.8 ms, the rows drawn where they scroll to | pass: 4.2 ms median (about 4x faster); 719 ms CPU for the 40 notches, was 1,313 |
+| Scrolling, debug | the same through a debug `rux` | layout a frame near the release figure's order, not 400 ms | pass: 12.7 ms median (about 31x faster). `RUX_SELF_CHECK=1` puts the proofs back: 400 ms |
+| Tracer's probe 2, loaded | **1k lines** | the lines drawn, the window answering | pass: 2.0 s CPU; `patch` 765 ms, was 10.3 s |
+| Tracer's probe 2, scrolled | 40 notches over the viewer | smooth enough to read, layout near 13 ms | pass: layout 13.4 ms median, 2.5 s CPU for the 40 notches (Tracer measured 29 s) |
+| Tracer's probe 2, sync load | **clear**, then **1k · sync Rust** | the window keeps answering | pass: never "not responding" in 40 samples 250 ms apart; was about 9 s |
+| Clear and reload | load, wheel 20 notches, **clear**, then **1k lines** | the list empties, then comes back, each without a hover | pass, screenshots |
+
+Not driven: a tap on a header with a row scrolled up under it, which needs
+rows with a handler, and probe 2's have none. Under test: `crates/rux-runtime/tests/scrolled_out_taps.rs`, a tap
+and a hover over the header with rows scrolled up beneath it.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

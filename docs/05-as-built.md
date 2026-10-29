@@ -148,6 +148,28 @@ Android has no environment to pass, so there the variable is read when the
 app is built: `RUX_PROFILE=1 rux build` bakes it in, and the summary goes to
 `adb logcat -s rux`. The web build has no profile.
 
+### A frame that only scrolls
+
+A frame that only scrolls lays nothing out again. The layout keeps the last
+frame's boxes with what they were laid out from: the window's size, which
+`content-visibility` boxes were shown, and the document's revision, a number
+that moves whenever anything writes the tree. When all three are as they
+were, only the walk that places the boxes at the scroll offsets runs again. A
+list of 1,000 rows: 16.8 ms of layout a scrolled frame in a release build,
+then 4.2 ms (about 4x faster). The walk itself still visits every row, so a
+list ten times as long costs ten times as much to scroll.
+
+Rux's own tests prove what it keeps: a debug build lays each kept layout out
+again whole, builds each list built alone again with its document, and builds
+each reused row again from nothing, and compares. Each of those is the whole
+document again, so the window turns them off, and an app's debug build no
+longer pays for them: the same list scrolled at 400 ms of layout a frame with
+them and 12.7 ms without. `RUX_SELF_CHECK=1 rux run app.rux` turns them on.
+
+What `overflow` cuts away cannot be tapped or hovered, as in a browser. A row
+scrolled up out of its list used to lie over the header above it, invisible,
+and take the header's taps.
+
 ### List rows are reused
 
 A change to a list builds the whole document and splices in the list that
