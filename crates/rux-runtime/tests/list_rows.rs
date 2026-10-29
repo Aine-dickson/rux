@@ -90,3 +90,20 @@ fn an_indexed_model_still_writes() {
     d.apply_edit_in("items[0].name", Some("1"), None, "direct");
     assert!(shows(&d, "direct"));
 }
+
+/// Without `r-key` a row is identified by its position, so an edit in the
+/// second row writes the second item and leaves the first alone. Before, both
+/// rows had no identity at all and were one input to everything addressing it.
+#[test]
+fn an_unkeyed_row_is_its_position() {
+    let mut d = doc(
+        r#"<view r-for="item in items"><input r-model="item.name" /></view>
+           <text>{{ items[1].name }}</text>"#,
+        LIST,
+    );
+    let second = "\u{1}1";
+    d.apply_edit_in("item.name", Some(second), None, "changed");
+    assert_eq!(d.value_in("item.name", Some(second), None), "changed");
+    assert!(shows(&d, "changed"), "the list itself changed");
+    assert_eq!(d.value_in("item.name", Some("\u{1}0"), None), "alpha");
+}

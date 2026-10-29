@@ -3129,6 +3129,26 @@ phone (none), a `content://` file from the picker, Back leaving
 fullscreen, frame rates worth recording (the emulator cannot show C.0's
 page alone at 60).
 
+## Invalid CSS dropped before the cascade, and unkeyed rows, 2026-10-29
+
+Found by the owner in a Tailwind project: `.grid { grid-template-rows: minmax 1fr; }`
+in a `<style src="assets/tailwind.css">` body, on a `<screen class="grid grid-rows-2">`.
+A copy of that project in a scratch folder, Tailwind v4.3.3 standalone. Desktop,
+Windows 11.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The owner's case, check | `rux check app.rux` | a warning on line 17 naming `minmax` as a function | pass |
+| The owner's case, window | `rux run app.rux` | `grid-rows-2` still applies: the nav's border halfway down the window, as a browser draws it | pass, screenshot. Before: `auto 1fr`, the border right under the text |
+| No false alarms | the owner's current version (`grid-rows-[auto_1fr]`) against its generated sheet | no problems | pass |
+| Unkeyed rows with inputs | `r-for` with an `<input r-model>`, no `r-key` | a warning on the `r-for` line | pass |
+| Keyed rows, plain rows | the same list with `r-key`, and an unkeyed list of `<text>` | no warning | pass |
+
+Not driven: that focusing an input in one unkeyed row no longer puts a caret
+in every row. Injected clicks do not reach the window here; it is under test
+only: `an_unkeyed_row_is_its_position` in `crates/rux-runtime/tests/list_rows.rs`
+edits the second unkeyed row and finds the first untouched.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

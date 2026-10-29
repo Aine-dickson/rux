@@ -52,6 +52,9 @@ mod color;
 mod layer;
 mod logical;
 
+/// Whether a declaration is one a browser would keep, asked before the cascade.
+mod validity;
+
 /// `white-space`: which spaces in a `<text>` are drawn. It lives in the layout,
 /// which joins the runs of a sentence and collapses the spaces between them.
 pub use rux_layout::white_space;
@@ -314,6 +317,9 @@ pub struct ListCtx {
     ancestors: Vec<AncNode>,
     inherited: Inherited,
     locals: Locals,
+    /// The unkeyed row it is in, if any, which everything inside it is
+    /// identified by. See [`only_by_position`].
+    row: Option<String>,
 }
 
 impl std::fmt::Debug for ListCtx {
@@ -2640,6 +2646,27 @@ fn inline_decls(css: &str, out: &mut Vec<(String, String)>) {
             }
         }
     }
+}
+
+/// [`validity::problem`] for an inline declaration, remembered: a `:style` is
+/// read again on every build, and parsing its value each time would be paid
+/// per row of a list.
+fn inline_problem(name: &str, value: &str) -> Option<String> {
+    thread_local! {
+        static SEEN: std::cell::RefCell<HashMap<(String, String), Option<String>>> =
+            std::cell::RefCell::new(HashMap::new());
+    }
+    SEEN.with(|seen| {
+        let mut seen = seen.borrow_mut();
+        // A `:style` interpolating a number per frame would grow this without
+        // end; past a bound it starts again.
+        if seen.len() > 4096 {
+            seen.clear();
+        }
+        seen.entry((name.to_string(), value.to_string()))
+            .or_insert_with(|| validity::problem(name, value, None))
+            .clone()
+    })
 }
 
 /// An element's `direction` and whether it is `dir="auto"`: the property
@@ -5210,6 +5237,13 @@ fn rule_decls(
                     if key == "position-try-fallbacks" || key == "position-try" {
                         v = expand_position_tries(&v, tries);
                     }
+                    // Dropped here, before the cascade, so an earlier valid
+                    // rule still wins, as it does in a browser.
+                    let unparsed = matches!(prop, lightningcss::properties::Property::Unparsed(_));
+                    if let Some(why) = validity::problem(&key, &v, Some(unparsed)) {
+                        located(file_line(base, at), || warn(why));
+                        continue;
+                    }
                     decls.push((key, v));
                 }
             }
@@ -7694,7 +7728,7 @@ fn build_text(
         };
         let siblings = if KEEP_SIBLINGS.with(std::cell::Cell::get) { prev.to_vec() } else { Vec::new() };
         ancestors.push(AncNode { desc, prev: siblings.into(), place: prev.len() + 1, child_total: None, form: None });
-        let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
+        let plain = instance.is_none() && slot.is_none() && outlet.is_none() && only_by_position(row);
         let (children, structural_deps) = build_children(
             &element_children(el),
             rules,
@@ -7722,6 +7756,7 @@ fn build_text(
                 ancestors: ancestors.clone(),
                 inherited: child_inherited.clone(),
                 locals: locals.clone(),
+                row: row.map(str::to_string),
             })
         });
         ancestors.pop();
@@ -8050,6 +8085,18 @@ fn build_node_inner(
             Some(v) => inline_decls(&v.to_display(), &mut inline),
             None => {}
         }
+    }
+    // What a browser would throw away goes before it can override the cascade,
+    // as a sheet's does in `rule_decls`.
+    if !inline.is_empty() {
+        let at = el.attr_line(":style").or_else(|| el.attr_line("style"));
+        inline.retain(|(k, v)| match inline_problem(k, v) {
+            Some(why) => {
+                located(at, || warn(why));
+                false
+            }
+            None => true,
+        });
     }
     for (k, v) in &inline {
         declare(&mut props, k, v);
@@ -9003,7 +9050,7 @@ fn build_node_inner(
         shadows: shadows.clone(),
         look: look.clone(),
     };
-    let plain = instance.is_none() && slot.is_none() && outlet.is_none() && row.is_none();
+    let plain = instance.is_none() && slot.is_none() && outlet.is_none() && only_by_position(row);
     let (children, structural_deps) = build_children(
         &element_children,
         rules,
@@ -9030,13 +9077,14 @@ fn build_node_inner(
     // What its children were built from, so they can be built again alone.
     // Only in the document's own markup, and never inside a keyed row: a
     // row can be replayed from the cache at another place, which would leave
-    // this stale. See [`rebuild_children`].
+    // this stale. See [`only_by_position`] and [`rebuild_children`].
     let ctx = (plain && !structural_deps.is_empty()).then(|| {
         Rc::new(ListCtx {
             el: el as *const Element as usize,
             ancestors: ancestors.clone(),
             inherited: child_inherited.clone(),
             locals: locals.clone(),
+            row: row.map(str::to_string),
         })
     });
     ancestors.pop();
@@ -9904,6 +9952,53 @@ fn field_key(expr: &str, var: &str, locals: &Locals) -> Option<String> {
     fields.iter().find(|(name, _)| name == field).map(|(_, value)| value.to_display())
 }
 
+/// Whether `row` is no row, or rows identified only by position all the way
+/// out. Such a row is never kept in the row cache, so it is never replayed
+/// somewhere else, and what its children were built from stays true: they
+/// can be built again alone. A keyed row anywhere outside it can be replayed,
+/// and its identity does not start with the marker [`unkeyed_row`] writes.
+fn only_by_position(row: Option<&str>) -> bool {
+    row.is_none_or(|r| r.starts_with('\u{1}'))
+}
+
+/// The identity of an unkeyed row: its position, inside the row that holds
+/// it. The `\u{1}` keeps it from ever equalling a key an author wrote.
+fn unkeyed_row(outer: Option<&str>, index: usize) -> String {
+    format!("{}\u{1}{index}", outer.unwrap_or_default())
+}
+
+/// What in a repeated element holds state of its own, said the way the
+/// warning about a missing `r-key` says it: an input, a bound model, media,
+/// or a component that holds any of those. `None` when a row is only what
+/// its item says, which position identifies well enough.
+fn row_state(el: &Element, comps: &Components) -> Option<&'static str> {
+    fn walk(el: &Element, comps: &Components, depth: usize) -> Option<&'static str> {
+        if el.tag == "input" {
+            return Some("an `<input>`");
+        }
+        if el.attr("r-model").is_some() {
+            return Some("an `r-model`");
+        }
+        if el.tag == "video" || el.tag == "audio" {
+            return Some("a `<video>` or `<audio>`");
+        }
+        // A component's template is walked as if written here, but only so
+        // far: one that uses itself would otherwise never end.
+        if depth < 8 {
+            if let Some((_, c)) = find_component(comps, &el.tag) {
+                if walk(&c.template, comps, depth + 1).is_some() {
+                    return Some("a component holding an input or media");
+                }
+            }
+        }
+        el.children.iter().find_map(|child| match child {
+            TplNode::Element(child) => walk(child, comps, depth),
+            TplNode::Text(..) => None,
+        })
+    }
+    walk(el, comps, 0)
+}
+
 fn row_place(coll: &str, locals: &Locals) -> Option<String> {
     let coll = coll.trim();
     let path = coll.chars().next().is_some_and(|c| c.is_alphabetic() || c == '_')
@@ -10491,6 +10586,22 @@ fn build_children(
                             el.tag
                         ));
                     }
+                    if key_expr.is_none() {
+                        if let Some(what) = row_state(el, comps) {
+                            // Unkeyed rows are told apart by position, so state
+                            // a row holds stays at its position when the list
+                            // changes, and lands on whatever item moves there.
+                            located(at, || {
+                                warn(format!(
+                                    "this `r-for` has {what} in each row but no `r-key`, so rows \
+                                     are told apart by position: when the list is reordered or \
+                                     an item is removed, that state stays where it was and \
+                                     moves to a different item. Add `r-key` with something \
+                                     unique to each item, like `r-key=\"{var}.id\"`"
+                                ))
+                            });
+                        }
+                    }
                     let animated = anim.is_some() && key_expr.is_some();
                     let mut seen_keys: Vec<String> = Vec::new();
                     // The same keys as a set, asked once a row: `seen_keys`
@@ -10591,6 +10702,12 @@ fn build_children(
                         if let Some(skey) = skey.as_ref().filter(|_| wanted) {
                             swaps.remember_row(skey, index, child_locals.clone());
                         }
+                        // An unkeyed row is identified by its position, inside
+                        // whatever row holds it, so an input in row two is not
+                        // the input in row three. It is not the row's `key`:
+                        // reconciling and row reuse go on treating the list as
+                        // unkeyed.
+                        let by_position = key.is_none().then(|| unkeyed_row(row, index));
                         let cp = child_path(&out);
                         // Only a keyed row can be found again, and an animated
                         // one is a swap's. See `RowCache`.
@@ -10606,9 +10723,7 @@ fn build_children(
                         let mut node = build_row(
                             el, rules, comps, ancestors, &prev, inherited, engine, &child_locals,
                             &cp, &ctp, reg, state, instances, swaps, instance, slot, outlet,
-                            // An unkeyed row inherits whatever row it is nested
-                            // in, which is normally nothing.
-                            key.as_deref().or(row),
+                            key.as_deref().or(by_position.as_deref()),
                             side,
                             reuse,
                         );
@@ -11116,7 +11231,7 @@ pub fn rebuild_children(
         None,
         None,
         None,
-        None,
+        ctx.row.as_deref(),
     );
     swaps.end_part(&parent.tpl_path);
     let origins = ORIGINS.with(|o| std::mem::take(&mut *o.borrow_mut()));
@@ -11994,30 +12109,32 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         st.max_height = parse_len(first(v));
     }
     interpret_grid_template(p, &mut st);
-    if let Some(v) = p.get("grid-area") {
-        let [rs, cs, re, ce] = parse_grid_area(v);
+    // A placement that does not parse leaves the initial `auto`, as CSS does
+    // with one a `var()` made invalid; [`validity::problem`] has already
+    // dropped a literal one.
+    if let Some([rs, cs, re, ce]) = p.get("grid-area").and_then(|v| parse_grid_area(v)) {
         st.grid_row = (rs, re);
         st.grid_column = (cs, ce);
     }
     // Grid item placement: `grid-column: 1 / 3`, `grid-row: span 2`, and the
     // -start/-end longhands.
-    if let Some(v) = p.get("grid-column") {
-        st.grid_column = parse_grid_shorthand(v);
+    if let Some(v) = p.get("grid-column").and_then(|v| parse_grid_shorthand(v)) {
+        st.grid_column = v;
     }
-    if let Some(v) = p.get("grid-row") {
-        st.grid_row = parse_grid_shorthand(v);
+    if let Some(v) = p.get("grid-row").and_then(|v| parse_grid_shorthand(v)) {
+        st.grid_row = v;
     }
-    if let Some(v) = p.get("grid-column-start") {
-        st.grid_column.0 = parse_grid_place(v);
+    if let Some(v) = p.get("grid-column-start").and_then(|v| parse_grid_place(v)) {
+        st.grid_column.0 = v;
     }
-    if let Some(v) = p.get("grid-column-end") {
-        st.grid_column.1 = parse_grid_place(v);
+    if let Some(v) = p.get("grid-column-end").and_then(|v| parse_grid_place(v)) {
+        st.grid_column.1 = v;
     }
-    if let Some(v) = p.get("grid-row-start") {
-        st.grid_row.0 = parse_grid_place(v);
+    if let Some(v) = p.get("grid-row-start").and_then(|v| parse_grid_place(v)) {
+        st.grid_row.0 = v;
     }
-    if let Some(v) = p.get("grid-row-end") {
-        st.grid_row.1 = parse_grid_place(v);
+    if let Some(v) = p.get("grid-row-end").and_then(|v| parse_grid_place(v)) {
+        st.grid_row.1 = v;
     }
     if let Some(v) = p.get("grid-auto-flow") {
         let v = v.trim();
@@ -12031,10 +12148,16 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         };
     }
     if let Some(v) = p.get("grid-auto-rows") {
-        st.grid_auto_rows = parse_tracks(v);
+        match parse_tracks(v) {
+            Some(t) => st.grid_auto_rows = t,
+            None => unreadable_tracks("grid-auto-rows", v),
+        }
     }
     if let Some(v) = p.get("grid-auto-columns") {
-        st.grid_auto_columns = parse_tracks(v);
+        match parse_tracks(v) {
+            Some(t) => st.grid_auto_columns = t,
+            None => unreadable_tracks("grid-auto-columns", v),
+        }
     }
     // `flex: grow [shrink [basis]]` first, so the longhands can override it.
     if let Some(v) = p.get("flex") {
@@ -14058,43 +14181,62 @@ fn parse_len(s: &str) -> Option<Len> {
 /// `grid-column` / `grid-row` shorthand: `<start> [/ <end>]`. A missing end is
 /// `auto` (span 1), or for a name, that name again (CSS's rule, so
 /// `grid-column: sidebar` covers the `sidebar` area).
-fn parse_grid_shorthand(value: &str) -> (GridPlace, GridPlace) {
+fn parse_grid_shorthand(value: &str) -> Option<(GridPlace, GridPlace)> {
     let mut parts = value.splitn(2, '/');
-    let start = parts.next().map(parse_grid_place).unwrap_or_default();
+    let start = parse_grid_place(parts.next()?)?;
     let end = match parts.next() {
-        Some(e) => parse_grid_place(e),
+        Some(e) => parse_grid_place(e)?,
         None => match start {
             GridPlace::Named(name, 0) => GridPlace::Named(name, 0),
             _ => GridPlace::Auto,
         },
     };
-    (start, end)
+    Some((start, end))
 }
 
 /// One placement endpoint: `auto`, a (possibly negative) line, `span <n>`,
 /// a line or area name with an optional count (`header`, `col 2`), or
-/// `span <name>` (`span col`, `span 2 col`).
-fn parse_grid_place(side: &str) -> GridPlace {
+/// `span <name>` (`span col`, `span 2 col`). The words come in any order, as
+/// CSS allows. `None` for anything CSS rejects: a `0` line, a span that is
+/// not above 0, two numbers or two names, `span` alone, or `auto` with
+/// anything beside it.
+fn parse_grid_place(side: &str) -> Option<GridPlace> {
     let words: Vec<&str> = side.split_whitespace().collect();
-    let span = words.first() == Some(&"span");
-    let rest = if span { &words[1..] } else { &words[..] };
-    let number = rest.iter().find_map(|w| w.parse::<i16>().ok());
-    let name = rest.iter().find(|w| w.parse::<i16>().is_err() && **w != "auto").map(|w| GridName::new(w));
-    match (span, name, number) {
-        (_, None, None) => GridPlace::Auto,
-        (true, None, Some(n)) if n > 0 => GridPlace::Span(n as u16),
-        (true, Some(name), n) => GridPlace::NamedSpan(name, n.filter(|n| *n > 0).unwrap_or(1) as u16),
-        (false, None, Some(i)) if i != 0 => GridPlace::Line(i),
-        (false, Some(name), n) => GridPlace::Named(name, n.unwrap_or(0)),
-        _ => GridPlace::Auto,
+    if words == ["auto"] {
+        return Some(GridPlace::Auto);
+    }
+    let spans = words.iter().filter(|w| **w == "span").count();
+    let numbers: Vec<i16> = words.iter().filter_map(|w| w.parse::<i16>().ok()).collect();
+    let names: Vec<&str> = words
+        .iter()
+        .copied()
+        .filter(|w| *w != "span" && w.parse::<i16>().is_err())
+        .collect();
+    if spans > 1 || numbers.len() > 1 || names.len() > 1 || names.contains(&"auto") {
+        return None;
+    }
+    let name = names.first().map(|w| GridName::new(w));
+    let number = numbers.first().copied();
+    match (spans == 1, name, number) {
+        (_, None, None) => None,
+        (true, None, Some(n)) if n > 0 => Some(GridPlace::Span(n as u16)),
+        (true, Some(name), None) => Some(GridPlace::NamedSpan(name, 1)),
+        (true, Some(name), Some(n)) if n > 0 => Some(GridPlace::NamedSpan(name, n as u16)),
+        (false, None, Some(i)) if i != 0 => Some(GridPlace::Line(i)),
+        (false, Some(name), None) => Some(GridPlace::Named(name, 0)),
+        (false, Some(name), Some(i)) if i != 0 => Some(GridPlace::Named(name, i)),
+        _ => None,
     }
 }
 
 /// `grid-area`: an area name for all four sides, or up to four placements,
 /// row-start / column-start / row-end / column-end. A side left out is the
 /// name of the side opposite it when that is a name, and `auto` otherwise.
-fn parse_grid_area(value: &str) -> [GridPlace; 4] {
-    let parts: Vec<GridPlace> = value.split('/').map(parse_grid_place).collect();
+fn parse_grid_area(value: &str) -> Option<[GridPlace; 4]> {
+    let parts: Vec<GridPlace> = value.split('/').map(parse_grid_place).collect::<Option<_>>()?;
+    if parts.len() > 4 {
+        return None;
+    }
     let get = |i: usize| parts.get(i).copied();
     let named = |p: GridPlace| match p {
         GridPlace::Named(n, 0) => GridPlace::Named(n, 0),
@@ -14104,7 +14246,7 @@ fn parse_grid_area(value: &str) -> [GridPlace; 4] {
     let col_start = get(1).unwrap_or_else(|| named(row_start));
     let row_end = get(2).unwrap_or_else(|| named(row_start));
     let col_end = get(3).unwrap_or_else(|| named(col_start));
-    [row_start, col_start, row_end, col_end]
+    Some([row_start, col_start, row_end, col_end])
 }
 
 /// Split a grid template on whitespace outside brackets, so `[a b]`,
@@ -14148,7 +14290,15 @@ fn split_template(value: &str) -> Vec<&str> {
 
 /// A track list with its line names: each track, and the names of the lines
 /// around them, one set more than tracks, or none when nothing is named.
-fn parse_named_tracks(value: &str, allow_repeat: bool) -> (Vec<GridTrack>, Vec<Vec<GridName>>) {
+///
+/// `None` when any part of it is not a track, a name or a `repeat()`: CSS
+/// takes a track list whole or not at all, and a word read as `auto` instead
+/// made `minmax 1fr` two tracks where a browser has none. `none` is no
+/// tracks.
+fn parse_named_tracks(value: &str, allow_repeat: bool) -> Option<(Vec<GridTrack>, Vec<Vec<GridName>>)> {
+    if value.trim() == "none" {
+        return Some((Vec::new(), Vec::new()));
+    }
     let mut tracks = Vec::new();
     let mut names: Vec<Vec<GridName>> = vec![Vec::new()];
     let mut any_name = false;
@@ -14163,7 +14313,7 @@ fn parse_named_tracks(value: &str, allow_repeat: bool) -> (Vec<GridTrack>, Vec<V
                 warn(format!(
                     "`{tok}` is not a `repeat()` Rux understands; write `repeat(3, 1fr)` or `repeat(auto-fill, minmax(120px, 1fr))`"
                 ));
-                continue;
+                return None;
             };
             let count = match count.trim() {
                 "auto-fill" => Repeat::AutoFill,
@@ -14174,15 +14324,15 @@ fn parse_named_tracks(value: &str, allow_repeat: bool) -> (Vec<GridTrack>, Vec<V
                         warn(format!(
                             "`{tok}` repeats `{n}` times; write a whole number above 0, `auto-fill` or `auto-fit`"
                         ));
-                        continue;
+                        return None;
                     }
                 },
             };
             if !allow_repeat {
                 warn(format!("`{tok}` cannot be inside another `repeat()`"));
-                continue;
+                return None;
             }
-            let (inner, inner_names) = parse_named_tracks(rest, false);
+            let (inner, inner_names) = parse_named_tracks(rest, false)?;
             let inner: Vec<Track> = inner
                 .into_iter()
                 .filter_map(|t| match t {
@@ -14190,63 +14340,72 @@ fn parse_named_tracks(value: &str, allow_repeat: bool) -> (Vec<GridTrack>, Vec<V
                     GridTrack::Repeat(..) => None,
                 })
                 .collect();
+            if inner.is_empty() {
+                return None;
+            }
             tracks.push(GridTrack::Repeat(count, inner, inner_names));
             names.push(Vec::new());
             continue;
         }
-        tracks.push(GridTrack::One(parse_track(tok)));
+        tracks.push(GridTrack::One(parse_track(tok)?));
         names.push(Vec::new());
+    }
+    if tracks.is_empty() {
+        return None;
     }
     if !any_name {
         names.clear();
     }
-    (tracks, names)
+    Some((tracks, names))
 }
 
 /// One track: a length or percentage, `Nfr`, `auto`, `min-content`,
-/// `max-content`, `fit-content(<length>)` or `minmax(min, max)`.
-fn parse_track(tok: &str) -> Track {
+/// `max-content`, `fit-content(<length>)` or `minmax(min, max)`. `None` for
+/// anything else, including a `minmax()` whose minimum is an `fr`, which CSS
+/// does not allow.
+fn parse_track(tok: &str) -> Option<Track> {
     if let Some(args) = tok.strip_prefix("minmax(").and_then(|s| s.strip_suffix(')')) {
-        let mut parts = args.split(',');
-        let lo = parts.next().map(parse_track_side).unwrap_or(TrackSide::Auto);
-        let hi = parts.next().map(parse_track_side).unwrap_or(TrackSide::Auto);
-        return Track::MinMax(lo, hi);
+        let (lo, hi) = args.split_once(',')?;
+        let lo = parse_track_side(lo)?;
+        if matches!(lo, TrackSide::Fr(_)) {
+            return None;
+        }
+        return Some(Track::MinMax(lo, parse_track_side(hi)?));
     }
     if let Some(arg) = tok.strip_prefix("fit-content(").and_then(|s| s.strip_suffix(')')) {
-        if let Some(px) = parse_px(arg.trim()) {
-            return Track::FitContent(px);
-        }
+        return parse_px(arg.trim()).map(Track::FitContent);
     }
-    match parse_track_side(tok) {
+    Some(match parse_track_side(tok)? {
         TrackSide::Px(v) => Track::Px(v),
         TrackSide::Pct(p) => Track::Pct(p),
         TrackSide::Fr(f) => Track::Fr(f),
         TrackSide::Auto => Track::Auto,
         TrackSide::MinContent => Track::MinContent,
         TrackSide::MaxContent => Track::MaxContent,
-    }
+    })
 }
 
 /// The tracks of `grid-auto-rows` / `-columns`, which take no names or
-/// `repeat()`.
-fn parse_tracks(value: &str) -> Vec<Track> {
-    split_template(value).into_iter().map(parse_track).collect()
+/// `repeat()`. `None` unless every one is a track.
+fn parse_tracks(value: &str) -> Option<Vec<Track>> {
+    let tracks: Vec<Track> = split_template(value).into_iter().map(parse_track).collect::<Option<_>>()?;
+    (!tracks.is_empty()).then_some(tracks)
 }
 
 /// A single track value: `Nfr`, `auto`, `min-content`, `max-content`, a
-/// percentage or a length (default `auto`).
-fn parse_track_side(tok: &str) -> TrackSide {
+/// percentage or a length, or `None`.
+fn parse_track_side(tok: &str) -> Option<TrackSide> {
     let tok = tok.trim();
     if let Some(fr) = tok.strip_suffix("fr") {
-        TrackSide::Fr(fr.trim().parse().unwrap_or(1.0))
+        fr.trim().parse::<f32>().ok().filter(|f| *f >= 0.0).map(TrackSide::Fr)
     } else if let Some(pct) = tok.strip_suffix('%') {
-        pct.trim().parse::<f32>().map(|p| TrackSide::Pct(p / 100.0)).unwrap_or(TrackSide::Auto)
+        pct.trim().parse::<f32>().ok().map(|p| TrackSide::Pct(p / 100.0))
     } else {
         match tok {
-            "auto" => TrackSide::Auto,
-            "min-content" => TrackSide::MinContent,
-            "max-content" => TrackSide::MaxContent,
-            _ => parse_px(tok).map(TrackSide::Px).unwrap_or(TrackSide::Auto),
+            "auto" => Some(TrackSide::Auto),
+            "min-content" => Some(TrackSide::MinContent),
+            "max-content" => Some(TrackSide::MaxContent),
+            _ => parse_px(tok).map(TrackSide::Px),
         }
     }
 }
@@ -14304,6 +14463,28 @@ fn parse_grid_areas(value: &str) -> Option<GridAreas> {
     })
 }
 
+/// `part` of `property: whole` as a track list, or `None` having said that
+/// it is left at its initial value. A value reaches here only past
+/// [`validity::problem`], so this is a valid one Rux cannot use (`subgrid`),
+/// or one a `var()` made invalid, which CSS also leaves at the initial value.
+fn tracks_or_initial(property: &str, whole: &str, part: &str) -> Option<(Vec<GridTrack>, Vec<Vec<GridName>>)> {
+    if part.trim().is_empty() {
+        return Some((Vec::new(), Vec::new()));
+    }
+    let tracks = parse_named_tracks(part, true);
+    if tracks.is_none() {
+        unreadable_tracks(property, whole);
+    }
+    tracks
+}
+
+fn unreadable_tracks(property: &str, value: &str) {
+    warn(format!(
+        "`{property}: {value}` is not a track list Rux can use, so `{property}` is left at its \
+         initial value"
+    ));
+}
+
 /// The grid template properties onto `st`: the `grid-template` shorthand,
 /// as `<rows> / <columns>` or with areas (`"a a" 40px "b c" / 1fr 2fr`),
 /// then `grid-template-columns`, `-rows` and `-areas` over it.
@@ -14327,19 +14508,32 @@ fn interpret_grid_template(p: &HashMap<String, String>, st: &mut Style) {
                     sizes.push_str(if size.is_empty() { "auto" } else { size });
                     sizes.push(' ');
                 }
-                names.areas = parse_grid_areas(&areas);
-                (st.grid_rows, names.rows) = parse_named_tracks(&sizes, true);
-            } else {
-                (st.grid_rows, names.rows) = parse_named_tracks(rows, true);
+                let rows = tracks_or_initial("grid-template", v, &sizes);
+                let columns = tracks_or_initial("grid-template", v, columns);
+                // The shorthand is taken whole or not at all.
+                if let (Some(rows), Some(columns)) = (rows, columns) {
+                    names.areas = parse_grid_areas(&areas);
+                    (st.grid_rows, names.rows) = rows;
+                    (st.grid_columns, names.columns) = columns;
+                }
+            } else if let (Some(rows), Some(columns)) = (
+                tracks_or_initial("grid-template", v, rows),
+                tracks_or_initial("grid-template", v, columns),
+            ) {
+                (st.grid_rows, names.rows) = rows;
+                (st.grid_columns, names.columns) = columns;
             }
-            (st.grid_columns, names.columns) = parse_named_tracks(columns, true);
         }
     }
     if let Some(v) = p.get("grid-template-columns") {
-        (st.grid_columns, names.columns) = parse_named_tracks(v, true);
+        if let Some(t) = tracks_or_initial("grid-template-columns", v, v) {
+            (st.grid_columns, names.columns) = t;
+        }
     }
     if let Some(v) = p.get("grid-template-rows") {
-        (st.grid_rows, names.rows) = parse_named_tracks(v, true);
+        if let Some(t) = tracks_or_initial("grid-template-rows", v, v) {
+            (st.grid_rows, names.rows) = t;
+        }
     }
     if let Some(v) = p.get("grid-template-areas") {
         names.areas = if v.trim() == "none" { None } else { parse_grid_areas(v) };
@@ -16656,7 +16850,7 @@ mod tests {
     #[test]
     fn parses_grid_tracks_including_minmax() {
         use super::{parse_tracks, Track, TrackSide};
-        let tracks = parse_tracks("minmax(0, 1fr) 100px auto minmax(120px, 1fr)");
+        let tracks = parse_tracks("minmax(0, 1fr) 100px auto minmax(120px, 1fr)").unwrap();
         assert_eq!(tracks.len(), 4);
         assert!(matches!(
             tracks[0],
@@ -20192,3 +20386,108 @@ mod tailwind_property_tests {
     }
 }
 
+
+/// A declaration a browser would throw away is thrown away here too, before
+/// the cascade, so it cannot override an earlier valid one.
+#[cfg(test)]
+mod invalid_declaration_tests {
+    use super::*;
+    use rux_script::Builder;
+
+    fn build(src: &str) -> (rux_layout::Node, Vec<Warning>) {
+        take_warnings();
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut e = Builder::new().build(&sfc.script).unwrap();
+        let root = build_styled_tree(&sfc, &HashMap::new(), &HashMap::new(), &mut e).unwrap();
+        (root, take_warnings())
+    }
+
+    /// The case that found it: `minmax` without its brackets became `auto
+    /// 1fr` and replaced Tailwind's two equal rows.
+    #[test]
+    fn a_bad_track_list_leaves_the_earlier_rule_in_force() {
+        let (root, warnings) = build(
+            "<template><screen class=\"grid g\"><view /><view /></screen></template>\n\
+             <style>.g { grid-template-rows: repeat(2, minmax(0, 1fr)); }\n\
+             .grid { grid-template-rows: minmax 1fr; }</style>",
+        );
+        assert!(
+            matches!(&root.style.grid_rows[..], [GridTrack::Repeat(Repeat::Count(2), ..)]),
+            "{:?}",
+            root.style.grid_rows
+        );
+        assert!(
+            warnings.iter().any(|w| w.message.contains("`minmax` is a function")),
+            "{warnings:?}"
+        );
+    }
+
+    #[test]
+    fn a_bad_inline_declaration_leaves_the_cascade_in_force() {
+        let (root, warnings) = build(
+            "<template><screen><view class=\"w\" style=\"width: wide\" /></screen></template>\n\
+             <style>.w { width: 40px; }</style>",
+        );
+        assert!(matches!(root.children[0].style.width, Some(Len::Px(v)) if v == 40.0));
+        assert!(warnings.iter().any(|w| w.message.contains("`width: wide` is not valid CSS")), "{warnings:?}");
+    }
+
+    #[test]
+    fn an_untyped_property_is_checked_against_its_grammar() {
+        let (_, warnings) = build(
+            "<template><screen><view class=\"t\" /></screen></template>\n\
+             <style>.t { touch-action: sideways; scrollbar-width: thin; }</style>",
+        );
+        assert!(warnings.iter().any(|w| w.message.contains("`touch-action: sideways`")), "{warnings:?}");
+        assert!(!warnings.iter().any(|w| w.message.contains("scrollbar-width")), "{warnings:?}");
+    }
+
+    #[test]
+    fn track_lists_are_taken_whole_or_not_at_all() {
+        assert!(parse_named_tracks("minmax 1fr", true).is_none());
+        assert!(parse_named_tracks("minmax(1fr, 2fr)", true).is_none());
+        assert!(parse_named_tracks("minmax(10px)", true).is_none());
+        assert!(parse_named_tracks("fit-content(wide)", true).is_none());
+        assert!(parse_named_tracks("abcfr", true).is_none());
+        assert_eq!(parse_named_tracks("none", true), Some((Vec::new(), Vec::new())));
+        let (t, _) = parse_named_tracks("minmax(auto, 1fr)", true).unwrap();
+        assert_eq!(t, vec![GridTrack::One(Track::MinMax(TrackSide::Auto, TrackSide::Fr(1.0)))]);
+    }
+
+    #[test]
+    fn placements_follow_the_css_grammar() {
+        assert_eq!(parse_grid_place("2 span"), Some(GridPlace::Span(2)));
+        assert_eq!(parse_grid_place("span"), None);
+        assert_eq!(parse_grid_place("0"), None);
+        assert_eq!(parse_grid_place("1 2"), None);
+        assert_eq!(parse_grid_place("auto 2"), None);
+        assert_eq!(parse_grid_place("span 0"), None);
+        assert!(parse_grid_area("1 / 2 / 3 / 4 / 5").is_none());
+    }
+
+    /// Unkeyed rows are told apart by position, so an input in one row is not
+    /// the input in the next, and the author is told what that costs.
+    #[test]
+    fn an_unkeyed_list_with_inputs_warns_and_keeps_rows_apart() {
+        let src = "<template><screen>\n\
+                   <view r-for=\"item in items\"><input r-model=\"item.name\" /></view>\n\
+                   </screen></template>\n\
+                   <script>let items = [#{ name: \"a\" }, #{ name: \"b\" }];</script>";
+        let (_, warnings) = build(src);
+        assert!(
+            warnings.iter().any(|w| w.message.contains("no `r-key`") && w.message.contains("`<input>`")),
+            "{warnings:?}"
+        );
+        assert_eq!(unkeyed_row(None, 1), "\u{1}1");
+        assert_ne!(unkeyed_row(Some("a"), 0), unkeyed_row(Some("b"), 0));
+    }
+
+    #[test]
+    fn an_unkeyed_list_of_plain_text_does_not_warn() {
+        let (_, warnings) = build(
+            "<template><screen><text r-for=\"n in items\">{{ n }}</text></screen></template>\n\
+             <script>let items = [1, 2];</script>",
+        );
+        assert!(!warnings.iter().any(|w| w.message.contains("r-key")), "{warnings:?}");
+    }
+}
