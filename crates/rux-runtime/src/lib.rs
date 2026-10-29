@@ -977,23 +977,15 @@ fn runtime_type(text: &str) -> rux_script::types::Type {
     rux_script::types::parse_type(text).unwrap_or_else(|e| panic!("`{text}`: {}", e.message))
 }
 
-/// Where a pointer is, as every gesture's `event` has it.
-const POINTER_FIELDS: &str = "x: float, y: float, pageX: float, pageY: float, \
-    width: float, height: float, touches: { id: int, x: float, y: float }[]";
-/// How far a drag or a swipe has gone, from where it landed and from the last move.
-const TRAVEL_FIELDS: &str = "totalX: float, totalY: float, moveX: float, moveY: float";
-
-/// What `event` is in `@name` on `el`. `any` where nothing is known.
+/// What `event` is in `@name` on `el`. `any` where nothing is known. The
+/// gestures' and keys' are named, in `rux_script::native::event_types`.
 fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_script::types::Type {
     use rux_script::types::Type;
     let text = match name {
-        "tap" | "press" | "release" | "longpress" => format!("{{ {POINTER_FIELDS} }}"),
-        "key" => "{ key: string, ctrl: bool, shift: bool, alt: bool, meta: bool, primary: bool, repeat: bool }"
-            .to_string(),
-        "drag" => format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, phase: \"start\" | \"move\" | \"end\" }}"),
-        "swipe" => format!(
-            "{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, direction: \"left\" | \"right\" | \"up\" | \"down\" }}"
-        ),
+        "tap" | "press" | "release" | "longpress" => "TapEvent".to_string(),
+        "key" => "KeyEvent".to_string(),
+        "drag" => "DragEvent".to_string(),
+        "swipe" => "SwipeEvent".to_string(),
         "input" | "change" | "focus" | "blur" if el.tag == "input" => {
             // A number field bound to a signal hands over the number the signal
             // holds; everything else hands over text, or has not been measured.
@@ -2468,6 +2460,9 @@ impl Document {
         let mut component_sources: Vec<rux_script::ComponentSource> = Vec::new();
         // Each component's file and the line its script starts on, by key.
         let mut component_places: HashMap<String, (PathBuf, usize)> = HashMap::new();
+        // Each component's `<script>` as written, before its props, computeds
+        // and hooks are taken out: what its types are checked over.
+        let mut component_whole: HashMap<String, String> = HashMap::new();
         let project_root = workspace_root(base).unwrap_or_else(|| base.to_path_buf());
         let mut queue: Vec<ImportJob> = vec![ImportJob {
             owner: DOCUMENT_NAMESPACE.to_string(),
@@ -2777,6 +2772,7 @@ impl Document {
                 let comp_base =
                     comp_path.parent().unwrap_or_else(|| Path::new(".")).to_path_buf();
                 resolve_style_includes(&mut comp_sfc, &comp_base, &comp_path)?;
+                component_whole.insert(key.clone(), comp_sfc.script.clone());
                 let (comp_script, nested) = extract_imports(&comp_sfc.script);
                 // Its props are its caller's to pass, so they leave the script:
                 // a `let` would be state any handler in here could write.
@@ -2832,10 +2828,22 @@ impl Document {
                 // own (step 7.4 of `docs/11-next.md`): they call each other by
                 // name and see what the component imports, and a caller's
                 // names are not theirs. Its `let`s are each instance's state.
+                let functions = component_functions(&comp_script);
+                // Its functions that do not parse fail the load at their line,
+                // as the document's own script does. Left to the engine they
+                // were dropped without a word, and what was reported instead
+                // was every handler calling one as a call to nothing
+                // (Tracer's AW-002).
+                if let Err(e) = rux_syntax::parse(&functions, rux_syntax::Options { declarations: true }) {
+                    let (line, column) = e.line_col(&functions);
+                    let mut err = LoadError::at_line(e.message, line + comp_sfc.script_line - 1, &comp_path);
+                    err.column = Some(column);
+                    return Err(err);
+                }
                 component_sources.push(rux_script::ComponentSource {
                     key: key.clone(),
                     name: modules::name_of(&comp_path, &project_root),
-                    functions: component_functions(&comp_script),
+                    functions,
                     aliases: Vec::new(),
                 });
                 let comp_script_line = comp_sfc.script_line;
@@ -2851,9 +2859,9 @@ impl Document {
             }
             namespaces.insert(job.owner, namespace);
         }
-        for (key, types) in component_types {
-            if let Some(component) = components.get_mut(&key) {
-                component.types.extend(types);
+        for (key, types) in &component_types {
+            if let Some(component) = components.get_mut(key) {
+                component.types.extend(types.iter().cloned());
             }
         }
 
@@ -2956,6 +2964,27 @@ impl Document {
             &callers,
             &tags_in(DOCUMENT_NAMESPACE),
         );
+        // Each component's and page's script gets the same pass, in its own
+        // file and scope. The document's check stops at its own lines, so
+        // without this a routed page's type errors were reported only when the
+        // page was opened alone (Tracer's AW-005). What an editor records is
+        // the document's alone, so the table is set aside meanwhile.
+        let recorded = TYPE_TABLE.with(|t| t.borrow_mut().take());
+        let mut keys: Vec<&String> = components.keys().collect();
+        keys.sort();
+        for key in keys {
+            let (Some(component), Some(whole)) = (components.get(key), component_whole.get(key)) else { continue };
+            let mut sfc = component.clone();
+            sfc.script = whole.clone();
+            let imported = component_types.get(key).cloned().unwrap_or_default();
+            let computeds = component_computeds.get(key).map(Vec::as_slice).unwrap_or(&[]);
+            rux_script::in_file(component.file.clone(), || {
+                engine.in_scope(Some(key), || {
+                    check_script_types(&engine, &sfc, usize::MAX, imported, Vec::new(), computeds, &callers, &tags_in(key))
+                });
+            });
+        }
+        TYPE_TABLE.with(|t| *t.borrow_mut() = recorded);
         // Everything the load-time checks said, kept: a rebuild re-raises what
         // the build finds and nothing else, so without this a document whose
         // `mounted` or `computed` ran lost every check error before anyone saw it.

@@ -55,3 +55,7 @@ toml = "0.9"
 rux-bindgen.workspace = true
 # A release build's script compiled to Rust: docs/11-next.md, step 9.
 rux-codegen.workspace = true
+
+[dev-dependencies]
+# The scaffold test walks a loaded page's tree, which is rux-layout's `Node`.
+rux-layout.workspace = true

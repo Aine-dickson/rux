@@ -3422,6 +3422,7 @@ dependencies = [
  "rux-bindgen",
  "rux-codegen",
  "rux-fmt",
+ "rux-layout",
  "rux-parser",
  "rux-runtime",
  "rux-shell",

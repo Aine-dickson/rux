@@ -52,6 +52,6 @@
 </style>
 
 <script>
-  prop title;
-  prop badge;
+  prop title: string;
+  prop badge: string;
 </script>

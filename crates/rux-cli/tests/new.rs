@@ -110,6 +110,37 @@ fn what_the_scaffold_writes_checks_clean() {
     // context of its project is what would make that answerable.
 }
 
+/// The detail page reads its task through a `computed`, which has to follow
+/// both the route and the store.
+#[test]
+fn the_scaffolds_detail_page_follows_its_task() {
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.trim().to_string()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+    fn tappable<'a>(node: &'a rux_layout::Node, label: &str) -> Option<&'a rux_layout::Node> {
+        if node.on_tap.is_some() && texts(node).iter().any(|t| t == label) {
+            return Some(node);
+        }
+        node.children.iter().find_map(|c| tappable(c, label))
+    }
+    let scratch = Scratch::new("detail");
+    assert_eq!(run(scratch.path(), &["new", "app"]).0, 0);
+    let mut doc = rux_runtime::Document::load(scratch.path().join("app/app.rux")).expect("loads");
+    doc.navigate("/task/2");
+    assert!(texts(&doc.root).contains(&"Add a task of your own".to_string()), "{:?}", texts(&doc.root));
+    let button = tappable(&doc.root, "Mark as done").expect("an undone task offers done").clone();
+    assert!(doc.apply_handler_in(&button.on_tap.clone().unwrap(), button.instance.as_deref()));
+    assert!(tappable(&doc.root, "Mark as not done").is_some(), "{:?}", texts(&doc.root));
+    doc.navigate("/task/1");
+    assert!(texts(&doc.root).contains(&"Read the Rux guide".to_string()), "{:?}", texts(&doc.root));
+    doc.navigate("/task/9");
+    assert!(texts(&doc.root).contains(&"That task is no longer here.".to_string()), "{:?}", texts(&doc.root));
+}
+
 /// And what comes out is already formatted. This caught a real mistake: the
 /// `<script>` body was written at column 0 while `rux fmt` indents it one level,
 /// so the first `rux fmt` in a new project rewrote the file it had just made.

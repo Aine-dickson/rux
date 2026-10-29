@@ -40,7 +40,7 @@
 <script>
   use stores::visits;
 
-  prop label;
+  prop label: string;
 
   // This instance's own state. Nothing here survives the instance.
   let draft = signal("");

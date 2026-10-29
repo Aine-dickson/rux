@@ -116,7 +116,7 @@ fn components_are_skipped_when_walking_but_not_when_named() {
             (
                 "components/row.rux",
                 "<template><view><text>{{ label }}</text></view></template>\n\
-                 <script>\n  prop label;\n</script>",
+                 <script>\n  prop label: string;\n</script>",
             ),
         ],
     );
@@ -261,11 +261,19 @@ fn a_missing_path_is_a_usage_error_not_a_finding() {
 #[test]
 fn the_shipped_examples_check_clean() {
     let examples = workspace_root().join("examples");
-    let out = check(&["--deny-warnings", examples.to_str().unwrap()]);
+    let out = check(&[examples.to_str().unwrap()]);
+    // `examples/learn/` is /learn's code, which is written against the last
+    // release, so what only this build asks for (a prop's type) is left until
+    // /learn is lifted. Errors there still count.
+    let noisy: Vec<String> = stdout(&out)
+        .lines()
+        .filter(|l| !(l.replace('\\', "/").contains("examples/learn/") && l.contains(": warning: ")))
+        .map(str::to_string)
+        .collect();
     assert!(
-        out.status.success(),
-        "examples/ must stay clean under `rux check --deny-warnings`:\n{}",
-        stdout(&out)
+        out.status.success() && noisy.is_empty(),
+        "examples/ must stay clean under `rux check`:\n{}",
+        noisy.join("\n")
     );
 }
 

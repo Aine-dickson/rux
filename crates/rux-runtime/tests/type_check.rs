@@ -140,7 +140,7 @@ fn a_component_on_its_own_knows_its_props() {
 }
 
 /// A component's functions ride in the document's script, and a finding in
-/// one is the component's to report, not the document's.
+/// one is the component's to report, in its own file, not the document's.
 #[test]
 fn a_components_function_is_not_reported_against_the_document() {
     let comp = "<template><view><text>c</text></view></template>\n\
@@ -148,8 +148,10 @@ fn a_components_function_is_not_reported_against_the_document() {
     let app = "<template><screen><card /></screen></template>\n<script>\nuse components::card;\n</script>\n";
     let dir = project(&[("app.rux", app), ("components/card.rux", comp)]);
     let doc = Document::load(dir.join("app.rux")).expect("loads");
-    let f = found(&doc);
-    assert!(!f.iter().any(|(_, _, m)| m.contains("broken")), "{f:?}");
+    let broken: Vec<_> = doc.diagnostics().warnings.iter().filter(|w| w.message.contains("broken")).collect();
+    assert_eq!(broken.len(), 1, "{broken:?}");
+    assert!(broken[0].file.as_deref().is_some_and(|f| f.ends_with("card.rux")), "{broken:?}");
+    assert_eq!(broken[0].line, Some(3), "{broken:?}");
 }
 
 /// A program with nothing wrong in it says nothing, and the typed version of

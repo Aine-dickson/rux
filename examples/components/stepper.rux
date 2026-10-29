@@ -70,7 +70,7 @@
 </style>
 
 <script>
-  prop label;
+  prop label: string;
 
   let count = signal(0);
 </script>

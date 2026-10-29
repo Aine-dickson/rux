@@ -159,6 +159,8 @@ pub fn run(options: Options) -> i32 {
     let skipped: Vec<PathBuf> = skipped
         .into_iter()
         .filter(|p| !reached.iter().any(|r| same_file(r, p)))
+        // A component whose error stopped the load was looked at too.
+        .filter(|p| !found.iter().any(|d| same_file(&d.file, p)))
         .filter(|p| !rux_runtime::is_module_file(p))
         .collect();
 

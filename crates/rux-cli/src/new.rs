@@ -324,13 +324,13 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
       <text class="back-label">‹ All tasks</text>
     </view>
 
-    <view class="card" r-if="task() != none">
-      <text class="label" :class='{ done: task().done }'>{{ task().label }}</text>
-      <text class="note" r-if='task().note != ""'>{{ task().note }}</text>
+    <view class="card" r-if="task != none">
+      <text class="label" :class='{ done: task.done }'>{{ task.label }}</text>
+      <text class="note" r-if='task.note != ""'>{{ task.note }}</text>
 
       <view class="actions">
         <view class="action done-action" @tap="todo.toggle(id())">
-          <text class="action-label" r-if="task().done">Mark as not done</text>
+          <text class="action-label" r-if="task.done">Mark as not done</text>
           <text class="action-label" r-else>Mark as done</text>
         </view>
         <view class="action delete" @tap="drop()">
@@ -409,9 +409,8 @@ const DETAIL: &str = r#"<!-- One task, opened from the list.
     params?.id
   }
 
-  fn task() {
-    todo.find(id())
-  }
+  // Read once, so the `r-if` above knows it is there below.
+  computed task = todo.find(id());
 
   fn drop() {
     todo.remove(id());
@@ -529,10 +528,10 @@ const TASK_ROW: &str = r#"<!-- One row of the list.
 <script>
   // What the caller hands in, and all this file reads of the caller's. A tag
   // writes them kebab or snake alike: `:id-of` and `:id_of` both reach `id_of`.
-  prop label;
+  prop label: string;
   prop note = "";
   prop done = false;
-  prop id_of;
+  prop id_of: string;
 </script>
 "#;
 

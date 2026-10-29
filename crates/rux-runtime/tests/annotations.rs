@@ -99,7 +99,7 @@ fn a_typed_prop_is_declared() {
           prop label: string;\n\
           prop value: float = 0;\n\
           prop shape: { a: int, b: int } = { a: 1, b: 2 };\n\
-          prop pick: (string, int) => bool = null;\n\
+          prop pick: ((string, int) => bool)? = none;\n\
           prop kind: \"primary\" | \"quiet\" = \"quiet\";\n\
         </script>";
     let app = "<template><screen><stat :label='\"x\"' :value=\"3\" /></screen></template>\n\
@@ -210,4 +210,20 @@ fn a_malformed_annotation_in_a_script_is_placed() {
     // Rux's parser says it now (docs/11-next.md, step 2), in its own words.
     assert!(err.to_string().contains("expecting a type after `:`"), "{err}");
     assert_eq!(err.line, Some(4), "{err}");
+}
+
+/// A component's function that does not parse is that one error, at its
+/// line in the component's file, rather than every handler calling one of
+/// its functions reported as a call to nothing (Tracer's AW-002).
+#[test]
+fn a_components_syntax_error_is_the_one_error() {
+    let page = "<template><view @tap=\"check()\"><text>x</text></view></template>\n\
+        <script>\n  fn match() {}\n  fn check() {}\n</script>";
+    let app = "<template><screen><row /></screen></template>\n\
+        <script>\nuse components::row;\n</script>";
+    let dir = project(&[("app.rux", app), ("components/row.rux", page)]);
+    let Err(err) = Document::load_checked(dir.join("app.rux")) else { panic!("loaded") };
+    assert!(err.message.contains("`match` is a reserved word"), "{err}");
+    assert!(err.file.as_deref().is_some_and(|f| f.ends_with("row.rux")), "{err:?}");
+    assert_eq!((err.line, err.column), (Some(3), Some(4)), "{err:?}");
 }

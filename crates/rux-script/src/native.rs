@@ -184,9 +184,36 @@ fn file_fields() -> Vec<rux_native::FieldSig> {
 /// no import, and `Sound`, which `loadSound` gives. A file's own type of the
 /// same name is its own.
 pub fn prelude_types() -> Vec<(String, String)> {
-    vec![
+    let mut types = vec![
         ("File".to_string(), rux_native::Interface::record_text(&file_fields())),
         ("Sound".to_string(), "#opaque Sound".to_string()),
+    ];
+    types.extend(event_types().into_iter().map(|(n, t)| (n.to_string(), t)));
+    types
+}
+
+/// Where a pointer is, as every gesture's `event` has it.
+const POINTER_FIELDS: &str = "x: float, y: float, pageX: float, pageY: float, \
+    width: float, height: float, touches: { id: int, x: float, y: float }[]";
+/// How far a drag or a swipe has gone, from where it landed and from the last move.
+const TRAVEL_FIELDS: &str = "totalX: float, totalY: float, moveX: float, moveY: float";
+
+/// What `event` is in the handlers that hand the same one everywhere, by the
+/// name a parameter is annotated with: `fn onKey(e: KeyEvent)` (Tracer's
+/// AW-007). `TapEvent` is `@tap`'s, `@press`'s, `@release`'s and
+/// `@longpress`'s.
+pub fn event_types() -> Vec<(&'static str, String)> {
+    vec![
+        ("TapEvent", format!("{{ {POINTER_FIELDS} }}")),
+        (
+            "KeyEvent",
+            "{ key: string, ctrl: bool, shift: bool, alt: bool, meta: bool, primary: bool, repeat: bool }".to_string(),
+        ),
+        ("DragEvent", format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, phase: \"start\" | \"move\" | \"end\" }}")),
+        (
+            "SwipeEvent",
+            format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, direction: \"left\" | \"right\" | \"up\" | \"down\" }}"),
+        ),
     ]
 }
 

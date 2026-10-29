@@ -56,8 +56,8 @@
 <script>
   use stores::shop;
 
-  prop label;
-  prop price;
+  prop label: string;
+  prop price: int;
 
   let qty = signal(1);
   let note = signal("");

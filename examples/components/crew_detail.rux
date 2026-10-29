@@ -64,8 +64,8 @@
 
 <script>
   // `id` is the segment the path captured, `crew` what the route passes.
-  prop id;
-  prop crew;
+  prop id: string;
+  prop crew: { id: string, name: string, job: string }[];
 
   // Private to this page, and gone when you leave it: a route's view starts
   // fresh on a second visit. Anything meant to outlive a visit belongs to the
@@ -74,7 +74,7 @@
 
   // The path carries an id and nothing else, which is the point: a link is a
   // string, so it can only ever hand over a name for something.
-  fn member_of(list, id) {
+  fn member_of(list: { id: string, name: string, job: string }[], id: string): { name: string, job: string } {
     for m in list {
       if m.id == id {
         return m;

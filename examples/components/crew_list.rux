@@ -58,5 +58,5 @@
 </style>
 
 <script>
-  prop crew;
+  prop crew: { id: string, name: string, job: string }[];
 </script>

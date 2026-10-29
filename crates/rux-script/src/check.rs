@@ -352,6 +352,10 @@ struct Checker<'a> {
     seen: Vec<Seen>,
     /// What each unannotated parameter was handed, by function and position.
     given: HashMap<(String, usize), Vec<(usize, Type)>>,
+    /// Each "has no type" warning, by its finding, its function and its
+    /// parameters: its `fn f(e: T)` is filled in from [`Checker::given`]
+    /// once the template, the last caller, has been checked.
+    untyped_warnings: Vec<(usize, (String, usize), Vec<(String, Option<Type>)>)>,
     /// Whether to keep what each expression is, for [`check_typed`].
     typed: bool,
     /// What is kept, for the parse being checked: the script's, or the
@@ -410,6 +414,7 @@ impl<'a> Checker<'a> {
             record: false,
             seen: Vec::new(),
             given: HashMap::new(),
+            untyped_warnings: Vec::new(),
             typed: false,
             cur: Types::default(),
             rec: Record::default(),
@@ -790,6 +795,43 @@ impl<'a> Checker<'a> {
         let cx = self.cx;
         for item in &cx.template {
             self.template_item(item);
+        }
+        self.suggest_param_types();
+    }
+
+    /// Each "has no type" warning's `fn f(e: T)`, with what every call
+    /// handed that parameter in place of `T` where that is one type with a
+    /// name: `fn onKey(e: KeyEvent)` for `@key="onKey(event)"` (Tracer's
+    /// AW-007). A record written out in full is no suggestion, so it stays `T`.
+    fn suggest_param_types(&mut self) {
+        for (at, key, params) in std::mem::take(&mut self.untyped_warnings) {
+            let signature: Vec<String> = params
+                .iter()
+                .enumerate()
+                .map(|(i, (p, t))| {
+                    if let Some(t) = t {
+                        return format!("{p}: {t}");
+                    }
+                    let handed: Vec<Type> = self
+                        .given
+                        .get(&key)
+                        .map(|g| g.iter().filter(|(n, _)| *n == i).map(|(_, t)| t.clone()).collect())
+                        .unwrap_or_default();
+                    if handed.is_empty() || handed.iter().any(|t| self.resolve(t) == Type::Any) {
+                        return format!("{p}: T");
+                    }
+                    let shown = widen(&Type::union(handed)).to_string();
+                    if shown.contains('{') {
+                        format!("{p}: T")
+                    } else {
+                        format!("{p}: {shown}")
+                    }
+                })
+                .collect();
+            let Some(finding) = self.findings.get_mut(at) else { continue };
+            if let Some(cut) = finding.message.rfind("`fn ") {
+                finding.message = format!("{}`fn {}({})`", &finding.message[..cut], key.0, signature.join(", "));
+            }
         }
     }
 
@@ -2183,8 +2225,13 @@ impl<'a> Checker<'a> {
                         return;
                     }
                 }
+                // A member can also fail on an error inside one of the values
+                // (`{ done: t.done }` with `t` maybe `none`), which inferring
+                // reports; the map itself still fits then.
                 let got = self.infer_map(entries);
-                self.mismatch_ty(pos, &got, want);
+                if !self.assignable(&got, want) {
+                    self.mismatch_ty(pos, &got, want);
+                }
             }
             _ => {
                 let got = self.infer_map(entries);
@@ -3021,7 +3068,7 @@ impl<'a> Checker<'a> {
                 }
                 None => {
                     let t = self.infer(arg);
-                    if self.record && self.quiet == 0 {
+                    if self.quiet == 0 {
                         self.given.entry(key.clone()).or_default().push((i, widen(&t)));
                     }
                 }
@@ -3189,6 +3236,7 @@ impl<'a> Checker<'a> {
                     None => format!("{p}: T"),
                 })
                 .collect();
+            let before = self.findings.len();
             self.warn(
                 at,
                 format!(
@@ -3200,6 +3248,9 @@ impl<'a> Checker<'a> {
                     signature.join(", ")
                 ),
             );
+            if self.findings.len() > before {
+                self.untyped_warnings.push((before, key.clone(), info.params.clone()));
+            }
         }
 
         // The body runs with its parameters in scope and nothing of whoever
@@ -4638,6 +4689,11 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         assert!(f.iter().any(|f| f.is_error), "a map of classes takes bools: {f:?}");
         let f = template_findings(&script, vec![expr("{ active: t.done }", Some(class))]);
         assert!(f.is_empty(), "{f:?}");
+        // A value's own error is the one error: the map of classes still fits.
+        let script = format!("{TASK}let u: Task? = none;");
+        let f = template_findings(&script, vec![expr("{ active: u.done }", Some(class))]);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!(f[0].message.contains("may be `none`"), "{f:?}");
     }
 
     #[test]
