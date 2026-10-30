@@ -247,6 +247,15 @@ fn wrapper_manifest(
         }
         _ => "",
     };
+    // **A debug build runs Rux optimised**, and only the app's own Rust as
+    // written, which is what a debugger is for. Unoptimised, Rux's layout of
+    // a 1,000-row list took 12.7 ms a frame against 4.2 in a release build,
+    // and the app paid for it in every window it opened from `rux run`. The
+    // cost is the first build, once.
+    let own_debug = native.map_or(String::new(), |n| {
+        format!("\n[profile.dev.package.{}]\nopt-level = 0\n", literal(&n.package))
+    });
+    let profile = format!("{profile}\n[profile.dev.package.\"*\"]\nopt-level = 2\n{own_debug}");
     // The app's own Rust, and, when Rux itself comes from a checkout, the
     // checkout's rux-native for it too: two copies of the registry would be
     // two registries, and the app's exports would land in the one nobody
@@ -905,5 +914,23 @@ mod tests {
         // The checkout's vendored taffy, which its own `[patch]` cannot
         // reach from a crate outside its workspace.
         assert!(toml.contains("[patch.crates-io]\ntaffy = { path = \"C:/rux/vendor/taffy\" }"), "{toml}");
+    }
+
+    /// A debug build compiles Rux optimised and the app's own native crate
+    /// as written, for a debugger.
+    #[test]
+    fn a_debug_build_optimises_rux_and_not_the_apps_own_rust() {
+        let options = Options { release: false, target: Target::Desktop, rux_source: None, abis: None, before: true };
+        let native = crate::native::NativeCrate {
+            dir: PathBuf::from("C:/app/native"),
+            lib: PathBuf::from("C:/app/native/src/lib.rs"),
+            package: "tracer".to_string(),
+            ident: "tracer".to_string(),
+        };
+        let text = wrapper_manifest(&manifest(), &options, None, Some(&native));
+        let parsed: toml::Table = text.parse().unwrap_or_else(|e| panic!("{e}\n{text}"));
+        let packages = &parsed["profile"]["dev"]["package"];
+        assert_eq!(packages["*"]["opt-level"].as_integer(), Some(2), "{text}");
+        assert_eq!(packages["tracer"]["opt-level"].as_integer(), Some(0), "{text}");
     }
 }

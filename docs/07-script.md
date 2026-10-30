@@ -768,6 +768,11 @@ pub fn open_till() -> Till { … }
   answers the empty value of its type. **`rux run` compiles the crate in**, and
   builds and restarts the window whenever something under `native/` changes;
   `.rux` files still hot reload. `rux native` prints what Rux sees.
+- **A debug build runs Rux optimised.** Everything the app depends on is
+  compiled at `opt-level = 2`, and only the `native/` crate as written, for a
+  debugger. A debug window scrolls as fast as a release one (a list of 1,000
+  rows: 40 wheel notches took 2.5 s of CPU before, 0.33 s now); the price is
+  the first build, which takes several minutes once.
 
 ### Signals from Rust
 
