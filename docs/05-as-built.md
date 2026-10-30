@@ -3820,9 +3820,11 @@ for the reasons under "Checking a file without opening a window".
 
 ## Gotchas (these will bite)
 
-1. **String literals in attributes need single-quoted attrs:**
-   `@tap='name = ""'`, `r-if='city != ""'`. We do **not** decode HTML entities,
-   and rhai treats `'x'` as a *char*, not a string.
+1. **A string literal inside a double-quoted attribute** is written with
+   `&quot;`, as in HTML: `r-if="city != &quot;&quot;"`, or the attribute is
+   single-quoted, `@tap='name = ""'`. Entities are decoded in attributes and
+   in text alike, `{{ }}` included, so `Tom &amp; Jerry` shows `Tom & Jerry`.
+   `'x'` in a script is a *char*, not a string.
 2. **`use` must be alone on its own line** in `<script>`.
 3. **A `fn` called in method style cannot see the surrounding scope.**
    `helper(thing)` reaches the state around it; `thing.helper()` does not. This

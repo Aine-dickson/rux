@@ -10449,6 +10449,18 @@ let open = signal(true);
         assert_eq!(text_of(&doc.root).join("|"), "true|none|true|0", "the computeds follow; the let kept its first read");
     }
 
+    /// Tracer's AW-021: an entity in text is decoded as in an attribute and
+    /// as HTML does, inside `{{ }}` and out of it.
+    #[test]
+    fn an_entity_in_text_is_decoded() {
+        let doc = Document::from_source(
+            "<template><screen><text>[{{ a ?? &quot;none&quot; }}]</text><text>Tom &amp; Jerry &lt;3</text></screen></template>
+             <script>let a: string? = none;</script>",
+        )
+        .expect("loads");
+        assert_eq!(text_of(&doc.root).join("|"), "[none]|Tom & Jerry <3");
+    }
+
     /// Tracer's AW-020: JavaScript's everyday helpers, with JavaScript's
     /// answers, through `rux check`'s types and the interpreter both.
     /// `reverse` and `replace` gave `none` back, and `replace` changed its

@@ -984,9 +984,12 @@ impl Parser {
                 nodes.push(Node::Element(el));
                 continue;
             }
-            // Text run up to the next '<'.
+            // Text run up to the next '<', its entities decoded as an
+            // attribute's are, and as HTML decodes text: `{{ a ?? &quot;&quot; }}`
+            // read `&` as the start of an expression (AW-021), and
+            // `Tom &amp; Jerry` showed the entity.
             let at = self.line_col(self.pos).0;
-            let text = self.read_text();
+            let text = decode_entities(&self.read_text());
             // The line of the run's first character, not of its first
             // non-space one. A `{{ }}` sitting on its own line after the tag
             // is the common shape, and the leading newline is part of the run,
