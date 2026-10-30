@@ -603,7 +603,12 @@ is, so it works anywhere a length does.
 
 `font-family` takes a CSS list (`font-family: "Inter", sans-serif`), and parley
 parses it and does name-matching + fallback; the generic families (`serif`,
-`sans-serif`, `monospace`, …) always resolve. It **inherits**, like `color` and
+`sans-serif`, `monospace`, …) always resolve. Every list ends with the
+system's symbol and emoji fonts (Segoe UI Emoji, Segoe UI Symbol and Cambria
+Math on Windows; Apple Color Emoji and Apple Symbols, Noto Color Emoji, Noto
+Sans Symbols 2 and DejaVu Sans elsewhere, whichever are installed), as a
+browser falls back to them, so ✕ ▾ ▸ ⌫ draw where the chosen font has no such
+glyph instead of a box. It **inherits**, like `color` and
 `font-size`. **The text properties inherit, as in CSS**: `color`, `font-size`,
 `font-family`, `font-weight`, `font-style`, `letter-spacing`, `word-spacing`,
 `line-height`, `text-align`, `white-space` and `direction`, so `font-weight: 700`

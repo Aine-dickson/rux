@@ -301,8 +301,21 @@ struct Strut {
 }
 
 /// Owns the reusable font/layout contexts. One per app is plenty.
+/// [`TextEngine::stack`], for where the engine is borrowed elsewhere.
+fn stack(family: Option<&str>, symbols: &str) -> Option<String> {
+    let family = family.filter(|f| !f.trim().is_empty());
+    match (family, symbols.is_empty()) {
+        (None, true) => None,
+        (Some(f), true) => Some(f.to_string()),
+        (f, false) => Some(format!("{}{symbols}", f.unwrap_or("sans-serif"))),
+    }
+}
+
 pub struct TextEngine {
     font_cx: FontContext,
+    /// The installed fonts every `font-family` list ends with, quoted and
+    /// comma-led, empty where none is: see [`TextEngine::stack`].
+    symbols: String,
     layout_cx: LayoutContext<RunId>,
     /// What [`measure`](Self::measure) has answered, keyed by everything that
     /// decides the answer. Layout asks for each text box's size several times
@@ -472,8 +485,30 @@ impl Default for TextEngine {
 
 impl TextEngine {
     pub fn new() -> Self {
+        let mut font_cx = FontContext::new();
+        // **Symbols fall back as a browser's do** (Tracer's AW-030). ✕ ▾ ▸ ⌫
+        // drew as boxes: none is in Segoe UI, and fontique's fallback goes by
+        // script, which for a symbol is "Common" and finds nothing. A browser
+        // ends every list with the system's symbol fonts. The emoji font goes
+        // before the symbol font, so what drew in colour still does.
+        const LAST: [&str; 8] = [
+            "Segoe UI Emoji",
+            "Segoe UI Symbol",
+            "Cambria Math",
+            "Apple Color Emoji",
+            "Apple Symbols",
+            "Noto Color Emoji",
+            "Noto Sans Symbols 2",
+            "DejaVu Sans",
+        ];
+        let symbols: String = LAST
+            .iter()
+            .filter(|name| font_cx.collection.family_id(name).is_some())
+            .map(|name| format!(", \"{name}\""))
+            .collect();
         Self {
-            font_cx: FontContext::new(),
+            symbols,
+            font_cx,
             layout_cx: LayoutContext::new(),
             measured: HashMap::new(),
             shaped: HashMap::new(),
@@ -521,6 +556,13 @@ impl TextEngine {
         true
     }
 
+    /// `family`, the CSS list written (or `sans-serif`), with the system's
+    /// symbol fonts after it. `None` where there are none to add and nothing
+    /// was written, which leaves parley its own default.
+    fn stack(&self, family: Option<&str>) -> Option<String> {
+        stack(family, &self.symbols)
+    }
+
     fn build(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Layout<RunId> {
         // `text-transform` changes letters, never where they are, so every
         // index into the text still holds for what is shaped.
@@ -539,14 +581,15 @@ impl TextEngine {
         let text = &*marked;
         // `tab-size`, worked out before the builder holds the contexts.
         let tab = (!tabs.is_empty()).then(|| self.tab_spacing(style));
+        let stack = self.stack(style.family);
         let mut builder = self.layout_cx.ranged_builder(&mut self.font_cx, text, 1.0, true);
         builder.push_default(StyleProperty::FontSize(style.font_size));
         builder.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
         builder.push_default(StyleProperty::OverflowWrap(style.wrap.to_parley()));
         // `font-family` is a raw CSS list; `FontFamily::Source` lets parley parse
         // it and run the usual name-matching + fallback. Absent → system default.
-        if let Some(family) = style.family.filter(|f| !f.trim().is_empty()) {
-            builder.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Borrowed(family))));
+        if let Some(family) = stack {
+            builder.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(family))));
         }
         if let Some(px) = style.letter_spacing {
             builder.push_default(StyleProperty::LetterSpacing(px));
@@ -569,7 +612,7 @@ impl TextEngine {
         if let Some(rich) = style.rich {
             for (i, run) in rich.runs.iter().enumerate() {
                 let range = run.range.start + off..run.range.end + off;
-                Self::push_run(&mut builder, i as RunId + 1, range, &run.style, style);
+                Self::push_run(&mut builder, i as RunId + 1, range, &run.style, style, &self.symbols);
             }
         }
         // Each tab as wide as `tab-size` says, by the space after it: shaping
@@ -612,12 +655,13 @@ impl TextEngine {
     /// Measured between two letters, as a space alone at the end of a line
     /// hangs and measures nothing.
     fn tab_spacing(&mut self, style: &TextStyle) -> f32 {
+        let stack = self.stack(style.family);
         let mut width = |s: &str| {
             let mut b = self.layout_cx.ranged_builder(&mut self.font_cx, s, 1.0, true);
             b.push_default(StyleProperty::FontSize(style.font_size));
             b.push_default(StyleProperty::FontWeight(FontWeight::new(style.weight as f32)));
-            if let Some(family) = style.family.filter(|f| !f.trim().is_empty()) {
-                b.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(family.to_string()))));
+            if let Some(family) = &stack {
+                b.push_default(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(family.clone()))));
             }
             if style.italic {
                 b.push_default(StyleProperty::FontStyle(FontStyle::Italic));
@@ -661,6 +705,7 @@ impl TextEngine {
         range: std::ops::Range<usize>,
         run: &RunStyle,
         base: &TextStyle,
+        symbols: &str,
     ) {
         builder.push(StyleProperty::Brush(id), range.clone());
         builder.push(StyleProperty::FontSize(run.font_size), range.clone());
@@ -671,7 +716,8 @@ impl TextEngine {
         );
         if let Some(family) = run.family.as_deref().filter(|f| !f.trim().is_empty()) {
             if base.family != Some(family) {
-                builder.push(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(family.to_string()))), range.clone());
+                let family = stack(Some(family), symbols).unwrap_or_else(|| family.to_string());
+                builder.push(StyleProperty::FontFamily(FontFamily::Source(Cow::Owned(family))), range.clone());
             }
         }
         builder.push(StyleProperty::LetterSpacing(run.letter_spacing.unwrap_or(0.0)), range.clone());
@@ -1619,5 +1665,22 @@ mod outline_tests {
         assert!(outlines_only(&font(&[b"CBDT", b"CBLC", b"EBDT", b"EBLC", b"glyf"]), 0).is_none());
         assert!(outlines_only(&font(&[b"EBDT", b"EBLC"]), 0).is_none());
         assert!(outlines_only(b"junk", 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod stack_tests {
+    use super::stack;
+
+    /// Every list ends with the symbol fonts found; with none found, what was
+    /// written goes as written and nothing written stays parley's default.
+    #[test]
+    fn a_family_list_ends_with_the_symbol_fonts() {
+        let tail = ", \"Segoe UI Symbol\"";
+        assert_eq!(stack(Some("monospace"), tail).as_deref(), Some("monospace, \"Segoe UI Symbol\""));
+        assert_eq!(stack(None, tail).as_deref(), Some("sans-serif, \"Segoe UI Symbol\""));
+        assert_eq!(stack(Some("  "), tail).as_deref(), Some("sans-serif, \"Segoe UI Symbol\""));
+        assert_eq!(stack(Some("Inter"), "").as_deref(), Some("Inter"));
+        assert_eq!(stack(None, ""), None);
     }
 }
