@@ -11181,6 +11181,42 @@ fn flip() { rts_flag.on = true; }</script>",
         assert_eq!(text_of(&doc.root).join(""), "1|1|listed 7", "and finished");
     }
 
+    /// Tracer's AW-028: a page that loads again, as a hot reload loads it,
+    /// does not hear the list the page before it already handled. Every
+    /// value reaches the app exactly once.
+    #[test]
+    fn a_reloaded_page_starts_with_an_empty_channel() {
+        static QUEUE: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+        rux_native::Module::new("rt28_core")
+            .export(rux_native::Export::channel("events", "int[]", || {
+                let taken: Vec<rux_native::Any> = QUEUE.lock().unwrap().drain(..).map(rux_native::Any::Int).collect();
+                Ok(rux_native::Any::Array(taken))
+            }))
+            .install();
+        let source = "<template><screen><text>{{ seen }}</text></screen></template>
+             <script>
+               use native::rt28_core;
+               let seen = signal(0);
+               effect {
+                 for e in rt28_core.events { seen += 1; }
+               }
+             </script>";
+        let mut doc = Document::from_source(source).expect("load");
+        QUEUE.lock().unwrap().extend([1, 2]);
+        rux_native::notify();
+        assert!(doc.refresh_native_signals(), "the push arrives");
+        assert_eq!(text_of(&doc.root).join(""), "2");
+        doc.replace_with(Document::from_source(source).expect("reload"));
+        assert_eq!(text_of(&doc.root).join(""), "0", "the old list is not heard again");
+        rux_native::notify();
+        let _ = doc.refresh_native_signals();
+        assert_eq!(text_of(&doc.root).join(""), "0", "nor on the first frame");
+        QUEUE.lock().unwrap().push(3);
+        rux_native::notify();
+        assert!(doc.refresh_native_signals(), "a new push arrives");
+        assert_eq!(text_of(&doc.root).join(""), "1");
+    }
+
     /// A task a component started goes on in that instance's scope: it
     /// writes the instance's own state, which renders.
     #[test]
