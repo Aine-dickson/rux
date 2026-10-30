@@ -4033,6 +4033,8 @@ impl Document {
                 return;
             }
             self.apply_change(&changed);
+            // An `async fn` an effect started on the edit is the document's.
+            self.apply_timer_requests(None);
             return;
         };
 
@@ -4060,6 +4062,9 @@ impl Document {
         if !moved.is_empty() && !self.patch_instance(&key, &before) {
             self.rebuild();
         }
+        // An `async fn` an effect started on the edit belongs to the field's
+        // component, as one its handler started does.
+        self.apply_timer_requests(Some(&key));
     }
 
     /// An input's current value, read in its own row's and instance's scope.
@@ -6009,6 +6014,11 @@ impl Document {
             return false;
         }
         self.apply_change(&moved);
+        // **Claimed, as after a handler**: an `async fn` an effect started on
+        // what Rust pushed was never taken into the tasks the answers are
+        // matched against, so it never came back from its `await` (Tracer's
+        // AW-029). Those started on load were claimed by the load.
+        self.apply_timer_requests(None);
         self.diagnostics.warnings.extend(collect_warnings());
         true
     }
@@ -11124,6 +11134,51 @@ fn flip() { rts_flag.on = true; }</script>",
         settle_one(&mut doc);
         assert_eq!(text_of(&doc.root).join(""), "done Grace 31");
         assert!(!doc.has_waiting_tasks(), "finished, and let go");
+    }
+
+    /// Tracer's AW-029: an effect woken by a channel's push starts an
+    /// `async fn`, and it comes back from its `await`. It started and never
+    /// finished when the push came into an idle window.
+    #[test]
+    fn an_async_fn_an_effect_starts_on_a_push_finishes() {
+        static QUEUE: std::sync::Mutex<Vec<i64>> = std::sync::Mutex::new(Vec::new());
+        answer_later("rt29_list", "listed ");
+        rux_native::Module::new("rt29_core")
+            .export(rux_native::Export::channel("events", "int[]", || {
+                let taken: Vec<rux_native::Any> = QUEUE.lock().unwrap().drain(..).map(rux_native::Any::Int).collect();
+                Ok(rux_native::Any::Array(taken))
+            }))
+            .install();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ started }}|{{ finished }}|{{ last }}</text></screen></template>
+             <script>
+               use native::rt29_core;
+               use native::rt29_list;
+               let started = signal(0);
+               let finished = signal(0);
+               let last = signal(\"\");
+               async fn load(n: int) {
+                 started += 1;
+                 last = await rt29_list.call(n);
+                 finished += 1;
+               }
+               effect {
+                 for e in rt29_core.events { load(e); }
+               }
+             </script>",
+        )
+        .expect("load");
+        assert_eq!(text_of(&doc.root).join(""), "0|0|");
+        std::thread::spawn(|| {
+            QUEUE.lock().unwrap().push(7);
+            rux_native::notify();
+        })
+        .join()
+        .unwrap();
+        assert!(doc.refresh_native_signals(), "the push arrives");
+        assert_eq!(text_of(&doc.root).join(""), "1|0|", "started");
+        settle_one(&mut doc);
+        assert_eq!(text_of(&doc.root).join(""), "1|1|listed 7", "and finished");
     }
 
     /// A task a component started goes on in that instance's scope: it
