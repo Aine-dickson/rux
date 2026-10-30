@@ -9599,7 +9599,7 @@ use components::detail;
         let sheet = out
             .metrics
             .iter()
-            .find(|m| m.path == [0, 0])
+            .find(|m| *m.path == [0, 0])
             .expect("the nested screen is measured");
         assert_eq!(
             (sheet.x, sheet.y, sheet.width, sheet.height),

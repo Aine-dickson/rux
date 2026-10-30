@@ -156,8 +156,25 @@ frame's boxes with what they were laid out from: the window's size, which
 that moves whenever anything writes the tree. When all three are as they
 were, only the walk that places the boxes at the scroll offsets runs again. A
 list of 1,000 rows: 16.8 ms of layout a scrolled frame in a release build,
-then 4.2 ms (about 4x faster). The walk itself still visits every row, so a
-list ten times as long costs ten times as much to scroll.
+then 4.2 ms (about 4x faster).
+
+A row the clips cut wholly away is passed over: nothing it would paint is
+made, nor its tap and hover regions. What it still answers for, its place for
+`query()` and `scrollIntoView()`, Tab, and what a screen reader reads, is
+worked out once and moved with the scroll on later frames. A row whose
+drawing can reach outside its box in a way not known without drawing it is
+walked as before: one inside a `transform` or a `filter`, or holding a
+`<path>`, an inline box with a shadow, or anything `sticky` or anchored.
+2,000 rows in a release build: 7.2 ms of layout a scrolled frame, then
+0.9 ms (about 8x faster), and 8,003 paints a frame down to 107.
+
+`content-visibility: auto` shows a box's contents when it comes within half
+a window of the screen. When one first does, every box within a window and
+a half is shown with it, and stays shown until the next one arrives, so the
+document is laid out again about once a window of scrolling rather than on
+nearly every frame. 2,000 such rows: 8.9 ms a scrolled frame, then 1.0 ms
+(about 9x faster), with a frame of about 10 ms each time the shown boxes
+change.
 
 Rux's own tests prove what it keeps: a debug build lays each kept layout out
 again whole, builds each list built alone again with its document, and builds
@@ -3006,7 +3023,10 @@ to let a row that is far from the screen skip its contents:
 
 - **`content-visibility: auto`** lays out and draws a box's contents only
   while the box is near the screen: on screen, inside every clip it sits in,
-  or within half the window's size of it. Further away, the box is laid out
+  or within half the window's size of it. When a box first comes that near,
+  every box within a window and a half is shown along with it, and they stay
+  shown until the next one does, so what is shown changes about once a window
+  of scrolling rather than on every frame. Further away, the box is laid out
   with no children, its own background and border drawn, its texts never
   measured. `hidden` skips them always; `visible` is the default.
 - **`contain-intrinsic-size`** is the size a skipped box takes in place of its
@@ -3035,6 +3055,13 @@ scrolled a little each frame, release, desktop):
 | scene, a scrolled frame | 0.75 ms | 0.33 ms, 2.3x faster |
 | the first frame's layout | 127 ms | 18.8 ms, 6.7x faster |
 | building the document | 104 ms | 109 ms, the same |
+
+Those were measured when it landed. Since then a frame that only scrolls
+lays nothing out again, and rows scrolled out of view are passed over (see
+"A frame that only scrolls"): a scrolled frame is now 0.9 ms without
+`content-visibility` and 1.0 ms with it, so on a desktop it no longer makes
+scrolling faster. What it still saves is the first frame, and the work of
+laying out rows whose contents change while they are far away.
 
 Building the rows is the same either way: every row is still styled and
 stays in the document, so `query()`, `r-model` and a handler reach it.

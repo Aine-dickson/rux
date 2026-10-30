@@ -3869,7 +3869,9 @@ pub struct AccessNode {
     pub y: f32,
     pub width: f32,
     pub height: f32,
-    pub access: Access,
+    /// Shared with the layout that made it, not copied: a long list has one
+    /// for every line of text, on every frame.
+    pub access: std::sync::Arc<Access>,
     /// `r-model`, when this element is an input, lets the shell match it against
     /// the focused model and report focus to the platform.
     pub model: Option<String>,
@@ -3974,7 +3976,9 @@ pub struct Layout {
 /// property of what is actually shown.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NodeMetrics {
-    pub path: Vec<usize>,
+    /// Shared, not owned: every box has one, on every frame, and the shell
+    /// keeps copies of the list.
+    pub path: std::sync::Arc<[usize]>,
     pub x: f32,
     pub y: f32,
     pub width: f32,
@@ -4773,8 +4777,8 @@ struct Built {
     transforms: Vec<(NodeId, Transform, [Len; 2], Option<[Len; 2]>)>,
     opacities: Vec<(NodeId, f32, BlendMode)>,
     states: Vec<(NodeId, Vec<usize>)>,
-    access: Vec<(NodeId, Access, Option<String>)>,
-    paths: Vec<(NodeId, Vec<usize>)>,
+    access: Vec<(NodeId, std::sync::Arc<Access>, Option<String>)>,
+    paths: Vec<(NodeId, std::sync::Arc<[usize]>)>,
     stickies: Vec<(NodeId, [Option<f32>; 4])>,
     /// The boxes a scroller can snap to. See `SnapArea`.
     snaps: Vec<(NodeId, SnapArea)>,
@@ -4787,6 +4791,35 @@ struct Built {
     /// Each visible scroller's id. See `number_scrollers`.
     scroll_ids: IdMap<usize>,
     anchoring: Anchoring,
+    /// Where each subtree the walk may pass over can draw. See `fold`.
+    folds: IdMap<[f32; 4]>,
+    /// What each subtree passed over answers for, made the first time it is
+    /// passed over. See `Folded`.
+    folded: std::cell::RefCell<IdMap<Folded>>,
+}
+
+/// What a subtree passed over answers for (see `collect_folded`), made once
+/// for the prepared layout as if its parent's content corner were at the
+/// origin, and moved to where the scroll has put it on each frame.
+///
+/// Walking a list's rows on every frame for nothing but this cost 170 ns a
+/// box even so, nearly all of it in finding each box's entries, scattered
+/// over the tree: 2,000 rows of four boxes, 1.4 ms a frame.
+///
+/// Every layout passes a subtree over this way, kept or laid out whole, so
+/// the two agree to the bit, though a box's place is then its offset from
+/// the parent's corner plus that corner, not the sum taken from the top.
+#[derive(Default)]
+struct Folded {
+    /// The scroller it was made inside.
+    inside: Option<usize>,
+    /// Made by walking it on every frame instead: it holds a field, whose
+    /// regions carry the text drawn in it, placed and all.
+    walked: bool,
+    metrics: Vec<NodeMetrics>,
+    access: Vec<(u32, AccessNode)>,
+    focusables: Vec<(u32, FocusItem)>,
+    contained: Vec<(Contained, Rect4)>,
 }
 
 impl Built {
@@ -4815,8 +4848,8 @@ fn index(
     scrolls: &[ScrollFacts],
     transforms: &[(NodeId, Transform, [Len; 2], Option<[Len; 2]>)],
     states: &[(NodeId, Vec<usize>)],
-    access: &[(NodeId, Access, Option<String>)],
-    paths: &[(NodeId, Vec<usize>)],
+    access: &[(NodeId, std::sync::Arc<Access>, Option<String>)],
+    paths: &[(NodeId, std::sync::Arc<[usize]>)],
     stickies: &[(NodeId, [Option<f32>; 4])],
     snaps: &[(NodeId, SnapArea)],
     stacks: &[(NodeId, Stack)],
@@ -5042,7 +5075,7 @@ fn build(
     scrolls: &mut Vec<ScrollFacts>,
     transforms: &mut Vec<(NodeId, Transform, [Len; 2], Option<[Len; 2]>)>,
     states: &mut Vec<(NodeId, Vec<usize>)>,
-    access: &mut Vec<(NodeId, Access, Option<String>)>,
+    access: &mut Vec<(NodeId, std::sync::Arc<Access>, Option<String>)>,
     // Where this node sits, and where every node's path is collected.
     //
     // Computed here rather than in `collect` on purpose: this walker recurses
@@ -5050,7 +5083,7 @@ fn build(
     // walks taffy ids, where the same assumption is only *probably* true, and a
     // mismatch there would hand back confident, wrong geometry.
     path: &[usize],
-    paths: &mut Vec<(NodeId, Vec<usize>)>,
+    paths: &mut Vec<(NodeId, std::sync::Arc<[usize]>)>,
     vp: (f32, f32),
     // `cap` is the widest this node can end up, from the constraint chain above
     // it; `caps` is where each text leaf's own cap is left for the measure hook.
@@ -5495,7 +5528,7 @@ fn build(
     if let Some(path) = node.state_path.as_ref().filter(|_| !node.style.no_pointer) {
         states.push((id, path.clone()));
     }
-    paths.push((id, path.to_vec()));
+    paths.push((id, path.into()));
     if let Some(a) = &node.style.anchor {
         if let Some(name) = &a.name {
             anchoring.names.push((id, name.clone(), seq));
@@ -5532,7 +5565,7 @@ fn build(
         },
     );
     if node.access.role.is_meaningful() {
-        access.push((id, node.access.clone(), node.model.clone()));
+        access.push((id, std::sync::Arc::new(node.access.clone()), node.model.clone()));
     }
     (id, kept)
 }
@@ -5548,8 +5581,8 @@ fn clips(style: &Style, skipped: bool) -> bool {
 /// the screen last frame and the size each was last drawn at (both by
 /// path), and, filled by `build`, what was skipped.
 struct Skipping<'a> {
-    shown: &'a HashMap<Vec<usize>, bool>,
-    sizes: &'a HashMap<Vec<usize>, (f32, f32)>,
+    shown: &'a HashMap<std::sync::Arc<[usize]>, bool>,
+    sizes: &'a HashMap<std::sync::Arc<[usize]>, (f32, f32)>,
     /// Each skipped box's content size, answered by the measure hook.
     intrinsic: IdMap<(f32, f32)>,
     /// Every box with `content-visibility` other than `visible`, and whether
@@ -5561,7 +5594,7 @@ struct Skipping<'a> {
 /// found it. See [`LayoutState`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct Contained {
-    pub path: Vec<usize>,
+    pub path: std::sync::Arc<[usize]>,
     /// Whether its contents were skipped this frame.
     pub skipped: bool,
     /// Whether any of it is on screen, inside every clip it sits in.
@@ -5569,6 +5602,10 @@ pub struct Contained {
     /// Whether it is near enough to the screen that its contents should be
     /// there: on screen with half the window's size to spare on every side.
     pub near: bool,
+    /// Whether it is within a window and a half of the screen on every side:
+    /// what is shown, all at once, when a box first comes near. See
+    /// `LayoutState::lay_out_text`.
+    pub ahead: bool,
     /// Its content box, when its contents were laid out: what
     /// `contain-intrinsic-size: auto` remembers.
     pub size: Option<(f32, f32)>,
@@ -5650,7 +5687,10 @@ struct Deferred {
     inside_scroll: Option<usize>,
     xform: Option<Transform>,
     dim: f32,
-    clips: Vec<Clip>,
+    /// Shared by the boxes held back from one parent, which are all inside
+    /// the same ones: a list of 2,000 rows that are each a context made a
+    /// copy for every row on every frame.
+    clips: std::rc::Rc<[Clip]>,
 }
 
 impl Deferred {
@@ -5659,22 +5699,6 @@ impl Deferred {
     }
 }
 
-impl PartialEq for Deferred {
-    fn eq(&self, other: &Self) -> bool {
-        self.key() == other.key()
-    }
-}
-impl Eq for Deferred {}
-impl PartialOrd for Deferred {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl Ord for Deferred {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.key().cmp(&other.key())
-    }
-}
 
 /// The lengths of the lists painting order decides: paints, and every region
 /// a pointer finds by taking the topmost (last) one. Scrollers, Tab order and
@@ -5692,7 +5716,7 @@ struct Stacking {
     /// How deep the clip stack was there. The clips above it are the ones a
     /// held-back box has to be drawn inside.
     clip_base: usize,
-    pending: std::collections::BinaryHeap<std::cmp::Reverse<Deferred>>,
+    pending: Pending,
     /// The negative layers already moved under the in-flow content, in order,
     /// with how much of each list they took.
     below: Vec<((i32, u32), Marks)>,
@@ -5706,6 +5730,37 @@ impl Stacking {
             pending: Default::default(),
             below: Vec::new(),
         }
+    }
+}
+
+/// The boxes a stacking context holds back, taken lowest layer first.
+///
+/// The heap holds only each box's key and where it is kept: a list of 2,000
+/// rows that are each a context moved every row's whole record a dozen
+/// levels down the heap as each was taken.
+#[derive(Default)]
+struct Pending {
+    order: std::collections::BinaryHeap<std::cmp::Reverse<((i32, u32), usize)>>,
+    held: Vec<Option<Deferred>>,
+}
+
+impl Pending {
+    fn push(&mut self, d: Deferred) {
+        self.order.push(std::cmp::Reverse((d.key(), self.held.len())));
+        self.held.push(Some(d));
+    }
+
+    fn pop(&mut self) -> Option<Deferred> {
+        let std::cmp::Reverse((_, i)) = self.order.pop()?;
+        let d = self.held[i].take();
+        if self.order.is_empty() {
+            self.held.clear();
+        }
+        d
+    }
+
+    fn is_empty(&self) -> bool {
+        self.order.is_empty()
     }
 }
 
@@ -6102,6 +6157,11 @@ struct Walk {
     /// Where the parts of each sentence landed, asked of the text engine once
     /// the sentence had a width. See [`TextMeasure::inline`].
     inline: std::rc::Rc<IdMap<std::sync::Arc<InlineGeometry>>>,
+    /// How many `filter`s the walk is inside, which can draw a box's ink
+    /// away from the box: none, and a box out of view can be passed over.
+    filters: u32,
+    /// Where each box in `contained` is.
+    contained_at: Vec<Rect4>,
 }
 
 /// A rectangle as `(x, y, width, height)`.
@@ -6183,31 +6243,40 @@ fn drain(
     // next one sits inside the same ones: a list of rows that are each a
     // context (`content-visibility`, say) is one clip around them all, not
     // a clip layer per row.
-    let mut open: Option<Vec<Clip>> = None;
-    let close = |open: &mut Option<Vec<Clip>>, out: &mut Layout, walk: &mut Walk| {
-        for _ in open.take().unwrap_or_default() {
+    let mut open: Option<std::rc::Rc<[Clip]>> = None;
+    let close = |open: &mut Option<std::rc::Rc<[Clip]>>, out: &mut Layout, walk: &mut Walk| {
+        for _ in open.take().iter().flat_map(|c| c.iter()) {
             out.paints.push(Paint::PopClip);
             walk.clips.pop();
         }
     };
-    while let Some(std::cmp::Reverse(d)) = ctx.pending.pop() {
+    while let Some(d) = ctx.pending.pop() {
         // A negative one is moved afterwards, so it carries its own clips.
-        let shared = d.z >= 0 && open.as_ref().is_some_and(|c| *c == d.clips);
+        let shared = d.z >= 0 && open.as_ref().is_some_and(|c| std::rc::Rc::ptr_eq(c, &d.clips) || *c == d.clips);
         if !shared {
             close(&mut open, out, walk);
         }
         let start = marks(out);
         if !shared {
-            for c in &d.clips {
+            for c in d.clips.iter() {
                 out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius });
                 walk.clips.push(*c);
             }
             open = Some(d.clips.clone());
         }
-        collect(
-            tree, d.id, d.origin.0, d.origin.1, b, offsets, vp, d.holder, d.inside_scroll, d.xform, d.dim,
-            d.context, out, walk, ctx,
-        );
+        // Passed over when the clips cut it wholly away, as in `collect`:
+        // a list of rows that are each a context (`content-visibility`,
+        // `position: relative`) is drawn from here.
+        if passed_over(tree, d.id, d.origin, b, d.xform, walk) {
+            if !walk.dry {
+                pass_over(tree, d.id, d.origin, b, vp, d.inside_scroll, out, walk);
+            }
+        } else {
+            collect(
+                tree, d.id, d.origin.0, d.origin.1, b, offsets, vp, d.holder, d.inside_scroll, d.xform, d.dim,
+                d.context, out, walk, ctx,
+            );
+        }
         if d.z >= 0 {
             continue;
         }
@@ -6322,35 +6391,8 @@ fn collect(
     let x = x;
     let y = y;
 
-    // `content-visibility`: whether this box is on screen, or near it, for
-    // the next pass or frame to decide whether its contents are there.
-    if let (Some(i), false) = (at.contained, walk.dry) {
-        let (_, skipped) = b.contained[i as usize];
-        let path = at.path.map(|p| b.paths[p as usize].1.clone()).unwrap_or_default();
-        let (w, h) = (layout.size.width, layout.size.height);
-        // What can be seen from here, the window inside every clip, and the
-        // same with half the window to spare on every side of each.
-        let (mx, my) = (vp.0 / 2.0, vp.1 / 2.0);
-        let mut seen = (0.0f32, 0.0f32, vp.0, vp.1);
-        let mut near = (-mx, -my, vp.0 + mx, vp.1 + my);
-        for c in &walk.clips {
-            seen = (seen.0.max(c.x), seen.1.max(c.y), seen.2.min(c.x + c.width), seen.3.min(c.y + c.height));
-            near = (
-                near.0.max(c.x - mx),
-                near.1.max(c.y - my),
-                near.2.min(c.x + c.width + mx),
-                near.3.min(c.y + c.height + my),
-            );
-        }
-        let meets = |r: (f32, f32, f32, f32)| x <= r.2 && x + w >= r.0 && y <= r.3 && y + h >= r.1 && r.2 > r.0 && r.3 > r.1;
-        let (_, _, cw, ch) = content_box(layout);
-        walk.contained.push(Contained {
-            path,
-            skipped,
-            on_screen: meets(seen),
-            near: meets(near),
-            size: (!skipped).then_some((cw, ch)),
-        });
+    if !walk.dry {
+        contained_record(&at, b, x, y, layout, vp, walk);
     }
 
     if let Some(i) = at.anchor_name {
@@ -6471,6 +6513,7 @@ fn collect(
     }
     if let Some(f) = filters.filter(|_| filtered) {
         out.paints.push(Paint::PushFilter { ops: f.filter.clone().into(), bounds: None });
+        walk.filters += 1;
     }
 
     let mut clip = false;
@@ -6706,77 +6749,12 @@ fn collect(
     if at.invisible {
         out.paints.truncate(own_paint);
         placed.clear();
-        if let (false, Some((_, path))) = (walk.dry, at.path.map(|i| &b.paths[i as usize])) {
-            out.metrics.push(NodeMetrics {
-                path: path.clone(),
-                x,
-                y,
-                width: layout.size.width,
-                height: layout.size.height,
-                scroll: inside_scroll,
-            });
-        }
+    }
+    if !walk.dry {
+        node_records(tree, id, &at, b, x, y, layout, inside_scroll, out, walk);
     }
     let (hits_from, states_from) = (out.hits.len(), out.states.len());
     if !walk.dry && !at.invisible {
-        // A `for=` label targeting a text input: a focus region at the label's box,
-        // carrying the *target's* model, so tapping the label focuses that input.
-        if let Some((_, model, row)) = at.focus_label.map(|i| &b.focus_labels[i as usize]) {
-            // The scope comes from the input the label points at, not from the
-            // label: `for=` names a model, and a model only means anything where it
-            // was written. A label that finds no such input carries no instance,
-            // which is the same answer as before this field existed.
-            let target = b.models.iter().find(|m| m.model == *model && m.row == *row);
-            let instance = target.and_then(|b| b.instance.clone());
-            // The target's attributes too, because the shell reads them off
-            // whichever region shares the field's identity, and a label's region
-            // can come first. A `readonly` field focused from its label must still
-            // refuse the keyboard.
-            let field = target.map(|t| t.field.clone()).unwrap_or_default();
-            out.focuses.push(FocusRegion {
-                x,
-                y,
-                width: layout.size.width,
-                height: layout.size.height,
-                model: model.clone(),
-                row: row.clone(),
-                instance,
-                text: None,
-                kind: target.map_or(InputKind::Text, |b| b.kind),
-                field,
-                scroll_id: None,
-                within: inside_scroll,
-            });
-        }
-
-        // Assistive technology needs the same geometry the pointer uses, so this rides
-        // the same walk. `hidden` nodes returned above, so an `r-show="false"` element
-        // is absent from the a11y tree too, not merely invisible.
-        if let Some((_, node_access, model)) = at.access.map(|i| &b.access[i as usize]) {
-            walk.access_seq.push(at.stack.seq);
-            out.access.push(AccessNode {
-                x,
-                y,
-                width: layout.size.width,
-                height: layout.size.height,
-                access: node_access.clone(),
-                model: model.clone(),
-            });
-        }
-
-        // Emitted after the `hidden` check above, so an `r-show="false"` subtree has
-        // no metrics at all rather than metrics nobody can see.
-        if let Some((_, path)) = at.path.map(|i| &b.paths[i as usize]) {
-            out.metrics.push(NodeMetrics {
-                path: path.clone(),
-                x,
-                y,
-                width: layout.size.width,
-                height: layout.size.height,
-                scroll: inside_scroll,
-            });
-        }
-
         // Emitted for any box a `:hover`/`:active` rule could style, tappable or not,
         // unlike `cursor`, pointer-state styling is not limited to `@tap` boxes.
         if let Some((_, path)) = at.state.map(|i| &b.states[i as usize]) {
@@ -6806,140 +6784,6 @@ fn collect(
                 instance: own.and_then(|h| h.5.clone()),
                 seq: at.stack.seq,
                 owners,
-            });
-        }
-
-        let (fw, fh) = (layout.size.width, layout.size.height);
-        if let Some(bound) = at.model.map(|i| &b.models[i as usize]) {
-            if bound.field.file.is_some() {
-                // A file input: no caret either, a box that opens a picker.
-                out.files.push(FileRegion {
-                    x,
-                    y,
-                    width: fw,
-                    height: fh,
-                    model: bound.model.clone(),
-                    row: bound.row.clone(),
-                    instance: bound.instance.clone(),
-                    field: bound.field.clone(),
-                });
-                walk.focus_seq.push(at.stack.seq);
-                out.focusables.push(FocusItem {
-                    x,
-                    y,
-                    width: fw,
-                    height: fh,
-                    kind: FocusKind::File {
-                        model: bound.model.clone(),
-                        row: bound.row.clone(),
-                        instance: bound.instance.clone(),
-                    },
-                    path: bound.focus_path.clone(),
-                    scroll: inside_scroll,
-                });
-            } else if let Some(options) = &bound.options {
-                // A select: no caret, just a tappable box that opens a dropdown.
-                out.selects.push(SelectRegion {
-                    x,
-                    y,
-                    width: fw,
-                    height: fh,
-                    model: bound.model.clone(),
-                    row: bound.row.clone(),
-                    instance: bound.instance.clone(),
-                    options: options.clone(),
-                    field: bound.field.clone(),
-                });
-                walk.focus_seq.push(at.stack.seq);
-                out.focusables.push(FocusItem {
-                    x,
-                    y,
-                    width: fw,
-                    height: fh,
-                    kind: FocusKind::Select {
-                        model: bound.model.clone(),
-                        row: bound.row.clone(),
-                        instance: bound.instance.clone(),
-                        options: options.clone(),
-                    },
-                    path: bound.focus_path.clone(),
-                    scroll: inside_scroll,
-                });
-            } else {
-                // A text/textarea input: its value is rendered by its single text
-                // child; find that child's box so a tap resolves to a caret index.
-                let text = tree
-                    .children(id)
-                    .ok()
-                    .and_then(|kids| kids.first().copied())
-                    .and_then(|kid| {
-                        let child = tree.layout(kid).ok()?;
-                        let content = b.paints(kid).iter().find_map(|(_, k)| match k {
-                            PaintKind::Text(tc) => Some(tc.clone()),
-                            _ => None,
-                        })?;
-                        // The same content box the glyphs are painted in, or the
-                        // caret would sit at the border box while the text it is
-                        // supposed to be inside sits within the padding.
-                        let (cx, cy, cw, ch) = content_box(child);
-                        Some(PaintText {
-                            x: x + child.location.x + cx,
-                            y: y + child.location.y + cy,
-                            width: cw,
-                            height: ch,
-                            content,
-                        })
-                    });
-                out.focuses.push(FocusRegion {
-                    x,
-                    y,
-                    width: fw,
-                    height: fh,
-                    model: bound.model.clone(),
-                    row: bound.row.clone(),
-                    instance: bound.instance.clone(),
-                    text: text.clone(),
-                    kind: bound.kind,
-                    field: bound.field.clone(),
-                    // Ids are given out before the walk: see `number_scrollers`.
-                    scroll_id: b.scroll_ids.get(&id).copied(),
-                    within: inside_scroll,
-                });
-                walk.focus_seq.push(at.stack.seq);
-                out.focusables.push(FocusItem {
-                    x,
-                    y,
-                    width: fw,
-                    height: fh,
-                    kind: FocusKind::Text {
-                        model: bound.model.clone(),
-                        row: bound.row.clone(),
-                        instance: bound.instance.clone(),
-                        kind: bound.kind,
-                        text,
-                    },
-                    path: None,
-                    scroll: inside_scroll,
-                });
-            }
-        } else if let Some((_, Some(handler), _, _, _, instance, focus_path, _)) =
-            at.handler.map(|i| &b.handlers[i as usize])
-        {
-            // A button / checkbox / radio (anything with a `@tap` handler) is
-            // keyboard-reachable: Space or Enter runs the same handler as a tap.
-            //
-            // Only `@tap`. A keyboard has no pointer, so an element that declares
-            // only `@drag` has nothing a key could stand in for, and offering Enter
-            // as a fake drag would be worse than leaving it alone.
-            walk.focus_seq.push(at.stack.seq);
-            out.focusables.push(FocusItem {
-                x,
-                y,
-                width: fw,
-                height: fh,
-                kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
-                path: focus_path.clone(),
-                scroll: inside_scroll,
             });
         }
 
@@ -7056,7 +6900,7 @@ fn collect(
             (walk.dry, at.scroll_resize, at.path.map(|i| &b.paths[i as usize]))
         {
             out.resizes.push(ResizeRegion {
-                path: path.clone(),
+                path: path.to_vec(),
                 x,
                 y,
                 width: layout.size.width,
@@ -7110,6 +6954,8 @@ fn collect(
     );
     // By index: `children` hands back a copy of the list, one allocation per
     // box per frame.
+    // The clips every box held back from here is inside, made once.
+    let mut held: Option<std::rc::Rc<[Clip]>> = None;
     for child in (0..tree.child_count(id)).map(|i| tree.child_at_index(id, i).expect("child")) {
         let ca = b.at(child);
         if ca.hidden {
@@ -7124,7 +6970,7 @@ fn collect(
         // goes with it, as CSS says.
         let pinned = at.stack.seq == 0 && ca.stack.position == Position::Fixed;
         match layer(&ca, items) {
-            Some((z, own)) => ctx.pending.push(std::cmp::Reverse(Deferred {
+            Some((z, own)) => ctx.pending.push(Deferred {
                 z,
                 seq: ca.stack.seq,
                 context: own,
@@ -7134,8 +6980,20 @@ fn collect(
                 inside_scroll: if pinned { inside_scroll } else { child_scroll },
                 xform: child_xform,
                 dim: child_dim,
-                clips: walk.clips[ctx.clip_base..].to_vec(),
-            })),
+                clips: std::rc::Rc::clone(held.get_or_insert_with(|| walk.clips[ctx.clip_base..].into())),
+            }),
+            // **A box the clips cut wholly away is passed over** (AW-018):
+            // its paint and its pointer regions would all be thrown away, by
+            // the scene and by the cut above, and making them was what a
+            // scrolled frame of a long list spent its time on. Only where its
+            // ink is known (see `fold`) and nothing above could carry ink
+            // into view: a transform, or a filter, which can move it.
+            None if passed_over(tree, child, origin, b, child_xform, walk) => {
+                // The walk that only finds anchors has nothing to find here.
+                if !walk.dry {
+                    pass_over(tree, child, origin, b, vp, child_scroll, out, walk);
+                }
+            }
             None => collect(
                 tree, child, origin.0, origin.1, b, offsets, vp, holder, child_scroll, child_xform,
                 child_dim, false, out, walk, ctx,
@@ -7163,6 +7021,7 @@ fn collect(
     }
     if filtered {
         out.paints.push(Paint::PopFilter);
+        walk.filters -= 1;
     }
     if shape_clip.is_some() {
         out.paints.push(Paint::PopClip);
@@ -7184,6 +7043,491 @@ fn collect(
     if layered {
         out.paints.push(Paint::PopOpacity);
     }
+}
+
+
+/// Where the subtree at `id` can draw, from its own corner, as `[left, top,
+/// right, bottom]`, when that is known without drawing it; `None` when not.
+/// Each such subtree is entered in `folds`, for the walk to pass over when
+/// the clips it is inside cut all of that away (AW-018: a scrolled frame of
+/// 2,000 rows spent 7 ms making paint and regions for rows nobody could see).
+///
+/// Known for boxes, their shadows and outlines, pictures, and text, whose
+/// glyphs never rise above its box or start left of it (as the scene's
+/// `text_reaches` says), and spill only where the box is given a size its
+/// lines do not fit: sideways then without limit, and downwards as far as
+/// the lines measure. Not known, and never passed over, for anything placed
+/// by the scroll offset or by another box (sticky, anchored, a scroller,
+/// anything held back for its layer), drawn through a transform, opacity,
+/// filter, clip-path or mask, a `<path>` (in a sentence too), or an inline
+/// box with a shadow. `items` is whether the parent lays
+/// its children out as flex or grid items, and whether as grid.
+fn fold(
+    tree: &TaffyTree<TextContent>,
+    id: NodeId,
+    b: &Built,
+    (items, grid): (bool, bool),
+    measure: &mut dyn TextMeasure,
+    folds: &mut IdMap<[f32; 4]>,
+) -> Option<[f32; 4]> {
+    let at = b.at(id);
+    // Draws nothing, and the walk never goes inside.
+    if at.hidden {
+        return Some([0.0; 4]);
+    }
+    let layout = tree.layout(id).expect("layout");
+    let style = tree.style(id).expect("style");
+    let (w, h) = (layout.size.width, layout.size.height);
+    let mut ink = [0.0, 0.0, w, h];
+    let grow = |ink: &mut [f32; 4], r: [f32; 4]| {
+        *ink = [ink[0].min(r[0]), ink[1].min(r[1]), ink[2].max(r[2]), ink[3].max(r[3])];
+    };
+    let mut known = at.sticky.is_none()
+        && at.anchored.is_none()
+        && at.anchor_name.is_none()
+        && !at.scroll
+        && at.transform.is_none()
+        && at.opacity.is_none();
+    let mut clipped = false;
+    for (_, kind) in b.paints_at(at) {
+        match kind {
+            PaintKind::Box { shadow, clip, .. } => {
+                clipped = *clip;
+                // As far as the scene counts a shadow's blur reaching.
+                for s in shadow.iter().flat_map(|s| s.iter()).filter(|s| !s.inset) {
+                    let r = 2.0 * s.blur + 1.0 + s.spread.max(0.0);
+                    grow(&mut ink, [s.dx - r, s.dy - r, w + s.dx + r, h + s.dy + r]);
+                }
+            }
+            PaintKind::Outline(o) => {
+                let r = (o.offset + o.width).max(0.0) + 4.0;
+                grow(&mut ink, [-r, -r, w + r, h + r]);
+            }
+            PaintKind::Text(tc) | PaintKind::TextFill(_, tc) => {
+                let (cx, cy, cw, ch) = content_box(layout);
+                // Room for a glyph's overhang, as the scene allows.
+                let slack = tc.font_size.max(tc.line_height.unwrap_or(0.0));
+                let mut t = [cx - slack, cy - slack, cx + cw + slack, cy + ch + slack];
+                if !clipped {
+                    let (size, min, max) = (style.size, style.min_size, style.max_size);
+                    if tc.nowrap || !size.width.is_auto() || !min.width.is_auto() || !max.width.is_auto() {
+                        (t[0], t[2]) = (f32::NEG_INFINITY, f32::INFINITY);
+                    }
+                    if grid || !size.height.is_auto() || !min.height.is_auto() || !max.height.is_auto() {
+                        let (_, lines) = measure.measure(tc, Some(cw));
+                        t[3] = t[3].max(cy + lines + slack);
+                    }
+                }
+                for sh in tc.shadows.iter().flat_map(|s| s.iter()) {
+                    let r = 2.0 * sh.blur + 2.0;
+                    grow(&mut ink, [t[0] + sh.dx - r, t[1] + sh.dy - r, t[2] + sh.dx + r, t[3] + sh.dy + r]);
+                }
+                grow(&mut ink, t);
+            }
+            PaintKind::Image(_) | PaintKind::Tick(_) => {}
+            // Placed among the sentence's own lines, which its text bounds.
+            PaintKind::Inline(parts) => known &= parts.iter().all(inline::ink_known),
+            PaintKind::Path(..) | PaintKind::ClipPath(_) | PaintKind::Mask(_) | PaintKind::Filters(_) => {
+                known = false
+            }
+        }
+    }
+    let kids = (
+        matches!(style.display, taffy::Display::Flex | taffy::Display::Grid),
+        matches!(style.display, taffy::Display::Grid),
+    );
+    // Every child is asked, known or not, so the rows inside a box that is
+    // not known are still entered for themselves.
+    for kid in (0..tree.child_count(id)).map(|i| tree.child_at_index(id, i).expect("child")) {
+        match fold(tree, kid, b, kids, measure, folds) {
+            Some(r) => {
+                let loc = tree.layout(kid).expect("layout").location;
+                grow(&mut ink, [loc.x + r[0], loc.y + r[1], loc.x + r[2], loc.y + r[3]]);
+            }
+            None => known = false,
+        }
+    }
+    // Entered whatever its own layer, which only decides where it is drawn
+    // from (see `drain`), but known to its parent only when it is drawn in
+    // the parent's walk.
+    if known {
+        folds.insert(id, ink);
+    }
+    (known && layer(&at, items).is_none()).then_some(ink)
+}
+
+/// Whether the subtree at `id`, its parent's content corner at `origin`, can
+/// be passed over: its ink is known (see `fold`), the clips it is inside cut
+/// all of it away, and nothing above could carry ink into view, as a
+/// transform or a filter can.
+fn passed_over(
+    tree: &TaffyTree<TextContent>,
+    id: NodeId,
+    origin: (f32, f32),
+    b: &Built,
+    xform: Option<Transform>,
+    walk: &Walk,
+) -> bool {
+    if xform.is_some() || walk.filters > 0 || !PASSING_OVER.with(|p| p.get()) {
+        return false;
+    }
+    let (Some(ink), Some((vx, vy, vw, vh))) = (b.folds.get(&id), seen_through(&walk.clips)) else {
+        return false;
+    };
+    let loc = tree.layout(id).expect("layout").location;
+    let (x, y) = (origin.0 + loc.x, origin.1 + loc.y);
+    // As far outside as the scene still counts as seen: the edge of a
+    // shape spills into the pixel beside it.
+    const EDGE: f32 = 2.0;
+    x + ink[2] <= vx - EDGE || x + ink[0] >= vx + vw + EDGE || y + ink[3] <= vy - EDGE || y + ink[1] >= vy + vh + EDGE
+}
+
+/// Pass over the subtree at `id`, its parent's content corner at `origin`:
+/// what it answers for off screen, from what it was found to the first time
+/// (see `Folded`).
+#[allow(clippy::too_many_arguments)]
+fn pass_over(
+    tree: &TaffyTree<TextContent>,
+    id: NodeId,
+    (ox, oy): (f32, f32),
+    b: &Built,
+    vp: (f32, f32),
+    inside_scroll: Option<usize>,
+    out: &mut Layout,
+    walk: &mut Walk,
+) {
+    let mut cache = b.folded.borrow_mut();
+    let fresh = cache.get(&id).is_none_or(|f| f.inside != inside_scroll);
+    if fresh {
+        let mut own = Layout::default();
+        let mut alone = Walk { inline: std::rc::Rc::clone(&walk.inline), ..Walk::default() };
+        collect_folded(tree, id, 0.0, 0.0, b, vp, inside_scroll, &mut own, &mut alone);
+        let walked = !(own.focuses.is_empty() && own.selects.is_empty() && own.files.is_empty());
+        cache.insert(
+            id,
+            Folded {
+                inside: inside_scroll,
+                walked,
+                metrics: own.metrics,
+                access: alone.access_seq.into_iter().zip(own.access).collect(),
+                focusables: alone.focus_seq.into_iter().zip(own.focusables).collect(),
+                contained: alone.contained.into_iter().zip(alone.contained_at).collect(),
+            },
+        );
+    }
+    let f = &cache[&id];
+    if f.walked {
+        drop(cache);
+        collect_folded(tree, id, ox, oy, b, vp, inside_scroll, out, walk);
+        return;
+    }
+    out.metrics.extend(f.metrics.iter().map(|m| NodeMetrics { x: m.x + ox, y: m.y + oy, ..m.clone() }));
+    for (seq, a) in &f.access {
+        walk.access_seq.push(*seq);
+        out.access.push(AccessNode { x: a.x + ox, y: a.y + oy, ..a.clone() });
+    }
+    for (seq, item) in &f.focusables {
+        walk.focus_seq.push(*seq);
+        out.focusables.push(FocusItem { x: item.x + ox, y: item.y + oy, ..item.clone() });
+    }
+    for (c, (x, y, w, h)) in &f.contained {
+        let rect = (x + ox, y + oy, *w, *h);
+        let (on_screen, near, ahead) = bands(rect, vp, &walk.clips);
+        walk.contained.push(Contained { on_screen, near, ahead, ..c.clone() });
+        walk.contained_at.push(rect);
+    }
+}
+
+/// The walk past a subtree the clips cut wholly away (see `fold`): what it
+/// answers for off screen, by the same arithmetic `collect` places it with,
+/// and none of what it draws or points with.
+#[allow(clippy::too_many_arguments)]
+fn collect_folded(
+    tree: &TaffyTree<TextContent>,
+    id: NodeId,
+    origin_x: f32,
+    origin_y: f32,
+    b: &Built,
+    vp: (f32, f32),
+    inside_scroll: Option<usize>,
+    out: &mut Layout,
+    walk: &mut Walk,
+) {
+    let at = b.at(id);
+    if at.hidden {
+        return;
+    }
+    let layout = tree.layout(id).expect("layout");
+    let (x, y) = (origin_x + layout.location.x, origin_y + layout.location.y);
+    contained_record(&at, b, x, y, layout, vp, walk);
+    node_records(tree, id, &at, b, x, y, layout, inside_scroll, out, walk);
+    // A sentence's parts, where they would have been drawn.
+    if !at.invisible {
+        for (_, kind) in b.paints_at(at) {
+            if let PaintKind::Inline(parts) = kind {
+                let (cx, cy, _, _) = content_box(layout);
+                let geo = walk.inline.get(&id).cloned();
+                for part in parts.iter() {
+                    let rects = inline::part_rects(part, x + cx, y + cy, geo.as_deref());
+                    inline::part_records(part, &rects, at.stack.seq, inside_scroll, out, walk);
+                }
+            }
+        }
+    }
+    for child in (0..tree.child_count(id)).map(|i| tree.child_at_index(id, i).expect("child")) {
+        collect_folded(tree, child, x, y, b, vp, inside_scroll, out, walk);
+    }
+}
+
+/// What a box answers for besides its paint and its pointer regions, which
+/// must exist whether or not it can be seen: where it is, for `query()` and
+/// `scrollIntoView()`; how Tab reaches it; what assistive technology reads.
+/// A box scrolled out of its list makes these and nothing else: see `fold`.
+#[allow(clippy::too_many_arguments)]
+fn node_records(
+    tree: &TaffyTree<TextContent>,
+    id: NodeId,
+    at: &At,
+    b: &Built,
+    x: f32,
+    y: f32,
+    layout: &taffy::Layout,
+    inside_scroll: Option<usize>,
+    out: &mut Layout,
+    walk: &mut Walk,
+) {
+    // `visibility: hidden`: still where it is, and nothing else.
+    if at.invisible {
+        if let Some((_, path)) = at.path.map(|i| &b.paths[i as usize]) {
+            out.metrics.push(NodeMetrics {
+                path: path.clone(),
+                x,
+                y,
+                width: layout.size.width,
+                height: layout.size.height,
+                scroll: inside_scroll,
+            });
+        }
+        return;
+    }
+
+    if let Some((_, model, row)) = at.focus_label.map(|i| &b.focus_labels[i as usize]) {
+        // The scope comes from the input the label points at, not from the
+        // label: `for=` names a model, and a model only means anything where it
+        // was written. A label that finds no such input carries no instance,
+        // which is the same answer as before this field existed.
+        let target = b.models.iter().find(|m| m.model == *model && m.row == *row);
+        let instance = target.and_then(|b| b.instance.clone());
+        // The target's attributes too, because the shell reads them off
+        // whichever region shares the field's identity, and a label's region
+        // can come first. A `readonly` field focused from its label must still
+        // refuse the keyboard.
+        let field = target.map(|t| t.field.clone()).unwrap_or_default();
+        out.focuses.push(FocusRegion {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            model: model.clone(),
+            row: row.clone(),
+            instance,
+            text: None,
+            kind: target.map_or(InputKind::Text, |b| b.kind),
+            field,
+            scroll_id: None,
+            within: inside_scroll,
+        });
+    }
+
+    // Assistive technology needs the same geometry the pointer uses, so this rides
+    // the same walk. `hidden` nodes returned above, so an `r-show="false"` element
+    // is absent from the a11y tree too, not merely invisible.
+    if let Some((_, node_access, model)) = at.access.map(|i| &b.access[i as usize]) {
+        walk.access_seq.push(at.stack.seq);
+        out.access.push(AccessNode {
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            access: node_access.clone(),
+            model: model.clone(),
+        });
+    }
+
+    // Emitted after the `hidden` check above, so an `r-show="false"` subtree has
+    // no metrics at all rather than metrics nobody can see.
+    if let Some((_, path)) = at.path.map(|i| &b.paths[i as usize]) {
+        out.metrics.push(NodeMetrics {
+            path: path.clone(),
+            x,
+            y,
+            width: layout.size.width,
+            height: layout.size.height,
+            scroll: inside_scroll,
+        });
+    }
+    let (fw, fh) = (layout.size.width, layout.size.height);
+    if let Some(bound) = at.model.map(|i| &b.models[i as usize]) {
+        if bound.field.file.is_some() {
+            // A file input: no caret either, a box that opens a picker.
+            out.files.push(FileRegion {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                model: bound.model.clone(),
+                row: bound.row.clone(),
+                instance: bound.instance.clone(),
+                field: bound.field.clone(),
+            });
+            walk.focus_seq.push(at.stack.seq);
+            out.focusables.push(FocusItem {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                kind: FocusKind::File {
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    instance: bound.instance.clone(),
+                },
+                path: bound.focus_path.clone(),
+                scroll: inside_scroll,
+            });
+        } else if let Some(options) = &bound.options {
+            // A select: no caret, just a tappable box that opens a dropdown.
+            out.selects.push(SelectRegion {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                model: bound.model.clone(),
+                row: bound.row.clone(),
+                instance: bound.instance.clone(),
+                options: options.clone(),
+                field: bound.field.clone(),
+            });
+            walk.focus_seq.push(at.stack.seq);
+            out.focusables.push(FocusItem {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                kind: FocusKind::Select {
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    instance: bound.instance.clone(),
+                    options: options.clone(),
+                },
+                path: bound.focus_path.clone(),
+                scroll: inside_scroll,
+            });
+        } else {
+            // A text/textarea input: its value is rendered by its single text
+            // child; find that child's box so a tap resolves to a caret index.
+            let text = tree
+                .children(id)
+                .ok()
+                .and_then(|kids| kids.first().copied())
+                .and_then(|kid| {
+                    let child = tree.layout(kid).ok()?;
+                    let content = b.paints(kid).iter().find_map(|(_, k)| match k {
+                        PaintKind::Text(tc) => Some(tc.clone()),
+                        _ => None,
+                    })?;
+                    // The same content box the glyphs are painted in, or the
+                    // caret would sit at the border box while the text it is
+                    // supposed to be inside sits within the padding.
+                    let (cx, cy, cw, ch) = content_box(child);
+                    Some(PaintText {
+                        x: x + child.location.x + cx,
+                        y: y + child.location.y + cy,
+                        width: cw,
+                        height: ch,
+                        content,
+                    })
+                });
+            out.focuses.push(FocusRegion {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                model: bound.model.clone(),
+                row: bound.row.clone(),
+                instance: bound.instance.clone(),
+                text: text.clone(),
+                kind: bound.kind,
+                field: bound.field.clone(),
+                // Ids are given out before the walk: see `number_scrollers`.
+                scroll_id: b.scroll_ids.get(&id).copied(),
+                within: inside_scroll,
+            });
+            walk.focus_seq.push(at.stack.seq);
+            out.focusables.push(FocusItem {
+                x,
+                y,
+                width: fw,
+                height: fh,
+                kind: FocusKind::Text {
+                    model: bound.model.clone(),
+                    row: bound.row.clone(),
+                    instance: bound.instance.clone(),
+                    kind: bound.kind,
+                    text,
+                },
+                path: None,
+                scroll: inside_scroll,
+            });
+        }
+    } else if let Some((_, Some(handler), _, _, _, instance, focus_path, _)) =
+        at.handler.map(|i| &b.handlers[i as usize])
+    {
+        // A button / checkbox / radio (anything with a `@tap` handler) is
+        // keyboard-reachable: Space or Enter runs the same handler as a tap.
+        //
+        // Only `@tap`. A keyboard has no pointer, so an element that declares
+        // only `@drag` has nothing a key could stand in for, and offering Enter
+        // as a fake drag would be worse than leaving it alone.
+        walk.focus_seq.push(at.stack.seq);
+        out.focusables.push(FocusItem {
+            x,
+            y,
+            width: fw,
+            height: fh,
+            kind: FocusKind::Activate { on_tap: handler.clone(), instance: instance.clone() },
+            path: focus_path.clone(),
+            scroll: inside_scroll,
+        });
+    }
+
+}
+
+/// `content-visibility`: whether this box is on screen, or near it, for
+/// the next pass or frame to decide whether its contents are there.
+fn contained_record(at: &At, b: &Built, x: f32, y: f32, layout: &taffy::Layout, vp: (f32, f32), walk: &mut Walk) {
+    let Some(i) = at.contained else { return };
+    let (_, skipped) = b.contained[i as usize];
+    let path = at.path.map(|p| b.paths[p as usize].1.clone()).unwrap_or_else(|| std::sync::Arc::from([]));
+    let rect = (x, y, layout.size.width, layout.size.height);
+    let (on_screen, near, ahead) = bands(rect, vp, &walk.clips);
+    let (_, _, cw, ch) = content_box(layout);
+    walk.contained.push(Contained { path, skipped, on_screen, near, ahead, size: (!skipped).then_some((cw, ch)) });
+    walk.contained_at.push(rect);
+}
+
+/// Whether `(x, y, w, h)` meets what can be seen from inside `clips`: the
+/// window inside every clip; the same with half the window to spare on
+/// every side of each; and with a window and a half.
+fn bands((x, y, w, h): Rect4, vp: (f32, f32), clips: &[Clip]) -> (bool, bool, bool) {
+    let meets = |k: f32| {
+        let (mx, my) = (vp.0 * k, vp.1 * k);
+        let mut r = (-mx, -my, vp.0 + mx, vp.1 + my);
+        for c in clips {
+            r = (r.0.max(c.x - mx), r.1.max(c.y - my), r.2.min(c.x + c.width + mx), r.3.min(c.y + c.height + my));
+        }
+        x <= r.2 && x + w >= r.0 && y <= r.3 && y + h >= r.1 && r.2 > r.0 && r.3 > r.1
+    };
+    (meets(0.0), meets(0.5), meets(1.5))
 }
 
 /// An outline as a stroked rect around a `width` x `height` box at `(x, y)`
@@ -7278,8 +7622,8 @@ pub struct LayoutState {
     /// `content-visibility: auto`: whether each such box was near the
     /// screen last frame, and the content size each was last drawn at, for
     /// `contain-intrinsic-size: auto`. By path. See [`Layout::contained`].
-    shown: HashMap<Vec<usize>, bool>,
-    sizes: HashMap<Vec<usize>, (f32, f32)>,
+    shown: HashMap<std::sync::Arc<[usize]>, bool>,
+    sizes: HashMap<std::sync::Arc<[usize]>, (f32, f32)>,
     /// The last frame's laid-out tree, kept whole with what it was laid out
     /// from, for a frame that only scrolls (AW-018).
     prepared: Option<Prepared>,
@@ -7302,8 +7646,8 @@ struct Prepared {
     revision: Option<u64>,
     root: Option<Node>,
     vp: (f32, f32),
-    shown: HashMap<Vec<usize>, bool>,
-    sizes: HashMap<Vec<usize>, (f32, f32)>,
+    shown: HashMap<std::sync::Arc<[usize]>, bool>,
+    sizes: HashMap<std::sync::Arc<[usize]>, (f32, f32)>,
     root_id: NodeId,
     built: Built,
     geometry: std::rc::Rc<IdMap<std::sync::Arc<InlineGeometry>>>,
@@ -7321,6 +7665,18 @@ static SELF_CHECKS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// rows spent 400 ms a frame scrolling it and 10 s loading it (AW-018).
 pub fn set_self_checks(on: bool) {
     SELF_CHECKS.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+thread_local! {
+    static PASSING_OVER: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Turn off passing over what the clips cut away (see `fold`) on this
+/// thread, so a test can lay the same document out both ways and compare
+/// what is seen.
+#[doc(hidden)]
+pub fn set_passing_over(on: bool) {
+    PASSING_OVER.with(|p| p.set(on));
 }
 
 /// Whether a debug build proves what it kept. Always false in a release
@@ -7413,9 +7769,24 @@ impl LayoutState {
             }
         }
         self.tried = out.position_tries.iter().map(|(p, n, a)| (p.clone(), (*n, a.clone()))).collect();
-        self.shown = out.contained.iter().map(|c| (c.path.clone(), c.near)).collect();
+        // **What is shown changes only when a box first comes near**, and
+        // then to everything within a window and a half. Kept to the boxes
+        // near the screen, it changed on nearly every frame of a scroll, as
+        // each next row came within half a window, and each change lays the
+        // whole document out again: a list of 2,000 `content-visibility:
+        // auto` rows scrolled slower than the same list without it. A box
+        // that leaves stays shown until the next change, which is at most
+        // about a window of scrolling away. How near is near is the
+        // browser's to say in CSS.
+        let arrived = out.contained.iter().any(|c| c.near && !self.shown.get(&c.path).copied().unwrap_or(false));
+        if arrived || self.shown.is_empty() {
+            self.shown = out.contained.iter().map(|c| (c.path.clone(), c.ahead)).collect();
+        }
         // A size is remembered while its box is in the document, drawn or not.
-        self.sizes.retain(|p, _| out.contained.iter().any(|c| &c.path == p));
+        // By a set: asking every box of every size was 4 million comparisons
+        // a frame for a list of 2,000 rows.
+        let present: std::collections::HashSet<&std::sync::Arc<[usize]>> = out.contained.iter().map(|c| &c.path).collect();
+        self.sizes.retain(|p, _| present.contains(p));
         for c in &out.contained {
             if let Some(size) = c.size {
                 self.sizes.insert(c.path.clone(), size);
@@ -7459,7 +7830,7 @@ impl LayoutState {
         // Last frame's answers, put back untouched: the caller keeps them
         // until it has compared this layout with a whole one.
         let before = std::mem::take(&mut self.shown);
-        let mut again: Option<HashMap<Vec<usize>, bool>> = None;
+        let mut again: Option<HashMap<std::sync::Arc<[usize]>, bool>> = None;
         let mut pass = 0;
         loop {
             let out = self.lay_out_pass(root, avail_w, avail_h, offsets, measure, again.as_ref().unwrap_or(&before));
@@ -7470,7 +7841,7 @@ impl LayoutState {
             }
             let next = again.get_or_insert_with(|| before.clone());
             for c in &out.contained {
-                next.insert(c.path.clone(), c.near);
+                next.insert(c.path.clone(), c.ahead);
             }
         }
     }
@@ -7482,7 +7853,7 @@ impl LayoutState {
         avail_h: f32,
         offsets: &[Offset],
         measure: &mut dyn TextMeasure,
-        shown: &HashMap<Vec<usize>, bool>,
+        shown: &HashMap<std::sync::Arc<[usize]>, bool>,
     ) -> Layout {
         let vp = (avail_w, avail_h);
         // A frame that only scrolled lays out nothing: every box is where it
@@ -7565,7 +7936,7 @@ impl LayoutState {
         root: &Node,
         vp: (f32, f32),
         measure: &mut dyn TextMeasure,
-        shown: &HashMap<Vec<usize>, bool>,
+        shown: &HashMap<std::sync::Arc<[usize]>, bool>,
     ) -> Prepared {
         let (avail_w, avail_h) = vp;
         let mut skipping = Skipping { shown, sizes: &self.sizes, intrinsic: IdMap::default(), boxes: Vec::new() };
@@ -7894,7 +8265,7 @@ impl LayoutState {
             number_scrollers(tree, root_id, &at, &mut ids);
             ids
         };
-        let built = Built {
+        let mut built = Built {
             paint,
             handlers,
             models,
@@ -7911,7 +8282,12 @@ impl LayoutState {
             scroll_ids,
             anchoring,
             at,
+            folds: IdMap::default(),
+            folded: Default::default(),
         };
+        let mut folds = IdMap::default();
+        fold(tree, root_id, &built, (false, false), measure, &mut folds);
+        built.folds = folds;
         Prepared {
             revision: self.revision,
             root: self.revision.is_none().then(|| root.clone()),

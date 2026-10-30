@@ -294,18 +294,11 @@ pub(crate) fn place_part(
     paints: &mut Vec<crate::Paint>,
 ) -> Vec<crate::Rect4> {
     use crate::{Paint, PaintImage, PaintPath, PaintRect};
+    let rects = part_rects(part, ox, oy, geo);
     match &part.what {
-        PartWhat::Runs(runs) => {
-            let Some(g) = geo else { return Vec::new() };
-            runs.clone()
-                .filter_map(|r| g.runs.get(r))
-                .flatten()
-                .map(|&(x, y, w, h)| (ox + x, oy + y, w, h))
-                .collect()
-        }
-        PartWhat::Item { index, width, height, look } => {
-            let (ix, iy) = geo.and_then(|g| g.items.get(*index)).copied().unwrap_or((0.0, 0.0));
-            let (x, y, w, h) = (ox + ix, oy + iy, *width, *height);
+        PartWhat::Runs(_) => rects,
+        PartWhat::Item { look, .. } => {
+            let (x, y, w, h) = rects[0];
             let shadows = look.shadow.as_deref().unwrap_or_default();
             crate::shadow_paints(shadows, (x, y, w, h), &look.radius, &look.border, false, paints);
             let widest = look.border.top.max(look.border.right).max(look.border.bottom).max(look.border.left);
@@ -335,6 +328,32 @@ pub(crate) fn place_part(
     }
 }
 
+/// Where a part lands, with its sentence's content corner at `(ox, oy)`,
+/// drawing nothing: one rectangle for an inline box, one a line for runs.
+pub(crate) fn part_rects(part: &InlinePart, ox: f32, oy: f32, geo: Option<&crate::InlineGeometry>) -> Vec<crate::Rect4> {
+    match &part.what {
+        PartWhat::Runs(runs) => {
+            let Some(g) = geo else { return Vec::new() };
+            runs.clone().filter_map(|r| g.runs.get(r)).flatten().map(|&(x, y, w, h)| (ox + x, oy + y, w, h)).collect()
+        }
+        PartWhat::Item { index, width, height, .. } => {
+            let (ix, iy) = geo.and_then(|g| g.items.get(*index)).copied().unwrap_or((0.0, 0.0));
+            vec![(ox + ix, oy + iy, *width, *height)]
+        }
+    }
+}
+
+/// Whether where a part draws is known without drawing it: words, or an
+/// inline picture with no shadow. See `fold`.
+pub(crate) fn ink_known(part: &InlinePart) -> bool {
+    match &part.what {
+        PartWhat::Runs(_) => true,
+        PartWhat::Item { look, .. } => {
+            matches!(look.content, ItemContent::Image(_)) && look.shadow.as_deref().is_none_or(|s| s.is_empty())
+        }
+    }
+}
+
 /// What a part answers to, at the rectangles it was placed in: a tap, a
 /// hover, Tab, a screen reader and `query()`, each the way the same element
 /// would as a box of its own.
@@ -350,9 +369,10 @@ pub(crate) fn part_regions(
     out: &mut crate::Layout,
     walk: &mut crate::Walk,
 ) {
-    use crate::{AccessNode, FocusItem, FocusKind, HitRegion, NodeMetrics, StateRegion};
-    let Some(bound) = bounding(rects) else { return };
-    let (bx, by, bw, bh) = bound;
+    use crate::{HitRegion, StateRegion};
+    if rects.is_empty() {
+        return;
+    }
     if part.reachable() {
         for &(x, y, width, height) in rects {
             out.hits.push(HitRegion {
@@ -378,6 +398,22 @@ pub(crate) fn part_regions(
             out.states.push(StateRegion { x, y, width, height, path: path.clone() });
         }
     }
+    part_records(part, rects, seq, scroll, out, walk);
+}
+
+/// What a part answers for whether or not it can be seen, at the rectangles
+/// it was placed in: Tab, a screen reader and `query()`. All a sentence
+/// passed over off screen makes of its parts (see `collect_folded`).
+pub(crate) fn part_records(
+    part: &InlinePart,
+    rects: &[crate::Rect4],
+    seq: u32,
+    scroll: Option<usize>,
+    out: &mut crate::Layout,
+    walk: &mut crate::Walk,
+) {
+    use crate::{AccessNode, FocusItem, FocusKind, NodeMetrics};
+    let Some((bx, by, bw, bh)) = bounding(rects) else { return };
     // A link in a sentence is a Tab stop, as it is in a browser: Enter runs
     // it. Its focus ring is drawn around all of it.
     if let Some(on_tap) = &part.on_tap {
@@ -394,9 +430,9 @@ pub(crate) fn part_regions(
     }
     if part.access.role != AccessRole::None {
         walk.access_seq.push(seq);
-        out.access.push(AccessNode { x: bx, y: by, width: bw, height: bh, access: part.access.clone(), model: None });
+        out.access.push(AccessNode { x: bx, y: by, width: bw, height: bh, access: std::sync::Arc::new(part.access.clone()), model: None });
     }
-    out.metrics.push(NodeMetrics { path: part.path.clone(), x: bx, y: by, width: bw, height: bh, scroll });
+    out.metrics.push(NodeMetrics { path: part.path.as_slice().into(), x: bx, y: by, width: bw, height: bh, scroll });
 }
 
 /// The smallest rectangle around all of them, `None` for none.

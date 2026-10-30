@@ -26,7 +26,7 @@ fn metrics(root: Node) -> Vec<NodeMetrics> {
 }
 
 fn at<'a>(m: &'a [NodeMetrics], path: &[usize]) -> &'a NodeMetrics {
-    m.iter().find(|e| e.path == path).unwrap_or_else(|| panic!("no metrics at {path:?}"))
+    m.iter().find(|e| *e.path == *path).unwrap_or_else(|| panic!("no metrics at {path:?}"))
 }
 
 /// The root is the empty path, and each child is its index under its parent.
@@ -80,7 +80,7 @@ fn a_hidden_node_reports_no_metrics() {
     hidden.hidden = true;
     let m = metrics(boxed(flex(Axis::Column), vec![hidden, boxed(sized(100.0, 60.0), vec![])]));
 
-    assert!(!m.iter().any(|e| e.path == [0]), "the hidden node has no box to report");
+    assert!(!m.iter().any(|e| *e.path == [0]), "the hidden node has no box to report");
     assert_eq!(at(&m, &[1]).height, 60.0, "but its sibling still does");
 }
 

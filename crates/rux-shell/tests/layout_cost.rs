@@ -258,12 +258,12 @@ fn scroll_cost(src: &str, label: &str) {
     let steady = |v: &mut Vec<f64>| {
         let mut s: Vec<f64> = v[20..].to_vec();
         s.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        (s[s.len() / 2], s[0])
+        (s[s.len() / 2], s[0], s[s.len() - 1])
     };
-    let (lm, lb) = steady(&mut layout_us);
-    let (sm, sb) = steady(&mut scene_us);
+    let (lm, lb, lw) = steady(&mut layout_us);
+    let (sm, sb, _) = steady(&mut scene_us);
     eprintln!(
-        "{label}: mount {:.1} ms; first layout {:.1} ms; scrolling: layout median {lm:.0} us (best {lb:.0}), scene median {sm:.0} us (best {sb:.0})",
+        "{label}: mount {:.1} ms; first layout {:.1} ms; scrolling: layout median {lm:.0} us (best {lb:.0}, worst {lw:.0}), scene median {sm:.0} us (best {sb:.0})",
         mount_us / 1000.0,
         first_us / 1000.0
     );

@@ -408,7 +408,7 @@ fn a_hidden_box_draws_nothing_but_a_visible_child_does() {
     assert_eq!(fills, [1.0], "only the visible child draws");
     let taps: Vec<&str> = out.hits.iter().filter_map(|h| h.on_tap.as_deref()).collect();
     assert_eq!(taps, ["b()"]);
-    assert!(out.metrics.iter().any(|m| m.path == [0] && m.width == 100.0), "still measured");
+    assert!(out.metrics.iter().any(|m| *m.path == [0] && m.width == 100.0), "still measured");
 }
 
 /// A blend mode draws the box and its subtree as one layer, opened before

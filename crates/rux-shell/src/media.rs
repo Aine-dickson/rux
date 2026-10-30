@@ -286,7 +286,7 @@ pub(crate) fn stir_at(metrics: &[rux_layout::NodeMetrics], x: f32, y: f32) {
     stir(|path| {
         metrics
             .iter()
-            .find(|m| m.path == path)
+            .find(|m| *m.path == path[..])
             .is_some_and(|m| x >= m.x && x <= m.x + m.width && y >= m.y && y <= m.y + m.height)
     });
 }

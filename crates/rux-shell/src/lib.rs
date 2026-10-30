@@ -4854,7 +4854,7 @@ impl App {
     /// as a finger would, and an element with no box in the last frame (hidden,
     /// or never laid out) cannot be tapped at all.
     fn synthesize_tap(&mut self, path: &[usize]) {
-        let Some(m) = self.metrics.iter().find(|e| e.path == path).cloned() else {
+        let Some(m) = self.metrics.iter().find(|e| *e.path == *path).cloned() else {
             rux_runtime::warn_script(
                 "tap() was called on an element with no box on screen, so nothing was tapped"
                     .to_string(),
@@ -7436,9 +7436,9 @@ impl App {
             let stand_in = || {
                 layout.contained.iter().filter(|c| c.skipped && path.starts_with(&c.path)).max_by_key(|c| c.path.len())
             };
-            let Some(m) = layout.metrics.iter().find(|e| e.path == path).or_else(|| {
+            let Some(m) = layout.metrics.iter().find(|e| *e.path == path[..]).or_else(|| {
                 let c = stand_in()?;
-                layout.metrics.iter().find(|e| e.path == c.path)
+                layout.metrics.iter().find(|e| *e.path == c.path[..])
             }) else {
                 continue;
             };

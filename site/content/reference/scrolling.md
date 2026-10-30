@@ -72,7 +72,10 @@ to let a row that is far from the screen skip its contents:
 
 - **`content-visibility: auto`** lays out and draws a box's contents only
   while the box is near the screen: on screen, inside every clip it sits in,
-  or within half the window's size of it. Further away, the box is laid out
+  or within half the window's size of it. When a box first comes that near,
+  every box within a window and a half is shown along with it, and they stay
+  shown until the next one does, so what is shown changes about once a window
+  of scrolling rather than on every frame. Further away, the box is laid out
   with no children, its own background and border drawn, its texts never
   measured. `hidden` skips them always; `visible` is the default.
 - **`contain-intrinsic-size`** is the size a skipped box takes in place of its
@@ -101,6 +104,13 @@ scrolled a little each frame, release, desktop):
 | scene, a scrolled frame | 0.75 ms | 0.33 ms, 2.3x faster |
 | the first frame's layout | 127 ms | 18.8 ms, 6.7x faster |
 | building the document | 104 ms | 109 ms, the same |
+
+Those were measured when it landed. Since then a frame that only scrolls
+lays nothing out again, and rows scrolled out of view are passed over (see
+"A frame that only scrolls"): a scrolled frame is now 0.9 ms without
+`content-visibility` and 1.0 ms with it, so on a desktop it no longer makes
+scrolling faster. What it still saves is the first frame, and the work of
+laying out rows whose contents change while they are far away.
 
 Building the rows is the same either way: every row is still styled and
 stays in the document, so `query()`, `r-model` and a handler reach it.

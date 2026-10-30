@@ -19720,7 +19720,7 @@ mod selector_list_tests {
             let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
             let out = rux_layout::layout(&root, 400.0, 800.0, &mut measure);
             let at = |path: &[usize]| {
-                let m = out.metrics.iter().find(|m| m.path == path).unwrap();
+                let m = out.metrics.iter().find(|m| *m.path == path[..]).unwrap();
                 (m.x, m.y, m.width, m.height)
             };
             let kids: Vec<(f32, f32, f32, f32)> = (0..heights.len()).map(|i| at(&[0, i])).collect();
@@ -19794,7 +19794,7 @@ mod selector_list_tests {
 
         let mut measure = |tc: &rux_layout::TextContent, _: Option<f32>| (tc.text.chars().count() as f32 * 8.0, 20.0);
         let out = rux_layout::layout(&root, 400.0, 600.0, &mut measure);
-        let at = |path: &[usize]| out.metrics.iter().find(|m| m.path == path).unwrap_or_else(|| panic!("{path:?}"));
+        let at = |path: &[usize]| out.metrics.iter().find(|m| *m.path == *path).unwrap_or_else(|| panic!("{path:?}"));
         // The real child keeps index 0 and sits under the `::before`.
         assert_eq!(at(&[0, 0]).y, at(&[0]).y + 20.0);
         assert_eq!(at(&[0, usize::MAX]).y, at(&[0]).y + 70.0, "the ::after is last");
@@ -19863,9 +19863,9 @@ mod selector_list_tests {
         let field = &out.focuses[0];
         assert!(field.y > 100.0 + 100.0, "it lies over the second list: {}", field.y);
         assert_eq!(field.within, Some(0));
-        let row = out.metrics.iter().find(|m| m.path == [0, 3]).expect("the fourth row");
+        let row = out.metrics.iter().find(|m| *m.path == [0, 3]).expect("the fourth row");
         assert_eq!(row.scroll, Some(0));
-        assert_eq!(out.metrics.iter().find(|m| m.path == [1, 0]).unwrap().scroll, Some(1));
+        assert_eq!(out.metrics.iter().find(|m| *m.path == [1, 0]).unwrap().scroll, Some(1));
     }
 
     /// `appearance: none` (and `-webkit-appearance`) takes away what Rux

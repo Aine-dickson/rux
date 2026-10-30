@@ -84,11 +84,11 @@ fn offset_shifts_the_content_not_the_box() {
     let unscrolled = run(&[Offset::default()]);
     let scrolled = run(&[Offset { x: 0.0, y: 150.0 }]);
 
-    let before = row_tops(&unscrolled);
-    let after = row_tops(&scrolled);
-    for (b, a) in before.iter().zip(after.iter()) {
-        assert_eq!(*b - *a, 150.0, "every row should shift up by the offset");
-    }
+    // Only the rows that reach the 200px clip are painted, as the scene
+    // counts reaching: within two pixels of it. One wholly past that is
+    // passed over.
+    assert_eq!(row_tops(&unscrolled), [0.0, 100.0, 200.0], "rows 0 and 1 in view, and 2 touching its edge");
+    assert_eq!(row_tops(&scrolled), [-50.0, 50.0, 150.0], "rows 1 to 3, each shifted up by the offset");
     assert!(
         unscrolled
             .paints
@@ -271,7 +271,9 @@ fn a_fixed_box_stays_put_when_the_screen_itself_scrolls() {
         vec![header, marker, tall],
     );
     let mut measure = |_: &TextContent, _: Option<f32>| (0.0, 0.0);
-    let out = layout_scrolled(&screen, 400.0, 300.0, &[Offset { x: 0.0, y: 500.0 }], &mut measure);
+    // Far enough to show the header did not move, and not so far that the
+    // marker leaves the view, where it would not be painted at all.
+    let out = layout_scrolled(&screen, 400.0, 300.0, &[Offset { x: 0.0, y: 5.0 }], &mut measure);
     let y_of = |r: f32| {
         out.paints
             .iter()
@@ -282,7 +284,7 @@ fn a_fixed_box_stays_put_when_the_screen_itself_scrolls() {
             .expect("painted")
     };
     assert_eq!(y_of(1.0), 0.0, "the fixed header is still at the top of the window");
-    assert_eq!(y_of(0.0), -500.0, "the content beside it scrolled");
+    assert_eq!(y_of(0.0), -5.0, "the content beside it scrolled");
 }
 
 /// A scroller wider and taller than its box, that scrolls only down: the

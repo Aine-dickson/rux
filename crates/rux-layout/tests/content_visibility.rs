@@ -70,9 +70,14 @@ fn only_rows_near_the_screen_have_contents() {
     let out = state.layout_scrolled(&list(1000), 800.0, 600.0, &[], &mut measure);
     assert!((30..=48).contains(&cells(&out)), "{} cells drawn", cells(&out));
     assert!(out.contained.iter().filter(|c| c.on_screen).all(|c| !c.skipped));
-    let h = row_heights(&out);
-    assert_eq!(h.len(), 1000, "every row keeps its place");
+    // Every row keeps its place, drawn at its size and skipped at its
+    // stand-in. Only the rows in view are painted, so where each one is
+    // comes from its metrics.
+    let h: Vec<f32> = (0..1000)
+        .map(|i| out.metrics.iter().find(|m| *m.path == [0, i]).expect("every row has its box").height)
+        .collect();
     assert_eq!((h[0], h[999]), (20.0, 10.0), "drawn at its size, skipped at its stand-in");
+    assert_eq!(row_heights(&out)[0], 20.0, "and painted at it");
 }
 
 #[test]
