@@ -271,7 +271,7 @@ from script, neither of which has a pointer at all.
       @press="held = true"
       @release="held = false"
       @swipe="if event.direction == &quot;left&quot; { next() }"
-      @drag="offset = event.dx">
+      @drag="offset = event.totalX">
 ```
 
 `@swipe` adds `event.direction`, one of `left`, `right`, `up` or `down`, chosen
@@ -290,6 +290,10 @@ Both carry **two distances**, named so they cannot be mistaken for one another:
 
 `totalX` is what following a finger wants: assign it and the thing tracks the
 hand with no bookkeeping. `moveX` is what velocity and flick detection want.
+Every pointer event also says where the pointer is now: `event.x`, `event.y`
+in the element, `event.pageX`, `event.pageY` in the window, and the
+element's `width` and `height` (the table under "A function that takes the
+event").
 
 **A drag that ends as a flick also fires `@swipe`.** The two are not rivals: a
 page that follows the finger still has to be told, at the end, whether the hand

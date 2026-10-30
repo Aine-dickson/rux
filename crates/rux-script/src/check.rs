@@ -2609,8 +2609,22 @@ impl<'a> Checker<'a> {
                 Some(f) => f.ty.clone(),
                 None => {
                     let names: Vec<&str> = fields.iter().map(|f| f.name.as_str()).collect();
-                    let hint =
-                        near_miss(name, &names).map(|n| format!("; did you mean `{n}`?")).unwrap_or_default();
+                    // A drag's distance under other libraries' names: the
+                    // nearest spelling (`x`, for `dx`) is the pointer's
+                    // position, not how far it went (AW-023).
+                    let axis = match name {
+                        "dx" | "deltaX" | "movementX" | "distanceX" => Some("X"),
+                        "dy" | "deltaY" | "movementY" | "distanceY" => Some("Y"),
+                        _ => None,
+                    };
+                    let travel = axis.filter(|a| names.contains(&format!("total{a}").as_str())).map(|a| {
+                        format!(
+                            "; for how far it went, write `total{a}` (from where the press landed) or `move{a}` (since the last event)"
+                        )
+                    });
+                    let hint = travel.unwrap_or_else(|| {
+                        near_miss(name, &names).map(|n| format!("; did you mean `{n}`?")).unwrap_or_default()
+                    });
                     self.error(pos, format!("{} has no field `{name}`{hint}", self.show(shown)));
                     Type::Any
                 }
@@ -4588,6 +4602,14 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         // A file's own `File` is its own, and is not declared twice.
         let f = built_findings("type File = { id: int };\nfn f(x: File): int { x.id }");
         assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+    }
+
+    /// A drag's distance written as another library names it is answered
+    /// with Rux's two, not with the pointer's position (AW-023).
+    #[test]
+    fn a_drags_dx_is_answered_with_total_and_move() {
+        one_error("fn f(e: DragEvent): float { e.dx }", "write `totalX` (from where the press landed) or `moveX`");
+        one_error("fn f(e: SwipeEvent): float { e.deltaY }", "`totalY`");
     }
 
     /// `s.replace(…)` as a statement changed `s` under rhai; it now gives the
