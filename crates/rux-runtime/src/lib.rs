@@ -10420,6 +10420,35 @@ let open = signal(true);
         assert!(!doc.refresh_native_signals(), "nothing set since");
     }
 
+    /// Tracer's AW-019: a `computed`, a top-level `let` and a `fn` a computed
+    /// calls all read native state while the top level first runs, and the
+    /// document failed to load, the signal "not defined". Each now reads
+    /// what Rust holds, or `none`, and a computed follows later sets.
+    #[test]
+    fn a_computed_reads_a_native_signal_on_the_first_run() {
+        static LINK: rux_native::Signal<String> = rux_native::Signal::new();
+        rux_native::Module::new("aw019")
+            .export(rux_native::Export::signal("link", "string?", || LINK.__read()))
+            .export(rux_native::Export::channel("events", "int[]", || Ok(rux_native::Any::Array(Vec::new()))))
+            .install();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ connected }}</text><text>{{ first ?? \"none\" }}</text><text>{{ viaFn }}</text><text>{{ seen }}</text></screen></template>
+             <script>
+               use native::aw019;
+               fn isUp(): bool { aw019.link == \"up\" }
+               computed connected = aw019.link == \"up\";
+               let first = aw019.link;
+               computed viaFn = isUp();
+               computed seen = aw019.events.length;
+             </script>",
+        )
+        .expect("loads, the native signals in scope from the start");
+        assert_eq!(text_of(&doc.root).join("|"), "false|none|false|0");
+        LINK.set("up".to_string());
+        assert!(doc.refresh_native_signals());
+        assert_eq!(text_of(&doc.root).join("|"), "true|none|true|0", "the computeds follow; the let kept its first read");
+    }
+
     /// A resource that only Rust changes, with a writable property `level`
     /// and a read-only one `label`, as a playing sound has `volume` and
     /// `currentTime`.

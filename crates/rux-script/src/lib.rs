@@ -462,6 +462,7 @@ impl Builder {
 
         let linking = std::rc::Rc::new(linking);
         let units: Vec<&ModuleChecked> = modules.iter().chain(&components).collect();
+        let natives = native_signal_names(&linking);
         let mut ir = interpreter_linked(
             &parsed,
             script,
@@ -469,7 +470,19 @@ impl Builder {
             &module_types,
             &self.types,
             std::rc::Rc::clone(&linking),
+            &natives,
         );
+        // **Native signals are in scope before the top level runs** (Tracer's
+        // AW-019): a `computed` gets its first value there, and one reading a
+        // native signal stopped the document loading, "not defined", because
+        // they were provided only once the build had finished. Each holds
+        // what Rust has set, or `none`, as the docs promise. A channel starts
+        // empty rather than being read here, which would take what has
+        // arrived from the first frame.
+        for name in &natives {
+            let v = if native::is_channel(name) { interp::V::Array(Default::default()) } else { native::read_signal(name) };
+            ir.set_global(name, v);
+        }
         // Compiled functions, when a build registered some for this exact
         // text: step 9 of docs/11-next.md.
         let hash = aot::source_hash(
@@ -534,7 +547,7 @@ pub(crate) fn interpreter(
     parsed: &rux_syntax::ast::Script,
     script: &str,
 ) -> interp::Interp {
-    interpreter_linked(parsed, script, &[], &[], &[], Default::default())
+    interpreter_linked(parsed, script, &[], &[], &[], Default::default(), &[])
 }
 
 /// [`interpreter`], with script modules linked in: see
@@ -546,9 +559,16 @@ fn interpreter_linked(
     module_types: &[(String, String, String)],
     imported: &[(String, String)],
     linking: std::rc::Rc<link::Linking>,
+    // The native signals the script can read, provided as the router's are.
+    natives: &[String],
 ) -> interp::Interp {
     let cx = check::Context {
-        provided: ROUTER_SIGNALS.iter().map(|n| (n.to_string(), types::Type::Any)).collect(),
+        provided: ROUTER_SIGNALS
+            .iter()
+            .map(|n| n.to_string())
+            .chain(natives.iter().cloned())
+            .map(|n| (n, types::Type::Any))
+            .collect(),
         support_types: module_types.to_vec(),
         imported_types: imported.to_vec(),
         linked: linking.linked(),
@@ -563,6 +583,23 @@ fn interpreter_linked(
     let mut ir = interp::Interp::new(unit);
     ir.set_linking(linking);
     ir
+}
+
+/// Every native signal the linked modules export, by its linked name.
+fn native_signal_names(linking: &link::Linking) -> Vec<String> {
+    let mut out: Vec<String> = linking
+        .exports
+        .iter()
+        .filter(|(module, _)| native::is_native(module))
+        .flat_map(|(module, exports)| {
+            exports
+                .iter()
+                .filter(|e| matches!(e.kind, link::ExportKind::Signal(_)))
+                .map(move |e| link::qualified(module, &e.name))
+        })
+        .collect();
+    out.sort();
+    out
 }
 
 /// The `type` declarations of a script Rux parsed from `src`, as name and the
@@ -2184,20 +2221,7 @@ impl Engine {
     /// The native signals this document's imports reach, by linked name:
     /// `native/sim::frame`.
     pub fn native_signals(&self) -> Vec<String> {
-        let mut out: Vec<String> = self
-            .linking
-            .exports
-            .iter()
-            .filter(|(module, _)| native::is_native(module))
-            .flat_map(|(module, exports)| {
-                exports
-                    .iter()
-                    .filter(|e| matches!(e.kind, link::ExportKind::Signal(_)))
-                    .map(move |e| link::qualified(module, &e.name))
-            })
-            .collect();
-        out.sort();
-        out
+        native_signal_names(&self.linking)
     }
 
     /// Give every native signal what Rust holds now, as the router gives
