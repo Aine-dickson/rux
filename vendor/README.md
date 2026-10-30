@@ -46,8 +46,13 @@ for the GPU. Every change is marked with a `Rux:` comment.
 
 Measured on a window of 1,000 rows of text (release, AMD integrated GPU):
 GPU memory 475 MB to 297 MB, private memory 586 MB to 417 MB, and the wait
-for the counts costs about 1.6 ms a frame. Most of what is left is not these
-buffers: with them all at a token size the window still holds 219 MB.
+for the counts costs about 1.6 ms a frame.
+
+The rest was the allocator. `RUX_GPU_REPORT=1` showed 10 MB allocated inside
+256 MB reserved: wgpu's default `MemoryHints::Performance` takes device
+memory in large blocks. `util::RenderContext` now asks for
+`MemoryHints::MemoryUsage`, and the window holds 61 MB of GPU memory and
+193 MB private, at no measured cost per frame.
 
 Both are patched in the root `Cargo.toml`, and into an app's generated
 wrapper when Rux comes from a checkout (`crates/rux-cli/src/build.rs`).

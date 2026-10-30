@@ -7857,6 +7857,37 @@ impl App {
         device_handle.queue.submit([encoder.finish()]);
 
         surface_texture.present();
+        // `RUX_GPU_REPORT=1`: what the GPU holds, by label, once the window
+        // has drawn 30 frames. How AW-022's 297 MB turned out to be 10 MB
+        // allocated inside 256 MB of reserved blocks.
+        {
+            static FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+            let n = FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if n == 30 && std::env::var_os("RUX_GPU_REPORT").is_some() {
+                match device_handle.device.generate_allocator_report() {
+                    Some(r) => {
+                        let mut by: std::collections::BTreeMap<String, (u64, u32)> = Default::default();
+                        for a in &r.allocations {
+                            let e = by.entry(a.name.clone()).or_default();
+                            e.0 += a.size;
+                            e.1 += 1;
+                        }
+                        let mut rows: Vec<_> = by.into_iter().collect();
+                        rows.sort_by_key(|(_, (s, _))| std::cmp::Reverse(*s));
+                        eprintln!(
+                            "gpu report at frame {n}: allocated {:.1} MB, reserved {:.1} MB, {} blocks",
+                            r.total_allocated_bytes as f64 / 1048576.0,
+                            r.total_reserved_bytes as f64 / 1048576.0,
+                            r.blocks.len()
+                        );
+                        for (name, (size, count)) in rows.iter().take(25) {
+                            eprintln!("  {:>8.2} MB  x{count:<4} {name}", *size as f64 / 1048576.0);
+                        }
+                    }
+                    None => eprintln!("gpu report: none from this backend"),
+                }
+            }
+        }
         if let Some(filters) = state.filters.as_mut() {
             filters.finish(&mut state.renderer);
         }

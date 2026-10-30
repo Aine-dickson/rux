@@ -174,6 +174,10 @@ impl RenderContext {
                 label: None,
                 required_features: features & maybe_features,
                 required_limits: limits,
+                // Rux: small memory blocks rather than wgpu's default, which
+                // favours speed and reserved 256 MB to hold the 10 MB a
+                // window of text allocates (Tracer's AW-022).
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
                 ..Default::default()
             })
             .await
