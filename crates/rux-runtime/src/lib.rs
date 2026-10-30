@@ -10626,6 +10626,36 @@ let open = signal(true);
         }
     }
 
+    /// Tracer's AW-033: the wall clock, and a time's parts in the local time
+    /// zone, from milliseconds since 1970.
+    #[test]
+    fn date_reads_the_wall_clock_and_a_times_parts() {
+        use chrono::{Datelike, TimeZone, Timelike};
+        let ms: i64 = 1_793_345_000_000;
+        let at = chrono::Local.timestamp_millis_opt(ms).single().unwrap();
+        let cases: Vec<(&str, String)> = vec![
+            ("Date.time(at)", at.format("%H:%M").to_string()),
+            ("Date.date(at)", at.format("%-d %b %Y").to_string()),
+            ("Date.hours(at)", at.hour().to_string()),
+            ("Date.minutes(at)", at.minute().to_string()),
+            ("Date.seconds(at)", at.second().to_string()),
+            ("Date.day(at)", at.day().to_string()),
+            ("Date.month(at)", at.month().to_string()),
+            ("Date.year(at)", at.year().to_string()),
+            ("Date.weekday(at)", at.weekday().num_days_from_sunday().to_string()),
+            ("intDiv(at + 180000 - at, 60000)", "3".into()),
+            ("Date.now() > 1700000000000", "true".into()),
+        ];
+        let texts: String = cases.iter().map(|(e, _)| format!("<text>{{{{ {e} }}}}</text>")).collect();
+        let src = format!("<template><screen>{texts}</screen></template><script>let at = {ms};</script>");
+        let doc = Document::from_source(&src).expect("load");
+        assert!(doc.diagnostics().warnings.is_empty(), "{:?}", doc.diagnostics().warnings);
+        let shown = text_of(&doc.root);
+        for (i, (expr, want)) in cases.iter().enumerate() {
+            assert_eq!(shown.get(i).map(String::as_str), Some(want.as_str()), "{expr}");
+        }
+    }
+
     /// A resource that only Rust changes, with a writable property `level`
     /// and a read-only one `label`, as a playing sound has `volume` and
     /// `currentTime`.

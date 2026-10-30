@@ -391,10 +391,11 @@ fn root_name(e: &Expr) -> Option<&str> {
 /// JavaScript's namespaces, written as JavaScript writes them (Tracer's
 /// AW-020): `Math.max(a, b)` is a call of the language's `Math.max`, and
 /// `Math.PI` is the number, in a file that names nothing `Math` itself.
-/// `JSON`, `Object` and `Array` likewise. A function the language does not
-/// have, `Math.random()`, is left a call of that name, which the check
-/// reports as a function there is not.
-const NAMESPACES: [&str; 4] = ["Math", "JSON", "Object", "Array"];
+/// `JSON`, `Object`, `Array` and `Date` likewise (`Date` holds functions
+/// only: Tracer's AW-033). A function the language does not have,
+/// `Math.random()`, is left a call of that name, which the check reports as
+/// a function there is not.
+const NAMESPACES: [&str; 5] = ["Math", "JSON", "Object", "Array", "Date"];
 
 fn namespaces(script: &mut Script, aliases: &[Alias]) {
     let mut own: Vec<String> = aliases.iter().map(|a| a.local.clone()).collect();

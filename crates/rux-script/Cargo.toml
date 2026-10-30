@@ -21,6 +21,9 @@ rux-native.workspace = true
 # `now()`'s clock: `std::time::Instant` on native, the browser's on the web,
 # where `Instant` panics. The shell already depends on it.
 web-time = "1.1"
+# `Date.time(ms)` and the rest: the wall clock read in the local time zone,
+# which std cannot find. `wasmbind` asks the browser for it on the web.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "wasmbind"] }
 
 [dev-dependencies]
 # The attributes, for tests written as an app writes its native/ crate.

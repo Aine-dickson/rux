@@ -42,3 +42,8 @@ getrandom = { version = "0.3", features = ["wasm_js"] }
 # src/remote.rs.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }
+
+# The tests read the local time zone the way `Date.time` does, to say what
+# it must show on this machine.
+[dev-dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

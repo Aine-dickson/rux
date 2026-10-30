@@ -2919,6 +2919,20 @@ impl<'a> Checker<'a> {
             }
             // Milliseconds on a clock that only goes forward.
             ("now", 0) => return Type::Float,
+            // The wall clock, and a time's parts: see `stdlib`.
+            ("Date.now", 0) => return Type::Int,
+            ("Date.time" | "Date.date", 1) => {
+                self.infer_all(args);
+                return Type::String;
+            }
+            (
+                "Date.hours" | "Date.minutes" | "Date.seconds" | "Date.day" | "Date.month" | "Date.year"
+                | "Date.weekday",
+                1,
+            ) => {
+                self.infer_all(args);
+                return Type::Int;
+            }
             // JavaScript's namespaces: see `link::namespaces`.
             ("Math.max" | "Math.min" | "Math.abs" | "Math.sign", _) => {
                 let mut all_int = !args.is_empty();

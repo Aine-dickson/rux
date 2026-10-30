@@ -3238,6 +3238,23 @@ above the bottom.
 | Escape, Tab | with it open | it closes | under the code only |
 | The web, Android | the platform's own picker | unchanged | not affected |
 
+## The wall clock and a time's parts, 2026-10-30
+
+Tracer's AW-033: script had only `now()`, which only goes forward. `Date.now()`
+and functions that read a time in the local time zone, in the shape the owner
+chose (functions on milliseconds, no `Date` value). Under test in
+`rux-runtime` (`date_reads_the_wall_clock_and_a_times_parts`: each part against
+chrono's reading of the same time on the machine running it). Driven in a
+desktop window on a probe that ticks once a second, Windows 11, UTC+3.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The time and date | open it | the computer's clock: `17:02 on 30 Oct 2026` | pass, against `Get-Date` |
+| The parts | the same | `2026-10-30 17:2:3 weekday 5` (Friday) | pass |
+| How long ago | a time three minutes back | `sent 3 min ago` | pass |
+| A name `Date` lacks | `Date.parse("x")` | `rux check` says there is no such function | pass |
+| The web | the browser's time zone | the same | built, not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

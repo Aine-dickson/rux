@@ -1186,6 +1186,15 @@ JavaScript's names, with JavaScript's answers:
   2)` indented, and `JSON.parse(text)`; `Object.keys`, `Object.values` and
   `Object.entries`; `Array.from` and `Array.isArray`. A file that declares a
   `Math` of its own keeps it.
+- **`Date`, as functions on a time**: `Date.now()` is the wall clock, an
+  `int` of milliseconds since 1970 as JavaScript's is, and each of the rest
+  takes such a time and reads it in the computer's own time zone.
+  `Date.time(ms)` is `"14:02"` and `Date.date(ms)` is `"30 Oct 2026"`;
+  `Date.hours`, `Date.minutes`, `Date.seconds`, `Date.day` (of the month),
+  `Date.month` (**1 to 12**, where JavaScript's `getMonth` counts from 0),
+  `Date.year` and `Date.weekday` (0 for Sunday to 6, as `getDay`) are `int`s.
+  How long ago is arithmetic: `intDiv(Date.now() - sentAt, 60000)` minutes.
+  There is no `Date` value and no `new`: a time is its milliseconds.
 
 A string's methods **return** a new string and leave their receiver alone, as
 JavaScript's do: `name.replace("-", " ")` replaces the first `-` and gives the
@@ -1199,7 +1208,9 @@ check` says so where a statement throws the new value away: `s.replace("a",
 give it back; `toSorted` and `toReversed` leave it alone.
 
 Not there yet: spread, `[...a, x]` (write `a.concat([x])`), `Math.random`,
-and `Date` (`now()` below times things).
+and a `Date` value with methods (`Date.now()` and the functions above take
+its place). `now()` below times things: it only goes forward, so it cannot
+say when something happened.
 
 `forEach` is called with `(item, index)` and falls back to `(item)`. `every`
 and `findIndex` take a callback as JavaScript's do (`some` and `find` are
