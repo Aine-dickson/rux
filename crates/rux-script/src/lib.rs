@@ -44,6 +44,10 @@ thread_local! {
     /// While positive, nothing read is recorded: an `async fn` is running,
     /// and what it reads is nobody's dependency.
     static QUIET: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    /// While `Some`, the names read for their value, as against named by a
+    /// write: what [`Engine::run_effect_tracked`] keeps an effect subscribed
+    /// to even when it also writes them.
+    static GENUINE: RefCell<Option<HashSet<String>>> = const { RefCell::new(None) };
 }
 
 /// Run `f` with nothing it reads recorded. See [`interp`]'s tasks.
@@ -73,6 +77,26 @@ pub(crate) fn note_read(name: &str) {
     if QUIET.with(|q| q.get()) > 0 {
         return;
     }
+    GENUINE.with(|g| {
+        if let Some(set) = g.borrow_mut().as_mut() {
+            if !set.contains(name) {
+                set.insert(name.to_string());
+            }
+        }
+    });
+    note_named(name);
+}
+
+/// Record that a write named `name`, which counts as a read everywhere but
+/// in what an effect is subscribed to. See [`Engine::run_effect_tracked`].
+pub(crate) fn note_written_read(name: &str) {
+    if QUIET.with(|q| q.get()) > 0 {
+        return;
+    }
+    note_named(name);
+}
+
+fn note_named(name: &str) {
     READS.with(|r| {
         if let Some(set) = r.borrow_mut().as_mut() {
             if !set.contains(name) {
@@ -2437,11 +2461,16 @@ impl Engine {
         // re-run when it moves (watchlist #34). The caller knows which of them
         // can move.
         READS.with(|r| *r.borrow_mut() = Some(HashSet::new()));
+        GENUINE.with(|g| *g.borrow_mut() = Some(HashSet::new()));
         self.ir.noting_given = true;
         let (after, changed) = self.run_scoped_handler(src, locals);
         self.ir.noting_given = false;
         let mut reads = READS.with(|r| r.borrow_mut().take()).unwrap_or_default();
+        let genuine = GENUINE.with(|g| g.borrow_mut().take()).unwrap_or_default();
         reads.retain(|n| self.ir.has_global(n) || locals.iter().any(|(l, _)| l == n));
+        // What it only wrote is no reason to run again, as for a document's
+        // effect: see `run_effect_tracked`.
+        reads.retain(|n| !changed.contains(n) || genuine.contains(n));
         (after, changed, reads)
     }
 
@@ -2462,13 +2491,22 @@ impl Engine {
     }
 
     /// Run an effect body, reporting what it read and what it wrote.
+    ///
+    /// What it is subscribed to leaves out what it wrote without reading
+    /// it: assigning names what it assigns, and that is no reason to run
+    /// again. What it read for its value stays, written or not: an effect that
+    /// drains a list it reads (`let batch = inbox; inbox = [];`) heard the
+    /// first push and none after (Tracer's AW-027).
     pub fn run_effect_tracked(&mut self, src: &str) -> (HashSet<String>, HashSet<String>) {
-        let ((ran, writes), reads) = self.reading(|e| e.tracking(|e| e.eval(src, &[]).is_some()));
+        GENUINE.with(|g| *g.borrow_mut() = Some(HashSet::new()));
+        let ((ran, writes), mut reads) = self.reading(|e| e.tracking(|e| e.eval(src, &[]).is_some()));
+        let genuine = GENUINE.with(|g| g.borrow_mut().take()).unwrap_or_default();
         if !ran {
             // It still subscribes to whatever it managed to read, so a fixed
             // signal re-runs it rather than leaving it dead until a reload.
             return (reads, HashSet::new());
         }
+        reads.retain(|n| !writes.contains(n) || genuine.contains(n));
         (reads, writes)
     }
 

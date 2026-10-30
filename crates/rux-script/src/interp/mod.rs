@@ -1389,8 +1389,8 @@ impl Interp {
     /// runs again when `n` changes, and the runtime relies on it.
     fn note_written(&self, root: ir::Root, slot: Slot) {
         match (root, slot) {
-            (_, Slot::Global(g)) => crate::note_read(&self.unit.globals[g.0 as usize].name),
-            (ir::Root::Outer(n), _) => crate::note_read(&self.unit.outer[n as usize]),
+            (_, Slot::Global(g)) => crate::note_written_read(&self.unit.globals[g.0 as usize].name),
+            (ir::Root::Outer(n), _) => crate::note_written_read(&self.unit.outer[n as usize]),
             _ => {}
         }
     }

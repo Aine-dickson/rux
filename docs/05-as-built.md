@@ -1486,12 +1486,13 @@ An effect subscribes to what it actually read on its last run, so a signal it
 never touched does not wake it, and a conditional branch changes what it
 watches.
 
-**An effect is never woken by its own writes.** Assigning to a signal also
-resolves its name, so the tracker cannot tell the write from a read; without
-this rule every effect that wrote anything would re-trigger itself. The cost is
-that an effect writing `x` will not re-run when something *else* changes `x`,
-which is the right way round: that effect is the one deciding what `x` is.
-Effects that feed *each other* still cycle; that is stopped after 8 rounds and
+**An effect is never woken by its own writes.** A signal it only writes
+(`pick = 0`) is not among what it listens to, so a handler changing `pick`
+does not wake it. A signal it reads and also writes stays: the effect is not
+woken by its own write, but is by anyone else's. One that drains a list it
+reads (`let batch = inbox; inbox = [];`) hears every push. Until Tracer's
+AW-027 an effect stopped listening to everything it wrote, and heard only the
+first push. Effects that feed *each other* still cycle; that is stopped after 8 rounds and
 reported in the overlay rather than hung on.
 
 Both are document-level today: a component's own `computed`/`effect` lines are

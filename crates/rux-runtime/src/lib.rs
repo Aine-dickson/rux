@@ -144,6 +144,11 @@ pub struct Document {
     computeds: Vec<Computed>,
     /// `effect` blocks, with what each read when it last ran.
     effects: Vec<Effect>,
+    /// Which effects, by index, wrote each signal in the last round of
+    /// effects: a change only an effect's own write made does not wake it.
+    effect_writers: HashMap<String, Vec<usize>>,
+    /// The same for components' effects, by instance key and index.
+    instance_effect_writers: HashMap<String, Vec<(String, usize)>>,
     /// The document's own `mounted` / `unmounted` bodies.
     hooks: Hooks,
     /// Each component's `mounted` / `unmounted` bodies, by tag. Shared by every
@@ -3077,6 +3082,8 @@ impl Document {
             instances,
             computeds,
             effects,
+            effect_writers: HashMap::new(),
+            instance_effect_writers: HashMap::new(),
             hooks,
             component_hooks,
             component_computeds,
@@ -3229,6 +3236,8 @@ impl Document {
             instances,
             computeds,
             effects,
+            effect_writers: HashMap::new(),
+            instance_effect_writers: HashMap::new(),
             hooks,
             // No imports were resolved here, so there are no components and
             // nothing can declare a component hook, computed or effect.
@@ -5278,18 +5287,16 @@ impl Document {
             self.computeds[i].deps = deps;
         }
         let mut writes: HashSet<String> = HashSet::new();
+        self.effect_writers.clear();
         for i in 0..self.effects.len() {
             let body = self.effects[i].body.clone();
-            let (mut reads, wrote) = self.engine.run_effect_tracked(&body);
-            // An effect is never woken by its own writes. Assigning to a signal
-            // resolves its name, so the tracker sees a write as a read too, and
-            // every effect that wrote anything would immediately re-trigger
-            // itself: harmless when the result settles, an eight-round pile-up
-            // when it does not. The cost is that an effect which writes X will
-            // not re-run when someone *else* changes X, which is the right way
-            // round: that effect is the one deciding what X is.
-            reads.retain(|n| !wrote.contains(n));
+            // What it is subscribed to leaves out what it only wrote: see
+            // `Engine::run_effect_tracked`.
+            let (reads, wrote) = self.engine.run_effect_tracked(&body);
             self.effects[i].deps = reads;
+            for n in &wrote {
+                self.effect_writers.entry(n.clone()).or_default().push(i);
+            }
             writes.extend(wrote);
         }
         // `mounted` runs after the effects and after the first tree exists.
@@ -5423,6 +5430,12 @@ impl Document {
         };
         let mut writes = HashSet::new();
         let mut moved = Vec::new();
+        // A document signal only this effect wrote, in the round before,
+        // does not wake it: see `run_effects`.
+        let last = match wake {
+            Wake::Signals(_) => std::mem::take(&mut self.instance_effect_writers),
+            _ => HashMap::new(),
+        };
         for key in keys {
             let Some(list) = self.instance_effects.get(&key).cloned() else { continue };
             for (i, effect) in list.iter().enumerate() {
@@ -5434,9 +5447,11 @@ impl Document {
                     // A document signal, not a state name that happens to be
                     // spelled the same: the effect read its own, not the
                     // document's.
-                    Wake::Signals(changed) => {
-                        effect.deps.iter().any(|d| changed.contains(d) && !state_names.contains(d))
-                    }
+                    Wake::Signals(changed) => effect.deps.iter().any(|d| {
+                        changed.contains(d)
+                            && !state_names.contains(d)
+                            && last.get(d).is_none_or(|by| by.iter().any(|(k, j)| *k != key || *j != i))
+                    }),
                     Wake::Own(_, names) => effect.deps.iter().any(|d| names.contains(d)),
                 };
                 if !stale {
@@ -5465,11 +5480,14 @@ impl Document {
                         }
                     }
                 }
-                // An effect is never woken by its own writes, exactly as at
-                // document level: assigning resolves the name, so the tracker
-                // sees a write as a read too and the effect would re-trigger
-                // itself every time. Its own state's writes count as well.
-                reads.retain(|n| !wrote.contains(n) && !own_writes.contains(n));
+                // An effect is never woken by its own writes. What it wrote
+                // without reading is already left out (see
+                // `Engine::run_scoped_effect`); its own state's writes are
+                // left out here.
+                reads.retain(|n| !own_writes.contains(n));
+                for n in &wrote {
+                    self.instance_effect_writers.entry(n.clone()).or_default().push((key.clone(), i));
+                }
                 if let Some(list) = self.instance_effects.get_mut(&key) {
                     if let Some(slot) = list.get_mut(i) {
                         slot.deps = reads;
@@ -6068,23 +6086,30 @@ impl Document {
     }
 
     /// Run the effects whose dependencies changed, and report what they wrote.
+    ///
+    /// **An effect is never woken by its own writes.** A signal changed only
+    /// by the effect's own write in the round before does not wake it; one
+    /// anything else changed does, though the effect also writes it, if it
+    /// reads it: a drained `inbox` hears the next push (Tracer's AW-027).
+    /// Until that, everything an effect wrote was dropped from what it
+    /// listened to, and an effect that reads and empties a list heard only
+    /// the first push.
     fn run_effects(&mut self, changed: &HashSet<String>) -> HashSet<String> {
         let mut writes = HashSet::new();
+        let last = std::mem::take(&mut self.effect_writers);
         for i in 0..self.effects.len() {
-            if self.effects[i].deps.is_disjoint(changed) {
+            let woken = self.effects[i].deps.iter().any(|n| {
+                changed.contains(n) && last.get(n).is_none_or(|by| by.iter().any(|j| *j != i))
+            });
+            if !woken {
                 continue;
             }
             let body = self.effects[i].body.clone();
-            let (mut reads, wrote) = self.engine.run_effect_tracked(&body);
-            // An effect is never woken by its own writes. Assigning to a signal
-            // resolves its name, so the tracker sees a write as a read too, and
-            // every effect that wrote anything would immediately re-trigger
-            // itself: harmless when the result settles, an eight-round pile-up
-            // when it does not. The cost is that an effect which writes X will
-            // not re-run when someone *else* changes X, which is the right way
-            // round: that effect is the one deciding what X is.
-            reads.retain(|n| !wrote.contains(n));
+            let (reads, wrote) = self.engine.run_effect_tracked(&body);
             self.effects[i].deps = reads;
+            for n in &wrote {
+                self.effect_writers.entry(n.clone()).or_default().push(i);
+            }
             writes.extend(wrote);
         }
         writes
@@ -6102,6 +6127,11 @@ impl Document {
     /// while a warning naming the effect is the whole diagnosis.
     fn apply_change_depth(&mut self, changed: &HashSet<String>, depth: u32) {
         const MAX_EFFECT_ROUNDS: u32 = 8;
+        // A change from outside, which wakes every effect that reads it.
+        if depth == 0 {
+            self.effect_writers.clear();
+            self.instance_effect_writers.clear();
+        }
         let mut changed = changed.clone();
         self.refresh_computed(&mut changed);
         // An instance's own computeds are refreshed before the tree is touched,
@@ -9481,10 +9511,12 @@ use components::detail;
         .expect("load");
         assert!(find_text(&doc.root, "1"), "ran once: {:?}", text_of(&doc.root));
 
+        // It read `n`, so a write from outside wakes it, once: its own
+        // write back does not (AW-027; it used to stop listening to `n`).
         assert!(doc.apply_handler("n = 100;"));
         assert!(
-            find_text(&doc.root, "100"),
-            "an outside write is not chased by the effect that owns n: {:?}",
+            find_text(&doc.root, "101"),
+            "an outside write wakes the effect that reads n, once: {:?}",
             text_of(&doc.root)
         );
         assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
@@ -10447,6 +10479,36 @@ let open = signal(true);
         LINK.set("up".to_string());
         assert!(doc.refresh_native_signals());
         assert_eq!(text_of(&doc.root).join("|"), "true|none|true|0", "the computeds follow; the let kept its first read");
+    }
+
+    /// Tracer's AW-027: an effect that drains a signal it reads (`read it,
+    /// act, set it to []`) stays woken by it. It heard the first push and no
+    /// other.
+    #[test]
+    fn an_effect_that_empties_what_it_reads_still_hears_it() {
+        let mut doc = Document::from_source(
+            "<template><screen><view @tap=\"add()\"><text>push</text></view>
+               <text>{{ pushed }}|{{ drained }}|{{ inbox.length }}</text></screen></template>
+             <script>
+               let inbox: int[] = signal([]);
+               let pushed = signal(0);
+               let drained = signal(0);
+               fn add() { pushed += 1; inbox.push(pushed); }
+               effect {
+                 if inbox.length > 0 {
+                   let batch = inbox;
+                   inbox = [];
+                   drained += batch.length;
+                 }
+               }
+             </script>",
+        )
+        .expect("load");
+        let tap = find_node(&doc.root, &|n| n.on_tap.is_some()).unwrap().on_tap.clone().unwrap();
+        for _ in 0..3 {
+            doc.apply_handler(&tap);
+        }
+        assert_eq!(text_of(&doc.root).join("|"), "push|3|3|0");
     }
 
     /// Tracer's AW-021: an entity in text is decoded as in an attribute and
