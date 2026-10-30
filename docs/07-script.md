@@ -557,6 +557,14 @@ the app's own runtime once it hands one over with `rux::set_spawner`. There is
 no `Future`, `Promise` or task value on the Rux side, and no `fetch` or
 `delay` built in.
 
+**When the component that started it goes, the future is dropped** where it
+waits, which is how a Rust future is cancelled: a request it was making goes
+no further, and a socket or file it held is closed by its own `Drop`. Nothing
+answers, and nothing runs after the `await`. A call that blocks its thread
+inside the future (a blocking HTTP client, `std::thread::sleep`) cannot be
+reached there, and finishes first; write it with an async client, or check a
+flag of its own between steps.
+
 ## File dialogs
 
 **`pickFile`, `pickFiles` and `pickSaveFile` ask the person for a file**, with

@@ -11336,6 +11336,48 @@ fn flip() { rts_flag.on = true; }</script>",
         assert_eq!(probe_value(&doc, "beats"), "none yet");
     }
 
+    /// Tracer's AW-026: the Rust future an instance was waiting on is
+    /// dropped when the instance goes, rather than running on to its end, so
+    /// a request it was making goes no further.
+    #[test]
+    fn the_rust_future_is_dropped_with_its_instance() {
+        static DROPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                DROPPED.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        rux_native::Module::new("rt3b_forever")
+            .export(rux_native::Export::function(
+                "call",
+                &[("x", "any")],
+                "string",
+                rux_native::Call::future(|_| async {
+                    let _held = Guard;
+                    std::future::pending::<()>().await;
+                    Ok(rux_native::Any::None)
+                }),
+            ))
+            .install();
+        let mut doc = with_component(
+            "<template><view><text>card</text></view></template>\n\
+             <script>\nuse native::rt3b_forever;\nasync fn fetch() { let v: string = await rt3b_forever.call(none); }\n\
+             mounted { fetch(); }\n</script>",
+            "<template><screen><card r-if=\"open\" /></screen></template>\n\
+             <script>\nuse components::card;\nlet open = signal(true);\n</script>",
+        );
+        assert!(doc.has_waiting_tasks());
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        assert!(!DROPPED.load(std::sync::atomic::Ordering::SeqCst), "still waiting");
+        assert!(doc.apply_handler("open = false"), "close the r-if");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !DROPPED.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(std::time::Instant::now() < deadline, "the future was never dropped");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
     /// An error nothing catches is reported as a failing handler is, at the
     /// file line of the `await` that failed.
     #[test]

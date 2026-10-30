@@ -9,6 +9,8 @@
 //! next settles its tasks.
 
 use std::collections::HashSet;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -50,11 +52,18 @@ pub(crate) fn take_answers(wanted: impl Fn(u64) -> bool) -> Vec<(u64, Answer)> {
 }
 
 /// Nobody waits for `tickets` any more: drop an answer already queued for
-/// one, and any that comes later.
+/// one, and any that comes later, and stop each future still running.
 pub(crate) fn abandon(tickets: impl IntoIterator<Item = u64>) {
     let tickets: HashSet<u64> = tickets.into_iter().collect();
     if tickets.is_empty() {
         return;
+    }
+    let stops: Vec<Arc<Stop>> = {
+        let mut running = RUNNING.lock().unwrap_or_else(|e| e.into_inner());
+        tickets.iter().filter_map(|t| running.as_mut()?.remove(t)).collect()
+    };
+    for stop in stops {
+        stop.stop();
     }
     let mut q = ANSWERS.lock().unwrap_or_else(|e| e.into_inner());
     let answered: HashSet<u64> = q.iter().map(|(t, _)| *t).filter(|t| tickets.contains(t)).collect();
@@ -123,15 +132,69 @@ impl Drop for Completer {
     }
 }
 
+/// The futures still running, by ticket, each with what stops it.
+static RUNNING: Mutex<Option<std::collections::HashMap<u64, Arc<Stop>>>> = Mutex::new(None);
+
+/// Asks a running future to stop: set once, from whichever thread abandons
+/// its call, and seen at the future's next poll.
+#[derive(Default)]
+struct Stop {
+    stopped: std::sync::atomic::AtomicBool,
+    waker: Mutex<Option<std::task::Waker>>,
+}
+
+impl Stop {
+    fn stop(&self) {
+        self.stopped.store(true, Ordering::SeqCst);
+        if let Some(w) = self.waker.lock().unwrap_or_else(|e| e.into_inner()).take() {
+            w.wake();
+        }
+    }
+}
+
+/// `future`, until it is stopped. Stopped, it is dropped where it waits,
+/// which is how a Rust future is cancelled: a socket it held is closed, a
+/// request it was making goes no further. A call that blocks its thread
+/// inside a poll is past reaching, and finishes first.
+struct Stoppable {
+    future: Option<Pin<Box<dyn Future<Output = Result<Answer, String>> + Send>>>,
+    stop: Arc<Stop>,
+}
+
+impl Future for Stoppable {
+    type Output = Option<Result<Answer, String>>;
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
+        *self.stop.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+        if self.stop.stopped.load(Ordering::SeqCst) {
+            self.future = None;
+            return std::task::Poll::Ready(None);
+        }
+        match self.future.as_mut() {
+            Some(f) => f.as_mut().poll(cx).map(Some),
+            None => std::task::Poll::Ready(None),
+        }
+    }
+}
+
 /// Start `future`, the call waited on under `ticket`, where futures run, its
-/// answer (or its panic) going to the queue.
+/// answer (or its panic) going to the queue. Abandoned first, it is dropped
+/// instead, and nothing answers.
 pub(crate) fn start(ticket: u64, name: &str, future: rux_native::BoxFuture) {
     let done = Completer::new(ticket, name);
+    let stop = Arc::new(Stop::default());
+    RUNNING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Default::default).insert(ticket, stop.clone());
+    let running = Stoppable { future: Some(Box::pin(rux_native::CatchUnwind::new(future))), stop };
     rux_native::spawn(Box::pin(async move {
-        let answer = match rux_native::CatchUnwind::new(future).await {
-            Ok(a) => a,
-            Err(p) => Err(Error::new("panic", p)),
-        };
-        done.complete(answer);
+        let answer = running.await;
+        if let Some(r) = RUNNING.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+            r.remove(&ticket);
+        }
+        match answer {
+            Some(Ok(a)) => done.complete(a),
+            Some(Err(p)) => done.complete(Err(Error::new("panic", p))),
+            // Stopped: its ticket is abandoned, so the completer's drop
+            // answers nobody.
+            None => drop(done),
+        }
     }));
 }
