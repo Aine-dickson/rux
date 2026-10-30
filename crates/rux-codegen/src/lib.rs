@@ -1095,7 +1095,7 @@ fn fast_path(op: BinOp) -> Option<&'static str> {
 /// (`rux_script::aot::MUTATING`), which `rux-aot-tests` holds this to.
 pub const MUTATING: &[&str] = &[
     "push", "append", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort", "set", "splice",
-    "retain", "dedup", "drain", "pad", "replace", "make_upper", "make_lower", "unshift", "fill",
+    "retain", "dedup", "drain", "pad", "make_upper", "make_lower", "unshift", "fill",
 ];
 
 /// `root` as the generated code names it.
