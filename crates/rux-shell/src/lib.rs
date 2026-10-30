@@ -40,6 +40,7 @@ mod web_sound;
 mod files;
 /// `filter` and `backdrop-filter`, as compute passes. See [`filter::GpuFilters`].
 mod filter;
+mod clipboard;
 mod settings;
 
 pub use settings::set_app_id;
@@ -11184,7 +11185,7 @@ impl DeviceProfile {
     }
 }
 
-/// Rux's own native modules: the file dialogs and settings.
+/// Rux's own native modules: the file dialogs, settings and the clipboard.
 ///
 /// **Before any document loads.** Loading declares what a document uses
 /// from source, with placeholder calls, and a call made while it loads (a
@@ -11194,6 +11195,7 @@ impl DeviceProfile {
 fn install_rux_modules() {
     dialogs::install_builtins();
     settings::install_settings();
+    clipboard::install_clipboard();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading

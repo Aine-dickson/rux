@@ -706,6 +706,36 @@ fn remember(path: string) {
 - A file with a `settings` of its own (a `use native::settings;`, a `let`)
   keeps it; the built-in is then `use native::rux::settings;`.
 
+## Clipboard
+
+**`clipboard.writeText(text)`** puts text on the system clipboard, the one a
+text field's Copy and Paste use, and **`await clipboard.readText()`** gives
+what it holds. Like `settings`, they are Rux's own, so nothing is imported.
+
+```rux
+fn copyCurl() {
+  clipboard.writeText(`curl -X ${method} ${url}`);
+  notice = "Copied";
+}
+
+async fn pasteUrl() {
+  url = await clipboard.readText();
+}
+```
+
+- **`writeText` is a plain call**, so a `@tap` can make it, and it is not
+  awaited. On the web it starts the browser's write and goes on.
+- **`readText` is awaited**: a browser asks the person before it hands the
+  clipboard over. It gives `""` when the clipboard holds no text (an image,
+  or nothing).
+- **Both throw** when there is no clipboard to reach, and `readText` throws on
+  the web when the person refuses, or the page is not focused. Catch it with
+  `try`, as for any native call.
+- Every target: Windows, macOS, Linux, Android's clipboard manager, and the
+  browser's `navigator.clipboard` (which needs the page served over https).
+- A file with a `clipboard` of its own keeps it; the built-in is then
+  `use native::rux::clipboard;`.
+
 ## Native code
 
 An app's Rust lives in a `native/` crate beside `rux.toml`, an ordinary

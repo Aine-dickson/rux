@@ -63,7 +63,8 @@ pub use rux_native as native;
 /// interface, which a shell installs with code behind it.
 pub mod builtins {
     pub use rux_script::native::{
-        builtin_interface, set_media, settings_interface, BUILTIN_FNS, BUILTIN_MODULE, SETTINGS_MODULE,
+        builtin_interface, clipboard_interface, set_media, settings_interface, BUILTIN_FNS, BUILTIN_MODULE,
+        CLIPBOARD_MODULE, SETTINGS_MODULE,
     };
 }
 /// What is asked of an `<audio>`'s sound. See [`Document::take_media_requests`].
@@ -6863,7 +6864,10 @@ fn native_module_of(file: &str) -> Option<String> {
     let module = file.strip_suffix(".rux").unwrap_or(file);
     // Rux's own (the file dialogs) is there whether or not a shell put it
     // there, so `use native::rux::{pickFile};` resolves in a check too.
-    if module == rux_script::native::BUILTIN_MODULE || module == rux_script::native::SETTINGS_MODULE {
+    if module == rux_script::native::BUILTIN_MODULE
+        || module == rux_script::native::SETTINGS_MODULE
+        || module == rux_script::native::CLIPBOARD_MODULE
+    {
         rux_script::native::ensure_builtins();
     }
     rux_script::native::is_native(module).then(|| module.to_string())
@@ -11215,6 +11219,52 @@ fn flip() { rts_flag.on = true; }</script>",
         rux_native::notify();
         assert!(doc.refresh_native_signals(), "a new push arrives");
         assert_eq!(text_of(&doc.root).join(""), "1");
+    }
+
+    /// Tracer's AW-025: a script reaches the clipboard by its bare name. A
+    /// tap copies with a plain call; a read is awaited and lands in the page.
+    #[test]
+    fn a_script_copies_to_and_reads_the_clipboard() {
+        static HELD: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+        let mut calls = std::collections::HashMap::new();
+        calls.insert(
+            "writeText".to_string(),
+            rux_native::Call::sync(|args: Vec<rux_native::Any>| {
+                if let Some(rux_native::Any::Str(s)) = args.into_iter().next() {
+                    *HELD.lock().unwrap() = s;
+                }
+                Ok(rux_native::Any::None)
+            }),
+        );
+        calls.insert(
+            "readText".to_string(),
+            rux_native::Call::future(|_| async { Ok(rux_native::Any::Str(format!("got {}", HELD.lock().unwrap()))) }),
+        );
+        let _ = rux_native::install(rux_native::Module { interface: builtins::clipboard_interface(), calls });
+        let mut doc = Document::from_source(
+            "<template><screen><view @tap=\"clipboard.writeText(`curl ${url}`)\"><text>[{{ pasted }}]</text></view>\
+             <view @tap=\"paste()\"><text>paste</text></view></screen></template>
+             <script>
+               let url = signal(\"https://x\");
+               let pasted = signal(\"\");
+               async fn paste() { pasted = await clipboard.readText(); }
+             </script>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics().warnings.is_empty(), "{:?}", doc.diagnostics().warnings);
+        fn taps(n: &LayoutNode, out: &mut Vec<LayoutNode>) {
+            if n.on_tap.is_some() {
+                out.push(n.clone());
+            }
+            n.children.iter().for_each(|c| taps(c, out));
+        }
+        let mut buttons = Vec::new();
+        taps(&doc.root, &mut buttons);
+        let _ = doc.apply_handler_in(&buttons[0].on_tap.clone().unwrap(), None);
+        assert_eq!(*HELD.lock().unwrap(), "curl https://x", "copied");
+        let _ = doc.apply_handler_in(&buttons[1].on_tap.clone().unwrap(), None);
+        settle_one(&mut doc);
+        assert_eq!(text_of(&doc.root).join("|"), "[got curl https://x]|paste");
     }
 
     /// A task a component started goes on in that instance's scope: it

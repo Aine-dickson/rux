@@ -3178,6 +3178,21 @@ Not driven: a tap on a header with a row scrolled up under it, which needs
 rows with a handler, and probe 2's have none. Under test: `crates/rux-runtime/tests/scrolled_out_taps.rs`, a tap
 and a hover over the header with rows scrolled up beneath it.
 
+## Clipboard from script, 2026-10-30
+
+Tracer's AW-025: `clipboard.writeText(text)` and `await clipboard.readText()`.
+Under test in `rux-runtime` (`a_script_copies_to_and_reads_the_clipboard`: a
+tap's plain call copies, an awaited read lands in the page). Driven in a
+desktop window, a debug `rux` from this checkout, on a probe with a **copy**
+and a **paste** button; the clipboard set and read from PowerShell.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Paste what another program copied | `Set-Clipboard "from outside 42"`, **paste** | `pasted: [from outside 42]` | desktop: pass |
+| Copy for another program | **copy**, then `Get-Clipboard` | `curl -X GET https://example.com/0` | desktop: pass |
+| An empty clipboard | clear it, **paste** | `pasted: []`, no error | desktop: pass |
+| The web, Android | `navigator.clipboard`, the clipboard manager | the same; a refused read throws on the web | built for both targets, not driven |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

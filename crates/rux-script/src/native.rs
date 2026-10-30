@@ -245,6 +245,32 @@ pub fn settings_interface() -> rux_native::Interface {
     }
 }
 
+/// The module behind `clipboard.writeText` and `clipboard.readText`: the
+/// system clipboard, which text fields already copy to (Tracer's AW-025).
+pub const CLIPBOARD_MODULE: &str = "native/rux/clipboard";
+
+/// The name a script reaches [`CLIPBOARD_MODULE`] by without importing it.
+pub const CLIPBOARD_NAME: &str = "clipboard";
+
+/// The clipboard module's interface. `writeText` is a plain call, so a copy
+/// button's `@tap` can make it; `readText` is awaited, since a browser asks
+/// for the clipboard and answers later.
+pub fn clipboard_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str, params: &[(&str, &str)], result: &str, is_async: bool| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            result: result.into(),
+            is_async,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux::clipboard".into(),
+        items: vec![f("writeText", &[("text", "string")], "void", false), f("readText", &[], "string", true)],
+    }
+}
+
 /// Declare the built-in modules if no shell has installed them, so a
 /// document checked or run without one still knows the names.
 pub fn ensure_builtins() {
@@ -254,6 +280,9 @@ pub fn ensure_builtins() {
     if registry::interface(SETTINGS_MODULE).is_none() {
         let _ = registry::declare(settings_interface());
     }
+    if registry::interface(CLIPBOARD_MODULE).is_none() {
+        let _ = registry::declare(clipboard_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -261,19 +290,23 @@ pub fn ensure_builtins() {
 /// `use native::rux::{pickFile};` would link it.
 pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate::link::Alias> {
     let mut out = builtin_fn_aliases(code, aliases);
-    // `settings.get(…)`: the store, as a whole module, unless the file has a
-    // `settings` of its own (a `use native::settings;`, a `let settings`).
-    let uses = code.match_indices("settings.").any(|(at, _)| {
-        !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
-    });
-    let own = ["let settings", "fn settings", "const settings", "settings ="].iter().any(|d| code.contains(d))
-        || aliases.iter().any(|a| a.local == SETTINGS_NAME);
-    if uses && !own {
-        out.push(crate::link::Alias {
-            local: SETTINGS_NAME.to_string(),
-            target: crate::link::Target::Module(SETTINGS_MODULE.to_string()),
-            line: 0,
+    // `settings.get(…)`, `clipboard.writeText(…)`: each a whole module,
+    // unless the file has one of that name of its own (a `use
+    // native::settings;`, a `let settings`).
+    for (name, module) in [(SETTINGS_NAME, SETTINGS_MODULE), (CLIPBOARD_NAME, CLIPBOARD_MODULE)] {
+        let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
+            !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
         });
+        let own = ["let ", "fn ", "const "].iter().any(|d| code.contains(&format!("{d}{name}")))
+            || code.contains(&format!("{name} ="))
+            || aliases.iter().any(|a| a.local == name);
+        if uses && !own {
+            out.push(crate::link::Alias {
+                local: name.to_string(),
+                target: crate::link::Target::Module(module.to_string()),
+                line: 0,
+            });
+        }
     }
     out
 }
