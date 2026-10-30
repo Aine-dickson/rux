@@ -8060,7 +8060,16 @@ impl LayoutState {
                     Some(tc) => {
                         // Wrap to a definite width; otherwise (content sizing) let
                         // the text take its natural single-line width.
-                        let max = known.width.or(match available.width {
+                        //
+                        // From `available`, never `known`: when a width is known
+                        // taffy hands it over as the *border* box, and the
+                        // available width is that less the padding and border.
+                        // Wrapping at the known width measured text as if its
+                        // `padding-left` were room for it, so a flex row whose
+                        // text was shrunk to its min-content took the height of
+                        // one line and drew the second over the next row
+                        // (Tracer's AW-035).
+                        let max = (match available.width {
                             AvailableSpace::Definite(w) => Some(w),
                             // Min-content is the narrowest the box can be without
                             // its content spilling, which for text is the longest

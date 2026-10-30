@@ -3276,6 +3276,21 @@ leaving `a` alone). Driven with a debug `rux` from this checkout.
 | Spreading a number | `let bad = [...n];` | "`...` spreads an array or a string, and this is an `int`" | pass |
 | `{ ...o }`, `f(...xs)` | | not there yet | not built |
 
+## Wrapped text in a flex row that shrinks it, 2026-10-30
+
+Tracer's AW-035: in probe 2 at about 1000 by 1040, each record's `url` line
+wrapped but its row stayed one line tall, the second line painted over the
+next row. Text was wrapped at the width taffy knew for its box, which is the
+border box: the `:style` `padding-left` counted as room. Under test in
+`rux-shell` (`flex_text_height`: probe 2's page and styles through the text
+engine at eight widths; it fails without the fix). Driven in Tracer's probes
+window at 978 by 984 client, a debug build of this checkout.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The `url` lines | probe 2, **1k lines** | lines 6, 16, 26 two lines tall, the next row below them | pass |
+| The rest | the same | one line each, as before | pass |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
