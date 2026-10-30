@@ -10481,6 +10481,28 @@ let open = signal(true);
         assert_eq!(text_of(&doc.root).join("|"), "true|none|true|0", "the computeds follow; the let kept its first read");
     }
 
+    /// Tracer's AW-024: an effect that writes `pick` without reading it is
+    /// not woken when a key handler changes `pick`. It was, whenever its last
+    /// run had left `pick` as it found it, and undid the key.
+    #[test]
+    fn an_effect_is_not_woken_by_what_it_only_writes() {
+        let mut doc = Document::from_source(
+            "<template><screen><input r-model=\"search\" /><text>{{ pick }}</text></screen></template>
+             <script>
+               let search = signal(\"\");
+               let pick = signal(0);
+               effect { let q = search; pick = 0; }
+             </script>",
+        )
+        .expect("load");
+        doc.apply_edit("search", "r");
+        doc.apply_edit("search", "re");
+        assert!(doc.apply_handler("pick += 1;"));
+        assert_eq!(text_of(&doc.root).last().map(String::as_str), Some("1"), "the key's change stands");
+        doc.apply_edit("search", "req");
+        assert_eq!(text_of(&doc.root).last().map(String::as_str), Some("0"), "a new search still resets it");
+    }
+
     /// Tracer's AW-027: an effect that drains a signal it reads (`read it,
     /// act, set it to []`) stays woken by it. It heard the first push and no
     /// other.

@@ -2470,7 +2470,7 @@ impl Engine {
         reads.retain(|n| self.ir.has_global(n) || locals.iter().any(|(l, _)| l == n));
         // What it only wrote is no reason to run again, as for a document's
         // effect: see `run_effect_tracked`.
-        reads.retain(|n| !changed.contains(n) || genuine.contains(n));
+        reads.retain(|n| genuine.contains(n));
         (after, changed, reads)
     }
 
@@ -2492,11 +2492,12 @@ impl Engine {
 
     /// Run an effect body, reporting what it read and what it wrote.
     ///
-    /// What it is subscribed to leaves out what it wrote without reading
-    /// it: assigning names what it assigns, and that is no reason to run
-    /// again. What it read for its value stays, written or not: an effect that
-    /// drains a list it reads (`let batch = inbox; inbox = [];`) heard the
-    /// first push and none after (Tracer's AW-027).
+    /// It is subscribed to what it read for its value, written or not, and to
+    /// nothing it only named by writing it. An effect that drains a list it
+    /// reads (`let batch = inbox; inbox = [];`) heard the first push and none
+    /// after (Tracer's AW-027); one that writes `pick = 0` was woken by a key
+    /// handler's `pick += 1` whenever its last run had left `pick` as it was,
+    /// and undid the key (AW-024).
     pub fn run_effect_tracked(&mut self, src: &str) -> (HashSet<String>, HashSet<String>) {
         GENUINE.with(|g| *g.borrow_mut() = Some(HashSet::new()));
         let ((ran, writes), mut reads) = self.reading(|e| e.tracking(|e| e.eval(src, &[]).is_some()));
@@ -2506,7 +2507,7 @@ impl Engine {
             // signal re-runs it rather than leaving it dead until a reload.
             return (reads, HashSet::new());
         }
-        reads.retain(|n| !writes.contains(n) || genuine.contains(n));
+        reads.retain(|n| genuine.contains(n));
         (reads, writes)
     }
 
