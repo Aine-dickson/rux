@@ -2101,6 +2101,23 @@ impl<'a> Checker<'a> {
                 self.check_expr(&args[0], want);
                 self.note(e, want);
             }
+            // A start where a value was wanted: the `await` is missing, and
+            // "this is `int`" would say nothing about why.
+            ExprKind::Call { callee, args, .. }
+                if callee.len() == 1
+                    && !self.accepts_int(&resolved)
+                    && self.fns.get(&(callee[0].name.clone(), args.len())).is_some_and(|f| f.def.is_async) =>
+            {
+                let name = callee[0].name.clone();
+                self.infer(e);
+                self.error(
+                    e.span,
+                    format!(
+                        "`{name}` is an `async fn`, so this call starts it and gives its handle, for `cancel`: \
+                         for what it answers, write `await {name}(…)` inside an `async fn`"
+                    ),
+                );
+            }
             // A negative whole number written as `-` applied to one.
             ExprKind::Unary { op: "-", expr } if matches!(expr.kind, ExprKind::Int(_)) && self.accepts_int(&resolved) => {
                 self.note(expr, &Type::Int);
@@ -2876,9 +2893,10 @@ impl<'a> Checker<'a> {
 
         // `close` is a natural name for a dialog's own function, and the
         // file's own wins at run time, so it wins here too.
-        let own_close = name == "close" && self.fns.contains_key(&(name.to_string(), args.len()));
+        // So is `cancel`, for a form's Cancel button.
+        let own_close = matches!(name, "close" | "cancel") && self.fns.contains_key(&(name.to_string(), args.len()));
         match (name, args.len()) {
-            ("close", _) if own_close => {}
+            ("close" | "cancel", _) if own_close => {}
             ("signal", 1) => return self.infer(&args[0]),
             // The two halves of a `Result`; the other half is whatever the
             // place it goes wants.
@@ -2988,7 +3006,7 @@ impl<'a> Checker<'a> {
                 }));
             }
             ("print" | "debug" | "emit" | "navigate" | "replace" | "back" | "forward" | "close" | crate::ANSWER_FN | "blur"
-            | "clearInterval", _) => {
+            | "clearInterval" | "cancel", _) => {
                 self.infer_all(args);
                 return Type::Null;
             }
@@ -3012,8 +3030,8 @@ impl<'a> Checker<'a> {
                         ),
                     );
                 }
-                // Started, not waited for: there is no value to use.
-                return Type::Void;
+                // Started, not waited for: its handle, for `cancel`.
+                return Type::Int;
             }
             if let Some(sig) = self.signature(name, args.len()) {
                 if self.saw(pos, "fn", name, None, &Type::Any) {
@@ -4908,8 +4926,8 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         one_error("let n = signal(0);\nasync fn x() {}\nasync fn f() { [1].map(y => await x()); }", "inside a closure");
         one_error("fn g(): int { 1 }\nasync fn f() { await g(); }", "`g` is not an `async fn`");
         one_error("async fn f() { await 3; }", "only a call to an `async fn`");
-        // Started, not waited for: there is no value.
-        one_error(&format!("{lib}fn f() {{ let u: User = load(1); }}"), "`void`");
+        // Started, not waited for: the value is its handle, for `cancel`.
+        one_error(&format!("{lib}fn f() {{ let u: User = load(1); }}"), "write `await load(…)` inside an `async fn`");
         assert!(errors(&format!("{lib}fn f() {{ load(1); }}")).is_empty());
         // A `computed` runs again on every change and cannot start one.
         one_error(&format!("{lib}let n = signal(1);\ncomputed c = load(n);"), "cannot start one");

@@ -91,18 +91,25 @@ impl Interp {
 
     /// Start `id`, an `async fn`, with `args`: run it to its first stop. A
     /// failure before then is the task's, reported with [`Interp::take_failed`],
-    /// not the caller's.
-    pub(super) fn start_task(&mut self, id: FnId, args: Vec<V>) -> R<()> {
+    /// not the caller's. Gives the task's id, the handle `cancel` takes.
+    pub(super) fn start_task(&mut self, id: FnId, args: Vec<V>) -> R<u64> {
         let code = self.flat(id)?;
         let name = self.unit.fns[id.0 as usize].name.clone();
         let mut task = Task { frames: vec![TaskFrame::new(code, args)], ready: None, name };
         let tid = host::next_id();
+        self.driving.push(tid);
         let out = crate::quiet_reads(|| self.drive(tid, &mut task, None));
+        self.driving.pop();
         self.settle(tid, task, out);
-        Ok(())
+        Ok(tid)
     }
 
     fn settle(&mut self, tid: u64, task: Task, out: Outcome) {
+        // Cancelled by its own code while it ran: let go now it has stopped.
+        if self.cancelled.remove(&tid) {
+            self.drop_tasks(&[tid]);
+            return;
+        }
         match out {
             Outcome::Waiting => {
                 self.tasks.insert(tid, task);
@@ -480,7 +487,9 @@ impl Interp {
         let given: Vec<V> = locals.iter().map(|(_, v)| V::from_value(v)).collect();
         self.enter(&piece, given);
         self.ops = 0;
+        self.driving.push(id);
         let out = crate::quiet_reads(|| self.drive(id, &mut task, Some(input)));
+        self.driving.pop();
         let (after, _) = self.leave(&piece);
         self.settle(id, task, out);
         Some(after)
@@ -491,6 +500,9 @@ impl Interp {
     pub fn drop_tasks(&mut self, ids: &[u64]) {
         for id in ids {
             self.tasks.remove(id);
+            if self.driving.contains(id) {
+                self.cancelled.insert(*id);
+            }
         }
         let tickets: Vec<u64> = self.waiting.iter().filter(|(_, t)| ids.contains(t)).map(|(k, _)| *k).collect();
         for t in &tickets {

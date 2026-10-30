@@ -5553,6 +5553,9 @@ impl Document {
             let owner = if self.engine.task_is_a_modules(id) { None } else { instance.map(str::to_string) };
             self.tasks.push((id, owner));
         }
+        // And any the code just ran cancelled are gone.
+        let engine = &self.engine;
+        self.tasks.retain(|(id, _)| engine.has_task(*id));
         self.report_task_failures();
         for request in rux_script::take_timer_requests() {
             match request {
@@ -10436,6 +10439,15 @@ let open = signal(true);
         });
     }
 
+    /// Wait, a while at most, for another thread to set `flag`.
+    fn wait_for(flag: &std::sync::atomic::AtomicBool, what: &str) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !flag.load(std::sync::atomic::Ordering::SeqCst) {
+            assert!(std::time::Instant::now() < deadline, "waited for {what}");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
     /// Settle `doc`'s tasks until one runs, as the shell does when an answer
     /// wakes it.
     fn settle_one(doc: &mut Document) {
@@ -11342,6 +11354,7 @@ fn flip() { rts_flag.on = true; }</script>",
     #[test]
     fn the_rust_future_is_dropped_with_its_instance() {
         static DROPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
         struct Guard;
         impl Drop for Guard {
             fn drop(&mut self) {
@@ -11355,6 +11368,7 @@ fn flip() { rts_flag.on = true; }</script>",
                 "string",
                 rux_native::Call::future(|_| async {
                     let _held = Guard;
+                    STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
                     std::future::pending::<()>().await;
                     Ok(rux_native::Any::None)
                 }),
@@ -11368,14 +11382,91 @@ fn flip() { rts_flag.on = true; }</script>",
              <script>\nuse components::card;\nlet open = signal(true);\n</script>",
         );
         assert!(doc.has_waiting_tasks());
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        wait_for(&STARTED, "the future to start");
         assert!(!DROPPED.load(std::sync::atomic::Ordering::SeqCst), "still waiting");
         assert!(doc.apply_handler("open = false"), "close the r-if");
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !DROPPED.load(std::sync::atomic::Ordering::SeqCst) {
-            assert!(std::time::Instant::now() < deadline, "the future was never dropped");
-            std::thread::sleep(std::time::Duration::from_millis(2));
+        wait_for(&DROPPED, "the future to be dropped");
+    }
+
+    /// Tracer's AW-026: starting an `async fn` hands back a handle, as
+    /// `setInterval` does, and `cancel(handle)` stops it and drops the Rust
+    /// future it waits on.
+    #[test]
+    fn cancel_stops_a_started_async_fn_and_its_rust_future() {
+        static DROPPED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        struct Guard;
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                DROPPED.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
         }
+        rux_native::Module::new("rt26_forever")
+            .export(rux_native::Export::function(
+                "call",
+                &[("x", "any")],
+                "string",
+                rux_native::Call::future(|_| async {
+                    let _held = Guard;
+                    STARTED.store(true, std::sync::atomic::Ordering::SeqCst);
+                    std::future::pending::<()>().await;
+                    Ok(rux_native::Any::None)
+                }),
+            ))
+            .install();
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ res }}</text></screen></template>
+             <script>
+               use native::rt26_forever;
+               let job = signal(0);
+               let res = signal(\"\");
+               async fn send() { res = \"sending\"; res = await rt26_forever.call(none); }
+               fn go() { job = send(); }
+               fn stop() { cancel(job); res = \"cancelled\"; }
+             </script>",
+        )
+        .expect("load");
+        assert!(doc.diagnostics().warnings.is_empty(), "{:?}", doc.diagnostics().warnings);
+        assert!(doc.apply_handler("go()"));
+        assert_eq!(text_of(&doc.root).join(""), "sending");
+        assert!(doc.has_waiting_tasks());
+        wait_for(&STARTED, "the future to start");
+        assert!(doc.apply_handler("stop()"));
+        assert!(!doc.has_waiting_tasks(), "cancelled");
+        assert_eq!(text_of(&doc.root).join(""), "cancelled");
+        wait_for(&DROPPED, "the future to be dropped");
+        // Again, or a handle never given: nothing, and no error.
+        let _ = doc.apply_handler("stop()");
+        let _ = doc.apply_handler("cancel(0)");
+        assert!(doc.diagnostics().warnings.is_empty(), "{:?}", doc.diagnostics().warnings);
+    }
+
+    /// A task that cancels itself, between two awaits, stops there.
+    #[test]
+    fn a_task_that_cancels_itself_stops() {
+        answer_later("rt26b_echo", "echo ");
+        let mut doc = Document::from_source(
+            "<template><screen><text>{{ res }}</text></screen></template>
+             <script>
+               use native::rt26b_echo;
+               let job = signal(0);
+               let res = signal(\"\");
+               async fn twice() {
+                 res = await rt26b_echo.call(1);
+                 cancel(job);
+                 res = await rt26b_echo.call(2);
+               }
+               fn go() { job = twice(); }
+             </script>",
+        )
+        .expect("load");
+        assert!(doc.apply_handler("go()"));
+        settle_one(&mut doc);
+        assert_eq!(text_of(&doc.root).join(""), "echo 1");
+        assert!(!doc.has_waiting_tasks(), "it let itself go");
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        assert!(!doc.settle_tasks(), "and the second answer runs nothing");
+        assert_eq!(text_of(&doc.root).join(""), "echo 1");
     }
 
     /// An error nothing catches is reported as a failing handler is, at the

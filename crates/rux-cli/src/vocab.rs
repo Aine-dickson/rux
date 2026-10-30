@@ -367,6 +367,7 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "blur", detail: "blur()", doc: "Drop focus. Free-standing rather than a method on an element, because there is only one focused element: blurring \"this one\" would either do nothing or take focus from something else." },
     Entry { name: "setInterval", detail: "setInterval(ms) { … }", doc: "Run a block on a period, handing back a handle. A **block, not a callback**: `setInterval(1000) { seconds++ }`. Stop it with `clearInterval(handle)`." },
     Entry { name: "clearInterval", detail: "clearInterval(handle)", doc: "Stop a timer started by `setInterval`. The handle is what `setInterval` returned." },
+    Entry { name: "cancel", detail: "cancel(handle)", doc: "Stop an `async fn` started without `await`, and drop the Rust call it waits on. The handle is what starting it gave: `job = send(url);` then `cancel(job)`. One already finished is ignored." },
     Entry { name: "print", detail: "print(x)", doc: "Printf-debugging. Reaches the dev overlay, not just stderr." },
     Entry { name: "debug", detail: "debug(x)", doc: "Like `print`, with the value's structure shown." },
     Entry { name: "Number", detail: "Number(text)", doc: "The whole text as a number: `Number(\"2\")` is 2, `Number(\"\")` is 0, `Number(\"12px\")` is `NaN`. How a route parameter, which is always text, meets a numeric id." },

@@ -3186,6 +3186,22 @@ and a **paste** button; the clipboard set and read from PowerShell.
 | An empty clipboard | clear it, **paste** | `pasted: []`, no error | desktop: pass |
 | The web, Android | `navigator.clipboard`, the clipboard manager | the same; a refused read throws on the web | built for both targets, not driven |
 
+## Cancelling an `async fn`, 2026-10-30
+
+Tracer's AW-026: a call to an `async fn` without `await` gives a handle, and
+`cancel(handle)` stops it and drops the Rust future it waits on; a component
+going drops its futures the same way. Under test in `rux-runtime`
+(`the_rust_future_is_dropped_with_its_instance`, `cancel_stops_a_started_async_fn_and_its_rust_future`,
+`a_task_that_cancels_itself_stops`): each holds a guard in a Rust future that
+never finishes and waits for its `Drop`. The first fails without the change.
+`rux check` of the docs' timeout example: no problems.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Cancel a send | start it, then **cancel** | nothing after the `await` runs; the Rust future dropped | under test only |
+| A timeout | `setInterval` that cancels | the same, after the period | `rux check` only; not driven in a window |
+| A forgotten `await` | `let u: User = load(1);` | an error naming `await load(…)` | pass, `rux check` |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

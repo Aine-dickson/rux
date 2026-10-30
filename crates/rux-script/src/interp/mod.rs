@@ -194,6 +194,11 @@ pub struct Interp {
     failed: Vec<(String, Fault)>,
     /// What each native call being waited on is for: its ticket, and the task.
     waiting: HashMap<u64, u64>,
+    /// The tasks being run right now, innermost last: out of `tasks` while
+    /// they run, so a `cancel` of one is noted in `cancelled` instead.
+    driving: Vec<u64>,
+    /// Tasks cancelled while they ran, to be let go when they stop.
+    cancelled: std::collections::HashSet<u64>,
     /// What text handed in is linked against before it is lowered: the
     /// document's imports. See [`crate::link`].
     linking: Rc<crate::link::Linking>,
@@ -248,6 +253,8 @@ impl Interp {
             started: Vec::new(),
             failed: Vec::new(),
             waiting: HashMap::new(),
+            driving: Vec::new(),
+            cancelled: Default::default(),
             linking: Rc::default(),
             noting_given: false,
         }
@@ -1545,8 +1552,7 @@ impl Interp {
                 for a in args {
                     argv.push(self.expr(a)?);
                 }
-                self.start_task(*func, argv)?;
-                V::None
+                V::Int(self.start_task(*func, argv)? as i64)
             }
             // Only an `async fn`'s own ops wait; see `task`.
             ExprKind::Await(_) => return fail("`await` is only allowed inside an `async fn`"),
@@ -1769,8 +1775,7 @@ impl Interp {
         // Called by a name found where it runs: started, as the IR's
         // `Start` would.
         if f.is_async {
-            self.start_task(id, argv)?;
-            return Ok(V::None);
+            return Ok(V::Int(self.start_task(id, argv)? as i64));
         }
         if flat::everything() {
             return self.call_flat(id, argv);

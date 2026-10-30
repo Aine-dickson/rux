@@ -25,7 +25,7 @@ use crate::types::Type;
 const BUILTINS: &[&str] = &[
     "print", "debug", "emit", "navigate", "replace", "back", "forward", "close", crate::ANSWER_FN, "blur", "query",
     "setInterval",
-    "clearInterval", "__interval", "Ok", "Err", "parseInt", "parseFloat", "Number", "String", "isNaN", "intDiv",
+    "clearInterval", "cancel", "__interval", "Ok", "Err", "parseInt", "parseFloat", "Number", "String", "isNaN", "intDiv",
     "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan", "atan2", "exp",
     "ln", "log", "log10", "keys", "values", "range", "path_for", "pathFor", "type_of", "to_string", "to_int",
     "to_float", "parse_int", "parse_float", "is_def_var", "is_def_fn", "now",
@@ -1169,7 +1169,7 @@ impl<'a> Lower<'a> {
         let args = args.iter().map(|x| self.expr(x)).collect();
         match callee {
             Callee::Fn(func) if !awaited && self.asyncs.contains(&func) => {
-                ir::Expr::new(ExprKind::Start { func, args }, Type::Void, a)
+                ir::Expr::new(ExprKind::Start { func, args }, Type::Int, a)
             }
             callee => ir::Expr::new(ExprKind::Call { callee, args }, ty, a),
         }
@@ -1349,7 +1349,7 @@ mod tests {
         assert!(text.contains("async fn 1 get(): int"), "{text}");
         assert!(text.contains("(await (call fn:count):int):int"), "{text}");
         assert!(text.contains("(await (call fn:get):int):int"), "{text}");
-        assert!(text.contains("(start fn:add):void"), "{text}");
+        assert!(text.contains("(start fn:add):int"), "{text}");
     }
 
     #[test]

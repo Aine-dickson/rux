@@ -531,8 +531,9 @@ page waits for it in an `async fn`:
   expression can, `total += await price(id)` included, but not inside a
   closure, which is not `async`.
 - **The result type is the value awaited**: `async fn price(id: int): float`
-  gives a `float` to `await price(1)`. A call without `await` has no value
-  (`void`), since nothing has come back yet.
+  gives a `float` to `await price(1)`. A call without `await` gives a
+  **handle** (an `int`, as `setInterval`'s is), since nothing has come back
+  yet: keep it to [cancel](#cancelling) the call.
 - **Everything between two `await`s runs without interruption.** There is one
   thread of script. A signal can change under a function only at an `await`,
   so whatever a condition established about a signal before one is not known
@@ -549,6 +550,51 @@ page waits for it in an `async fn`:
   reads is never a dependency: an `effect` that starts one is subscribed to
   what the effect itself read.
 
+### Cancelling
+
+**`cancel(handle)` stops an `async fn`** that was started without `await`,
+as `clearInterval(handle)` stops an interval. It stops at the `await` it is
+waiting at, nothing after that runs, and the Rust future it waits on is
+dropped (see the end of this section). A timeout is an interval that cancels:
+
+```rux
+let job = signal(0);
+let timer = signal(0);
+
+async fn send(url: string) {
+  status = "sending";
+  res = await http.send(url);
+  status = "done";
+  clearInterval(timer);
+}
+
+fn onSend() {
+  job = send(url);
+  timer = setInterval(10000) {
+    cancel(job);
+    status = "timed out";
+    clearInterval(timer);
+  }
+}
+
+fn onCancel() {
+  cancel(job);
+  clearInterval(timer);
+  status = "cancelled";
+}
+```
+
+- **The handle names one run.** Starting `send` again gives a new one; a
+  `cancel` of the old one stops only the old run.
+- **One already finished, already cancelled, or `0`, is ignored**: cancelling
+  twice, or after the answer came, is ordinary rather than a mistake.
+- **A run may cancel itself** with its own handle; it stops at its next
+  `await`.
+- **Every `await` in the run stops with it**, an `async fn` it awaited
+  included: there is one run, and it is cancelled whole.
+- A file with a `fn cancel(x)` of its own keeps it; the built-in is then out
+  of reach in that file.
+
 What a page awaits is an `async fn` in the app's Rust, exported to Rux
 ([Native code](#native-code)):
 
@@ -559,13 +605,13 @@ pub async fn lookup(id: u32) -> Result<User, LookupError> {
 }
 ```
 
-Its future runs off the UI thread: on a thread of its own by default, or on
-the app's own runtime once it hands one over with `rux::set_spawner`. There is
-no `Future`, `Promise` or task value on the Rux side, and no `fetch` or
-`delay` built in.
+Its future runs off the UI thread: on a thread of
+its own by default, or on the app's own runtime once it hands one over with
+`rux::set_spawner`. There is no `Future` or `Promise` value on the Rux side,
+only the handle a start gives, and no `fetch` or `delay` built in.
 
-**When the component that started it goes, the future is dropped** where it
-waits, which is how a Rust future is cancelled: a request it was making goes
+**When the run is cancelled, or the component that started it goes, the
+future is dropped** where it waits, which is how a Rust future is cancelled: a request it was making goes
 no further, and a socket or file it held is closed by its own `Drop`. Nothing
 answers, and nothing runs after the `await`. A call that blocks its thread
 inside the future (a blocking HTTP client, `std::thread::sleep`) cannot be

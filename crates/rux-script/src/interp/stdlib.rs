@@ -15,7 +15,7 @@ use crate::{ElementAction, ElementHandle, Nav};
 /// resolve at all. A test holds the two together.
 pub const FUNCTIONS: &[&str] = &[
     "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "close", "path_for", "pathFor", "blur",
-    crate::SUBMIT_FN, crate::ANSWER_FN, crate::MEDIA_FN, crate::MEDIA_ASK_FN, "query", "clearInterval", "setInterval", "__interval", "Ok", "Err", "Number", "parseInt",
+    crate::SUBMIT_FN, crate::ANSWER_FN, crate::MEDIA_FN, crate::MEDIA_ASK_FN, "query", "clearInterval", "setInterval", "cancel", "__interval", "Ok", "Err", "Number", "parseInt",
     "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
     "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
     "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var", "now",
@@ -260,6 +260,15 @@ impl Interp {
                     return fail(format!("`{selector}` is not a selector this can match"));
                 };
                 V::array(found.into_iter().map(|facts| V::Element(Rc::new(ElementHandle { facts }))).collect())
+            }
+            // A task's handle, from starting an `async fn`: stop it, and drop
+            // the Rust future it waits on. One already finished, or cancelled,
+            // names nothing, and is ignored, as `clearInterval` ignores one.
+            ("cancel", 1) => {
+                if let Some(id) = argv[0].number().filter(|n| *n >= 1.0) {
+                    self.drop_tasks(&[id as u64]);
+                }
+                V::None
             }
             ("clearInterval", 1) => {
                 let id = argv[0].number().unwrap_or(0.0);
