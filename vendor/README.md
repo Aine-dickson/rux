@@ -44,6 +44,13 @@ with its tests); `WgpuEngine::trim_pool` lets go of buffers of a length no
 longer asked for. The web keeps vello's path, since a frame there cannot wait
 for the GPU. Every change is marked with a `Rux:` comment.
 
+The lengths `Sizing` asks for are the parts the GPU counts. Two buffers also
+hold a part it does not, which `RenderConfig::new_sized` adds from the frame
+and the scene: `ptcl` starts with 64 words for every tile, and `bin_data` with
+the draw objects' info. Neither is bounds-checked by vello's shaders, so
+without them a window of more tiles than the first `ptcl` held drew only its
+top rows (Tracer's AW-034).
+
 Measured on a window of 1,000 rows of text (release, AMD integrated GPU):
 GPU memory 475 MB to 297 MB, private memory 586 MB to 417 MB, and the wait
 for the counts costs about 1.6 ms a frame.

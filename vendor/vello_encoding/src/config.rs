@@ -10,6 +10,10 @@ use super::{
 use bytemuck::{Pod, Zeroable};
 
 const TILE_WIDTH: u32 = 16;
+
+/// Rux: the words of `ptcl` each tile holds before any is counted, from
+/// vello's `shader/shared/ptcl.wgsl`.
+const PTCL_INITIAL_ALLOC: u32 = 64;
 const TILE_HEIGHT: u32 = 16;
 
 // TODO: Obtain these from the vello_shaders crate
@@ -185,7 +189,18 @@ impl RenderConfig {
         let n_path_tags = layout.path_tags_size();
         let workgroup_counts =
             WorkgroupCounts::new(layout, width_in_tiles, height_in_tiles, n_path_tags);
-        let buffer_sizes = BufferSizes::new_sized(layout, &workgroup_counts, sizes);
+        // `sizes` is what the GPU counts. Two buffers also hold a part it
+        // does not: `ptcl` starts with every tile's own words, and `bin_data`
+        // with the draw objects' info. Left out, a window of more tiles than
+        // the first length held drew only its top rows, the tiles below
+        // writing past the end with no failure to say so (Tracer's AW-034),
+        // and a scene of more info than `bin_data` held would have wrapped
+        // `binning_size` below.
+        let mut sizes = *sizes;
+        let tiles = width_in_tiles.saturating_mul(height_in_tiles);
+        sizes.ptcl = sizes.ptcl.saturating_add(tiles.saturating_mul(PTCL_INITIAL_ALLOC));
+        sizes.bin_data = sizes.bin_data.saturating_add(layout.bin_data_start);
+        let buffer_sizes = BufferSizes::new_sized(layout, &workgroup_counts, &sizes);
         Self {
             gpu: ConfigUniform {
                 width_in_tiles,
@@ -480,4 +495,32 @@ impl BufferSizes {
 
 const fn align_up(len: u32, alignment: u32) -> u32 {
     len + (len.wrapping_neg() & (alignment - 1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rux, Tracer's AW-034: the parts of `ptcl` and `bin_data` the GPU does
+    /// not count are added to what `sizes` asks for.
+    #[test]
+    fn sized_buffers_hold_every_tile_and_the_draw_info() {
+        let sizes = BumpSizes {
+            bin_data: 1 << 14,
+            tiles: 1 << 15,
+            lines: 1 << 15,
+            seg_counts: 1 << 15,
+            segments: 1 << 15,
+            blend_spill: 1 << 12,
+            ptcl: 1 << 17,
+        };
+        let layout = Layout { bin_data_start: 50_000, ..Layout::default() };
+        let config = RenderConfig::new_sized(&layout, 1263, 744, &peniko::Color::WHITE, &sizes);
+        // 79 by 47 tiles. Before, `ptcl` held 2,048 tiles' words: 26 rows.
+        assert_eq!(config.gpu.ptcl_size, 79 * 47 * PTCL_INITIAL_ALLOC + sizes.ptcl);
+        // More info than `bin_data` asked for, and `binning_size` is still
+        // the counted part rather than wrapping.
+        assert_eq!(config.gpu.binning_size, sizes.bin_data);
+        assert_eq!(config.gpu.lines_size, sizes.lines, "the rest as asked");
+    }
 }

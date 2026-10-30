@@ -60,11 +60,13 @@ fn room(n: u32) -> u32 {
     n.saturating_add(n / 4).max(1).next_power_of_two()
 }
 
-/// What `u` says a frame needed, buffer by buffer. The binning count leaves
-/// out the space before it the buffer also holds, so it is counted twice.
+/// What `u` says a frame needed, buffer by buffer: the counted part of
+/// each. The part of `bin_data` and `ptcl` the GPU does not count (the draw
+/// objects' info, every tile's own words) is added by
+/// `RenderConfig::new_sized`, which knows the scene and the frame's size.
 fn needed(u: &BumpAllocators) -> BumpSizes {
     BumpSizes {
-        bin_data: u.binning.saturating_mul(2),
+        bin_data: u.binning,
         tiles: u.tile,
         lines: u.lines,
         seg_counts: u.seg_counts,
