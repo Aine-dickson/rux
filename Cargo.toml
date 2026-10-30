@@ -112,3 +112,5 @@ arboard = { version = "3", default-features = false }
 # 0. See vendor/README.md.
 [patch.crates-io]
 taffy = { path = "vendor/taffy" }
+vello = { path = "vendor/vello" }
+vello_encoding = { path = "vendor/vello_encoding" }

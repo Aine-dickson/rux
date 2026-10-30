@@ -268,8 +268,13 @@ fn wrapper_manifest(
     let patch = match &options.rux_source {
         Some(dir) => {
             let dir = dir.display().to_string().replace('\\', "/");
-            let mut patch =
-                format!("\n[patch.crates-io]\ntaffy = {{ path = {} }}\n", literal(&format!("{dir}/vendor/taffy")));
+            // The vendored vello with it, which sizes its buffers to the scene.
+            let mut patch = format!(
+                "\n[patch.crates-io]\ntaffy = {{ path = {} }}\nvello = {{ path = {} }}\nvello_encoding = {{ path = {} }}\n",
+                literal(&format!("{dir}/vendor/taffy")),
+                literal(&format!("{dir}/vendor/vello")),
+                literal(&format!("{dir}/vendor/vello_encoding")),
+            );
             if native.is_some() {
                 patch.push_str(&format!(
                     "rux-native = {{ path = {} }}\n\
@@ -914,6 +919,7 @@ mod tests {
         // The checkout's vendored taffy, which its own `[patch]` cannot
         // reach from a crate outside its workspace.
         assert!(toml.contains("[patch.crates-io]\ntaffy = { path = \"C:/rux/vendor/taffy\" }"), "{toml}");
+        assert!(toml.contains("vello = { path = \"C:/rux/vendor/vello\" }"), "{toml}");
     }
 
     /// A debug build compiles Rux optimised and the app's own native crate

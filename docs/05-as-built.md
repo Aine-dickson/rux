@@ -183,6 +183,12 @@ document again, so the window turns them off, and an app's debug build no
 longer pays for them: the same list scrolled at 400 ms of layout a frame with
 them and 12.7 ms without. `RUX_SELF_CHECK=1 rux run app.rux` turns them on.
 
+**A window's GPU memory.** A Rux window of text and boxes holds about 300 MB
+of GPU memory, which on an integrated GPU is system RAM. It held about 475 MB
+until the renderer's scratch buffers were sized to what the scene draws
+rather than fixed (see `vendor/README.md`), at about 1.6 ms a frame for
+reading back what the scene needed. Several windows open at once add up.
+
 What `overflow` cuts away cannot be tapped or hovered, as in a browser. A row
 scrolled up out of its list used to lie over the header above it, invisible,
 and take the header's taps.
