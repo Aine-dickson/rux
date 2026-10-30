@@ -25,11 +25,15 @@ use crate::types::Type;
 const BUILTINS: &[&str] = &[
     "print", "debug", "emit", "navigate", "replace", "back", "forward", "close", crate::ANSWER_FN, "blur", "query",
     "setInterval",
-    "clearInterval", "cancel", "__interval", "Ok", "Err", "parseInt", "parseFloat", "Number", "String", "isNaN", "intDiv",
+    "clearInterval", "cancel", "__interval", SPREAD_FN, "Ok", "Err", "parseInt", "parseFloat", "Number", "String", "isNaN", "intDiv",
     "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan", "atan2", "exp",
     "ln", "log", "log10", "keys", "values", "range", "path_for", "pathFor", "type_of", "to_string", "to_int",
     "to_float", "parse_int", "parse_float", "is_def_var", "is_def_fn", "now",
 ];
+
+/// What an array with `...` in it is lowered to a call of: the language's
+/// own, never written.
+pub(crate) const SPREAD_FN: &str = "__spread";
 
 /// Lower `script`, whose text is `src`, as the checker recorded it.
 /// `provided` are the names the runtime supplies, with their types.
@@ -962,7 +966,29 @@ impl<'a> Lower<'a> {
                 }
                 ExprKind::Template(out)
             }
+            // `[a, ...b, c]`: the plain runs as arrays and each spread as it
+            // is, joined in order by `__spread` (Tracer's AW-020).
+            E::Array(items) if items.iter().any(|i| matches!(i.kind, E::Spread(_))) => {
+                let mut parts = Vec::new();
+                let mut run = Vec::new();
+                for i in items {
+                    if let E::Spread(inner) = &i.kind {
+                        if !run.is_empty() {
+                            parts.push(ir::Expr::new(ExprKind::Array(std::mem::take(&mut run)), ty.clone(), a));
+                        }
+                        parts.push(self.expr(inner));
+                    } else {
+                        run.push(self.expr(i));
+                    }
+                }
+                if !run.is_empty() {
+                    parts.push(ir::Expr::new(ExprKind::Array(run), ty.clone(), a));
+                }
+                ExprKind::Call { callee: Callee::Builtin(SPREAD_FN.to_string()), args: parts }
+            }
             E::Array(items) => ExprKind::Array(items.iter().map(|i| self.expr(i)).collect()),
+            // Only an array's item, which the arm above takes.
+            E::Spread(inner) => return self.expr(inner),
             E::Map { entries, .. } => {
                 let keys: Vec<&str> = entries.iter().map(|en| en.key.name.as_str()).collect();
                 match self.record_shape(&ty, &keys) {

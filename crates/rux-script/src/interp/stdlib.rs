@@ -15,7 +15,7 @@ use crate::{ElementAction, ElementHandle, Nav};
 /// resolve at all. A test holds the two together.
 pub const FUNCTIONS: &[&str] = &[
     "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "close", "path_for", "pathFor", "blur",
-    crate::SUBMIT_FN, crate::ANSWER_FN, crate::MEDIA_FN, crate::MEDIA_ASK_FN, "query", "clearInterval", "setInterval", "cancel", "__interval", "Ok", "Err", "Number", "parseInt",
+    crate::SUBMIT_FN, crate::ANSWER_FN, crate::MEDIA_FN, crate::MEDIA_ASK_FN, "query", "clearInterval", "setInterval", "cancel", crate::lower::SPREAD_FN, "__interval", "Ok", "Err", "Number", "parseInt",
     "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
     "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
     "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var", "now",
@@ -273,6 +273,29 @@ impl Interp {
                     self.drop_tasks(&[id as u64]);
                 }
                 V::None
+            }
+            // `[a, ...b]`, lowered: every array's items, a string's characters,
+            // in order.
+            (crate::lower::SPREAD_FN, _) => {
+                let mut out = Vec::new();
+                for part in argv {
+                    match &part {
+                        V::Array(items) => out.extend(items.iter().cloned()),
+                        V::Str(s) => out.extend(s.chars().map(|c| V::Str(c.to_string().into()))),
+                        other => {
+                            let what = match other {
+                                V::Int(_) => "an `int`",
+                                V::Float(_) => "a `float`",
+                                V::Bool(_) => "a `bool`",
+                                V::None => "`none`",
+                                V::Map(_) | V::Rec(_) => "a map or record",
+                                _ => "a value of another kind",
+                            };
+                            return fail(format!("`...` spreads an array or a string, and this is {what}"));
+                        }
+                    }
+                }
+                V::array(out)
             }
             ("clearInterval", 1) => {
                 let id = argv[0].number().unwrap_or(0.0);

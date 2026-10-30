@@ -251,6 +251,9 @@ pub enum ExprKind {
     /// A backtick string with `${ }` in it.
     Template(Vec<TemplatePart>),
     Array(Vec<Expr>),
+    /// `...xs` in an array literal: every item of `xs`, in place. Only ever
+    /// an item of [`ExprKind::Array`] (Tracer's AW-020).
+    Spread(Box<Expr>),
     /// `{ a: 1 }`, or `#{ a: 1 }` when `hash`.
     Map { entries: Vec<MapEntry>, hash: bool },
     Var(String),

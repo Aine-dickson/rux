@@ -406,6 +406,10 @@ impl Printer<'_> {
                 }
                 self.w("]");
             }
+            ExprKind::Spread(inner) => {
+                self.w("...");
+                self.expr(inner);
+            }
             ExprKind::Map { entries, .. } => {
                 self.w("#{");
                 for (i, entry) in entries.iter().enumerate() {

@@ -2126,7 +2126,14 @@ impl<'a> Checker<'a> {
             ExprKind::Array(items) => match self.array_member(&resolved) {
                 Some(item) => {
                     for i in items.iter() {
-                        self.check_expr(i, &item);
+                        match &i.kind {
+                            // Every item of what is spread is one of these.
+                            ExprKind::Spread(inner) => {
+                                self.check_expr(inner, &Type::Array(Box::new(item.clone())));
+                                self.note(i, &item);
+                            }
+                            _ => self.check_expr(i, &item),
+                        }
                     }
                     self.note(e, &Type::Array(Box::new(item)));
                 }
@@ -2333,6 +2340,19 @@ impl<'a> Checker<'a> {
                     }
                 }
                 Type::String
+            }
+            // `...xs` in an array is what `xs` holds, item by item.
+            ExprKind::Spread(inner) => {
+                let t = self.infer(inner);
+                match self.resolve(&t) {
+                    Type::Array(item) => *item,
+                    Type::String | Type::Literal(_) => Type::String,
+                    Type::Any => Type::Any,
+                    other => {
+                        self.error(inner.span, format!("`...` spreads an array or a string, and this is `{other}`"));
+                        Type::Any
+                    }
+                }
             }
             ExprKind::Array(items) => {
                 let members: Vec<Type> = items.iter().map(|i| widen(&self.infer(i))).collect();

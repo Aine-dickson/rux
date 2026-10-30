@@ -1214,8 +1214,13 @@ check` says so where a statement throws the new value away: `s.replace("a",
 `sort`, `reverse` and `fill` change the array, as JavaScript's do, and also
 give it back; `toSorted` and `toReversed` leave it alone.
 
-Not there yet: spread, `[...a, x]` (write `a.concat([x])`), `Math.random`,
-and a `Date` value with methods (`Date.now()` and the functions above take
+**Spread in an array**, as JavaScript's: `[...a, x]` is `a`'s items and
+then `x`, `[...a, ...b]` both in order, and `[..."hi"]` the characters. It
+makes a new array and leaves `a` alone. Spreading anything but an array or a
+string is an error.
+
+Not there yet: spread in a map or record, `{ ...o, a: 1 }`, and in a call's
+arguments, `f(...xs)`; `Math.random`; and a `Date` value with methods (`Date.now()` and the functions above take
 its place). `now()` below times things: it only goes forward, so it cannot
 say when something happened.
 

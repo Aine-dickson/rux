@@ -3255,6 +3255,20 @@ desktop window on a probe that ticks once a second, Windows 11, UTC+3.
 | A name `Date` lacks | `Date.parse("x")` | `rux check` says there is no such function | pass |
 | The web | the browser's time zone | the same | built, not driven |
 
+## Spread in an array, 2026-10-30
+
+Tracer's AW-020, the part left: `[...a, x]` said "`...` cannot start an
+expression". Under test in `rux-runtime` (`javascripts_everyday_helpers_answer_as_javascript_does`:
+`[...a, 4]`, `[0, ...a, ...[9]]`, `[..."hi", "!"]`, and `[...a].reverse()`
+leaving `a` alone). Driven with a debug `rux` from this checkout.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A file with spreads | `rux check` | no problems | pass |
+| `rux fmt` | on the same file | unchanged, `...` as written | pass |
+| Spreading a number | `let bad = [...n];` | "`...` spreads an array or a string, and this is an `int`" | pass |
+| `{ ...o }`, `f(...xs)` | | not there yet | not built |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

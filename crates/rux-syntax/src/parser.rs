@@ -1419,6 +1419,13 @@ impl<'t> Parser<'t> {
                     return Ok(());
                 }
                 Tok::Eof => return self.error("this array is never closed with `]`"),
+                Tok::Punct("...") => {
+                    let at = self.span();
+                    self.bump();
+                    let of = self.expr()?;
+                    let span = at.to(of.span);
+                    items.push(Expr { id: self.next_id(), kind: ExprKind::Spread(Box::new(of)), span });
+                }
                 _ => items.push(self.expr()?),
             }
             match self.peek() {
