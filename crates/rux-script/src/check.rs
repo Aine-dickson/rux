@@ -1574,11 +1574,39 @@ impl<'a> Checker<'a> {
 
     fn check_statements(&mut self, statements: &[Stmt]) -> Type {
         let mut last = Type::Null;
-        for stmt in statements {
+        for (i, stmt) in statements.iter().enumerate() {
             last = self.check_stmt(stmt);
             self.after(stmt);
+            self.result_thrown_away(stmt, i + 1 == statements.len());
         }
         last
+    }
+
+    /// A method that only gives a new value back, called as a statement whose
+    /// value nothing takes: `s.replace("a", "b");`. Its answer is lost, and
+    /// it changes nothing. rhai's `replace` changed its receiver, so old code
+    /// written that way would go quiet without this (AW-020).
+    fn result_thrown_away(&mut self, stmt: &Stmt, last: bool) {
+        const NEW_VALUE: [&str; 12] = [
+            "replace", "replaceAll", "trim", "trimStart", "trimEnd", "padStart", "padEnd", "toLowerCase",
+            "toUpperCase", "toReversed", "toSorted", "concat",
+        ];
+        let StmtKind::Expr(Expr { kind: ExprKind::Method { recv, name, .. }, span, .. }) = &stmt.kind else { return };
+        if !NEW_VALUE.contains(&name.name.as_str()) {
+            return;
+        }
+        let text = &self.source.text;
+        let semi = text.get(span.end as usize..).is_some_and(|rest| rest.trim_start().starts_with(';'));
+        if last && !semi {
+            return;
+        }
+        let place = recv.span.text(text).to_string();
+        let message = format!(
+            "`{}` gives the new value back and leaves `{place}` as it was: write `{place} = {}`",
+            name.name,
+            span.text(text)
+        );
+        self.warn(name.span, message);
     }
 
     /// A statement used as a value, as a block of that one statement.
@@ -2859,6 +2887,55 @@ impl<'a> Checker<'a> {
             }
             // Milliseconds on a clock that only goes forward.
             ("now", 0) => return Type::Float,
+            // JavaScript's namespaces: see `link::namespaces`.
+            ("Math.max" | "Math.min" | "Math.abs" | "Math.sign", _) => {
+                let mut all_int = !args.is_empty();
+                for a in args {
+                    let t = self.infer(a);
+                    all_int &= self.resolve(&t) == Type::Int;
+                }
+                return if all_int { Type::Int } else { Type::Float };
+            }
+            ("Math.floor" | "Math.ceil" | "Math.round" | "Math.trunc", _) => {
+                self.infer_all(args);
+                return Type::Int;
+            }
+            (
+                "Math.sqrt" | "Math.cbrt" | "Math.pow" | "Math.hypot" | "Math.log" | "Math.log10" | "Math.log2"
+                | "Math.exp" | "Math.sin" | "Math.cos" | "Math.tan" | "Math.atan" | "Math.atan2",
+                _,
+            ) => {
+                self.infer_all(args);
+                return Type::Float;
+            }
+            ("JSON.stringify", _) => {
+                self.infer_all(args);
+                return Type::String;
+            }
+            ("JSON.parse", _) => {
+                self.infer_all(args);
+                return Type::Any;
+            }
+            ("Object.keys", _) => {
+                self.infer_all(args);
+                return Type::Array(Box::new(Type::String));
+            }
+            ("Object.entries", _) => {
+                self.infer_all(args);
+                return Type::Array(Box::new(Type::Array(Box::new(Type::Any))));
+            }
+            ("Array.isArray", _) => {
+                self.infer_all(args);
+                return Type::Bool;
+            }
+            ("Array.from", 1) => {
+                let t = self.infer(&args[0]);
+                return Type::Array(Box::new(match self.resolve(&t) {
+                    Type::Array(item) => *item,
+                    Type::String | Type::Literal(_) => Type::String,
+                    _ => Type::Any,
+                }));
+            }
             // `int` in and out, and a `float` as soon as one comes in.
             ("max" | "min" | "abs", _) => {
                 let mut all_int = !args.is_empty();
@@ -2888,7 +2965,7 @@ impl<'a> Checker<'a> {
                 self.infer_all(args);
                 return Type::Array(Box::new(Type::String));
             }
-            ("values", 1) => {
+            ("values" | "Object.values", 1) => {
                 let m = self.infer(&args[0]);
                 return Type::Array(Box::new(match self.resolve(&m) {
                     Type::Dict(v) => *v,
@@ -3500,9 +3577,45 @@ impl<'a> Checker<'a> {
                         self.callback(&args[0], callback(Type::Any));
                         return Type::Array(Box::new(item));
                     }
-                    "find" if args.len() == 1 => {
+                    "find" | "findLast" if args.len() == 1 => {
                         self.callback(&args[0], callback(Type::Any));
                         return item.optional();
+                    }
+                    "flatMap" if args.len() == 1 => {
+                        let f = self.callback(&args[0], callback(Type::Any));
+                        return Type::Array(Box::new(match self.resolve(&f) {
+                            Type::Array(inner) => *inner,
+                            other => other,
+                        }));
+                    }
+                    "toSorted" if args.len() == 1 => {
+                        self.callback(&args[0], Some((vec![item.clone(), item.clone()], Type::Float)));
+                        return Type::Array(Box::new(item));
+                    }
+                    "at" => {
+                        self.infer_all(args);
+                        return item.optional();
+                    }
+                    "concat" | "fill" | "toReversed" | "toSorted" => {
+                        self.infer_all(args);
+                        return Type::Array(Box::new(item));
+                    }
+                    "flat" => {
+                        self.infer_all(args);
+                        return Type::Array(Box::new(match self.resolve(&item) {
+                            Type::Array(inner) => *inner,
+                            other => other,
+                        }));
+                    }
+                    "unshift" => {
+                        for a in args {
+                            self.check_expr(a, &item);
+                        }
+                        return Type::Int;
+                    }
+                    "findLastIndex" if args.len() == 1 => {
+                        self.callback(&args[0], callback(Type::Any));
+                        return Type::Int;
                     }
                     "findIndex" if args.len() == 1 => {
                         self.callback(&args[0], callback(Type::Any));
@@ -3534,7 +3647,7 @@ impl<'a> Checker<'a> {
                         self.infer_all(args);
                         return Type::Bool;
                     }
-                    "indexOf" | "index_of" | "len" => {
+                    "indexOf" | "index_of" | "lastIndexOf" | "len" => {
                         self.infer_all(args);
                         return Type::Int;
                     }
@@ -3555,7 +3668,8 @@ impl<'a> Checker<'a> {
                     return Type::Array(Box::new(Type::String));
                 }
                 "trim" | "toLowerCase" | "toUpperCase" | "to_lower" | "to_upper" | "repeat"
-                | "charAt" | "slice" | "substring" | "sub_string" | "to_string" => {
+                | "charAt" | "slice" | "substring" | "sub_string" | "to_string" | "replace" | "replaceAll"
+                | "padStart" | "padEnd" | "trimStart" | "trimEnd" => {
                     self.infer_all(args);
                     return Type::String;
                 }
@@ -3563,13 +3677,21 @@ impl<'a> Checker<'a> {
                     self.infer_all(args);
                     return Type::Bool;
                 }
-                "indexOf" | "index_of" | "len" => {
+                "indexOf" | "index_of" | "lastIndexOf" | "len" => {
                     self.infer_all(args);
                     return Type::Int;
+                }
+                "at" => {
+                    self.infer_all(args);
+                    return Type::String.optional();
                 }
                 _ => {}
             },
             Type::Float | Type::Int => match name {
+                "toFixed" => {
+                    self.infer_all(args);
+                    return Type::String;
+                }
                 "to_int" | "trunc" | "floor" | "ceil" | "round" => return Type::Int,
                 "to_float" | "toFloat" | "sqrt" => return Type::Float,
                 "abs" => return base.clone(),
@@ -4466,6 +4588,24 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         // A file's own `File` is its own, and is not declared twice.
         let f = built_findings("type File = { id: int };\nfn f(x: File): int { x.id }");
         assert!(f.iter().all(|f| !f.is_error), "{f:?}");
+    }
+
+    /// `s.replace(…)` as a statement changed `s` under rhai; it now gives the
+    /// new text back, so one whose answer nothing takes is said (AW-020).
+    #[test]
+    fn a_new_value_thrown_away_is_said() {
+        let w = warnings("let s = \"a-a\";\nfn f() { s.replace(\"a\", \"b\"); }");
+        assert!(w.iter().any(|w| w.contains("write `s = s.replace(\"a\", \"b\")`")), "{w:?}");
+        let w = warnings("let s = \"a\";\nfn f() { s.trim();\nlet n = 1; }");
+        assert!(w.iter().any(|w| w.contains("`trim` gives the new value back")), "{w:?}");
+        // Taken: as a function's result, an arrow's, or a value.
+        for taken in [
+            "fn f(s: string): string { s.replace(\"a\", \"b\") }",
+            "let xs = [\"a\"];\nlet ys = xs.map(x => x.replace(\"a\", \"b\"));",
+            "let s = \"a\";\nlet t = s.replace(\"a\", \"b\");",
+        ] {
+            assert!(warnings(taken).iter().all(|w| !w.contains("gives the new value back")), "{taken}");
+        }
     }
 
     #[test]

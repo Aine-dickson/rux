@@ -1074,14 +1074,39 @@ These are the way to say "absent is a legitimate answer here":
 
 ## Built-in methods
 
-JavaScript's names, on arrays and strings: `map`, `filter`, `reduce`, `forEach`,
-`find`, `includes`, `indexOf`, `slice`, `split`, `join`, `charAt`, `repeat`,
-`startsWith`, `endsWith`, `trim`, `toLowerCase`, `toUpperCase`.
+JavaScript's names, with JavaScript's answers:
 
-All of them **return** a value and leave their receiver alone, as JavaScript's
-do. That is worth saying because rhai's own string methods are in-place
-mutators: its `trim` empties the string it was given and returns nothing, so
-`{{ name.trim() }}` rendered blank. Rux's `trim` shadows it.
+- **Arrays:** `map`, `filter`, `reduce`, `forEach`, `find`, `findIndex`,
+  `findLast`, `findLastIndex`, `some`, `every`, `includes`, `indexOf`,
+  `lastIndexOf`, `at`, `slice`, `concat`, `flat`, `flatMap`, `join`,
+  `toReversed`, `toSorted`, and the ones that change the array: `push`, `pop`,
+  `shift`, `unshift`, `splice`, `sort`, `reverse`, `fill`.
+- **Strings:** `split`, `charAt`, `at`, `repeat`, `startsWith`, `endsWith`,
+  `includes`, `indexOf`, `lastIndexOf`, `slice`, `substring`, `trim`,
+  `trimStart`, `trimEnd`, `padStart`, `padEnd`, `replace`, `replaceAll`,
+  `toLowerCase`, `toUpperCase`.
+- **Numbers:** `toFixed`, so `(1.4123).toFixed(1)` is `"1.4"`.
+- **`Math`, `JSON`, `Object` and `Array`**, as namespaces: `Math.max`,
+  `Math.min`, `Math.floor`, `Math.ceil`, `Math.round`, `Math.trunc`,
+  `Math.abs`, `Math.sign`, `Math.sqrt`, `Math.pow`, `Math.log` and the rest,
+  with `Math.PI` and `Math.E`; `JSON.stringify(v)`, `JSON.stringify(v, none,
+  2)` indented, and `JSON.parse(text)`; `Object.keys`, `Object.values` and
+  `Object.entries`; `Array.from` and `Array.isArray`. A file that declares a
+  `Math` of its own keeps it.
+
+A string's methods **return** a new string and leave their receiver alone, as
+JavaScript's do: `name.replace("-", " ")` replaces the first `-` and gives the
+result back. That is worth saying because rhai's own string methods were
+in-place mutators: its `trim` emptied the string it was given and returned
+nothing, so `{{ name.trim() }}` rendered blank, and its `replace` changed the
+receiver, every match, and gave `none` back. Rux's shadow both, and `rux
+check` says so where a statement throws the new value away: `s.replace("a",
+"b");` is answered with "write `s = s.replace("a", "b")`". An array's
+`sort`, `reverse` and `fill` change the array, as JavaScript's do, and also
+give it back; `toSorted` and `toReversed` leave it alone.
+
+Not there yet: spread, `[...a, x]` (write `a.concat([x])`), `Math.random`,
+and `Date` (`now()` below times things).
 
 `forEach` is called with `(item, index)` and falls back to `(item)`. `every`
 and `findIndex` take a callback as JavaScript's do (`some` and `find` are

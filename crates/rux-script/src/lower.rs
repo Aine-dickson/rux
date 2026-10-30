@@ -1147,7 +1147,7 @@ impl<'a> Lower<'a> {
             Callee::Dyn(path.join("::"))
         } else if let Some(id) = self.fns.get(&(name.to_string(), args.len())) {
             Callee::Fn(*id)
-        } else if BUILTINS.contains(&name) {
+        } else if BUILTINS.contains(&name) || name.contains('.') && crate::interp::stdlib::FUNCTIONS.contains(&name) {
             // A function's name is looked up before a variable's, so a
             // built-in wins over state of the same name: `query(".card")`
             // with the router's `query` signal in scope.

@@ -10449,6 +10449,61 @@ let open = signal(true);
         assert_eq!(text_of(&doc.root).join("|"), "true|none|true|0", "the computeds follow; the let kept its first read");
     }
 
+    /// Tracer's AW-020: JavaScript's everyday helpers, with JavaScript's
+    /// answers, through `rux check`'s types and the interpreter both.
+    /// `reverse` and `replace` gave `none` back, and `replace` changed its
+    /// receiver, every match.
+    #[test]
+    fn javascripts_everyday_helpers_answer_as_javascript_does() {
+        let cases = [
+            ("[1, 2, 3].reverse()", "3, 2, 1"),
+            ("s.replace(\"a\", \"b\")", "b-a"),
+            ("s", "a-a"),
+            ("s.replaceAll(\"a\", \"b\")", "b-b"),
+            ("a.concat([4], 5)", "1, 2, 3, 4, 5"),
+            ("[[1, 2], [3]].flat()", "1, 2, 3"),
+            ("a.flatMap(x => [x, x])", "1, 1, 2, 2, 3, 3"),
+            ("a.findLast(x => 3 > x)", "2"),
+            ("a.findLastIndex(x => x > 5)", "-1"),
+            ("[1, 2, 1].lastIndexOf(1)", "2"),
+            ("a.at(-1)", "3"),
+            ("a.toReversed()", "3, 2, 1"),
+            ("[3, 1, 2].toSorted()", "1, 2, 3"),
+            ("[0, 0, 0].fill(7, 1)", "0, 7, 7"),
+            ("\"5\".padStart(3, \"0\")", "005"),
+            ("\"ab\".padEnd(5, \"xy\")", "abxyx"),
+            ("\"  x \".trimStart().length", "2"),
+            ("\"  x \".trimEnd().length", "3"),
+            ("\"abc\".at(-1)", "c"),
+            ("(12.345).toFixed(1)", "12.3"),
+            ("(1.4).toFixed()", "1"),
+            ("Math.max(1, 7, 3)", "7"),
+            ("Math.floor(2.7)", "2"),
+            ("Math.round(Math.PI * 100)", "314"),
+            ("Math.pow(2, 10)", "1024"),
+            ("Object.keys({ b: 1, a: 2 }).join(\"\")", "ba"),
+            ("Object.entries({ a: 1 })[0].join(\"=\")", "a=1"),
+            ("Array.from(\"hi\").join(\"|\")", "h|i"),
+            ("Array.isArray(a)", "true"),
+            ("JSON.stringify({ a: [1, \"x\"], b: none })", "{\"a\":[1,\"x\"],\"b\":null}"),
+            // Shown as text, whose newlines and runs of spaces fold into one.
+            ("JSON.stringify([1], none, \"--\").split(\"\\n\").join(\"|\")", "[|--1|]"),
+            ("JSON.stringify([1], none, 2).length", "7"),
+            ("JSON.parse(\"{\\\"n\\\": [1, 2.5, true]}\").n[1]", "2.5"),
+        ];
+        let texts: String = cases.iter().map(|(e, _)| format!("<text>{{{{ {e} }}}}</text>")).collect();
+        let src = format!(
+            "<template><screen>{texts}</screen></template>
+             <script>let a = [1, 2, 3]; let s = \"a-a\";</script>"
+        );
+        let mut doc = Document::from_source(&src).expect("load");
+        doc.fire_timers(0.0);
+        let shown = text_of(&doc.root);
+        for (i, (expr, want)) in cases.iter().enumerate() {
+            assert_eq!(shown.get(i).map(String::as_str), Some(*want), "{expr}");
+        }
+    }
+
     /// A resource that only Rust changes, with a writable property `level`
     /// and a read-only one `label`, as a playing sound has `volume` and
     /// `currentTime`.

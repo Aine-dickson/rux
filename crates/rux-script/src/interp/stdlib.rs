@@ -19,6 +19,12 @@ pub const FUNCTIONS: &[&str] = &[
     "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
     "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
     "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var", "now",
+    // JavaScript's namespaces, written as JavaScript writes them: see
+    // `link::namespaces`, which turns `Math.max(a, b)` into a call of these.
+    "Math.max", "Math.min", "Math.floor", "Math.ceil", "Math.round", "Math.trunc", "Math.abs", "Math.sign",
+    "Math.sqrt", "Math.cbrt", "Math.pow", "Math.hypot", "Math.log", "Math.log10", "Math.log2", "Math.exp",
+    "Math.sin", "Math.cos", "Math.tan", "Math.atan", "Math.atan2", "JSON.stringify", "JSON.parse", "Object.keys",
+    "Object.values", "Object.entries", "Array.from", "Array.isArray",
 ];
 
 /// Every method [`Interp::method`] answers on some kind of value.
@@ -30,6 +36,8 @@ pub const METHODS: &[&str] = &[
     "endsWith", "ends_with", "repeat", "charAt", "substring", "sub_string", "split", "chars", "to_chars", "replace",
     "pad", "to_int", "trunc", "floor", "ceil", "ceiling", "round", "to_float", "toFloat", "sqrt", "abs", "is_nan",
     "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "tap", "play", "pause", "call", "set",
+    "concat", "flat", "flatMap", "findLast", "findLastIndex", "lastIndexOf", "at", "fill", "toReversed", "toSorted",
+    "unshift", "replaceAll", "padStart", "padEnd", "trimStart", "trimEnd", "toFixed",
 ];
 
 /// Whether a method changes its receiver, so a call on a place writes the
@@ -38,7 +46,7 @@ pub const METHODS: &[&str] = &[
 /// is a place to write back to.
 pub const MUTATING: &[&str] = &[
     "push", "append", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort", "set", "splice",
-    "retain", "dedup", "drain", "pad", "replace", "make_upper", "make_lower", "unshift", "fill",
+    "retain", "dedup", "drain", "pad", "make_upper", "make_lower", "unshift", "fill",
 ];
 
 pub(crate) fn mutates(name: &str) -> bool {
@@ -64,6 +72,16 @@ fn text(v: &V) -> R<Rc<str>> {
 
 fn number(v: &V) -> R<f64> {
     v.number().ok_or(()).or_else(|_| fail(format!("expected a number, not a {}", v.type_name())))
+}
+
+/// `items` with the lists inside it opened, `depth` levels down, as `flat`.
+fn flatten(items: &[V], depth: usize, out: &mut Vec<V>) {
+    for x in items {
+        match x {
+            V::Array(inner) if depth > 0 => flatten(inner, depth - 1, out),
+            x => out.push(x.clone()),
+        }
+    }
 }
 
 /// `slice`'s bounds, JavaScript's: out of range clamps, inverted is empty.
@@ -367,6 +385,59 @@ impl Interp {
                 let ms = argv[0].number().unwrap_or(0.0);
                 V::Float(crate::start_interval(ms, text(&argv[1])?.to_string()))
             }
+            // `Math`'s, as the language's own where it has them. `Math.log`
+            // is the natural one, as in JavaScript.
+            ("Math.log", 1) => self.builtin("ln", argv)?,
+            ("Math.log2", 1) => V::Float(number(&argv[0])?.log2()),
+            ("Math.cbrt", 1) => V::Float(number(&argv[0])?.cbrt()),
+            ("Math.atan", 1) => V::Float(number(&argv[0])?.atan()),
+            ("Math.pow", 2) => V::Float(number(&argv[0])?.powf(number(&argv[1])?)),
+            ("Math.hypot", _) => {
+                let mut sum = 0.0;
+                for v in &argv {
+                    sum += number(v)?.powi(2);
+                }
+                V::Float(sum.sqrt())
+            }
+            ("Math.sign", 1) => match &argv[0] {
+                V::Int(i) => V::Int(i.signum()),
+                v => {
+                    let f = number(v)?;
+                    V::Float(if f == 0.0 || f.is_nan() { f } else { f.signum() })
+                }
+            },
+            (m, _) if m.starts_with("Math.") => self.builtin(&m[5..], argv)?,
+            ("Object.keys", 1) => self.builtin("keys", argv)?,
+            ("Object.values", 1) => self.builtin("values", argv)?,
+            ("Object.entries", 1) => {
+                let pair = |k: &str, v: &V| V::array(vec![V::str(k), v.clone()]);
+                match &argv[0] {
+                    V::Map(m) => V::array(m.iter().map(|(k, v)| pair(k, v)).collect()),
+                    V::Rec(r) => V::array(r.entries().map(|(k, v)| pair(k, v)).collect()),
+                    other => return fail(format!("Object.entries takes a map, not a {}", other.type_name())),
+                }
+            }
+            ("Array.isArray", 1) => V::Bool(matches!(argv[0], V::Array(_))),
+            ("Array.from", 1) => match &argv[0] {
+                V::Array(a) => V::array(a.as_ref().clone()),
+                V::Str(s) => V::array(s.chars().map(|c| V::str(c.to_string())).collect()),
+                V::Range(a, b) => V::array((*a..*b).map(V::Int).collect()),
+                other => return fail(format!("Array.from takes a list, a text or a range, not a {}", other.type_name())),
+            },
+            ("JSON.stringify", 1..=3) => {
+                let indent = match argv.get(2) {
+                    Some(V::Int(n)) => " ".repeat((*n).clamp(0, 10) as usize),
+                    Some(V::Str(t)) => t.chars().take(10).collect(),
+                    _ => String::new(),
+                };
+                let mut out = String::new();
+                super::json::write(&argv[0], &indent, 0, &mut out);
+                V::str(out)
+            }
+            ("JSON.parse", 1) => match super::json::read(&text(&argv[0])?) {
+                Ok(v) => v,
+                Err(e) => return fail(format!("JSON.parse: {e}")),
+            },
             _ => {
                 let types: Vec<&str> = argv.iter().map(V::type_name).collect();
                 return fail(format!("Function not found: {name} ({})", types.join(", ")));
@@ -429,9 +500,93 @@ impl Interp {
                     Rc::make_mut(items).truncate(to);
                     V::None
                 }
+                // In place, and the list back, as JavaScript does. It gave
+                // `none` back, so `let r = a.reverse()` was `none` (AW-020).
                 ("reverse", 0) => {
                     Rc::make_mut(items).reverse();
-                    V::None
+                    V::Array(Rc::clone(items))
+                }
+                ("toReversed", 0) => V::array(items.iter().rev().cloned().collect()),
+                ("toSorted", 0 | 1) => {
+                    let mut copy = V::array(items.as_ref().clone());
+                    self.method(&mut copy, "sort", argv)?;
+                    copy
+                }
+                ("concat", _) => {
+                    let mut out = items.as_ref().clone();
+                    for a in argv {
+                        match a {
+                            V::Array(more) => out.extend(more.iter().cloned()),
+                            x => out.push(x.clone()),
+                        }
+                    }
+                    V::array(out)
+                }
+                ("flat", 0 | 1) => {
+                    let depth = match argv.first() {
+                        Some(d) => number(d)?.max(0.0) as usize,
+                        None => 1,
+                    };
+                    let mut out = Vec::new();
+                    flatten(items, depth, &mut out);
+                    V::array(out)
+                }
+                ("flatMap", 1) => {
+                    let f = argv[0].clone();
+                    let list = Rc::clone(items);
+                    let mut out = Vec::new();
+                    for (i, x) in list.iter().enumerate() {
+                        match self.call_value(f.clone(), vec![x.clone(), V::Int(i as i64)])? {
+                            V::Array(more) => out.extend(more.iter().cloned()),
+                            y => out.push(y),
+                        }
+                    }
+                    V::array(out)
+                }
+                ("findLast" | "findLastIndex", 1) => {
+                    let f = argv[0].clone();
+                    let list = Rc::clone(items);
+                    let mut found = None;
+                    for (i, x) in list.iter().enumerate().rev() {
+                        if self.call_value(f.clone(), vec![x.clone(), V::Int(i as i64)])?.truthy() {
+                            found = Some(i);
+                            break;
+                        }
+                    }
+                    match (name, found) {
+                        ("findLast", Some(i)) => list[i].clone(),
+                        ("findLast", None) => V::None,
+                        (_, at) => V::Int(at.map_or(-1, |i| i as i64)),
+                    }
+                }
+                ("lastIndexOf", 1) => V::Int(items.iter().rposition(|x| *x == argv[0]).map_or(-1, |i| i as i64)),
+                ("at", 1) => {
+                    let len = items.len() as i64;
+                    match argv[0].whole() {
+                        Some(i) if (-len..len).contains(&i) => items[if i < 0 { len + i } else { i } as usize].clone(),
+                        _ => V::None,
+                    }
+                }
+                ("fill", 1..=3) => {
+                    let start = match argv.get(1) {
+                        Some(s) => number(s)?,
+                        None => 0.0,
+                    };
+                    let end = match argv.get(2) {
+                        Some(e) => Some(number(e)?),
+                        None => None,
+                    };
+                    let list = Rc::make_mut(items);
+                    let (from, to) = bounds(list.len(), start, end);
+                    for x in &mut list[from..to] {
+                        *x = argv[0].clone();
+                    }
+                    V::Array(Rc::clone(items))
+                }
+                ("unshift", _) => {
+                    let list = Rc::make_mut(items);
+                    list.splice(0..0, argv.iter().cloned());
+                    V::Int(list.len() as i64)
                 }
                 ("sort", 0) => {
                     let list = Rc::make_mut(items);
@@ -708,10 +863,42 @@ impl Interp {
                     V::array(s.split(sep.as_ref()).map(V::str).collect())
                 }
                 ("chars" | "to_chars", 0) => V::array(s.chars().map(|c| V::str(c.to_string())).collect()),
+                // JavaScript's: the first match, in a new text, the receiver
+                // left alone. It changed the receiver, every match, and gave
+                // `none` back (AW-020).
                 ("replace", 2) => {
                     let (a, b) = (text(&argv[0])?, text(&argv[1])?);
-                    *s = s.replace(a.as_ref(), b.as_ref()).into();
-                    V::None
+                    V::str(s.replacen(a.as_ref(), b.as_ref(), 1))
+                }
+                ("replaceAll", 2) => {
+                    let (a, b) = (text(&argv[0])?, text(&argv[1])?);
+                    V::str(s.replace(a.as_ref(), b.as_ref()))
+                }
+                ("padStart" | "padEnd", 1 | 2) => {
+                    let to = number(&argv[0])?.max(0.0) as usize;
+                    let with = match argv.get(1) {
+                        Some(w) => text(w)?,
+                        None => " ".into(),
+                    };
+                    let short = if with.is_empty() { 0 } else { to.saturating_sub(s.chars().count()) };
+                    let fill: String = with.chars().cycle().take(short).collect();
+                    V::str(if name == "padStart" { format!("{fill}{s}") } else { format!("{s}{fill}") })
+                }
+                ("trimStart", 0) => V::str(s.trim_start()),
+                ("trimEnd", 0) => V::str(s.trim_end()),
+                ("at", 1) => {
+                    let chars: Vec<char> = s.chars().collect();
+                    let len = chars.len() as i64;
+                    match argv[0].whole() {
+                        Some(i) if (-len..len).contains(&i) => {
+                            V::str(chars[if i < 0 { len + i } else { i } as usize].to_string())
+                        }
+                        _ => V::None,
+                    }
+                }
+                ("lastIndexOf", 1) => {
+                    let p = text(&argv[0])?;
+                    V::Int(s.rfind(p.as_ref()).map_or(-1, |i| s[..i].chars().count() as i64))
                 }
                 ("pad", 2) => {
                     let to = argv[0].whole().unwrap_or(0).max(0) as usize;
@@ -752,6 +939,13 @@ impl Interp {
                     ("to_string", 0) => V::str(v.display()),
                     ("is_nan", 0) => V::Bool(v.number().is_some_and(f64::is_nan)),
                     ("min" | "max", 1) => self.builtin(name, vec![v, argv[0].clone()])?,
+                    ("toFixed", 0 | 1) => {
+                        let digits = match argv.first() {
+                            Some(d) => number(d)?.clamp(0.0, 100.0) as usize,
+                            None => 0,
+                        };
+                        V::str(format!("{:.*}", digits, number(&v)?))
+                    }
                     _ => return Ok(None),
                 }
             }

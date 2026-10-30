@@ -187,6 +187,7 @@ pub fn findings(problems: &[Problem], src: &str) -> Vec<crate::check::Finding> {
 /// Rewrite `script` so every use of an imported name is its linked name, and
 /// say what cannot be. `exports` is what each module exports, by module name.
 pub fn resolve(script: &mut Script, aliases: &[Alias], exports: &HashMap<String, Vec<Export>>) -> Vec<Problem> {
+    namespaces(script, aliases);
     let mut problems = Vec::new();
     if aliases.is_empty() {
         return problems;
@@ -387,6 +388,61 @@ fn root_name(e: &Expr) -> Option<&str> {
 /// The names `node` declares: a `let`, a function and its parameters, a
 /// closure's parameters, a loop's variables, what `catch` binds, a
 /// `computed` or a `prop`.
+/// JavaScript's namespaces, written as JavaScript writes them (Tracer's
+/// AW-020): `Math.max(a, b)` is a call of the language's `Math.max`, and
+/// `Math.PI` is the number, in a file that names nothing `Math` itself.
+/// `JSON`, `Object` and `Array` likewise. A function the language does not
+/// have, `Math.random()`, is left a call of that name, which the check
+/// reports as a function there is not.
+const NAMESPACES: [&str; 4] = ["Math", "JSON", "Object", "Array"];
+
+fn namespaces(script: &mut Script, aliases: &[Alias]) {
+    let mut own: Vec<String> = aliases.iter().map(|a| a.local.clone()).collect();
+    walk_stmts(&script.stmts, &mut |node| {
+        own.extend(declared(node).into_iter().map(|i| i.name.clone()));
+        if let Node::Stmt(s) = node {
+            if let StmtKind::Type { name, .. } = &s.kind {
+                own.push(name.name.clone());
+            }
+        }
+        true
+    });
+    let open: Vec<&str> = NAMESPACES.into_iter().filter(|n| !own.iter().any(|o| o == n)).collect();
+    if open.is_empty() {
+        return;
+    }
+    rux_syntax::visit_mut::exprs_mut(&mut script.stmts, &mut |e| {
+        match &mut e.kind {
+            ExprKind::Method { recv, name, args, optional: false } => {
+                if let ExprKind::Var(ns) = &recv.kind {
+                    if open.contains(&ns.as_str()) {
+                        let callee = vec![Ident { name: format!("{ns}.{}", name.name), span: recv.span.to(name.span) }];
+                        let args = std::mem::take(args);
+                        e.kind = ExprKind::Call { callee, args, bang: false };
+                    }
+                }
+            }
+            ExprKind::Field { base, name, optional: false } => {
+                if let ExprKind::Var(ns) = &base.kind {
+                    let value = match (ns.as_str(), name.name.as_str()) {
+                        ("Math", "PI") => Some(std::f64::consts::PI),
+                        ("Math", "E") => Some(std::f64::consts::E),
+                        ("Math", "SQRT2") => Some(std::f64::consts::SQRT_2),
+                        ("Math", "LN2") => Some(std::f64::consts::LN_2),
+                        ("Math", "LN10") => Some(std::f64::consts::LN_10),
+                        _ => None,
+                    };
+                    if let (Some(v), true) = (value, open.contains(&ns.as_str())) {
+                        e.kind = ExprKind::Float(v);
+                    }
+                }
+            }
+            _ => {}
+        }
+        true
+    });
+}
+
 fn declared<'a>(node: Node<'a>) -> Vec<&'a Ident> {
     match node {
         Node::Stmt(s) => match &s.kind {

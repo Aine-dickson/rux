@@ -16,6 +16,7 @@
 pub mod value;
 pub mod stdlib;
 pub mod flat;
+mod json;
 mod task;
 
 use std::collections::{HashMap, HashSet};
