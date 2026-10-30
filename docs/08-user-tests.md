@@ -3202,6 +3202,23 @@ never finishes and waits for its `Drop`. The first fails without the change.
 | A timeout | `setInterval` that cancels | the same, after the period | `rux check` only; not driven in a window |
 | A forgotten `await` | `let u: User = load(1);` | an error naming `await load(…)` | pass, `rux check` |
 
+## Keyboard focus past a box that appears, 2026-10-30
+
+Tracer's AW-031: keyboard focus was kept as a place in Tab order, so a box an
+`r-if` showed before the focused element took its focus and its ring. Focus is
+now found again by what it is after each layout. Under test in `rux-shell`
+(`focus_tests`: a newcomer before a field, rows that move, a row whose data
+changed, one that went). Driven in a desktop window on Tracer's reproduction
+(a "clear" box before the field, an "after" box behind it), the old installed
+`rux` and a debug `rux` from this checkout side by side.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A box appears before the field | click the field, type `a` | "clear" shows with no ring; the field keeps its ring | pass (old build: "clear" ringed) |
+| Tab from the field | then Tab | "after" in one press | pass |
+| A row arriving above a tapped row | Tracer's history | the tapped row keeps focus | under test only |
+| An `autofocus` field after a tap elsewhere | Tracer's Ctrl+K palette | only the field shows focus | not driven; the caret now moves keyboard focus onto its field |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

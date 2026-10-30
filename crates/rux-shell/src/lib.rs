@@ -6506,6 +6506,18 @@ impl App {
     /// field, tabbing away or pressing Escape mid-composition all put the field
     /// back the way it was, rather than stranding half-typed text nobody chose.
     fn set_focus_range(&mut self, focus: Option<Focus>) {
+        // A field that takes the caret has keyboard focus too, however it
+        // took it (a tap, `autofocus`, a script's `focus()`), so Tab goes on
+        // from it and nothing else keeps a `:focus` ring (Tracer's AW-031).
+        if let Some(f) = focus.as_ref() {
+            let here = self.focusables.iter().position(|it| {
+                matches!(&it.kind, FocusKind::Text { model, row, instance, .. }
+                    if f.is(model, row.as_deref(), instance.as_deref()))
+            });
+            if here.is_some() {
+                self.focus_index = here;
+            }
+        }
         // The caret menu closes when the caret moves, not whenever focus is
         // restated. A long press on empty space focuses the field, the
         // keyboard attaches and reports the unchanged text straight back, and
@@ -7796,10 +7808,10 @@ impl App {
         }
         *selects = layout.selects;
         *files = layout.files;
-        // Keep the focus index in range if the new layout has fewer focusables.
-        if focus_index.map(|i| i >= layout.focusables.len()).unwrap_or(false) {
-            *focus_index = None;
-        }
+        // Keyboard focus follows its element, not its place in Tab order: an
+        // `r-if` box appearing before it would otherwise take the focus
+        // (Tracer's AW-031). Gone from the layout, focus goes with it.
+        *focus_index = focus_index.and_then(|i| refind_focus(focusables.get(i)?, i, &layout.focusables));
         *focusables = layout.focusables;
         *scrolls = layout.scrolls;
         *resizes = layout.resizes;
@@ -9440,6 +9452,46 @@ fn web_coarse() -> bool {
     return web_is_touch();
     #[cfg(not(target_arch = "wasm32"))]
     false
+}
+
+/// Where `old`, focused at `at`, is in `now`, a fresh layout's focusables.
+///
+/// Known by what it is: a text field by its model, row and instance, a box by
+/// its handler and instance, a select or file input by its model. Of several
+/// alike (rows repeating one handler), the one at the same tree path, else the
+/// nearest to where it was; of none, a box at its tree path.
+fn refind_focus(old: &FocusItem, at: usize, now: &[FocusItem]) -> Option<usize> {
+    let same = |a: &FocusKind, b: &FocusKind| match (a, b) {
+        (
+            FocusKind::Text { model: m1, row: r1, instance: i1, .. },
+            FocusKind::Text { model: m2, row: r2, instance: i2, .. },
+        )
+        | (
+            FocusKind::File { model: m1, row: r1, instance: i1 },
+            FocusKind::File { model: m2, row: r2, instance: i2 },
+        )
+        | (
+            FocusKind::Select { model: m1, row: r1, instance: i1, .. },
+            FocusKind::Select { model: m2, row: r2, instance: i2, .. },
+        ) => m1 == m2 && r1 == r2 && i1 == i2,
+        (FocusKind::Activate { on_tap: t1, instance: i1 }, FocusKind::Activate { on_tap: t2, instance: i2 }) => {
+            t1 == t2 && i1 == i2
+        }
+        _ => false,
+    };
+    let alike: Vec<usize> = (0..now.len()).filter(|&i| same(&old.kind, &now[i].kind)).collect();
+    if old.path.is_some() {
+        if let Some(&i) = alike.iter().find(|&&i| now[i].path == old.path) {
+            return Some(i);
+        }
+    }
+    if let Some(i) = alike.into_iter().min_by_key(|&i| i.abs_diff(at)) {
+        return Some(i);
+    }
+    // A row's handler carries the row's values, so one whose data changed
+    // has a new handler: the box at its path is still it.
+    let path = old.path.as_ref()?;
+    now.iter().position(|it| matches!(it.kind, FocusKind::Activate { .. }) && it.path.as_ref() == Some(path))
 }
 
 /// The browser's clipboard, when there is one.
@@ -13833,5 +13885,54 @@ mod bar_tests {
         let paints = scrollbar_paints(&r, Offset::default(), 1.0, None);
         let Some(Paint::Rect(thumb)) = paints.first() else { panic!("a thumb") };
         assert!(matches!(thumb.background, Some(rux_layout::Background::Color(c)) if c.r == 1.0 && c.g == 0.0));
+    }
+}
+
+/// Keyboard focus across a new layout: Tracer's AW-031.
+#[cfg(test)]
+mod focus_tests {
+    use super::refind_focus;
+    use rux_layout::{FocusItem, FocusKind, InputKind};
+
+    fn tap_item(on_tap: &str, path: &[usize]) -> FocusItem {
+        FocusItem {
+            x: 0.0,
+            y: 0.0,
+            width: 10.0,
+            height: 10.0,
+            kind: FocusKind::Activate { on_tap: on_tap.into(), instance: None },
+            path: Some(path.to_vec()),
+            scroll: None,
+        }
+    }
+
+    fn field_item(model: &str) -> FocusItem {
+        FocusItem {
+            kind: FocusKind::Text { model: model.into(), row: None, instance: None, kind: InputKind::Text, text: None },
+            path: None,
+            ..tap_item("", &[])
+        }
+    }
+
+    /// Tracer's AW-031: a box that appears before the focused element does
+    /// not take its focus; the element is found where it went.
+    #[test]
+    fn focus_follows_its_element_past_a_newcomer() {
+        let before = [field_item("q"), tap_item("q = \"\"", &[2])];
+        let after = [tap_item("q = \"\"", &[0, 1]), field_item("q"), tap_item("q = \"\"", &[2])];
+        assert_eq!(refind_focus(&before[0], 0, &after), Some(1), "the field, not the newcomer");
+        assert_eq!(refind_focus(&before[1], 1, &after), Some(2), "same handler: the one at its path");
+    }
+
+    /// Rows that differ only in their place: the nearest one alike, and a
+    /// row whose handler changed is still the box at its path.
+    #[test]
+    fn focus_keeps_to_rows_and_lets_go_of_what_went() {
+        let rows = [tap_item("open(1)", &[0]), tap_item("open(2)", &[1])];
+        let added = [tap_item("open(3)", &[0]), tap_item("open(1)", &[1]), tap_item("open(2)", &[2])];
+        assert_eq!(refind_focus(&rows[0], 0, &added), Some(1), "a row arriving above moves nothing");
+        let changed = [tap_item("open(1, true)", &[0]), tap_item("open(2)", &[1])];
+        assert_eq!(refind_focus(&rows[0], 0, &changed), Some(0));
+        assert_eq!(refind_focus(&field_item("q"), 0, &rows), None, "gone, so unfocused");
     }
 }
