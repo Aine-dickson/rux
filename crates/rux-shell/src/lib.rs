@@ -529,16 +529,49 @@ const DROPDOWN_ROW_H: f32 = 30.0;
 /// Gap between the select box and the top of its dropdown panel, in logical px.
 const DROPDOWN_GAP: f32 = 4.0;
 
-/// The nth option row of an open dropdown as `(x, y, w, h)` in logical px. Rows
-/// stack below the select box (after a small gap). Shared by paint and
-/// hit-testing so the dropdown looks and behaves consistently.
-fn dropdown_row(sel: &SelectRegion, i: usize) -> (f32, f32, f32, f32) {
-    (
-        sel.x,
-        sel.y + sel.height + DROPDOWN_GAP + i as f32 * DROPDOWN_ROW_H,
-        sel.width,
-        DROPDOWN_ROW_H,
-    )
+/// The room an open dropdown leaves between itself and the window's edge.
+const DROPDOWN_EDGE: f32 = 8.0;
+
+/// Where an open dropdown's panel sits, in logical px, and how far its rows
+/// are scrolled. Shared by paint and hit-testing so the dropdown looks and
+/// behaves consistently.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct DropPanel {
+    x: f32,
+    y: f32,
+    width: f32,
+    height: f32,
+    scroll: f32,
+}
+
+/// Place `sel`'s dropdown in a window `view_h` tall, scrolled by `scroll`.
+///
+/// Below the select when every option fits there, else above it when they
+/// fit there (Tracer's AW-032: it always opened below, and options under the
+/// window's edge could not be picked). Fitting on neither side, it takes the
+/// side with more room and scrolls.
+fn dropdown_panel(sel: &SelectRegion, view_h: f32, scroll: f32) -> DropPanel {
+    let full = sel.options.len() as f32 * DROPDOWN_ROW_H;
+    let below_top = sel.y + sel.height + DROPDOWN_GAP;
+    let below = view_h - below_top - DROPDOWN_EDGE;
+    let above = sel.y - DROPDOWN_GAP - DROPDOWN_EDGE;
+    let (height, down) = if full <= below || view_h <= 0.0 {
+        (full, true)
+    } else if full <= above {
+        (full, false)
+    } else if below >= above {
+        (below.max(DROPDOWN_ROW_H), true)
+    } else {
+        (above.max(DROPDOWN_ROW_H), false)
+    };
+    let y = if down { below_top } else { sel.y - DROPDOWN_GAP - height };
+    DropPanel { x: sel.x, y, width: sel.width, height, scroll: scroll.clamp(0.0, (full - height).max(0.0)) }
+}
+
+/// The nth option row of an open dropdown as `(x, y, w, h)` in logical px,
+/// where it is scrolled to. A row outside the panel is scrolled out of sight.
+fn dropdown_row(panel: &DropPanel, i: usize) -> (f32, f32, f32, f32) {
+    (panel.x, panel.y - panel.scroll + i as f32 * DROPDOWN_ROW_H, panel.width, DROPDOWN_ROW_H)
 }
 
 /// Width of a scrollbar's lane, in logical px: the strip along a scroller's
@@ -1341,11 +1374,10 @@ fn dark(root: &rux_layout::Node) -> bool {
     root.style.rare.as_ref().is_some_and(|r| r.dark)
 }
 
-fn dropdown_paints(sel: &SelectRegion, value: &str, dark: bool) -> Vec<Paint> {
+fn dropdown_paints(sel: &SelectRegion, panel: &DropPanel, value: &str, pick: Option<usize>, dark: bool) -> Vec<Paint> {
     let Popup { panel_bg, border, selected, ink, shadow } = Popup::of(dark);
 
-    let (px, py, pw, _) = dropdown_row(sel, 0);
-    let ph = sel.options.len() as f32 * DROPDOWN_ROW_H;
+    let (px, py, pw, ph) = (panel.x, panel.y, panel.width, panel.height);
 
     let mut out = Vec::with_capacity(sel.options.len() * 2 + 2);
     // A soft shadow so the panel reads as floating above the page.
@@ -1369,9 +1401,27 @@ fn dropdown_paints(sel: &SelectRegion, value: &str, dark: bool) -> Vec<Paint> {
         border: Sides::uniform(1.0),
         border_color: Some(border),
     }));
+    // The rows scroll inside the panel when they do not all fit.
+    out.push(Paint::PushClip { x: px, y: py, width: pw, height: ph, radius: [8.0; 4] });
 
     for (i, option) in sel.options.iter().enumerate() {
-        let y = py + i as f32 * DROPDOWN_ROW_H;
+        let y = dropdown_row(panel, i).1;
+        if y + DROPDOWN_ROW_H < py || y > py + ph {
+            continue;
+        }
+        // The keyboard's pick is outlined, so the arrows can be followed.
+        if pick == Some(i) {
+            out.push(Paint::Rect(PaintRect {
+                x: px + 3.0,
+                y: y + 2.0,
+                width: pw - 6.0,
+                height: DROPDOWN_ROW_H - 4.0,
+                background: None,
+                radius: [5.0; 4],
+                border: Sides::uniform(2.0),
+                border_color: Some(ink),
+            }));
+        }
         if option == value {
             // A rounded pill marks the current choice, inset from the panel edge.
             out.push(Paint::Rect(PaintRect {
@@ -1430,6 +1480,7 @@ fn dropdown_paints(sel: &SelectRegion, value: &str, dark: bool) -> Vec<Paint> {
             },
         }));
     }
+    out.push(Paint::PopClip);
     out
 }
 
@@ -2202,6 +2253,10 @@ struct App {
     /// one's dropdown, drew it over row one, hit-tested the options against row
     /// one's box, and wrote the chosen option into row one.
     open_select: Option<(String, Option<String>, Option<String>)>,
+    /// How far the open dropdown's rows are scrolled, when they do not all
+    /// fit, and the option the arrow keys have moved to.
+    drop_scroll: f32,
+    drop_pick: Option<usize>,
     /// The `<select>` a platform picker is currently open for.
     ///
     /// Android only, and separate from [`App::open_select`] because the two are
@@ -2407,6 +2462,8 @@ impl App {
             #[cfg(target_os = "android")]
             text_menu_dismissed: None,
             open_select: None,
+            drop_scroll: 0.0,
+            drop_pick: None,
             #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             pending_select: None,
             #[cfg(any(target_os = "android", target_arch = "wasm32"))]
@@ -4324,9 +4381,11 @@ impl App {
                 .find(|s| s.model == model && s.row == row && s.instance == instance)
                 .cloned()
             {
+                let panel = dropdown_panel(&sel, self.logical_size().1, self.drop_scroll);
+                let inside = fy >= panel.y && fy <= panel.y + panel.height;
                 for (i, option) in sel.options.iter().enumerate() {
-                    let (rx, ry, rw, rh) = dropdown_row(&sel, i);
-                    if fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
+                    let (rx, ry, rw, rh) = dropdown_row(&panel, i);
+                    if inside && fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
                         self.choose_option(&model, row, instance, option, sel.field.on_change);
                         self.request_redraw();
                         return;
@@ -4414,7 +4473,7 @@ impl App {
                 web_open_select(&options, at, rect);
                 return;
             }
-            self.open_select = Some((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
+            self.open_dropdown((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
             self.set_focus(None);
             self.request_redraw();
             return;
@@ -5667,6 +5726,11 @@ impl App {
                 return;
             }
         }
+        // An open dropdown has the keys: the arrows move its pick, Enter or
+        // Space takes it, Escape or Tab closes it (Tracer's AW-032).
+        if self.open_select.is_some() && self.dropdown_key(&key) {
+            return;
+        }
         if let Key::Named(NamedKey::Tab) = key {
             self.move_focus(self.shift_held);
             return;
@@ -5801,6 +5865,70 @@ impl App {
         self.request_redraw();
     }
 
+    /// Open the drawn dropdown of the select `key` names, unscrolled, its pick
+    /// on the chosen option and that option in view.
+    fn open_dropdown(&mut self, key: (String, Option<String>, Option<String>)) {
+        self.drop_scroll = 0.0;
+        self.open_select = Some(key);
+        let chosen = self.open_panel().map(|(sel, _)| {
+            let value = self.document.value_in(&sel.model, sel.row.as_deref(), sel.instance.as_deref());
+            sel.options.iter().position(|o| *o == value)
+        });
+        self.drop_pick = chosen.flatten();
+        self.scroll_pick_into_view();
+    }
+
+    /// The open dropdown's select and where its panel sits now.
+    fn open_panel(&self) -> Option<(SelectRegion, DropPanel)> {
+        let (model, row, instance) = self.open_select.as_ref()?;
+        let sel = self.selects.iter().find(|s| &s.model == model && &s.row == row && &s.instance == instance)?;
+        Some((sel.clone(), dropdown_panel(sel, self.logical_size().1, self.drop_scroll)))
+    }
+
+    /// Scroll the open dropdown so its pick is in view.
+    fn scroll_pick_into_view(&mut self) {
+        let (Some(i), Some((_, panel))) = (self.drop_pick, self.open_panel()) else { return };
+        let top = i as f32 * DROPDOWN_ROW_H;
+        if top < panel.scroll {
+            self.drop_scroll = top;
+        } else if top + DROPDOWN_ROW_H > panel.scroll + panel.height {
+            self.drop_scroll = top + DROPDOWN_ROW_H - panel.height;
+        }
+    }
+
+    /// A key while a dropdown is open. Says whether it was the dropdown's.
+    fn dropdown_key(&mut self, key: &Key) -> bool {
+        let Some((sel, _)) = self.open_panel() else { return false };
+        let n = sel.options.len();
+        if n == 0 {
+            return false;
+        }
+        let step = |pick: Option<usize>, by: isize| -> usize {
+            match pick {
+                Some(i) => (i as isize + by).clamp(0, n as isize - 1) as usize,
+                None if by < 0 => n - 1,
+                None => 0,
+            }
+        };
+        match key {
+            Key::Named(NamedKey::ArrowDown) => self.drop_pick = Some(step(self.drop_pick, 1)),
+            Key::Named(NamedKey::ArrowUp) => self.drop_pick = Some(step(self.drop_pick, -1)),
+            Key::Named(NamedKey::Home) => self.drop_pick = Some(0),
+            Key::Named(NamedKey::End) => self.drop_pick = Some(n - 1),
+            Key::Named(NamedKey::Enter | NamedKey::Space) => {
+                self.open_select = None;
+                if let Some(option) = self.drop_pick.and_then(|i| sel.options.get(i)) {
+                    self.choose_option(&sel.model, sel.row.clone(), sel.instance.clone(), option, sel.field.on_change);
+                }
+            }
+            Key::Named(NamedKey::Escape | NamedKey::Tab) => self.open_select = None,
+            _ => return false,
+        }
+        self.scroll_pick_into_view();
+        self.request_redraw();
+        true
+    }
+
     /// Activate the focused element by keyboard: run a button/toggle's handler, or
     /// open a select's dropdown.
     fn activate_focused(&mut self, index: usize) {
@@ -5811,7 +5939,7 @@ impl App {
                 self.request_redraw();
             }
             Some(FocusKind::Select { model, row, instance, .. }) => {
-                self.open_select = Some((model, row, instance));
+                self.open_dropdown((model, row, instance));
                 self.request_redraw();
             }
             Some(FocusKind::File { model, row, instance }) => {
@@ -7352,6 +7480,8 @@ impl App {
             focusables,
             focus_index,
             open_select,
+            drop_scroll,
+            drop_pick,
             scrolls,
             resizes,
             offsets,
@@ -7733,7 +7863,9 @@ impl App {
                 .find(|s| s.model == model && s.row == row && s.instance == instance)
             {
                 let value = document.value_in(&model, row.as_deref(), instance.as_deref());
-                let overlay = dropdown_paints(sel, &value, dark(&document.root));
+                let view_h = (state.window.inner_size().height as f64 / scale) as f32;
+                let panel = dropdown_panel(sel, view_h, *drop_scroll);
+                let overlay = dropdown_paints(sel, &panel, &value, *drop_pick, dark(&document.root));
                 let scene = rux_paint::build_scene(&overlay, text, images, false);
                 state.scene.append(&scene, Some(Affine::scale(scale)));
             }
@@ -8513,6 +8645,14 @@ impl ApplicationHandler<RuxEvent> for App {
                 // Shift+wheel scrolls horizontally, the platform convention for a
                 // wheel with only one axis.
                 let (dx, dy) = if self.shift_held && dx == 0.0 { (dy, 0.0) } else { (dx, dy) };
+                // An open dropdown floats over the page, and its rows scroll
+                // rather than the page under it.
+                if self.open_select.is_some() {
+                    self.drop_scroll -= dy;
+                    self.drop_scroll = self.open_panel().map_or(0.0, |(_, p)| p.scroll);
+                    self.request_redraw();
+                    return;
+                }
                 self.scroll_wheel(-dx, -dy);
             }
             WindowEvent::CursorMoved { position, .. } => {
@@ -13885,6 +14025,55 @@ mod bar_tests {
         let paints = scrollbar_paints(&r, Offset::default(), 1.0, None);
         let Some(Paint::Rect(thumb)) = paints.first() else { panic!("a thumb") };
         assert!(matches!(thumb.background, Some(rux_layout::Background::Color(c)) if c.r == 1.0 && c.g == 0.0));
+    }
+}
+
+/// Where an open dropdown goes: Tracer's AW-032.
+#[cfg(test)]
+mod dropdown_tests {
+    use super::{dropdown_panel, dropdown_row, DROPDOWN_ROW_H};
+    use rux_layout::SelectRegion;
+
+    fn select_at(y: f32, options: usize) -> SelectRegion {
+        SelectRegion {
+            x: 10.0,
+            y,
+            width: 200.0,
+            height: 30.0,
+            model: "v".into(),
+            row: None,
+            instance: None,
+            options: (0..options).map(|i| format!("o{i}")).collect(),
+            field: Default::default(),
+        }
+    }
+
+    #[test]
+    fn below_when_it_fits_there() {
+        let p = dropdown_panel(&select_at(50.0, 5), 800.0, 0.0);
+        assert!(p.y > 80.0, "under the field");
+        assert_eq!(p.height, 5.0 * DROPDOWN_ROW_H);
+    }
+
+    #[test]
+    fn above_when_only_that_side_has_room() {
+        // Tracer's case: 8 options, the select near the window's bottom.
+        let sel = select_at(600.0, 8);
+        let p = dropdown_panel(&sel, 800.0, 0.0);
+        assert!(p.y + p.height <= sel.y, "over the field");
+        assert_eq!(p.height, 8.0 * DROPDOWN_ROW_H, "every option shows");
+        assert!(p.y >= 0.0);
+    }
+
+    #[test]
+    fn neither_side_fits_so_the_larger_one_scrolls() {
+        let sel = select_at(300.0, 40);
+        let p = dropdown_panel(&sel, 800.0, 10_000.0);
+        assert!(p.y > sel.y, "below has more room");
+        assert!(p.y + p.height <= 800.0, "inside the window");
+        assert_eq!(p.scroll, 40.0 * DROPDOWN_ROW_H - p.height, "scrolled no further than the last row");
+        let last = dropdown_row(&p, 39);
+        assert!((last.1 + last.3 - (p.y + p.height)).abs() < 0.01, "the last row at the panel's foot");
     }
 }
 

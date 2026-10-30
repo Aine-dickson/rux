@@ -3226,6 +3226,25 @@ changed, one that went). Driven in a desktop window on Tracer's reproduction
 | A row arriving above a tapped row | Tracer's history | the tapped row keeps focus | under test only |
 | An `autofocus` field after a tap elsewhere | Tracer's Ctrl+K palette | only the field shows focus | not driven; the caret now moves keyboard focus onto its field |
 
+## A select's dropdown near the window's edge, 2026-10-30
+
+Tracer's AW-032: the drawn dropdown always opened below its select, so options
+under the window's edge could not be picked, and the wheel and arrows did
+nothing in it. It now opens below when every option fits there, else above
+when they fit there, else on the side with more room, scrolling. Under test in
+`rux-shell` (`dropdown_tests`). Driven in a desktop window (150% scale, 640
+logical px tall), a debug `rux` from this checkout, with a select about 170 px
+above the bottom.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Ten options, no room below | open it | above the select, all ten showing, the chosen one outlined | pass |
+| The arrows and Enter | Down three times, Enter | the outline moves to "four"; Enter takes it, `chosen: [four]` | pass |
+| Thirty options, room on neither side | open, End | the larger side, scrolled inside its panel, "item 30" in view | pass |
+| The wheel over it | turn it up | the list scrolls to its top and stops; the page stays | pass |
+| Escape, Tab | with it open | it closes | under the code only |
+| The web, Android | the platform's own picker | unchanged | not affected |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
