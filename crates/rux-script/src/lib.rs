@@ -2487,6 +2487,9 @@ impl Engine {
         if changed {
             self.ir.set_global(name, value);
         }
+        // From now on a write to what it read leaves it stale, and a read of
+        // it before the runtime comes round works it out again.
+        self.ir.computed_ran(name, expr, &deps);
         (changed, deps)
     }
 

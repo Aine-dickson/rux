@@ -207,6 +207,20 @@ pub struct Interp {
     /// are its instance's state, which it re-runs on (watchlist #34). Off,
     /// a local read costs this one test.
     pub(crate) noting_given: bool,
+    /// Each `computed`, by the global it is kept in: its expression, and
+    /// whether a write since it last ran left it stale. A stale one runs
+    /// again when it is read, so a handler that writes `a` and then reads a
+    /// computed of `a` reads the new value (Tracer's AW-038). See
+    /// [`Interp::computed_ran`].
+    pulls: HashMap<u32, Pull>,
+    /// For each global, the computeds that read it when they last ran.
+    readers: HashMap<u32, Vec<u32>>,
+}
+
+/// A `computed`'s expression, and whether it is out of date.
+struct Pull {
+    src: Rc<str>,
+    stale: bool,
 }
 
 impl Drop for Interp {
@@ -257,6 +271,8 @@ impl Interp {
             cancelled: Default::default(),
             linking: Rc::default(),
             noting_given: false,
+            pulls: HashMap::new(),
+            readers: HashMap::new(),
         }
     }
 
@@ -367,6 +383,73 @@ impl Interp {
         };
         self.globals[g.0 as usize] = value;
         self.set[g.0 as usize] = true;
+        self.made_stale(g.0);
+    }
+
+    /// Note that the computed `name`, kept in the global of that name, was
+    /// worked out from `src` just now, reading `deps`: it is current, and a
+    /// write to any of `deps` leaves it stale until it runs again.
+    pub fn computed_ran(&mut self, name: &str, src: &str, deps: &HashSet<String>) {
+        let Some(g) = self.by_name.get(name).map(|g| g.0) else { return };
+        for list in self.readers.values_mut() {
+            list.retain(|r| *r != g);
+        }
+        for dep in deps {
+            if let Some(d) = self.by_name.get(dep.as_str()).map(|d| d.0) {
+                if d != g {
+                    self.readers.entry(d).or_default().push(g);
+                }
+            }
+        }
+        match self.pulls.get_mut(&g) {
+            Some(p) if &*p.src == src => p.stale = false,
+            _ => {
+                self.pulls.insert(g, Pull { src: Rc::from(src), stale: false });
+            }
+        }
+    }
+
+    /// Global `g` was written: every computed that read it, and every one
+    /// that read those, is stale.
+    fn made_stale(&mut self, g: u32) {
+        if self.readers.is_empty() {
+            return;
+        }
+        let mut todo = vec![g];
+        while let Some(g) = todo.pop() {
+            let Some(list) = self.readers.get(&g) else { continue };
+            for r in list {
+                if let Some(p) = self.pulls.get_mut(r) {
+                    if !p.stale {
+                        p.stale = true;
+                        todo.push(*r);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bring the computed kept in `g` up to date, if a write left it stale.
+    /// What it reads to do so is not noted: whoever read the computed
+    /// depends on it, as before.
+    fn pull(&mut self, g: u32) {
+        let src = match self.pulls.get_mut(&g) {
+            Some(p) if p.stale => {
+                p.stale = false;
+                Rc::clone(&p.src)
+            }
+            _ => return,
+        };
+        let Ok(piece) = self.compiled(&src, &[], true, None) else { return };
+        let ops = self.ops;
+        let (out, _, _) = crate::quiet_reads(|| self.run_piece(piece, Vec::new()));
+        self.ops = ops;
+        if let Ok(v) = out {
+            if self.globals[g as usize] != v {
+                self.wrote(GlobalId(g));
+                self.globals[g as usize] = v;
+            }
+        }
     }
 
     /// The native signals to keep current, and the epoch their values in the
@@ -424,6 +507,7 @@ impl Interp {
                     if self.globals[g.0 as usize] != v {
                         self.wrote(g);
                         self.globals[g.0 as usize] = v;
+                        self.made_stale(g.0);
                         self.native_moved.insert(name.clone());
                     }
                 }
@@ -633,6 +717,9 @@ impl Interp {
         let i = g.0 as usize;
         if !self.set[i] {
             return fail(format!("Variable not found: {}", self.unit.globals[i].name));
+        }
+        if !self.pulls.is_empty() {
+            self.pull(g.0);
         }
         crate::note_read(&self.unit.globals[i].name);
         Ok(self.globals[i].clone())
@@ -1388,6 +1475,9 @@ impl Interp {
             here = step_mut(here, k, true)?;
         }
         *here = v;
+        if let Slot::Global(g) = slot {
+            self.made_stale(g.0);
+        }
         Ok(())
     }
 
