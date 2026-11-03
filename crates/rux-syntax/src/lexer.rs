@@ -627,7 +627,16 @@ impl<'s> Lexer<'s> {
                     escape = false;
                     out.push('\n');
                 }
-                '\\' if !verbatim && !escape => escape = true,
+                // A backtick string runs over lines as written, and decodes
+                // its escapes as a plain string does: `\n` is one newline.
+                '\\' if !escape => escape = true,
+                '$' if escape && interpolation => {
+                    escape = false;
+                    out.push('$');
+                }
+                // A backslash at the end of a line in a backtick string joins
+                // the next line on, as in JavaScript.
+                '\n' if verbatim && escape => escape = false,
                 '\\' if escape => {
                     escape = false;
                     out.push('\\');

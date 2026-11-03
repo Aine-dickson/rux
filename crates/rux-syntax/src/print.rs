@@ -379,6 +379,7 @@ impl Printer<'_> {
                             while let Some(c) = chars.next() {
                                 match c {
                                     '`' => self.w("``"),
+                                    '\\' => self.w("\\\\"),
                                     '$' if chars.peek() == Some(&'{') => self.w("\\$"),
                                     c => self.out.push(c),
                                 }
