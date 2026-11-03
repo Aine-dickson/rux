@@ -3989,6 +3989,8 @@ fn exits(statements: &[Stmt]) -> bool {
         Some(StmtKind::Return(_) | StmtKind::Throw(_) | StmtKind::Break(_) | StmtKind::Continue) => true,
         Some(StmtKind::If(x)) => exits(&x.then.stmts) && exits(else_stmts(x)),
         Some(StmtKind::Block(b)) => exits(&b.stmts),
+        // Whichever block runs leaves.
+        Some(StmtKind::Try { body, catch, .. }) => exits(&body.stmts) && exits(&catch.stmts),
         _ => false,
     }
 }
@@ -4435,6 +4437,18 @@ mod tests {
         // A callback that returns nothing takes any function.
         assert!(errors("fn each(f: (int) => void) { f(1); }\nfn g() { each(n => n + 1); }").is_empty());
         assert!(errors("let a: string? = none; let b: void? = none;").is_empty());
+    }
+
+    /// A function that returns from both a `try` and its `catch` returns on
+    /// every path (AW-039); one that returns only from the `try` does not.
+    #[test]
+    fn a_try_whose_blocks_both_return_returns() {
+        assert!(errors("fn p(s: string): string { try { JSON.parse(s); return \"json\"; } catch e { return \"not json\"; } }").is_empty());
+        one_error(
+            "fn p(s: string): string { try { JSON.parse(s); return \"json\"; } catch e { let x = 1; } }",
+            "`p` is declared to return `string`",
+        );
+        one_error("fn p(): int { try { return \"x\"; } catch e { return 1; } }", "`p` is declared to return `int`, and this is");
     }
 
     #[test]
