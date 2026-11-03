@@ -610,7 +610,9 @@ impl TextEngine {
             Self::push_look(&mut builder, look, None);
         }
         if let Some(rich) = style.rich {
-            for (i, run) in rich.runs.iter().enumerate() {
+            // An empty run styles no text, and parley asserts every span it
+            // is given covers some: an empty piece after a full one panicked.
+            for (i, run) in rich.runs.iter().enumerate().filter(|(_, run)| !run.range.is_empty()) {
                 let range = run.range.start + off..run.range.end + off;
                 Self::push_run(&mut builder, i as RunId + 1, range, &run.style, style, &self.symbols);
             }

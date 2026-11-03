@@ -140,3 +140,22 @@ fn a_box_wraps_with_its_words() {
     assert!(y >= one_line_h * 0.9, "on a later line: y {y}");
     assert!(x < narrow, "inside the box: x {x}");
 }
+
+/// An empty piece anywhere in a sentence styles nothing and lays out: an
+/// empty piece after a full one used to panic in parley (AW-037).
+#[test]
+fn an_empty_run_first_in_the_middle_or_last_lays_out() {
+    let mut te = TextEngine::new();
+    let text = "\"k\": 1,";
+    let plain = te.measure(text, &base(), None);
+    for runs in [
+        vec![run(0..0, SIZE, 400), run(0..5, SIZE, 400), run(5..7, SIZE, 400)],
+        vec![run(0..5, SIZE, 400), run(5..5, SIZE, 400), run(5..7, SIZE, 400)],
+        vec![run(0..5, SIZE, 400), run(5..7, SIZE, 400), run(7..7, SIZE, 400)],
+    ] {
+        let rich = RichText { runs, items: vec![] };
+        let style = TextStyle { rich: Some(&rich), ..base() };
+        assert_eq!(te.measure(text, &style, None), plain);
+        te.placed(text, &style, Align::Start, None);
+    }
+}
