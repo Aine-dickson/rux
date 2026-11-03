@@ -1002,7 +1002,13 @@ filter, backdrop-filter (blur(), brightness(), contrast(), drop-shadow(),
                        drop-shadow with no colour is currentColor. Not yet: url()
                        to an SVG filter)
 overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
-                                      each axis on its own; `overflow: x y`)
+                                      each axis on its own; `overflow: x y`.
+                                      A flex or grid item that clips or
+                                      scrolls has an automatic minimum size
+                                      of 0, as in CSS, so an ellipsised
+                                      title shrinks beside a fixed column.
+                                      `clip` gets it too, where CSS keeps the
+                                      content's width: Rux has one clip)
 overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)
 scroll-behavior (auto | smooth: a scroll a script's `scrollIntoView()` or Tab
                        moving focus asks for glides there over 300ms; a wheel,

@@ -4349,9 +4349,20 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
         // taffy needs to know the box scrolls: it then sizes the box from its own
         // width/height (not its content) and reports its scrollable overflow,
         // which is how far we can scroll (`scroll_extent`).
+        // A clipping box is `Hidden` to taffy, which is what gives a flex or
+        // grid item that clips an automatic minimum size of 0, as CSS does
+        // for `overflow: hidden`: an ellipsised title beside a fixed column
+        // shrinks instead of squeezing the column (Tracer's AW-036).
         overflow: {
-            let axis = |scrolls: bool| if scrolls { taffy::Overflow::Scroll } else { taffy::Overflow::Visible };
-            Point { x: axis(style.scrolls_x()), y: axis(style.scrolls_y()) }
+            let axis = |o: Overflow| match o {
+                Overflow::Scroll => taffy::Overflow::Scroll,
+                Overflow::Clip => taffy::Overflow::Hidden,
+                Overflow::Visible => taffy::Overflow::Visible,
+            };
+            Point {
+                x: axis(style.overflow_x.unwrap_or(style.overflow)),
+                y: axis(style.overflow_y.unwrap_or(style.overflow)),
+            }
         },
         flex_grow: style.grow,
         flex_shrink: style.shrink,
