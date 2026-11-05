@@ -5394,6 +5394,7 @@ impl Document {
                     continue;
                 }
                 let (value, deps) = self.engine.eval_value_tracked(&computed.expr, &locals);
+                self.engine.component_computed_ran(&locals, &computed.name, &computed.expr, &deps);
                 if let Some(list) = self.instance_computeds.get_mut(&key) {
                     if let Some(slot) = list.get_mut(i) {
                         slot.deps = deps;

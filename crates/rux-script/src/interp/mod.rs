@@ -120,6 +120,8 @@ struct Compiled {
     given: Vec<String>,
     /// Whether it sees the unit's state.
     globals: bool,
+    /// The component it was compiled in, if any.
+    scope: Option<Rc<str>>,
 }
 
 /// What a tracked run wrote: each global's value before its first write.
@@ -137,6 +139,8 @@ struct Track {
 struct Root {
     frame: usize,
     piece: Rc<Compiled>,
+    /// The component computeds a write in this run left stale, by name.
+    stale: Vec<String>,
 }
 
 pub struct Interp {
@@ -215,6 +219,19 @@ pub struct Interp {
     pulls: HashMap<u32, Pull>,
     /// For each global, the computeds that read it when they last ran.
     readers: HashMap<u32, Vec<u32>>,
+    /// Each component's computeds, which are its instances' state rather
+    /// than globals: by component, each one's name, expression and what it
+    /// read. A write to one of those in a run leaves it stale for the rest
+    /// of that run ([`Root::stale`]); after the run the runtime works them
+    /// out as it always has.
+    scoped: HashMap<Rc<str>, Vec<ScopedPull>>,
+}
+
+/// A component's `computed`, as [`Interp::scoped`] keeps it.
+struct ScopedPull {
+    name: String,
+    src: Rc<str>,
+    deps: HashSet<String>,
 }
 
 /// A `computed`'s expression, and whether it is out of date.
@@ -273,6 +290,7 @@ impl Interp {
             noting_given: false,
             pulls: HashMap::new(),
             readers: HashMap::new(),
+            scoped: HashMap::new(),
         }
     }
 
@@ -406,6 +424,107 @@ impl Interp {
             _ => {
                 self.pulls.insert(g, Pull { src: Rc::from(src), stale: false });
             }
+        }
+    }
+
+    /// Note that the computed `name` of component `scope` was worked out
+    /// from `src` just now, reading `deps`. What an instance reads is joined
+    /// with what the others read: a computed made stale for nothing only
+    /// costs running it again.
+    pub fn scoped_computed_ran(&mut self, scope: &str, name: &str, src: &str, deps: &HashSet<String>) {
+        let list = self.scoped.entry(Rc::from(scope)).or_default();
+        match list.iter_mut().find(|p| p.name == name) {
+            Some(p) => {
+                if &*p.src != src {
+                    p.src = Rc::from(src);
+                }
+                p.deps.extend(deps.iter().filter(|d| *d != name).cloned());
+            }
+            None => list.push(ScopedPull {
+                name: name.to_string(),
+                src: Rc::from(src),
+                deps: deps.iter().filter(|d| *d != name).cloned().collect(),
+            }),
+        }
+    }
+
+    /// Local `i` of the running piece's own frame was written: if it is
+    /// state a computed of this component reads, that computed is stale, and
+    /// so is every one reading it.
+    fn wrote_local(&mut self, f: usize, i: usize) {
+        let Some(root) = self.roots.last() else { return };
+        if root.frame != f {
+            return;
+        }
+        let Some(list) = root.piece.scope.as_ref().and_then(|s| self.scoped.get(s)) else { return };
+        let mut todo = vec![root.piece.lowered.body.locals[i].name.clone()];
+        let mut stale = Vec::new();
+        while let Some(name) = todo.pop() {
+            for p in list {
+                if p.deps.contains(&name) && !stale.contains(&p.name) && !root.stale.contains(&p.name) {
+                    stale.push(p.name.clone());
+                    todo.push(p.name.clone());
+                }
+            }
+        }
+        if let Some(root) = self.roots.last_mut() {
+            root.stale.extend(stale);
+        }
+    }
+
+    /// The slot of the running piece's frame that holds `name` now: the last
+    /// one given a value, as [`Interp::outer`] finds it.
+    fn root_slot(&self, name: &str) -> Option<usize> {
+        let root = self.roots.last()?;
+        let locals = &root.piece.lowered.body.locals;
+        let frame = &self.stack[root.frame];
+        (0..locals.len()).rev().find(|&i| frame.set[i] && locals[i].name == name)
+    }
+
+    /// Bring the component computed `name` up to date, if a write in this
+    /// run left it stale: run its expression against the instance's state as
+    /// it stands, and put the answer where the run keeps that state.
+    fn pull_scoped(&mut self, name: &str) {
+        let Some(root) = self.roots.last_mut() else { return };
+        let Some(at) = root.stale.iter().position(|n| n == name) else { return };
+        root.stale.swap_remove(at);
+        let (frame, piece) = (root.frame, Rc::clone(&root.piece));
+        let Some(scope) = piece.scope.clone() else { return };
+        let Some(src) = self.scoped.get(&scope).and_then(|l| l.iter().find(|p| p.name == name)).map(|p| Rc::clone(&p.src))
+        else {
+            return;
+        };
+        let Some(target) = self.root_slot(name) else { return };
+        let mut names: Vec<String> = Vec::new();
+        let mut values: Vec<V> = Vec::new();
+        for given in &piece.given {
+            if names.contains(given) {
+                continue;
+            }
+            if let Some(i) = self.root_slot(given) {
+                names.push(given.clone());
+                values.push(self.stack[frame].slots[i].clone());
+            }
+        }
+        let Ok(code) = self.compiled(&src, &names, false, Some(&scope)) else { return };
+        let ops = self.ops;
+        let (out, _, _) = crate::quiet_reads(|| self.run_piece(code, values));
+        self.ops = ops;
+        if let Ok(v) = out {
+            self.stack[frame].slots[target] = v;
+        }
+    }
+
+    /// A read of local `id` in the running piece's own frame, of a component
+    /// computed a write left stale.
+    fn pull_local(&mut self, id: ir::LocalId) {
+        let Some(root) = self.roots.last() else { return };
+        if root.stale.is_empty() || self.stack.len() != root.frame + 1 {
+            return;
+        }
+        let name = root.piece.lowered.body.locals[id.0 as usize].name.clone();
+        if root.stale.contains(&name) {
+            self.pull_scoped(&name);
         }
     }
 
@@ -564,7 +683,7 @@ impl Interp {
         let lowered = crate::profile::time(crate::profile::Phase::Lower, || {
             lower_piece(unit, &script, src, given, globals, own)
         });
-        let c = Rc::new(Compiled { lowered, given: given.to_vec(), globals });
+        let c = Rc::new(Compiled { lowered, given: given.to_vec(), globals, scope: scope.map(Rc::from) });
         if self.pieces.len() >= PIECES_CAP {
             self.pieces.clear();
         }
@@ -633,7 +752,7 @@ impl Interp {
             frame.set[i] = true;
         }
         self.stack.push(frame);
-        self.roots.push(Root { frame: self.stack.len() - 1, piece: Rc::clone(piece) });
+        self.roots.push(Root { frame: self.stack.len() - 1, piece: Rc::clone(piece), stale: Vec::new() });
     }
 
     /// End the root [`Interp::enter`] began: what was handed in, as it stands
@@ -1413,7 +1532,11 @@ impl Interp {
             let locals = &root.piece.lowered.body.locals;
             let frame = &self.stack[root.frame];
             if let Some(i) = (0..locals.len()).rev().find(|&i| frame.set[i] && locals[i].name == name) {
-                return Ok(Slot::Local(root.frame, i));
+                let (f, stale) = (root.frame, root.stale.contains(&name));
+                if stale {
+                    self.pull_scoped(&name);
+                }
+                return Ok(Slot::Local(f, i));
             }
             // A component's code reaches no document state, only what the
             // runtime provides every file.
@@ -1475,8 +1598,10 @@ impl Interp {
             here = step_mut(here, k, true)?;
         }
         *here = v;
-        if let Slot::Global(g) = slot {
-            self.made_stale(g.0);
+        match slot {
+            Slot::Global(g) => self.made_stale(g.0),
+            Slot::Local(f, i) if !self.scoped.is_empty() => self.wrote_local(f, i),
+            _ => {}
         }
         Ok(())
     }
@@ -1519,6 +1644,9 @@ impl Interp {
             ExprKind::Local(id) => {
                 if self.noting_given {
                     self.note_given(*id);
+                }
+                if !self.scoped.is_empty() {
+                    self.pull_local(*id);
                 }
                 Ok(self.frame().slots[id.0 as usize].clone())
             }
@@ -2384,7 +2512,7 @@ fn dynamic(op: &str, a: V, b: V) -> R<V> {
 
 /// The component a run belongs to, from the marker its instance's state
 /// carries: see [`crate::SCOPE_LOCAL`].
-pub(super) fn scope_of(locals: &[(String, Value)]) -> Option<String> {
+pub(crate) fn scope_of(locals: &[(String, Value)]) -> Option<String> {
     locals.iter().rev().find(|(n, _)| n == crate::SCOPE_LOCAL).and_then(|(_, v)| match v {
         Value::Text(t) => Some(t.clone()),
         _ => None,

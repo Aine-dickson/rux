@@ -8080,7 +8080,7 @@ impl LayoutState {
                         // text was shrunk to its min-content took the height of
                         // one line and drew the second over the next row
                         // (Tracer's AW-035).
-                        let max = (match available.width {
+                        let max = match available.width {
                             AvailableSpace::Definite(w) => Some(w),
                             // Min-content is the narrowest the box can be without
                             // its content spilling, which for text is the longest
@@ -8090,7 +8090,7 @@ impl LayoutState {
                             // could never be narrower than one long line.
                             AvailableSpace::MinContent => Some(0.0),
                             AvailableSpace::MaxContent => None,
-                        });
+                        };
                         // Never measure at a width this box can never have. Taffy
                         // sizes a capped box from its *un*capped content, clamps
                         // the width afterwards, and does not revisit the height, so

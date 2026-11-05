@@ -55,11 +55,10 @@ fn a_computed_read_after_a_write_in_the_same_handler_is_current() {
     assert!(s.contains("a = 7, b = 14, c = 15"), "{s}");
 }
 
-/// A computed in a component is current in the component's handler too.
-/// Not yet: an instance's state is the handler's locals, not globals, and
-/// only a global's read pulls a stale computed.
+/// A computed in a component is current in the component's handler too, in
+/// a function it calls and in the handler's own text, through a chain, and
+/// for each instance on its own.
 #[test]
-#[ignore = "AW-038 is fixed for a document's computeds, not yet a component's"]
 fn a_components_computed_is_current_in_its_handler() {
     let dir = std::env::temp_dir().join(format!("rux_computed_pull_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
@@ -67,20 +66,26 @@ fn a_components_computed_is_current_in_its_handler() {
     std::fs::write(
         dir.join("components/card.rux"),
         "<template><view>\
-           <view @tap=\"go()\"><text>go</text></view>\
-           <text>seen {{ seen }}</text>\
+           <view @tap=\"go()\"><text>go {{ label }}</text></view>\
+           <view @tap=\"n += 1; seen = `inline ${twice} ${more}`\"><text>inline {{ label }}</text></view>\
+           <text>{{ label }} seen {{ seen }}, shown {{ twice }} {{ more }}</text>\
          </view></template>\n\
-         <script>\nlet n = signal(1);\ncomputed twice = n * 2;\nlet seen = signal(\"\");\n\
-         fn go() { n = 4; seen = `twice ${twice}`; }\n</script>",
+         <script>\nprop label: string;\nlet n = signal(1);\ncomputed twice = n * 2;\ncomputed more = twice + 1;\nlet seen = signal(\"\");\n\
+         fn go() { n = 4; seen = `twice ${twice} more ${more}`; }\n</script>",
     )
     .unwrap();
     std::fs::write(
         dir.join("app.rux"),
-        "<template><screen><card /></screen></template>\n<script>\nuse components::card;\n</script>",
+        "<template><screen><card :label='\"a\"' /><card :label='\"b\"' /></screen></template>\n<script>\nuse components::card;\n</script>",
     )
     .unwrap();
     let mut doc = Document::load(dir.join("app.rux")).expect("loads");
-    tap(&mut doc, "go");
+    tap(&mut doc, "go a");
     let s = shown(&doc);
-    assert!(s.contains("seen twice 8"), "{s}");
+    assert!(s.contains("a seen twice 8 more 9, shown 8 9"), "{s}");
+    assert!(s.contains("b seen , shown 2 3"), "{s}");
+    tap(&mut doc, "inline b");
+    let s = shown(&doc);
+    assert!(s.contains("b seen inline 4 5, shown 4 5"), "{s}");
+    assert!(s.contains("a seen twice 8 more 9, shown 8 9"), "{s}");
 }

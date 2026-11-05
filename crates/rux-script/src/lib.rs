@@ -2493,6 +2493,16 @@ impl Engine {
         (changed, deps)
     }
 
+    /// Note that a component's computed `name` was worked out from `expr`
+    /// against an instance's `locals`, reading `deps`: a write to any of them
+    /// in a later run of that component's code leaves it stale for the rest
+    /// of the run, and a read works it out again (Tracer's AW-038).
+    pub fn component_computed_ran(&mut self, locals: &[(String, Value)], name: &str, expr: &str, deps: &HashSet<String>) {
+        if let Some(scope) = interp::scope_of(locals) {
+            self.ir.scoped_computed_ran(&scope, name, expr, deps);
+        }
+    }
+
     /// Run an effect body, reporting what it read and what it wrote.
     ///
     /// It is subscribed to what it read for its value, written or not, and to
