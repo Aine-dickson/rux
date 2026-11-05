@@ -336,6 +336,16 @@ struct Checker<'a> {
     /// Every name declared anywhere in the script: a `let`, a parameter or a
     /// loop variable. One a function cannot see itself is some caller's.
     script_names: HashSet<String>,
+    /// The script's top-level `let`s, by name: the document's own, whichever
+    /// line declares them.
+    top_lets: HashSet<String>,
+    /// Set while the top level is checked in order, before every `let` of it
+    /// is in [`Checker::globals`].
+    top_pass: bool,
+    /// Set when a function body read a top-level `let` the in-order pass has
+    /// not reached yet (an `effect` above it called the function, Tracer's
+    /// AW-044). That body is checked again once the whole top level is in.
+    premature: bool,
     /// The script's top-level `let`s without `signal`: values, never written
     /// (`docs/11-next.md`, "`signal`, `let`").
     plain_lets: HashSet<String>,
@@ -407,6 +417,16 @@ impl<'a> Checker<'a> {
             results: Vec::new(),
             in_fn: Vec::new(),
             script_names: declared_names(&script.stmts),
+            top_lets: script
+                .stmts
+                .iter()
+                .filter_map(|s| match &s.kind {
+                    StmtKind::Let { name, .. } => Some(name.name.clone()),
+                    _ => None,
+                })
+                .collect(),
+            top_pass: false,
+            premature: false,
             plain_lets: plain_lets(&script.stmts),
             findings: Vec::new(),
             quiet: 0,
@@ -779,11 +799,15 @@ impl<'a> Checker<'a> {
 
         // The top level, in order: its `let`s are the signals every function
         // reads.
+        self.top_pass = true;
         for stmt in &script.stmts {
             self.check_stmt(stmt);
         }
+        self.top_pass = false;
+        self.premature = false;
 
-        // Then every function nothing has reached yet.
+        // Then every function nothing has reached yet, and every one reached
+        // too early to see the whole top level.
         let mut named: Vec<(String, usize)> = self.fns.keys().cloned().collect();
         named.sort();
         for key in named {
@@ -1731,7 +1755,7 @@ impl<'a> Checker<'a> {
                 let no = self.facts_of(&x.cond, false);
                 let a = self.with_facts(yes, |c| c.check_block(&x.then));
                 let b = self.with_facts(no, |c| c.with_scope(|c| c.check_statements(else_stmts(x))));
-                Type::union([a, b])
+                branches(vec![a, b])
             }
             StmtKind::Switch(sw) => self.check_switch(sw, stmt.span, None),
             StmtKind::While { cond, body } => {
@@ -2035,7 +2059,7 @@ impl<'a> Checker<'a> {
         if out.is_empty() {
             Type::Null
         } else {
-            Type::union(out)
+            branches(out)
         }
     }
 
@@ -3090,6 +3114,12 @@ impl<'a> Checker<'a> {
     /// a handler's `let`) or another function (its `let`s and parameters).
     fn caller_local(&mut self, name: &str, pos: Pos) {
         let Some((function, typed)) = self.in_fn.last().cloned() else { return };
+        // The document's own, declared further down than the statement that
+        // reached this function: the body is checked again once it is in.
+        if self.top_pass && self.top_lets.contains(name) && !self.globals.contains_key(name) {
+            self.premature = true;
+            return;
+        }
         if !self.cx.caller_names.contains(name) && !self.script_names.contains(name) {
             // Declared nowhere at all: the undefined-name check says so.
             return;
@@ -3366,6 +3396,10 @@ impl<'a> Checker<'a> {
         if let Some(f) = self.fns.get_mut(&key) {
             f.state = FnState::Checking;
         }
+        // What this check finds, should it have to be done again.
+        let found_before = self.findings.len();
+        let seen_before = self.seen.len();
+        let outer_premature = std::mem::replace(&mut self.premature, false);
 
         // Unannotated parameters: `any`, and a warning, once, where the function
         // is written.
@@ -3446,6 +3480,20 @@ impl<'a> Checker<'a> {
         self.scopes = saved;
         self.facts = saved_facts;
         self.tparams = saved_tparams;
+        if self.premature {
+            // Read a top-level `let` declared below the statement that got
+            // here: what was found is dropped, and the body is checked again
+            // after the top level, where every one of them is in.
+            self.findings.truncate(found_before);
+            self.seen.truncate(seen_before);
+            self.untyped_warnings.retain(|(at, _, _)| *at < found_before);
+            if let Some(f) = self.fns.get_mut(&key) {
+                f.state = FnState::Unchecked;
+            }
+            self.premature = true;
+            return info.result.unwrap_or(inferred);
+        }
+        self.premature = outer_premature;
         if let Some(f) = self.fns.get_mut(&key) {
             f.state = FnState::Done(inferred.clone());
         }
@@ -3848,6 +3896,19 @@ fn plain_lets(stmts: &[Stmt]) -> HashSet<String> {
             _ => None,
         })
         .collect()
+}
+
+/// The value of an `if` or a `switch`, from its branches' values. An empty
+/// array, `any[]`, is the array type another branch makes: `if c { ["b"] }
+/// else { [] }` is a `string[]` (Tracer's AW-045).
+fn branches(values: Vec<Type>) -> Type {
+    let empty = Type::Array(Box::new(Type::Any));
+    let typed = values.iter().any(|t| matches!(t, Type::Array(item) if **item != Type::Any));
+    if typed {
+        Type::union(values.into_iter().filter(|t| *t != empty))
+    } else {
+        Type::union(values)
+    }
 }
 
 fn declared_names(stmts: &[Stmt]) -> HashSet<String> {
@@ -4880,6 +4941,58 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
              fn first(): string {{ let item = \"a\"; [item].map(x => x + picked)[0] }}"
         ));
         assert!(e.is_empty(), "{e:?}");
+    }
+
+    /// Tracer's AW-044: a function an `effect` calls reads a top-level signal
+    /// declared below that `effect`. It is the document's all the same, and
+    /// what is wrong in the body is still said, once.
+    #[test]
+    fn a_function_reached_early_sees_the_whole_top_level() {
+        let src = "let tick = signal(0);\n\
+                   effect { if tick > 0 { load(); } }\n\
+                   let note = signal(\"\");\n\
+                   async fn load() { note = `loaded ${tick}`; }";
+        let e = errors(src);
+        assert!(e.is_empty(), "{e:?}");
+        // Through a second function.
+        let e = errors(
+            "let tick = signal(0);\neffect { if tick > 0 { sum(); } }\nlet items: int[] = [1];\n\
+             fn sum(): int { add() }\nfn add(): int { items.len() }",
+        );
+        assert!(e.is_empty(), "{e:?}");
+        // A real error in the body is reported, and only once.
+        let e = errors(
+            "let tick = signal(0);\neffect { if tick > 0 { load(); } }\nlet note = signal(\"\");\n\
+             fn load() { let n: int = note; }",
+        );
+        assert_eq!(e.iter().filter(|m| m.contains("int")).count(), 1, "{e:?}");
+        // Another function's `let` is still a caller's local.
+        let e = errors(
+            "let picked = signal(\"\");\neffect { outer(); }\nfn outer() { let helper = \"h\"; inner(); }\n\
+             fn inner() { picked = helper; }\nlet late = signal(0);",
+        );
+        assert!(e.iter().any(|m| m.contains("`inner` reads `helper`")), "{e:?}");
+    }
+
+    /// Tracer's AW-045: an empty array in one branch is the other branch's
+    /// array type.
+    #[test]
+    fn an_empty_array_branch_takes_the_others_type() {
+        let head = "let more = signal(true);\n";
+        clean(&format!(
+            "{head}fn joined(): string[] {{ let base: string[] = [\"a\"]; let extra = if more {{ [\"b\"] }} else {{ [] }}; return base + extra; }}"
+        ));
+        clean(&format!(
+            "{head}fn joined(): string[] {{ let extra = if more {{ [] }} else {{ [\"b\"] }}; return [\"a\"] + extra; }}"
+        ));
+        clean(&format!(
+            "{head}fn f(): int[] {{ let n = 1; let x = switch n {{ 1 => [1], _ => [] }}; return [0] + x; }}"
+        ));
+        // Two non-empty arrays of different items stay a union, as before.
+        let e = errors(&format!(
+            "{head}fn f(): int {{ let x = if more {{ [1] }} else {{ [\"b\"] }}; let n: int = x; n }}"
+        ));
+        assert!(!e.is_empty(), "{e:?}");
     }
 
     /// What the template pieces in `template` produce against `script`.
