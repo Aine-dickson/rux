@@ -46,6 +46,22 @@ fn a_run_in_the_paragraphs_own_style_measures_as_plain_text() {
     assert_eq!(te.measure(text, &style, None), plain);
 }
 
+/// Runs made for longer text (a field shortened by a keystroke before its
+/// marks are worked out again) are cut to the text or dropped, never handed to
+/// parley past the end, where it asserts (Tracer's AW-053).
+#[test]
+fn runs_past_the_end_of_the_text_are_cut_or_dropped() {
+    let mut te = TextEngine::new();
+    let text = "hello";
+    let plain = te.measure(text, &base(), None);
+    for runs in [vec![5..9], vec![7..9], vec![3..9], vec![0..9], vec![9..9], vec![2..2, 4..12]] {
+        let rich = RichText { runs: runs.iter().cloned().map(|r| run(r, SIZE, 400)).collect(), items: vec![] };
+        let style = TextStyle { rich: Some(&rich), ..base() };
+        assert_eq!(te.measure(text, &style, None), plain, "{runs:?}");
+        assert_eq!(te.measure("", &style, None).0, te.measure("", &base(), None).0, "{runs:?} on no text");
+    }
+}
+
 /// A larger run makes its line taller, and only its line.
 #[test]
 fn a_larger_run_makes_its_line_taller() {
