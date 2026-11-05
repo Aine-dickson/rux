@@ -251,6 +251,8 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "@focus", detail: "the field gained focus", doc: "`event.value` is its text." },
             Entry { name: "@cancel", detail: "a file picker closed with nothing chosen", doc: "On `type=\"file\"` only. The bound value stays what it was." },
             Entry { name: "@blur", detail: "the field lost focus", doc: "After `@change`, when both fire. `event.value` is its text." },
+            Entry { name: "@select", detail: "the caret or the selection moved", doc: "Once for each place they come to, by typing, a click, the arrows or script, and when the field is entered. `event.start`, `event.end` and `event.caret` are in characters, as strings index; `event.value` is the text." },
+            Entry { name: "marks", detail: "styled runs over a text field's text", doc: "`:marks` binds an array of `{ start, end, class }`, in characters: each range is drawn as a `<text>` with that class inside the field would be, so `.kw { color: blue }` or `.bad { text-decoration: underline wavy red }`. A mark changes how the text is drawn, never what is typed: `color`, `background` and `text-decoration` count. Where marks overlap, the later one wins. Not on a password or a placeholder." },
         ],
     ),
     (
@@ -542,6 +544,7 @@ const ELEMENT_PROPERTIES: &[Entry] = &[
     Entry { name: "y", detail: "top edge, in pixels", doc: "See `x`: one frame stale, absent before the first layout." },
     Entry { name: "width", detail: "width, in pixels", doc: "See `x`: one frame stale, absent before the first layout." },
     Entry { name: "height", detail: "height, in pixels", doc: "See `x`: one frame stale, absent before the first layout." },
+    Entry { name: "selection", detail: "a text field's selection, `{ start, end, caret }`", doc: "In characters, as strings index. Where it is while the field has focus, and where it was left after, so a button tapped beside the field still reads it. `none` for anything else, and for a field that has not had focus." },
 ];
 
 /// The actions on an element handle. Each returns nothing.
@@ -549,6 +552,8 @@ const ELEMENT_METHODS: &[Entry] = &[
     Entry { name: "focus", detail: "focus()", doc: "Give this element keyboard focus. Recorded and applied **after the handler finishes**, so a handler that focuses something and then changes state does not race its own tree." },
     Entry { name: "scrollIntoView", detail: "scrollIntoView()", doc: "Scroll whichever box scrolls until this element is visible. Applied after the handler, like the rest." },
     Entry { name: "tap", detail: "tap()", doc: "Tap this element as though a finger had. This is how a `mounted` hook drives the document, and how most of the lifecycle was verified." },
+    Entry { name: "setSelectionRange", detail: "setSelectionRange(start, end)", doc: "Select characters `start` to `end` of a text field, the caret at `end`, and give it focus. Equal numbers put the caret there." },
+    Entry { name: "insertText", detail: "insertText(text)", doc: "Replace a text field's selection with `text`, as typing it would: the field's undo takes it as a step of its own, `@input` runs, and the caret ends after it. The selection is where the field's is, or where it was left, or the end of a field never focused." },
 ];
 
 /// Methods on strings and arrays: JavaScript's names, deliberately.

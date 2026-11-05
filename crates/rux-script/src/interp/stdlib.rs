@@ -39,7 +39,8 @@ pub const METHODS: &[&str] = &[
     "toUpperCase", "to_upper", "toLowerCase", "to_lower", "make_upper", "make_lower", "startsWith", "starts_with",
     "endsWith", "ends_with", "repeat", "charAt", "substring", "sub_string", "split", "chars", "to_chars", "replace",
     "pad", "to_int", "trunc", "floor", "ceil", "ceiling", "round", "to_float", "toFloat", "sqrt", "abs", "is_nan",
-    "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "tap", "play", "pause", "call", "set",
+    "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "tap", "play", "pause",
+    "setSelectionRange", "insertText", "call", "set",
     "concat", "flat", "flatMap", "findLast", "findLastIndex", "lastIndexOf", "at", "fill", "toReversed", "toSorted",
     "unshift", "replaceAll", "padStart", "padEnd", "trimStart", "trimEnd", "toFixed",
 ];
@@ -129,6 +130,15 @@ pub(super) fn element_field(el: &ElementHandle, name: &str) -> R<V> {
         "y" => dim(|b| b.y),
         "width" => dim(|b| b.width),
         "height" => dim(|b| b.height),
+        "selection" => match el.facts.selection {
+            Some((start, end, caret)) => V::Map(Rc::new(
+                [("start", start), ("end", end), ("caret", caret)]
+                    .into_iter()
+                    .map(|(k, n)| (k.into(), V::Int(n as i64)))
+                    .collect(),
+            )),
+            None => V::None,
+        },
         _ => return fail(format!("Property not found: {name} on an Element")),
     })
 }
@@ -1079,6 +1089,14 @@ impl Interp {
                     ("tap", 0) => ElementAction::Tap(path),
                     ("play", 0) => ElementAction::Play(path),
                     ("pause", 0) => ElementAction::Pause(path),
+                    ("setSelectionRange", 2) => {
+                        let at = |v: &V| v.whole().map(|n| n.max(0) as usize);
+                        match (at(&argv[0]), at(&argv[1])) {
+                            (Some(start), Some(end)) => ElementAction::Select(path, start, end),
+                            _ => return fail("setSelectionRange takes two whole numbers: `el.setSelectionRange(start, end)`"),
+                        }
+                    }
+                    ("insertText", 1) => ElementAction::Insert(path, argv[0].display()),
                     _ => return Ok(None),
                 };
                 crate::ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(action));

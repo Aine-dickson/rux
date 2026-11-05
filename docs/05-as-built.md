@@ -2478,8 +2478,8 @@ default look for a button. Style `:disabled`:
 button:disabled { opacity: 0.5; }
 ```
 
-**Events.** Four on every input, each handed `event.value`, and a fifth on a
-file input:
+**Events.** Four on every input, each handed `event.value`, one more on a text
+field and one on a file input:
 
 | Event | When |
 |---|---|
@@ -2487,6 +2487,7 @@ file input:
 | `@change` | A changed value is committed: the field is left, or Enter is pressed in a one-line field. A select fires it on choosing a different option, a checkbox or radio on every toggle |
 | `@focus` | The field gained focus |
 | `@blur` | The field lost focus, after its `@change` when both fire |
+| `@select` | A text field's caret or selection came to a new place, the field being entered included. `event.start`, `event.end` and `event.caret`, in characters |
 | `@cancel` | `type="file"` only: the picker closed with nothing chosen. The value is kept |
 
 ```xml
@@ -2494,6 +2495,30 @@ file input:
 <input r-model="code" inputmode="numeric" maxlength="6" autofocus />
 <button :disabled="code.len() < 6" @tap="verify()">Verify</button>
 ```
+
+**Marks.** `:marks` on a text field draws runs of its text styled by a class,
+for a code editor's keywords or a problem underlined in place:
+
+```xml
+<input type="textarea" r-model="query" :marks="marks(query)" />
+```
+
+```css
+.kw { color: #0055ff; }
+.bad { text-decoration: underline wavy #e00000; }
+```
+
+It binds an array of `{ start, end, class }`, the range in characters of the
+value. Each range is drawn as a `<text>` with that class inside the field would
+be, so a rule like `.editor .kw` reaches it. A mark changes how the text is
+drawn and never what is typed, and the caret stays where the text is: `color`,
+`background` and `text-decoration` count, and anything else (a size, a weight)
+is said once and left out. Where two marks overlap, the later one in the array
+wins. A password and a placeholder are drawn without marks. When the marks are
+worked out from the field's own value, as above, they follow every keystroke;
+marks that read something else and no longer fit the text are dropped until
+they are worked out again. A change to what `:marks` reads restyles the field
+as a `:class` does.
 
 Handlers run **after** the edit or the focus change that caused them is
 complete, never from inside it, so a handler that writes the field's own

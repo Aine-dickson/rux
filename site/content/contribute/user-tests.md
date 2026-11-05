@@ -3291,6 +3291,34 @@ window at 978 by 984 client, a debug build of this checkout.
 | The `url` lines | probe 2, **1k lines** | lines 6, 16, 26 two lines tall, the next row below them | pass |
 | The rest | the same | one line each, as before | pass |
 
+## A text field's selection, marks and undo, 2026-11-05
+
+Tracer's AW-046 and AW-047: `el.selection`, `el.setSelectionRange`,
+`el.insertText`, `@select`, `:marks`, a field's undo kept across focus, and
+Ctrl+Z with nothing to undo going on to the app. Under test in `rux-runtime`
+(`tests/field_selection.rs`: characters against bytes with `é` and `ö`, a
+field left keeping its selection, `focus()` putting it back, marks as runs and
+the later of two overlapping ones winning) and in `rux-shell`
+(`an_empty_history_has_no_step_to_take`, `an_insert_from_script_is_its_own_step`).
+Driven on desktop with a debug `rux` from this checkout, a page with a
+textarea marked `query` (`.kw`) and `naem` (`.bad`, wavy underline), three
+buttons and a `<screen @key>` counting Ctrl+Z.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Marks drawn | open the page | `query` blue on a tint, `naem` with a wavy red underline, the rest plain | pass |
+| `@select` | click just after `naem` | `19-19 caret 19` | pass |
+| `el.selection` after leaving | tap "read selection" | the field loses focus; `19-19 caret 19` | pass |
+| `setSelectionRange(0, 5)` | tap "select 0-5" | `query` selected, the field focused, `@select` says `0-5 caret 5` | pass |
+| Typing over it | type `Q` | `Q { user { naem } }`, the keyword mark gone with the word, the underline moved with `naem` | pass |
+| Undo | Ctrl+Z | `query` back, selected | pass |
+| Ctrl+Z with nothing left | Ctrl+Z again | the field unchanged, the app's count 1 | pass |
+| Undo across focus | type `ab` at the end, type `zz` in another field, click back, Ctrl+Z | `ab` gone, `zz` left | pass |
+| `insertText` | type a space, tap "insert name" | `name` at the caret the field was left with, the field focused, caret after it | pass |
+| Its own undo step | Ctrl+Z | `name` gone, the space typed before it kept | pass |
+| `setSelectionRange` and the toolbar | as above | the Copy / Cut / Paste strip shows, as for any selection on desktop | as designed |
+| Web, Android | | not driven | open |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

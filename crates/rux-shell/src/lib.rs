@@ -2064,6 +2064,12 @@ struct App {
     meta_held: bool,
     /// The focused text field's undo and redo. See [`FieldHistory`].
     field_history: FieldHistory,
+    /// The histories of fields that were edited and left, by `(model, row,
+    /// instance)`, for when they get focus again. Dropped with their field.
+    histories: HashMap<(String, Option<String>, Option<String>), FieldHistory>,
+    /// The focused field's selection as `@select` last reported it, so it
+    /// runs once for each move, `(anchor, caret)`.
+    select_reported: Option<(usize, usize)>,
     /// An undo or redo is writing the field, so the write is not itself an
     /// edit to remember.
     replaying_history: bool,
@@ -2402,6 +2408,8 @@ impl App {
             alt_held: false,
             meta_held: false,
             field_history: FieldHistory::default(),
+            histories: HashMap::new(),
+            select_reported: None,
             replaying_history: false,
             scrolls: Vec::new(),
             resizes: Vec::new(),
@@ -4772,6 +4780,22 @@ impl App {
             }
         }
         self.adopt_focus_request();
+        // `insertText`, after the focus, so a `setSelectionRange` before it
+        // in the same handler says what it replaces.
+        for (focus, text) in self.document.take_inserts() {
+            let here = focus.is(
+                self.focused.as_deref().unwrap_or(""),
+                self.focused_row.as_deref(),
+                self.focused_instance.as_deref(),
+            );
+            if !here {
+                self.set_focus_range(Some(focus.clone()));
+            }
+            if self.focused.as_deref() == Some(focus.model.as_str()) {
+                self.insert_text(&focus.model, &text);
+            }
+            self.request_redraw();
+        }
         // `play()`, `pause()` and an `<audio>`'s own play button: the sounds
         // are kept by the shell.
         for (key, ask) in self.document.take_media_requests() {
@@ -5473,6 +5497,15 @@ impl App {
         });
     }
 
+    /// `el.insertText(text)`: replace the selection with `text` as typing it
+    /// would, a step of the field's undo of its own (Tracer's AW-046 and
+    /// AW-047), with `@input` after it.
+    fn insert_text(&mut self, model: &str, text: &str) {
+        self.field_history.boundary();
+        self.apply_paste(model, text);
+        self.field_history.boundary();
+    }
+
     /// Replace the selection with `pasted`, or insert it at the caret.
     fn apply_paste(&mut self, model: &str, pasted: &str) {
         // A single-line input takes the first line only, pasting a block
@@ -5614,11 +5647,22 @@ impl App {
     /// Whether the focused text field does something with `key` itself:
     /// text, the editing and moving keys, Enter, and its Ctrl chords (select
     /// all, copy, cut, paste, undo, redo). Everything else goes on outwards.
-    fn field_uses(&self, key: &Key) -> bool {
+    fn field_uses(&mut self, key: &Key) -> bool {
         match key {
-            Key::Character(s) if self.ctrl_held || self.meta_held => {
-                matches!(s.to_lowercase().as_str(), "a" | "c" | "x" | "v" | "z" | "y")
-            }
+            // Undo and redo only when the field has a step to take: with none,
+            // the key goes on outwards (Tracer's AW-047).
+            Key::Character(s) if self.ctrl_held || self.meta_held => match s.to_lowercase().as_str() {
+                "a" | "c" | "x" | "v" => true,
+                "z" => {
+                    let now = self.focused_value();
+                    self.field_history.can_step(&now, self.shift_held)
+                }
+                "y" => {
+                    let now = self.focused_value();
+                    self.field_history.can_step(&now, true)
+                }
+                _ => false,
+            },
             Key::Character(_) => true,
             // Alt+Left / Alt+Right are history, except on macOS, where
             // Option with an arrow moves a word.
@@ -6689,8 +6733,23 @@ impl App {
             })
             .flatten();
         if !same_field {
-            // Undo belongs to one field, as in every browser.
-            self.field_history = FieldHistory::default();
+            // Undo belongs to one field, and stays with it while it is there,
+            // focused or not (Tracer's AW-047): the field left keeps its
+            // history, and the one entered gets its own back. A value the app
+            // changed in between is caught by the history itself, which then
+            // starts again.
+            let left_history = std::mem::take(&mut self.field_history);
+            if let Some(model) = self.focused.clone() {
+                if !left_history.is_empty() {
+                    self.histories
+                        .insert((model, self.focused_row.clone(), self.focused_instance.clone()), left_history);
+                }
+            }
+            if let Some(f) = focus.as_ref() {
+                if let Some(kept) = self.histories.remove(&(f.model.clone(), f.row.clone(), f.instance.clone())) {
+                    self.field_history = kept;
+                }
+            }
             self.text_scroll = 0.0;
             self.handles = false;
             self.caret_handle_until = None;
@@ -6762,6 +6821,28 @@ impl App {
         let keyboard =
             !self.focused_field.readonly && self.focused_field.keyboard != Keyboard::None;
         self.set_ime_enabled(self.focused.is_some() && keyboard);
+        // `@select`: where the caret and the selection are, once for each
+        // place they come to, a field entered included (Tracer's AW-046).
+        let now = self.focused.is_some().then_some((self.anchor, self.caret));
+        if !same_field {
+            self.select_reported = None;
+        }
+        if now.is_some() && now != self.select_reported {
+            self.select_reported = now;
+            if let Some(body) = self.live_field().on_select {
+                let value = self.focused_value();
+                let chars = |b: usize| value.get(..b.min(value.len())).map_or(0, |s| s.chars().count());
+                let (a, c) = (chars(self.anchor), chars(self.caret));
+                let number = |n: usize| rux_reactive::Value::Number(n as f64);
+                let event = rux_reactive::Value::Map(vec![
+                    ("value".to_string(), rux_reactive::Value::Text(value.clone())),
+                    ("start".to_string(), number(a.min(c))),
+                    ("end".to_string(), number(a.max(c))),
+                    ("caret".to_string(), number(c)),
+                ]);
+                self.field_events.push_back((body, self.focused_instance.clone(), event));
+            }
+        }
         self.reset_blink();
         self.request_redraw();
     }
@@ -7502,6 +7583,7 @@ impl App {
             selection_ends,
             reveal_focus,
             keyboard_reveal,
+            histories,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -7911,6 +7993,12 @@ impl App {
         *hits = layout.hits;
         *focuses = layout.focuses;
         *metrics = layout.metrics.clone();
+        // A field's undo goes with the field.
+        if !histories.is_empty() {
+            histories.retain(|(m, r, i), _| {
+                focuses.iter().any(|f| f.model == *m && f.row == *r && f.instance == *i)
+            });
+        }
         // A field that is no longer in the tree must not stay focused. Nothing
         // dropped focus when its input went away: only a web source reload ever
         // cleared it, so navigating off a page you had been typing on left the
@@ -10428,8 +10516,9 @@ fn decimal_from(c: Option<char>) -> char {
 /// way through a surrogate pair. An edit that does not lengthen the value is
 /// let through untouched, so a value that was already too long can still be
 /// shortened.
-/// A text field's undo and redo, kept by the shell while the field has focus,
-/// as a browser keeps one per field.
+/// A text field's undo and redo, kept by the shell for as long as the field
+/// is there, focused or not, as a browser keeps one per field. The focused
+/// field's is here; the others wait in `App::histories`.
 ///
 /// **Typing is grouped**, as browsers group it: a run of typing in one place
 /// is one step. A new step starts when the caret was moved in between, after a
@@ -10438,7 +10527,9 @@ fn decimal_from(c: Option<char>) -> char {
 ///
 /// **If the app's script changes the field's value, the history is dropped**,
 /// as a browser drops it: an undo would otherwise put back text the app has
-/// since replaced for a reason the field cannot know.
+/// since replaced for a reason the field cannot know. Text a script inserts
+/// with `insertText` is not that: it is edited in as typing is, a step of its
+/// own (Tracer's AW-047).
 #[derive(Default)]
 struct FieldHistory {
     /// Text, caret and anchor before each step, oldest first.
@@ -10498,6 +10589,31 @@ impl FieldHistory {
             self.redo.push(now);
         }
         Some(to)
+    }
+
+    fn is_empty(&self) -> bool {
+        self.undo.is_empty() && self.redo.is_empty()
+    }
+
+    /// Whether an undo (or a redo) of the field, holding `now`, has a step to
+    /// take. With none, Ctrl+Z goes on to the `@key`s around the field
+    /// (Tracer's AW-047), where an app's own undo can have it.
+    fn can_step(&self, now: &str, redo: bool) -> bool {
+        if self.expect.is_some() && self.expect.as_deref() != Some(now) {
+            return false;
+        }
+        if redo {
+            !self.redo.is_empty()
+        } else {
+            !self.undo.is_empty()
+        }
+    }
+
+    /// The next edit is a step of its own, however small: what a script
+    /// inserts is undone apart from the typing either side of it.
+    fn boundary(&mut self) {
+        self.caret = None;
+        self.at = None;
     }
 
     /// An undo or redo left the field holding `text`; the next edit starts a
@@ -13895,6 +14011,37 @@ mod field_history {
         h.wrote("");
         type_in(&mut h, &mut field, &mut at, "draft");
         assert!(h.step(("cleared by the app".into(), 0, 0), false).is_none());
+    }
+
+    /// Tracer's AW-047: with nothing to undo the field has no use for Ctrl+Z,
+    /// which then goes on to the app; nor after the app changed the value.
+    #[test]
+    fn an_empty_history_has_no_step_to_take() {
+        let mut h = FieldHistory::default();
+        assert!(!h.can_step("", false) && !h.can_step("", true));
+        let (mut field, mut at) = (String::new(), 0);
+        h.wrote("");
+        type_in(&mut h, &mut field, &mut at, "abc");
+        assert!(h.can_step("abc", false), "typing to undo");
+        assert!(!h.can_step("abc", true), "nothing to redo");
+        assert!(!h.can_step("changed by the app", false), "the app's value is not this history's");
+        let back = h.step((field.clone(), at, at), false).unwrap();
+        h.wrote(&back.0);
+        assert!(!h.can_step("", false) && h.can_step("", true));
+    }
+
+    /// Text a script inserts (`insertText`) is a step of its own between two
+    /// runs of typing, however short it is.
+    #[test]
+    fn an_insert_from_script_is_its_own_step() {
+        let mut h = FieldHistory::default();
+        let (mut field, mut at) = (String::new(), 0);
+        h.wrote("");
+        type_in(&mut h, &mut field, &mut at, "ab");
+        h.boundary();
+        type_in(&mut h, &mut field, &mut at, "X");
+        h.boundary();
+        assert_eq!(h.step((field.clone(), at, at), false).unwrap().0, "ab");
     }
 }
 

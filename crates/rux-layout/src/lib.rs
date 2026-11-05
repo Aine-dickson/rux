@@ -2691,6 +2691,8 @@ pub struct Field {
     pub on_focus: Option<String>,
     /// `@blur`.
     pub on_blur: Option<String>,
+    /// `@select`: the caret moved or the selection changed, by any means.
+    pub on_select: Option<String>,
     /// A date field's earliest and latest day, `YYYY-MM-DD`. A day outside
     /// them is not offered by the picker and does not reach the signal.
     pub min: Option<(i32, u32, u32)>,

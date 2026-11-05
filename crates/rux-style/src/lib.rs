@@ -624,6 +624,7 @@ fn field_of(
         on_change: handler("@change"),
         on_focus: handler("@focus"),
         on_blur: handler("@blur"),
+        on_select: handler("@select"),
         min: el.attr("min").and_then(rux_layout::parse_date),
         max: el.attr("max").and_then(rux_layout::parse_date),
         autocomplete: el.attr("autocomplete").map(str::to_string),
@@ -7272,6 +7273,127 @@ fn matched_placeholder(
     Some(Rgba { a: c.a * opacity, ..c })
 }
 
+/// The runs a text field's `:marks` draws (Tracer's AW-046): each mark
+/// `{ start, end, class }`, in characters of `value`, styled by the rules
+/// that match a `<text>` with that class inside the field. A mark paints:
+/// its `color`, a `background` behind its words and its `text-decoration`.
+/// What would move the words (a size, a weight) is said and left out, so the
+/// caret stays where the typed text is. Marks that overlap are cut so the
+/// later one in the list wins where they meet.
+#[allow(clippy::too_many_arguments)]
+fn field_marks(
+    marks: &Value,
+    value: &str,
+    input: &ElemDesc,
+    ancestors: &[AncNode],
+    rules: &[Rule],
+    vars: &HashMap<String, String>,
+    scheme: ColorScheme,
+    base: &rux_layout::RunStyle,
+) -> Option<rux_layout::RichText> {
+    let items = marks.as_list()?;
+    // Character positions to bytes, the end of the text included.
+    let bounds: Vec<usize> = value.char_indices().map(|(i, _)| i).chain([value.len()]).collect();
+    let at = |chars: i64| bounds[(chars.max(0) as usize).min(bounds.len() - 1)];
+    let mut chain = ancestors.to_vec();
+    chain.push(AncNode { desc: input.clone(), prev: Vec::<ElemDesc>::new().into(), place: 1, child_total: None, form: None });
+    let mut styles: HashMap<String, rux_layout::RunStyle> = HashMap::new();
+    // Each byte range with the mark that covers it, the last one written winning.
+    let mut spans: Vec<(usize, usize, String)> = Vec::new();
+    for item in items.iter() {
+        let field = |k: &str| match item {
+            Value::Map(entries) => entries.iter().find(|(name, _)| name == k).map(|(_, v)| v),
+            _ => None,
+        };
+        let whole = |v: &Value| v.as_number().map(|n| n as i64);
+        let (Some(start), Some(end)) = (field("start").and_then(whole), field("end").and_then(whole)) else {
+            warn_once("a mark in `:marks` needs a `start` and an `end`, in characters: `{ start: 0, end: 4, class: \"kw\" }`".to_string());
+            continue;
+        };
+        let class = field("class").map(|c| c.to_display()).unwrap_or_default();
+        let (a, b) = (at(start), at(end));
+        if a >= b {
+            continue;
+        }
+        if !styles.contains_key(&class) {
+            let style = mark_style(&class, &chain, rules, vars, scheme, base);
+            styles.insert(class.clone(), style);
+        }
+        spans.push((a, b, class));
+    }
+    if spans.is_empty() {
+        return None;
+    }
+    let mut cuts: Vec<usize> = spans.iter().flat_map(|s| [s.0, s.1]).collect();
+    cuts.sort_unstable();
+    cuts.dedup();
+    let mut rich = rux_layout::RichText::default();
+    for w in cuts.windows(2) {
+        let (a, b) = (w[0], w[1]);
+        let Some((_, _, class)) = spans.iter().rev().find(|s| s.0 <= a && b <= s.1) else { continue };
+        let style = styles[class].clone();
+        match rich.runs.last_mut() {
+            Some(last) if last.range.end == a && last.style == style => last.range.end = b,
+            _ => rich.runs.push(rux_layout::TextRun { range: a..b, style }),
+        }
+    }
+    Some(rich)
+}
+
+/// One mark's look: the field's text, with what the class's rules say about
+/// its colour, background and decoration.
+fn mark_style(
+    class: &str,
+    chain: &[AncNode],
+    rules: &[Rule],
+    vars: &HashMap<String, String>,
+    scheme: ColorScheme,
+    base: &rux_layout::RunStyle,
+) -> rux_layout::RunStyle {
+    let desc = ElemDesc {
+        tag: "text".to_string(),
+        id: None,
+        classes: class.split_whitespace().map(str::to_string).collect(),
+        role: None,
+        attrs: Vec::new(),
+        states: ElemStates::default(),
+        total: None,
+    };
+    let mut props = matched_props(&desc, chain, &[], rules);
+    for value in props.values_mut() {
+        if value.contains("var(") {
+            *value = resolve_vars(value, vars, 0);
+        }
+        if let Some(v) = rewrite_colors(value, base.color, scheme) {
+            *value = v;
+        }
+    }
+    let mut style = base.clone();
+    for (k, v) in &props {
+        match k.as_str() {
+            "color" => {
+                if let Some(c) = parse_color(v) {
+                    style.color = c;
+                }
+            }
+            "background" | "background-color" => style.background = parse_color(v),
+            k if k.starts_with("text-decoration") || k == "text-underline-offset" => {}
+            k if k.starts_with("--") => {}
+            other => warn_once(format!(
+                "`{other}` does nothing in a mark of `:marks`; a mark is drawn with `color`, `background` \
+                 and `text-decoration`, which leave the typed text where it is"
+            )),
+        }
+    }
+    let lines = Lines::of(&props);
+    style.underline |= lines.underline;
+    style.strikethrough |= lines.strikethrough;
+    if props.keys().any(|k| k.starts_with("text-decoration") || k == "text-underline-offset") {
+        style.look = text_look(&props, base.look.as_ref(), false, lines.overline);
+    }
+    style
+}
+
 /// A file input's button before any `::file-selector-button` rule: a
 /// browser's, in whichever colour scheme the input is in.
 const FILE_BUTTON_LOOK: &str = "padding: 2px 8px; margin-right: 8px; border: 1px solid light-dark(#767676, #858585); \
@@ -8992,6 +9114,37 @@ fn build_node_inner(
                 v
             })
             .unwrap_or_default();
+        // `:marks`: styled runs over what is typed (Tracer's AW-046). Its
+        // signals restyle this node, as a `:class` does. Not on a placeholder,
+        // which is not what was typed, nor on a password's bullets.
+        if el.attr("marks").is_some() {
+            located(el.attr_line("marks"), || {
+                warn("`marks` takes an array of `{ start, end, class }`, so it is bound: write `:marks=\"…\"`".to_string())
+            });
+        }
+        let rich = el.attr(":marks").and_then(|expr| {
+            let (marks, deps) = located(el.attr_line(":marks"), || engine.eval_value_tracked(expr, locals));
+            if !deps.is_empty() {
+                reg.styled.push(StyledBinding { path: path.to_vec(), deps });
+            }
+            if value.is_empty() || secret || !matches!(kind, InputKind::Text | InputKind::Textarea | InputKind::Search) {
+                return None;
+            }
+            let base = rux_layout::RunStyle {
+                font_size,
+                weight,
+                italic,
+                family: font_family.clone(),
+                letter_spacing,
+                word_spacing,
+                underline,
+                strikethrough,
+                color,
+                background: None,
+                look: look.clone(),
+            };
+            field_marks(&marks?, &value, &desc, ancestors, rules, &vars, scheme, &base).map(Arc::new)
+        });
         // The same three-way choice as `eval_value_binding`, which handles every
         // keystroke after this one. Both are here rather than shared because the
         // build has the colours to hand and the patch has the binding; they must
@@ -9031,7 +9184,7 @@ fn build_node_inner(
                     handle: props.get("accent-color").and_then(|v| parse_color(v)),
                     ..selection
                 },
-                rich: None,
+                rich,
                 white_space: Default::default(),
                 // A field follows what is typed into it, Arabic or English,
                 // unless it is told a direction of its own: `dir` on it, or a

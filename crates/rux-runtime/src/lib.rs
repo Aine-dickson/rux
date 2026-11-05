@@ -234,6 +234,15 @@ pub struct Document {
     /// What was asked of `<audio>` elements' sounds, by key, that the shell,
     /// which holds the sounds, has not taken yet.
     pending_media: Vec<(String, rux_script::MediaAsk)>,
+    /// `insertText` calls the shell has not taken yet: the field, with the
+    /// selection the text replaces, and the text. The shell's, because the
+    /// edit joins the field's undo, which the shell keeps.
+    pending_inserts: Vec<(Focus, String)>,
+    /// Where each text field's selection was last, by `(model, row,
+    /// instance)`, as `(anchor, caret)` in bytes: the focused one's as it
+    /// moves, and a field left keeps where it was, as `el.selection` reports
+    /// and `focus()` puts back.
+    selections: HashMap<(String, Option<String>, Option<String>), (usize, usize)>,
     /// A `focus()` or `blur()` the shell has not taken yet. `Some(None)` is a
     /// blur, `Some(Some(f))` a focus, `None` nothing asked.
     ///
@@ -396,7 +405,7 @@ const EVENT_NAMES: &[&str] = &["tap", "press", "release", "longpress", "swipe", 
 
 /// The events only an `<input>` has, on top of [`EVENT_NAMES`]: what happens to
 /// its value and its focus, which no other element has.
-const FIELD_EVENT_NAMES: &[&str] = &["input", "change", "focus", "blur"];
+const FIELD_EVENT_NAMES: &[&str] = &["input", "change", "focus", "blur", "select"];
 
 /// The event only a file input has: its picker closed with nothing chosen.
 const FILE_EVENT_NAMES: &[&str] = &["cancel"];
@@ -1053,6 +1062,8 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
         "key" => "KeyEvent".to_string(),
         "drag" => "DragEvent".to_string(),
         "swipe" => "SwipeEvent".to_string(),
+        // Where the caret and the selection are, in characters of the value.
+        "select" if el.tag == "input" => "{ value: string, start: int, end: int, caret: int }".to_string(),
         "input" | "change" | "focus" | "blur" if el.tag == "input" => {
             // A number field bound to a signal hands over the number the signal
             // holds; everything else hands over text, or has not been measured.
@@ -3108,6 +3119,8 @@ impl Document {
             pending_taps: Vec::new(),
             pending_submits: Vec::new(),
             pending_media: Vec::new(),
+            pending_inserts: Vec::new(),
+            selections: HashMap::new(),
             pending_focus: None,
             root: Root::new(root),
         };
@@ -3264,6 +3277,8 @@ impl Document {
             pending_taps: Vec::new(),
             pending_submits: Vec::new(),
             pending_media: Vec::new(),
+            pending_inserts: Vec::new(),
+            selections: HashMap::new(),
             pending_focus: None,
             root: Root::new(root),
         };
@@ -3334,6 +3349,15 @@ impl Document {
             _ => false,
         };
         let left = if same { None } else { self.focus.take() };
+        if let Some(f) = &focus {
+            // Fields gone from the tree are forgotten, now and then.
+            if self.selections.len() >= 256 {
+                let live: HashSet<(String, Option<String>, Option<String>)> =
+                    self.registry.value.iter().map(|b| (b.model.clone(), b.row.clone(), b.instance.clone())).collect();
+                self.selections.retain(|id, _| live.contains(id));
+            }
+            self.selections.insert((f.model.clone(), f.row.clone(), f.instance.clone()), (f.anchor, f.caret));
+        }
         self.focus = focus;
         // A draft belongs to one field and ends with its focus. The field it
         // was shown in goes back to showing its value.
@@ -3677,6 +3701,21 @@ impl Document {
             let (text, color) = rux_style::eval_value_binding(binding, &mut self.engine);
             if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 if let Some(content) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
+                    // `:marks` that do not read this value were made for the
+                    // text before: what no longer lands on it is dropped, and
+                    // the rest waits for the marks to be worked out again.
+                    if content.text != text {
+                        if let Some(rich) = content.rich.take() {
+                            let fits = |r: &rux_layout::TextRun| {
+                                r.range.end <= text.len()
+                                    && text.is_char_boundary(r.range.start)
+                                    && text.is_char_boundary(r.range.end)
+                            };
+                            if !binding.secret && text != binding.placeholder && rich.runs.iter().all(fits) {
+                                content.rich = Some(rich);
+                            }
+                        }
+                    }
                     content.text = text;
                     content.color = color;
                 }
@@ -4826,8 +4865,27 @@ impl Document {
     /// confidently about a tree that is no longer on screen. The clone is of a
     /// flat vector of small records, against a tap that is about to patch or
     /// rebuild the tree anyway.
-    fn element_resolver(&self) -> rux_script::ElementResolver {
+    fn element_resolver(&mut self) -> rux_script::ElementResolver {
         let index = self.registry.elements.clone();
+        // Each text field's selection, by its path, in characters: only those
+        // that have had focus, which are few, so their values are read now.
+        let mut selections: HashMap<Vec<usize>, (usize, usize, usize)> = HashMap::new();
+        if !self.selections.is_empty() {
+            let fields: Vec<(Vec<usize>, (String, Option<String>, Option<String>))> = self
+                .registry
+                .value
+                .iter()
+                .map(|b| (b.path.clone(), (b.model.clone(), b.row.clone(), b.instance.clone())))
+                .filter(|(_, id)| self.selections.contains_key(id))
+                .collect();
+            for (path, id) in fields {
+                let (anchor, caret) = self.selections[&id];
+                let value = self.value_in(&id.0, id.1.as_deref(), id.2.as_deref());
+                let chars = |b: usize| value.get(..b.min(value.len())).map_or(value.chars().count(), |s| s.chars().count());
+                let (a, c) = (chars(anchor), chars(caret));
+                selections.insert(path, (a.min(c), a.max(c), c));
+            }
+        }
         // Geometry comes from the frame already on screen, so a handler reads
         // last layout's numbers. That is the same guarantee the browser gives,
         // and the alternative is laying out in the middle of a tap that is
@@ -4852,6 +4910,7 @@ impl Document {
                                 height: e.height,
                             }
                         }),
+                        selection: selections.get(&m.path).copied(),
                         path: m.path,
                         tag: m.tag,
                         id: m.id,
@@ -4953,6 +5012,30 @@ impl Document {
         Some(FormReport { form, instance, values, failures })
     }
 
+    /// Take the `insertText` calls the last handler made: each field, with
+    /// the selection its text replaces, and the text.
+    pub fn take_inserts(&mut self) -> Vec<(Focus, String)> {
+        std::mem::take(&mut self.pending_inserts)
+    }
+
+    /// The text field at `path`, focused with its selection as it was last,
+    /// else with the caret at the end of its value. `None` for anything that
+    /// is not a text field.
+    fn field_focus(&mut self, path: &[usize]) -> Option<Focus> {
+        let n = node_at(&self.root, path)?;
+        if !matches!(n.kind, rux_layout::InputKind::Text | rux_layout::InputKind::Textarea | rux_layout::InputKind::Search | rux_layout::InputKind::Password) || n.options.is_some() {
+            return None;
+        }
+        let (model, instance) = (n.model.clone()?, n.instance.clone());
+        let row = row_at(&self.root, path);
+        let mut focus = Focus::at_row_in(model.clone(), row.clone(), instance.clone(), 0);
+        let len = self.value_in(&model, row.as_deref(), instance.as_deref()).len();
+        let (anchor, caret) = self.selections.get(&(model, row, instance)).copied().unwrap_or((len, len));
+        focus.anchor = anchor.min(len);
+        focus.caret = caret.min(len);
+        Some(focus)
+    }
+
     /// Take the `focus()` / `blur()` the last handler asked for, if any.
     ///
     /// The shell applies it through its own focus funnel, so keystrokes, the
@@ -4986,15 +5069,17 @@ impl Document {
                             n.model.clone().map(|m| (m, n.key.clone(), n.instance.clone()))
                         });
                     if let Some((model, row, instance)) = found {
-                        // Read in the input's own scope. Read in the document's,
-                        // an input inside a component reported its own model as
-                        // undefined and the caret landed in an empty field.
-                        let caret = self
-                            .value_in(&model, row.as_deref(), instance.as_deref())
-                            .chars()
-                            .count();
-                        self.pending_focus =
-                            Some(Some(Focus::at_row_in(model, row, instance, caret)));
+                        // A text field gets its selection back, as it was left
+                        // (Tracer's AW-046); never focused, the caret goes to
+                        // the end. Read in the input's own scope: read in the
+                        // document's, an input inside a component reported its
+                        // own model as undefined and the caret landed in an
+                        // empty field.
+                        let focus = self.field_focus(&path).unwrap_or_else(|| {
+                            let end = self.value_in(&model, row.as_deref(), instance.as_deref()).len();
+                            Focus::at_row_in(model, row, instance, end)
+                        });
+                        self.pending_focus = Some(Some(focus));
                         acted = true;
                     } else {
                         rux_script::warn_script(
@@ -5030,6 +5115,34 @@ impl Document {
                     self.pending_media.push((key, ask));
                     acted = true;
                 }
+                rux_script::ElementAction::Select(path, start, end) => match self.field_focus(&path) {
+                    Some(mut focus) => {
+                        let value = self.value_in(&focus.model, focus.row.as_deref(), focus.instance.as_deref());
+                        let byte = |c: usize| value.char_indices().nth(c).map_or(value.len(), |(i, _)| i);
+                        let (start, end) = (byte(start.min(end)), byte(end));
+                        focus.anchor = start;
+                        focus.caret = end;
+                        self.selections.insert((focus.model.clone(), focus.row.clone(), focus.instance.clone()), (start, end));
+                        self.pending_focus = Some(Some(focus));
+                        acted = true;
+                    }
+                    None => rux_script::warn_script(
+                        "setSelectionRange() was called on an element that is not a text field, so nothing was                          selected"
+                            .to_string(),
+                    ),
+                },
+                rux_script::ElementAction::Insert(path, text) => match self.field_focus(&path) {
+                    Some(focus) => {
+                        // After a `setSelectionRange` in the same handler,
+                        // the selection it set is the one replaced.
+                        self.pending_inserts.push((focus, text));
+                        acted = true;
+                    }
+                    None => rux_script::warn_script(
+                        "insertText() was called on an element that is not a text field, so nothing was                          inserted"
+                            .to_string(),
+                    ),
+                },
             }
         }
         acted

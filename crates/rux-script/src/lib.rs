@@ -154,6 +154,11 @@ pub struct ElementFacts {
     /// no GPU, which is the point of it running in CI), or the node is hidden
     /// by `r-show="false"` and so is not on screen to have a box.
     pub bounds: Option<ElementBox>,
+    /// A text field's selection, in characters of its value: `(start, end,
+    /// caret)`, the caret at one end. Where it is while the field has focus,
+    /// and where it was left after. `None` for anything else, and for a field
+    /// that has not had focus.
+    pub selection: Option<(usize, usize, usize)>,
 }
 
 /// A laid-out box in absolute window pixels.
@@ -1319,6 +1324,13 @@ pub enum ElementAction {
     /// ([`MEDIA_ASK_FN`]): asked rather than done, since a sound not loaded
     /// yet (`preload="none"`) has nothing to call.
     Media(String, MediaAsk),
+    /// Select characters `start..end` of this text field, the caret at `end`,
+    /// and give it focus (`setSelectionRange`).
+    Select(Vec<usize>, usize, usize),
+    /// Replace this text field's selection with the text, as typing it would
+    /// (`insertText`): the field's undo takes it as a step, `@input` runs, and
+    /// the caret ends after it.
+    Insert(Vec<usize>, String),
 }
 
 /// What is asked of an `<audio>`'s sound.
@@ -3636,6 +3648,7 @@ mod tests {
                     id: Some("first".into()),
                     classes: vec!["card".into()],
                     bounds: Some(ElementBox { x: 4.0, y: 8.0, width: 120.0, height: 40.0 }),
+                    selection: None,
                 },
                 ElementFacts {
                     path: vec![0, 1],
@@ -3644,6 +3657,7 @@ mod tests {
                     classes: vec!["card".into(), "wide".into()],
                     // Stands for a node with no box: hidden, or never laid out.
                     bounds: None,
+                    selection: None,
                 },
             ]),
             "!" => None, // stands for a selector that does not parse

@@ -86,7 +86,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[&str])] = &[
             "type", "placeholder", "value", "checked", "name", "required", "minlength",
             "pattern", "options", "disabled", "readonly", "min", "max", "step", "maxlength",
             "inputmode", "enterkeyhint", "autocomplete", "autofocus", "r-model", "accept",
-            "multiple", "capture",
+            "multiple", "capture", "marks",
         ],
     ),
     ("button", &["disabled", "type"]),
@@ -103,7 +103,7 @@ const BOUND_GLOBAL: &[&str] = &["class", "style", "to", "r-transition"];
 const BOUND_ELEMENT: &[(&str, &[&str])] = &[
     ("image", &["src"]),
     ("path", &["d"]),
-    ("input", &["options", "disabled", "readonly", "required"]),
+    ("input", &["options", "disabled", "readonly", "required", "marks"]),
     ("button", &["disabled"]),
     ("audio", &["src", "controls", "autoplay", "loop", "muted"]),
     ("video", &["src", "poster", "controls", "autoplay", "loop", "muted"]),

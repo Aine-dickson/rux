@@ -235,7 +235,7 @@ fn shortcut(e) {
 
 A key goes, in order, to: the focused text field's own `@key`; **the field's own
 editing**, for a key it uses (text, Backspace, the arrows, Enter, and Ctrl+A, C,
-X, V, Z, Y); each enclosing element's `@key`, innermost first, then the
+X, V, and Ctrl+Z and Y while it has a step to undo or redo); each enclosing element's `@key`, innermost first, then the
 `<screen>`'s; and the shell's own handling (Tab, Enter on a button, scrolling,
 Alt+Left and Right). So Ctrl+Z in a field undoes its typing and outside one
 reaches the app's own undo, and Ctrl+S, which no field uses, reaches the app
@@ -244,8 +244,13 @@ from anywhere.
 **A text field has undo and redo**: Ctrl+Z, and Ctrl+Y or Ctrl+Shift+Z. Typing
 is grouped as a browser groups it, a run of typing in one place being one step;
 moving the caret, a pause of a second, switching between typing and deleting,
-and a paste each start a new one. The history belongs to the field while it has
-focus, and is dropped when the app's script changes the field's value.
+and a paste each start a new one. The history belongs to the field as long as
+the field is there, focused or not: leave it, come back, and Ctrl+Z still undoes
+what was typed. It is dropped when the app's script writes the field's value,
+since an undo would put back text the app replaced. An edit made with
+`el.insertText(text)` is the exception: it is undone as a step of its own, as if
+it had been typed. With nothing left to undo, Ctrl+Z goes on to the `@key`s
+around the field, so an app's own undo can follow the field's.
 
 On a component's tag, `@key` is a listener for an `emit("key")`, as every
 `@name` there is.
@@ -1342,6 +1347,32 @@ state, and the next build produces the tree it would have produced anyway.
 | `el.focus()` | Puts the caret in a text input |
 | `blur()` | Drops focus entirely |
 | `el.scrollIntoView()` | Scrolls the containing scroller until it is visible |
+| `el.setSelectionRange(start, end)` | Selects characters `start` to `end` of a text field, the caret at `end`, and gives it focus |
+| `el.insertText(text)` | Replaces a text field's selection with `text` as typing would: one undo step, `@input` after it, the caret after the text |
+
+**A text field's selection** is `el.selection`, `{ start, end, caret }` in
+characters, as strings index, the caret at one end of it. It is where the
+selection is while the field has focus and where it was left after, so a button
+beside the field reads it although tapping the button moved focus away. A field
+that has not had focus, and anything that is not a text field, has `none`.
+`focus()` on a text field puts that selection back; a field never focused gets
+its caret at the end. `@select` on the field runs each time the caret or the
+selection comes to a new place, with `event.start`, `event.end`, `event.caret`
+and `event.value`.
+
+```rux
+fn complete(name: string) {
+  let q = query("#query")[0];
+  let s = q.selection;
+  if s != none {
+    q.setSelectionRange(wordStart(text, s.caret), s.caret);
+    q.insertText(name);
+  }
+}
+```
+
+`insertText` replaces where the field's selection is, or was left; a
+`setSelectionRange` earlier in the same handler sets what it replaces.
 
 **`el.tap()` is the whole gesture, not a way to call the handler.** It presses the
 centre of the element through the same dispatch a real pointer goes through, so
