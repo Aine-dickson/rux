@@ -3309,7 +3309,7 @@ buttons and a `<screen @key>` counting Ctrl+Z.
 | Undo across focus | type `ab` at the end, type `zz` in another field, click back, Ctrl+Z | `ab` gone, `zz` left | pass |
 | `insertText` | type a space, tap "insert name" | `name` at the caret the field was left with, the field focused, caret after it | pass |
 | Its own undo step | Ctrl+Z | `name` gone, the space typed before it kept | pass |
-| `setSelectionRange` and the toolbar | as above | the Copy / Cut / Paste strip shows, as for any selection on desktop | as designed |
+| `setSelectionRange` and the toolbar | as above | the Copy / Cut / Paste strip shows, as for any selection on desktop | as designed then; since AW-052 (below) no strip for a script's selection |
 | Android: the same, on the `rux_test` emulator (Pixel, API 36, AOSP keyboard), a dev APK from this checkout, taps and `adb input` | marks, `@select` (19), `el.selection` after leaving (19, keyboard down), `setSelectionRange`, typing `Q` over it, `insertText` | as on desktop; the platform's own Cut / Copy / Share menu instead of the drawn strip | pass |
 | Android: Ctrl+Z from a keyboard | `input keycombination KEYCODE_CTRL_LEFT KEYCODE_Z` after typing `ab`, twice | (found) typed `z`: winit's Android backend sends no modifier changes, so no Ctrl chord ever reached a field or `@key`. Fixed: the shell follows the modifier keys themselves there, and the shim no longer commits a Ctrl or Meta chord as text. Then `ab` undone, and the second reaches the app (count 1) | pass |
 | Web | | not driven | open |
@@ -3348,6 +3348,16 @@ color: #0055ff; background: #e0e8ff; }`, a button calling
 | Cut and insert | Shift+Left, Ctrl+X, tap "insert" | `cut insert` | pass |
 | `clearHistory()` | tap "clear history", click the field, Ctrl+Z | the text stays `abcP!`; the app counts 1 | pass |
 | Web, Android | | not driven; the web compiles (`cargo check` for wasm) | open |
+
+Then Tracer's AW-052: the selection toolbar only for a finger's selection.
+The same AW-048 page.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Keyboard | click the field's end, Shift+Home | the line selected, no toolbar | pass |
+| Mouse | drag across `query { ` | selected, no toolbar | pass |
+| Script | tap "select 0..8" | 0 to 8 selected, no toolbar; Ctrl+C then puts `query { ` on the clipboard | pass |
+| A finger | long press a word on a touch screen, or a phone's browser | the word selected, handles and the toolbar | not driven: no touch screen here, and Windows' injected touch did not reach the window |
 
 ## Standing gaps
 

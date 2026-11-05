@@ -3352,6 +3352,12 @@ impl App {
         if cfg!(target_os = "android") {
             return None;
         }
+        // Only for a finger's selection, which is what the handles mark: a
+        // mouse, the keyboard or a script select with nothing over the page,
+        // as a desktop program does, and copy with Ctrl+C (Tracer's AW-052).
+        if !self.handles {
+            return None;
+        }
         if self.caret == self.anchor && !self.caret_menu {
             return None;
         }
@@ -7554,7 +7560,9 @@ impl App {
         });
         let caret_visible = self.caret_visible;
         let safe_top = self.safe_top();
-        let caret_menu = self.caret_menu;
+        // Whether the selection toolbar is up, as its hit test sees it, so the
+        // two never disagree.
+        let toolbar_up = self.toolbar_field().is_some();
         let toolbar_actions = self.toolbar_actions();
         let handle_set = self.handle_set();
         let drop_caret = self.drop_caret();
@@ -7568,9 +7576,6 @@ impl App {
                 (r.id, (bar_fade(self.bar_seen.get(&r.id).copied(), held), hovered))
             })
             .collect();
-        // The toolbar is put away while a selection is dragged. See
-        // `App::toolbar_field`, which says the same for its hit test.
-        let dragging_selection = self.text_dnd.as_ref().is_some_and(|d| d.moving);
         let handle_color = self
             .focused_region()
             .and_then(|r| r.text.as_ref())
@@ -7617,7 +7622,6 @@ impl App {
             overlay_badge,
             prints_open,
             caret,
-            anchor,
             text_scroll,
             focused,
             focused_row,
@@ -7922,9 +7926,9 @@ impl App {
         }
 
         // The selection toolbar, over the content while something is selected.
-        // It is the only route to copy and paste on a phone, and on the web at
-        // all, so it is drawn above the page rather than inside it.
-        if (*caret != *anchor || caret_menu) && !cfg!(target_os = "android") && !dragging_selection {
+        // A finger's selection only (`App::toolbar_field`): a phone has no
+        // Ctrl+C, so it is drawn above the page rather than inside it.
+        if toolbar_up {
             if let Some(r) = focused.as_deref().and_then(|m| {
                 layout
                     .focuses

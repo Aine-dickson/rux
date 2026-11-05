@@ -377,6 +377,7 @@ can name these without a `use`:
 | `SwipeEvent` | `@swipe` | `totalX`, `totalY`, `moveX`, `moveY`, `direction` |
 | `KeyEvent` | `@key` | none of those, only `key`, `ctrl`, `shift`, `alt`, `meta`, `primary`, `repeat` |
 | `SelectEvent` | `@select` on a field | none of those, only `value`, `start`, `end`, `caret` |
+| `InputEvent` | `@input` on a text field | none of those, only `value` and `kind` (see "An app that keeps one undo" above) |
 
 `TextMark` is one range of a field's `:marks`, `{ start: int, end: int,
 class: string }`, so a function that builds them from `[]` can say what it

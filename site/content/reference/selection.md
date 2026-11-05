@@ -144,10 +144,14 @@ bullets is empty space, as in any other field. The shell
 computes the whole menu state each frame and calls Java only when it changed
 (`App::sync_text_menu`).
 
-**A selection toolbar** appears above the focused field whenever something is
-selected (below it when there is no room above), offering **Copy**, **Cut**,
-**Paste** and **Select all**. It runs the same four actions the Ctrl shortcuts
-do, not a second copy of them.
+**A selection toolbar** appears above the focused field when a finger has
+selected something (below it when there is no room above), offering **Copy**,
+**Cut**, **Paste** and **Select all**. It runs the same four actions the Ctrl
+shortcuts do, not a second copy of them. It comes with the selection handles:
+a touch selection, a long press, a tapped caret handle. A selection made with
+the mouse, the keyboard or a script raises nothing over the page, as in a
+desktop program, and is copied with Ctrl+C (Tracer's AW-052, 2026-11-05;
+before that every selection raised it).
 
 It exists because on a phone there is no Ctrl+C, and in a browser there was no
 clipboard at all: `arboard` is a desktop-only dependency. The browser's *own*

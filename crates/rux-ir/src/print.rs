@@ -44,6 +44,7 @@ impl<'u> Printer<'u> {
                     | "DragEvent"
                     | "SwipeEvent"
                     | "SelectEvent"
+                    | "InputEvent"
                     | "TextMark"
             ) {
                 continue;

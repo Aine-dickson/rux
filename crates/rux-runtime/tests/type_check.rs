@@ -270,7 +270,7 @@ fn marks(src: string): TextMark[] {\n\
 <script>\n\
 let text = signal(\"\");\n\
 let mine = signal(0);\n\
-fn onInput(e: { value: string, kind: string }) { if e.kind != \"undo\" && e.kind != \"redo\" { mine = mine + 1; } }\n\
+fn onInput(e: InputEvent) { if e.kind != \"undo\" && e.kind != \"redo\" { mine = mine + 1; } }\n\
 </script>\n";
     let dir = project(&[("app.rux", kinds)]);
     let doc = Document::load(dir.join("app.rux")).expect("loads");

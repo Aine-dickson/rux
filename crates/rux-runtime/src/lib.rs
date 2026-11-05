@@ -1089,7 +1089,9 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
                 el.attr("type"),
                 Some("checkbox" | "switch" | "slider" | "file" | "select" | "radio")
             );
-            if name == "input" && typed {
+            if name == "input" && typed && value == "string" {
+                "InputEvent".to_string()
+            } else if name == "input" && typed {
                 format!("{{ value: {value}, kind: {INPUT_KINDS} }}")
             } else {
                 format!("{{ value: {value} }}")
