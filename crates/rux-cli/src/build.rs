@@ -72,6 +72,10 @@ pub struct Options {
     /// it has run them once already, and its watchers are writing the same
     /// files while it rebuilds.
     pub before: bool,
+    /// `--locked`: build with exactly the versions in `locks/<target>.lock`,
+    /// and fail rather than change them. What CI passes, so a build is the
+    /// one that was tested. See `kept_lock`.
+    pub locked: bool,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -136,6 +140,10 @@ fn walk(root: &Path, dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
         // The app's Rust is compiled in, never shipped as files: a release
         // carrying its own source is a leak, not an asset.
         if dir == root && name == crate::native::DIR && path.join("Cargo.toml").is_file() {
+            continue;
+        }
+        // Nor are the kept locks (`kept_lock`): they describe how it is built.
+        if dir == root && name == LOCKS_DIR {
             continue;
         }
         if path.is_dir() {
@@ -332,6 +340,9 @@ fn compile(work: &Path, options: &Options, target: Option<(&str, &str)>) -> Resu
     if let Some((triple, _)) = target {
         cargo.args(["--target", triple]);
     }
+    if options.locked {
+        cargo.arg("--locked");
+    }
     let status = cargo.status().map_err(|e| {
         format!(
             "could not run cargo: {e}\n\
@@ -342,12 +353,65 @@ fn compile(work: &Path, options: &Options, target: Option<(&str, &str)>) -> Resu
     if !status.success() {
         // Named, because after four compiles "it did not build" leaves someone
         // scrolling back to work out which architecture broke.
-        return Err(match target {
+        let mut message = match target {
             Some((_, name)) => format!("the generated crate did not build for {name}"),
             None => "the generated crate did not build".to_string(),
-        });
+        };
+        if options.locked {
+            message.push_str(
+                ". If cargo said it cannot update the lock file, a dependency or the app's \
+                 version changed: build once without --locked and commit the new locks/ file",
+            );
+        }
+        return Err(message);
     }
     Ok(())
+}
+
+/// The directory of kept locks, at the project root.
+const LOCKS_DIR: &str = "locks";
+
+/// Where a target's lock is kept in the project: `locks/<target>.lock`.
+///
+/// **The generated crate has a `Cargo.lock` of its own, and it lives in
+/// `.rux-build`, which nobody commits.** Without a copy that is kept, a fresh
+/// clone or a CI job resolved every dependency to whatever was newest that day:
+/// Rux's own, and anything added to `native/` with `cargo add`. So the lock is
+/// kept in the project, one file per target, and put back before each build.
+///
+/// One file per target rather than one shared, because the wrappers do not
+/// have the same dependencies (the web one carries `wasm-bindgen`). A shared
+/// lock would be pruned by whichever target built last, and the next target
+/// would resolve what was pruned afresh: the drift this exists to stop.
+///
+/// Not a root `Cargo.lock`, which is the name cargo gives a workspace at the
+/// root of the project, such as the one a `native/` crate may sit in.
+fn kept_lock(root: &Path, target: Target) -> PathBuf {
+    root.join(LOCKS_DIR).join(format!("{}.lock", target.dir()))
+}
+
+/// Copy the kept lock over the generated crate's. `false` when there is none.
+fn install_lock(kept: &Path, lock: &Path) -> Result<bool, String> {
+    if !kept.is_file() {
+        return Ok(false);
+    }
+    std::fs::copy(kept, lock)
+        .map_err(|e| format!("copying {} to {}: {e}", kept.display(), lock.display()))?;
+    Ok(true)
+}
+
+/// Copy the generated crate's lock back into the project. `true` when that
+/// created or changed the kept one, so an unchanged build says nothing.
+fn keep_lock(lock: &Path, kept: &Path) -> Result<bool, String> {
+    let Ok(new) = std::fs::read(lock) else { return Ok(false) };
+    if std::fs::read(kept).is_ok_and(|old| old == new) {
+        return Ok(false);
+    }
+    if let Some(dir) = kept.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| format!("creating {}: {e}", dir.display()))?;
+    }
+    std::fs::write(kept, new).map_err(|e| format!("writing {}: {e}", kept.display()))?;
+    Ok(true)
 }
 
 /// The crate name behind `libNAME.so`, which cargo spells with underscores.
@@ -675,10 +739,24 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
     // Built against a checkout, the wrapper starts from the checkout's lock:
     // the versions Rux was tested with, and what an already-built target
     // holds. Cargo trims it to what the wrapper uses.
-    if let Some(dir) = &options.rux_source {
-        let lock = work.join("Cargo.lock");
-        if !lock.exists() {
-            let _ = std::fs::copy(dir.join("Cargo.lock"), &lock);
+    //
+    // **A lock the project keeps comes first**: see `kept_lock`. It is what
+    // makes this build the one that was tested, and the checkout's lock only
+    // stands in for it until the first build has written one.
+    let kept = kept_lock(&manifest.root, options.target);
+    if !install_lock(&kept, &work.join("Cargo.lock"))? {
+        if options.locked {
+            return Err(format!(
+                "--locked needs {}, and there is none. Build once without --locked, then commit \
+                 the file it writes",
+                kept.display()
+            ));
+        }
+        if let Some(dir) = &options.rux_source {
+            let lock = work.join("Cargo.lock");
+            if !lock.exists() {
+                let _ = std::fs::copy(dir.join("Cargo.lock"), &lock);
+            }
         }
     }
     let mut main = wrapper_main(&manifest, &files, &options);
@@ -771,8 +849,13 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
         let host_or_wasm = (options.target == Target::Web).then_some(WASM);
         compile(&work, &options, host_or_wasm)?;
     }
+    // After the compile, so a lock is only ever kept for a set of versions
+    // that built. Under `--locked` cargo has refused to change it already.
+    if !options.locked && keep_lock(&work.join("Cargo.lock"), &kept)? {
+        println!("rux: wrote {}; commit it so every machine builds the same versions", kept.display());
+    }
 
-    let dist = manifest.root.join("dist");
+    let dist =manifest.root.join("dist");
     std::fs::create_dir_all(&dist).map_err(|e| format!("creating {}: {e}", dist.display()))?;
 
     if let Some(toolchain) = &toolchain {
@@ -848,7 +931,7 @@ mod tests {
     #[test]
     fn a_release_wrapper_embeds_every_file_and_installs_the_memory_source() {
         let files = vec![PathBuf::from("app.rux"), PathBuf::from("components/task.rux")];
-        let options = Options { release: true, target: Target::Desktop, rux_source: None, abis: None, before: true };
+        let options = Options { release: true, target: Target::Desktop, rux_source: None, abis: None, before: true, locked: false };
         let main = wrapper_main(&manifest(), &files, &options);
         assert!(main.contains("MemorySource"), "{main}");
         assert!(main.contains("include_bytes!"), "{main}");
@@ -860,7 +943,7 @@ mod tests {
 
     #[test]
     fn a_dev_wrapper_embeds_nothing_and_keeps_hot_reload() {
-        let options = Options { release: false, target: Target::Desktop, rux_source: None, abis: None, before: true };
+        let options = Options { release: false, target: Target::Desktop, rux_source: None, abis: None, before: true, locked: false };
         let main = wrapper_main(&manifest(), &[PathBuf::from("app.rux")], &options);
         assert!(!main.contains("include_bytes!"), "a dev build must not embed: {main}");
         assert!(!main.contains("MemorySource"), "a dev build reads the disk: {main}");
@@ -877,7 +960,7 @@ mod tests {
         m.window.width = Some(1280.0);
         m.window.maximized = true;
         for release in [false, true] {
-            let options = Options { release, target: Target::Desktop, rux_source: None, abis: None, before: true };
+            let options = Options { release, target: Target::Desktop, rux_source: None, abis: None, before: true, locked: false };
             let main = wrapper_main(&m, &[PathBuf::from("app.rux")], &options);
             assert!(main.contains("rux_shell::run_windowed("), "{main}");
             assert!(main.contains(&format!("title: Some({}.into())", literal(&m.name))), "{main}");
@@ -890,6 +973,53 @@ mod tests {
     fn windows_paths_survive_being_written_into_rust_source() {
         assert_eq!(literal(r"C:\a\b.rux"), "\"C:\\\\a\\\\b.rux\"");
         assert_eq!(literal("say \"hi\""), "\"say \\\"hi\\\"\"");
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("rux-locks-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// Each target keeps its own lock, since the wrappers have different
+    /// dependencies, and a lock round-trips through the generated crate.
+    #[test]
+    fn a_lock_is_kept_per_target_and_put_back_before_a_build() {
+        let root = scratch("roundtrip");
+        assert_eq!(kept_lock(&root, Target::Desktop), root.join("locks").join("desktop.lock"));
+        assert_ne!(kept_lock(&root, Target::Desktop), kept_lock(&root, Target::Web));
+
+        let kept = kept_lock(&root, Target::Desktop);
+        let generated = root.join("Cargo.lock");
+        assert!(!install_lock(&kept, &generated).unwrap(), "no kept lock yet, so nothing to install");
+
+        std::fs::write(&generated, "version = 3\n").unwrap();
+        assert!(keep_lock(&generated, &kept).unwrap(), "the first lock is written");
+        assert!(!keep_lock(&generated, &kept).unwrap(), "an unchanged lock says nothing");
+
+        // A fresh clone: the generated crate has no lock, the project does.
+        std::fs::remove_file(&generated).unwrap();
+        assert!(install_lock(&kept, &generated).unwrap());
+        assert_eq!(std::fs::read_to_string(&generated).unwrap(), "version = 3\n");
+
+        std::fs::write(&generated, "version = 4\n").unwrap();
+        assert!(keep_lock(&generated, &kept).unwrap(), "a changed lock is rewritten");
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), "version = 4\n");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The kept locks describe how the app is built, so a release does not
+    /// carry them.
+    #[test]
+    fn the_kept_locks_are_not_part_of_the_app() {
+        let root = scratch("walk");
+        std::fs::write(root.join("app.rux"), "<template><view/></template>").unwrap();
+        std::fs::create_dir_all(root.join("locks")).unwrap();
+        std::fs::write(root.join("locks").join("desktop.lock"), "version = 3\n").unwrap();
+        let files = collect(&root).unwrap();
+        assert_eq!(files, vec![PathBuf::from("app.rux")], "{files:?}");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -912,6 +1042,7 @@ mod tests {
             rux_source: Some(PathBuf::from("C:/rux")),
             abis: None,
             before: true,
+            locked: false,
         };
         let toml = wrapper_manifest(&manifest(), &options, None, None);
         assert!(toml.contains("C:/rux/crates/rux-shell"), "{toml}");
@@ -926,7 +1057,7 @@ mod tests {
     /// as written, for a debugger.
     #[test]
     fn a_debug_build_optimises_rux_and_not_the_apps_own_rust() {
-        let options = Options { release: false, target: Target::Desktop, rux_source: None, abis: None, before: true };
+        let options = Options { release: false, target: Target::Desktop, rux_source: None, abis: None, before: true, locked: false };
         let native = crate::native::NativeCrate {
             dir: PathBuf::from("C:/app/native"),
             lib: PathBuf::from("C:/app/native/src/lib.rs"),

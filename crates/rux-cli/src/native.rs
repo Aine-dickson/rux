@@ -251,6 +251,7 @@ pub fn run(entry: &Path, c: &NativeCrate, route: Option<&str>, preview: Option<&
             rux_source: default_rux_source(),
             abis: None,
             before: false,
+            locked: false,
         };
         eprintln!("rux: building the app with its native/ crate");
         let exe = match crate::build::run(options) {

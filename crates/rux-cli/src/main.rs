@@ -93,6 +93,9 @@ Build options:
   --release                  Embed the documents, so the artifact carries
                              its own contents. Without it the build reads
                              the project from disk and hot reload works
+  --locked                   Build with exactly the versions in
+                             locks/<target>.lock, and fail if they would
+                             change. For CI; commit locks/ to the repository
   --target <name>            What to build for (default: desktop)
   --rux-source <dir>         Build against a Rux checkout instead of the
                              published crates, for tracking the tip (a
@@ -203,11 +206,13 @@ fn build_command(args: &[String]) -> ExitCode {
         rux_source: crate::native::default_rux_source(),
         abis: None,
         before: true,
+        locked: false,
     };
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--release" => options.release = true,
+            "--locked" => options.locked = true,
             "--target" => {
                 let Some(name) = args.get(i + 1) else {
                     eprintln!("rux: --target needs a name, like `--target desktop`");

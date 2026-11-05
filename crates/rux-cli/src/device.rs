@@ -139,6 +139,7 @@ pub fn run(args: &[String]) -> i32 {
         rux_source,
         abis,
         before: true,
+        locked: false,
     }) {
         Ok(apk) => apk,
         Err(why) => {

@@ -436,6 +436,38 @@ The generated crate lives in `.rux-build/`, inside the project. It is
 disposable and is rewritten on every build, so there is nothing in it worth
 editing and nothing in it worth committing.
 
+## Pinning versions
+
+The generated crate has a `Cargo.lock`, and it lives in `.rux-build/` with the
+rest of the disposable parts. A lock that is thrown away is no lock at all: a
+fresh clone, or a CI job, would resolve every dependency to the newest version
+that day, Rux's own and anything added to `native/` with `cargo add`.
+
+So the first successful build writes the lock into the project, one file per
+target:
+
+```
+locks/desktop.lock
+locks/android.lock
+locks/web.lock
+```
+
+Commit them. Every later build puts the file back before cargo runs and writes
+it again if the versions changed. There is one file per target because the
+three generated crates do not depend on the same things; the web one carries
+`wasm-bindgen`.
+
+```bash
+rux build --locked             # the versions in locks/desktop.lock, or a failure
+```
+
+`--locked` is for CI. It fails when the lock is missing, and when the build
+would need to change it, instead of quietly resolving something new. Bumping
+`version` in `rux.toml` is one such change, because the generated crate carries
+the app's version: build once without `--locked` and commit the result.
+
+`locks/` is not part of the app, so a release does not embed it.
+
 ## What embeds
 
 Everything the project is made of: the entry document, every component, every
