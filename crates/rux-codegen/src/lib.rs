@@ -977,7 +977,13 @@ impl Gen<'_> {
                         (None, root) => format!("t!(cx.captured({}), {s}, {end})", root_code(*root)),
                     });
                 }
-                format!("t!(cx.closure({}, {k}, vec![{}]), {s}, {end})", self.func, caps.join(", "))
+                // The captures read before the call that takes `cx`: a frame
+                // slot read inside its argument list borrows `cx` twice (AW-041).
+                format!(
+                    "{{ let __caps = vec![{}]; t!(cx.closure({}, {k}, __caps), {s}, {end}) }}",
+                    caps.join(", "),
+                    self.func
+                )
             }
             // The timer keeps its body as text and runs it on its own, as
             // the interpreter's does; only the first argument is worked out.

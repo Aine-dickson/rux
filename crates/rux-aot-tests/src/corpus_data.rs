@@ -257,4 +257,13 @@ pub const CORPUS: &[(&str, &[&str])] = &[
           "undeclared()", "open_set()", "closed_set()", "open_order()", "eq_order()", "eq_open()", "has()", "dict()", "results()", "contexts()",
           "restock(1000)", "relabel()", "picks(few, 3)", "picks([], 3)", "blowup(few)", "onstr()", "over(few, 40)", "!churn()", "spun"],
     ),
+    // AW-041: a function that calls an `async fn` keeps its parameters in the
+    // frame; a closure capturing one of them must still build and run.
+    (
+        "let xs: int[] = signal([1, 2, 3]);\nlet note = signal(\"\");\n\
+         async fn load() { note = `${xs.length}`; }\n\
+         fn drop(n: int) { xs = xs.filter(x => x != n); load(); }\n\
+         fn keep(n: int, m: int): int { load(); xs.filter(x => x != n && x != m).length }\n",
+        &["!drop(1)", "xs", "note", "keep(2, 3)", "xs.length"],
+    ),
 ];
