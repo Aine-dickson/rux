@@ -1275,6 +1275,11 @@ pub struct Rare {
     /// `resize`, as the axes it may be dragged along (x, y). On a scroller
     /// alone, as CSS has it on a box whose overflow is not `visible`.
     pub resize: Option<(bool, bool)>,
+    /// The margin sides written `auto`, in `Sides` order (AW-042). In a flex
+    /// or grid container such a side takes the free space on its axis, and on
+    /// the cross axis keeps the item from stretching; in a block it centres.
+    /// It overrides that side's px and percentage.
+    pub margin_auto: [bool; 4],
     /// On the root alone: its used `color-scheme` is dark, so what Rux
     /// draws itself (a dropdown, the selection toolbar) is drawn dark too.
     pub dark: bool,
@@ -1480,6 +1485,11 @@ impl Style {
     /// The translation in a percentage of the box's size, `None` for none.
     pub fn translate_pct(&self) -> Option<[Len; 2]> {
         self.rare.as_ref().and_then(|r| r.translate)
+    }
+
+    /// The margin sides written `auto` (top, right, bottom, left).
+    pub fn margin_auto(&self) -> [bool; 4] {
+        self.rare.as_ref().map_or([false; 4], |r| r.margin_auto)
     }
 
     /// The rarely set properties, made to write into.
@@ -4412,11 +4422,17 @@ fn to_taffy(style: &Style, vp: (f32, f32)) -> taffy::Style {
             top: or_pct(style.padding.top, style.padding_pct[0]),
             bottom: or_pct(style.padding.bottom, style.padding_pct[2]),
         },
-        margin: Rect {
-            left: or_pct(style.margin.left, style.margin_pct[3]),
-            right: or_pct(style.margin.right, style.margin_pct[1]),
-            top: or_pct(style.margin.top, style.margin_pct[0]),
-            bottom: or_pct(style.margin.bottom, style.margin_pct[2]),
+        margin: {
+            let autos = style.margin_auto();
+            let side = |i: usize, px: f32| -> LengthPercentageAuto {
+                if autos[i] { auto() } else { or_pct(px, style.margin_pct[i]) }
+            };
+            Rect {
+                left: side(3, style.margin.left),
+                right: side(1, style.margin.right),
+                top: side(0, style.margin.top),
+                bottom: side(2, style.margin.bottom),
+            }
         },
         border: Rect {
             left: length(style.border.left),

@@ -2449,6 +2449,9 @@ fn video_picture(
         (s.min_width, s.max_width, s.min_height, s.max_height) = (None, None, None, None);
         s.margin = Sides::default();
         s.margin_pct = [None; 4];
+        if let Some(r) = s.rare.as_mut() {
+            r.margin_auto = [false; 4];
+        }
         s.border = Sides::default();
         s.radius = Default::default();
         s.radius_pct = [None; 4];
@@ -12146,7 +12149,13 @@ fn interpret(p: &HashMap<String, String>) -> Style {
         }
     }
     (st.padding, st.padding_pct) = box_sides(p, "padding");
-    (st.margin, st.margin_pct) = box_sides(p, "margin");
+    let auto;
+    (st.margin, st.margin_pct, auto) = margin_sides(p);
+    if auto.contains(&true) {
+        st.rare_mut().margin_auto = auto;
+    } else if let Some(r) = st.rare.as_mut() {
+        r.margin_auto = [false; 4];
+    }
     interpret_border(p, &mut st);
     interpret_path_paint(p, &mut st);
     if let Some((px, pct)) = p.get("gap").and_then(|v| gap_length(v)) {
@@ -14671,28 +14680,50 @@ fn parse_border_radius(value: &str) -> [f32; 4] {
 /// A percentage keeps its place in the shorthand. It used to be dropped, which
 /// moved the values after it: `padding: 10px 5%` came out as 10px all round.
 fn box_sides(p: &HashMap<String, String>, prop: &str) -> (Sides, [Option<f32>; 4]) {
+    let (sides, pct, _) = sides_with_auto(p, prop, false);
+    (sides, pct)
+}
+
+/// `margin` as [`box_sides`] reads it, plus the sides written `auto`
+/// (AW-042). `auto` keeps its place in the shorthand: it used to be skipped,
+/// so `margin: 10px auto` came out as 10px all round.
+fn margin_sides(p: &HashMap<String, String>) -> (Sides, [Option<f32>; 4], [bool; 4]) {
+    sides_with_auto(p, "margin", true)
+}
+
+fn sides_with_auto(p: &HashMap<String, String>, prop: &str, takes_auto: bool) -> (Sides, [Option<f32>; 4], [bool; 4]) {
+    // A side: px, its percentage, and whether it is `auto`.
+    let read = |token: &str| -> Option<(f32, Option<f32>, bool)> {
+        if takes_auto && token.eq_ignore_ascii_case("auto") {
+            return Some((0.0, None, true));
+        }
+        side_length(token).map(|(px, pct)| (px, pct, false))
+    };
     let mut sides = Sides::default();
     let mut pct = [None; 4];
+    let mut auto = [false; 4];
     if let Some(v) = p.get(prop) {
-        let v: Vec<(f32, Option<f32>)> = v.split_whitespace().filter_map(side_length).collect();
+        let v: Vec<(f32, Option<f32>, bool)> = v.split_whitespace().filter_map(read).collect();
         let at = |i: usize| v[i];
         let four = match v.len() {
             1 => [at(0); 4],
             2 => [at(0), at(1), at(0), at(1)],
             3 => [at(0), at(1), at(2), at(1)],
             n if n >= 4 => [at(0), at(1), at(2), at(3)],
-            _ => [(0.0, None); 4],
+            _ => [(0.0, None, false); 4],
         };
         sides = Sides { top: four[0].0, right: four[1].0, bottom: four[2].0, left: four[3].0 };
         pct = [four[0].1, four[1].1, four[2].1, four[3].1];
+        auto = [four[0].2, four[1].2, four[2].2, four[3].2];
     }
     for (i, side) in ["top", "right", "bottom", "left"].into_iter().enumerate() {
-        if let Some((px, p)) = p.get(&format!("{prop}-{side}")).and_then(|v| side_length(first(v))) {
+        if let Some((px, p, a)) = p.get(&format!("{prop}-{side}")).and_then(|v| read(first(v))) {
             set_side(&mut sides, side, px);
             pct[i] = p;
+            auto[i] = a;
         }
     }
-    (sides, pct)
+    (sides, pct, auto)
 }
 
 /// One side of a box shorthand: px, or a percentage (0 px, then the
