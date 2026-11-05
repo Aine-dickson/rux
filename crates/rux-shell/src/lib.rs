@@ -9006,6 +9006,22 @@ impl ApplicationHandler<RuxEvent> for App {
             }
             WindowEvent::Ime(ime) => self.on_ime(&ime),
             WindowEvent::KeyboardInput { event, .. } => {
+                // **Android never says which modifiers are held**: winit's
+                // backend sends no `ModifiersChanged`, so a keyboard's Ctrl+Z,
+                // Ctrl+A and the rest reached a field as letters and `@key` with
+                // `ctrl: false`. The modifier keys themselves do arrive, so they
+                // are followed here. Found on the emulator, 2026-11-05.
+                #[cfg(target_os = "android")]
+                if let Key::Named(named) = &event.logical_key {
+                    let down = event.state == ElementState::Pressed;
+                    match named {
+                        NamedKey::Control => self.ctrl_held = down,
+                        NamedKey::Shift => self.shift_held = down,
+                        NamedKey::Alt => self.alt_held = down,
+                        NamedKey::Super | NamedKey::Meta => self.meta_held = down,
+                        _ => {}
+                    }
+                }
                 // While a composition is running the input method owns the
                 // keyboard: the same keystrokes also arrive here, and acting on
                 // them would type the letters twice, once raw and once composed.

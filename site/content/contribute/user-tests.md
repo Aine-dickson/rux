@@ -3317,7 +3317,9 @@ buttons and a `<screen @key>` counting Ctrl+Z.
 | `insertText` | type a space, tap "insert name" | `name` at the caret the field was left with, the field focused, caret after it | pass |
 | Its own undo step | Ctrl+Z | `name` gone, the space typed before it kept | pass |
 | `setSelectionRange` and the toolbar | as above | the Copy / Cut / Paste strip shows, as for any selection on desktop | as designed |
-| Web, Android | | not driven | open |
+| Android: the same, on the `rux_test` emulator (Pixel, API 36, AOSP keyboard), a dev APK from this checkout, taps and `adb input` | marks, `@select` (19), `el.selection` after leaving (19, keyboard down), `setSelectionRange`, typing `Q` over it, `insertText` | as on desktop; the platform's own Cut / Copy / Share menu instead of the drawn strip | pass |
+| Android: Ctrl+Z from a keyboard | `input keycombination KEYCODE_CTRL_LEFT KEYCODE_Z` after typing `ab`, twice | (found) typed `z`: winit's Android backend sends no modifier changes, so no Ctrl chord ever reached a field or `@key`. Fixed: the shell follows the modifier keys themselves there, and the shim no longer commits a Ctrl or Meta chord as text. Then `ab` undone, and the second reaches the app (count 1) | pass |
+| Web | | not driven | open |
 
 ## A focused field taken out of the page, 2026-11-05
 
@@ -3332,6 +3334,7 @@ Escape, which both blur through the shell first and hide the defect.
 | Before the fix | click the field, type `ab`, F2, F2, type `x` | (found) the field back tinted, a caret in it, and `x` going nowhere | defect |
 | After | the same | the field back plain, no caret, `x` going nowhere as nothing has focus | pass |
 | Focusing it again | click it, type `y` | tinted, `aby` | pass |
+| Android, the emulator | tap the field, type `ab`, F2 (`input keyevent`), F2 | the keyboard goes down as the field leaves; the field comes back plain | pass |
 
 ## Standing gaps
 

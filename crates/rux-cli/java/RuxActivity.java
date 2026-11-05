@@ -1876,8 +1876,15 @@ public class RuxActivity extends NativeActivity {
                         // moving focus, and a newline in a single-line input.
                         // They are not edits, so they go to the dispatch below
                         // with the arrow keys.
+                        //
+                        // **Nor a chord.** Ctrl+Z from a keyboard has a
+                        // printable character too, and committed it typed a
+                        // `z`: no Ctrl chord reached the field (select all,
+                        // copy, cut, paste, undo) or the app's `@key`. Driven
+                        // on the emulator, 2026-11-05.
                         int unicode = event.getUnicodeChar();
-                        if (unicode >= 0x20 && unicode != 0x7f) {
+                        boolean chord = event.isCtrlPressed() || event.isMetaPressed();
+                        if (!chord && unicode >= 0x20 && unicode != 0x7f) {
                             commitText(String.valueOf((char) unicode), 1);
                             return true;
                         }
