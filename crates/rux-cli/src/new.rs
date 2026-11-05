@@ -714,9 +714,18 @@ pub fn create(args: &[String]) -> i32 {
         name = Some(arg.clone());
     }
 
-    let Some(name) = name else {
-        eprintln!("rux: `new` needs a name, like `rux new my-app`");
-        return 2;
+    // No name given: ask for one, as `rux new my-app` would have been told it.
+    // Only at a terminal. A script or CI job with nobody to answer would hang
+    // on the question, so it gets the error instead.
+    let name = match name {
+        Some(name) => name,
+        None => match ask_name() {
+            Some(name) => name,
+            None => {
+                eprintln!("rux: `new` needs a name, like `rux new my-app`");
+                return 2;
+            }
+        },
     };
 
     let target = PathBuf::from(&name);
@@ -753,6 +762,44 @@ pub fn create(args: &[String]) -> i32 {
     println!();
     println!("`rux run` finds app.rux from anywhere inside the project. Edits reload live.");
     0
+}
+
+/// Ask for the project name, until it is one `check_name` accepts.
+///
+/// `None` when nobody can answer: stdin is not a terminal, or it closed. An
+/// empty answer asks again rather than giving up, since pressing Enter early is
+/// a slip and not a refusal; end of input is the way out.
+fn ask_name() -> Option<String> {
+    use std::io::IsTerminal;
+
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return None;
+    }
+    prompt_name(&mut stdin.lock(), &mut std::io::stdout(), &mut std::io::stderr())
+}
+
+/// The question and its retries, over any reader, so a test can answer it.
+fn prompt_name(
+    input: &mut impl std::io::BufRead,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> Option<String> {
+    loop {
+        let _ = write!(out, "Project name: ");
+        let _ = out.flush();
+        let mut line = String::new();
+        if input.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        let name = line.trim();
+        match check_name(name) {
+            Ok(()) => return Some(name.to_string()),
+            Err(why) => {
+                let _ = writeln!(err, "rux: {why}");
+            }
+        }
+    }
 }
 
 fn write_all(target: &Path, name: &str) -> Result<(), String> {
@@ -834,6 +881,20 @@ mod tests {
         assert!(check_name("--force").is_err(), "reads as an option");
         assert!(check_name("my app").is_err(), "a space is a papercut in every shell");
         assert!(check_name("app/inner").is_err(), "a separator is not part of the name");
+    }
+
+    /// The prompt asks again after a slip and gives up only at end of input.
+    #[test]
+    fn the_name_prompt_asks_again_until_the_name_is_usable() {
+        let (mut out, mut err) = (Vec::new(), Vec::new());
+        let mut input = std::io::Cursor::new("\nmy app\n  my-app  \n");
+        assert_eq!(prompt_name(&mut input, &mut out, &mut err).as_deref(), Some("my-app"));
+        assert_eq!(String::from_utf8(out).unwrap().matches("Project name: ").count(), 3);
+        let err = String::from_utf8(err).unwrap();
+        assert!(err.contains("cannot be empty") && err.contains("use letters"), "{err}");
+
+        let mut closed = std::io::Cursor::new("my app\n");
+        assert_eq!(prompt_name(&mut closed, &mut Vec::new(), &mut Vec::new()), None);
     }
 
     /// Every `use` in the scaffold has to name a file the scaffold writes.
