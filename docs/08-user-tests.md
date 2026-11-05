@@ -3312,6 +3312,20 @@ buttons and a `<screen @key>` counting Ctrl+Z.
 | `setSelectionRange` and the toolbar | as above | the Copy / Cut / Paste strip shows, as for any selection on desktop | as designed |
 | Web, Android | | not driven | open |
 
+## A focused field taken out of the page, 2026-11-05
+
+The shell let go of a field that left the tree, and nothing else did: the
+document kept its focus and `:focus` kept matching. Driven on desktop with a
+debug `rux` from this checkout, a field under `r-if` with `input:focus` tinted
+red, and F2 on the `<screen @key>` toggling it. F2 rather than a tap or
+Escape, which both blur through the shell first and hide the defect.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Before the fix | click the field, type `ab`, F2, F2, type `x` | (found) the field back tinted, a caret in it, and `x` going nowhere | defect |
+| After | the same | the field back plain, no caret, `x` going nowhere as nothing has focus | pass |
+| Focusing it again | click it, type `y` | tinted, `aby` | pass |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

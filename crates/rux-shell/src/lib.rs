@@ -2070,6 +2070,9 @@ struct App {
     /// The focused field's selection as `@select` last reported it, so it
     /// runs once for each move, `(anchor, caret)`.
     select_reported: Option<(usize, usize)>,
+    /// The last frame found the focused field gone from the tree. The rest
+    /// of the window is told after the frame: see `App::render`.
+    field_gone: bool,
     /// An undo or redo is writing the field, so the write is not itself an
     /// edit to remember.
     replaying_history: bool,
@@ -2410,6 +2413,7 @@ impl App {
             field_history: FieldHistory::default(),
             histories: HashMap::new(),
             select_reported: None,
+            field_gone: false,
             replaying_history: false,
             scrolls: Vec::new(),
             resizes: Vec::new(),
@@ -7584,6 +7588,7 @@ impl App {
             reveal_focus,
             keyboard_reveal,
             histories,
+            field_gone,
             #[cfg(not(target_arch = "wasm32"))]
             path,
             ..
@@ -8020,6 +8025,11 @@ impl App {
                 *focused_row = None;
                 *focused_instance = None;
                 *text_scroll = 0.0;
+                // The document, `:focus` and the keyboard follow after this
+                // frame. Until 2026-11-05 nothing told them: a field shown
+                // again came back painted focused, a caret in it, taking no
+                // keys.
+                *field_gone = true;
                 #[cfg(target_arch = "wasm32")]
                 if let Some(el) = web_ime_current() {
                     let _ = el.blur();
@@ -9111,6 +9121,12 @@ impl ApplicationHandler<RuxEvent> for App {
             // is issued on resume, resize, reload, and tap, not every frame.
             WindowEvent::RedrawRequested => {
                 self.render();
+                // The focused field went with the frame's tree: everything
+                // else lets go of it as a blur would, with no `@change` or
+                // `@blur`, since there is no field left to run them on.
+                if std::mem::take(&mut self.field_gone) {
+                    self.set_focus_range(None);
+                }
                 // A browser's video gives no word of a new picture: while one
                 // in sight plays, every frame is drawn.
                 #[cfg(target_arch = "wasm32")]
