@@ -3819,8 +3819,14 @@ impl Document {
         }
         // Toggles: replace just the single node (its checked style + mark). No
         // shape change and no caret on a toggle, so no scoped focus is needed.
+        // A node *inside* a respliced parent came with its children; the
+        // parent itself did not, only its children did, so a node that is
+        // also a structural parent is still replaced whole here: a `<screen>`
+        // with a `:class` and an `r-if` child kept its old style (Tracer's
+        // AW-043).
+        let covered = |p: &Vec<usize>| roots.iter().any(|r| r.len() < p.len() && p.starts_with(r.as_slice()));
         for p in &toggles {
-            if roots.iter().any(|r| p.starts_with(r.as_slice())) {
+            if covered(p) {
                 continue; // already covered by a parent splice above
             }
             if let Some(fresh) = node_at(&fresh_root, p) {
@@ -3833,7 +3839,7 @@ impl Document {
         // Components and :class/:style nodes: replace the whole node subtree,
         // re-applying focus scoped to it (the subtree may hold inputs).
         for p in &node_splices {
-            if roots.iter().any(|r| p.starts_with(r.as_slice())) {
+            if covered(p) {
                 continue;
             }
             if let Some(fresh) = node_at(&fresh_root, p) {
