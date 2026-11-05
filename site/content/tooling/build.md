@@ -436,6 +436,12 @@ The generated crate lives in `.rux-build/`, inside the project. It is
 disposable and is rewritten on every build, so there is nothing in it worth
 editing and nothing in it worth committing.
 
+What it compiles lands in `.rux-build/<target>/target/`, and `rux build` copies
+the finished executable, APK or web directory into `dist/`. Every project
+compiles Rux into a `target/` of its own, which is several gigabytes of disk
+each. Set `CARGO_TARGET_DIR` to one shared directory and projects share a single
+compiled copy instead.
+
 ## Pinning versions
 
 The generated crate has a `Cargo.lock`, and it lives in `.rux-build/` with the

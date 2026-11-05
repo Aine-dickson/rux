@@ -47,8 +47,11 @@ const USAGE: &str = "\
 rux: the Rux runtime and tools
 
 Usage:
-  rux new [name]             Create a project: app.rux, components/, assets/
-                             (asks for the name when run at a terminal without one)
+  rux new [name]             Create a project: app.rux, pages/, components/,
+                             native/ (the app's Rust), assets/. Asks for the
+                             name at a terminal when none is given
+      --template <name>      minimal (default) or tasks, a larger example
+      --no-native            Leave out the native/ Rust crate
   rux run                    Run the workspace: its app.rux or index.rux,
                              looked for here and in every parent directory
   rux run <app.rux>          Run a named document

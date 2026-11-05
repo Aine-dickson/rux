@@ -62,13 +62,15 @@ fn the_scaffold_writes_the_layout_it_documents() {
     for expected in [
         "app.rux",
         "pages/home.rux",
-        "pages/new-task.rux",
-        "pages/detail.rux",
         "pages/missing.rux",
-        "components/task-row.rux",
-        "assets/README.md",
+        "components/message-card.rux",
+        "native/Cargo.toml",
+        "native/src/lib.rs",
+        "native/src/hello.rs",
+        "assets/.gitkeep",
         "README.md",
         ".gitignore",
+        ".vscode/settings.json",
         "rux.toml",
     ] {
         assert!(root.join(expected).is_file(), "{expected} was not created");
@@ -78,28 +80,169 @@ fn the_scaffold_writes_the_layout_it_documents() {
     // not create, it is wrong on the reader's first look at it.
     let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
     assert!(readme.contains("my-app"), "the project name did not reach the README");
-    assert!(readme.contains("components/"));
-    assert!(readme.contains("pages/"));
-    assert!(readme.contains("assets/"));
+    for dir in ["components/", "pages/", "assets/", "native/", "locks/"] {
+        assert!(readme.contains(dir), "the README does not mention {dir}");
+    }
+    assert!(readme.contains("cargo add"), "the README does not say how a crate is added");
+    assert!(readme.contains("--locked"), "the README does not say what CI passes");
+}
+
+/// The tasks template is the larger worked example, and is still there.
+#[test]
+fn the_tasks_template_writes_the_larger_project() {
+    let scratch = Scratch::new("tasks-layout");
+    let (code, _, stderr) = run(scratch.path(), &["new", "my-app", "--template", "tasks"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let root = scratch.path().join("my-app");
+    for expected in [
+        "app.rux",
+        "stores/todo.rux",
+        "pages/home.rux",
+        "pages/new-task.rux",
+        "pages/detail.rux",
+        "pages/missing.rux",
+        "components/task-row.rux",
+        "native/Cargo.toml",
+    ] {
+        assert!(root.join(expected).is_file(), "{expected} was not created");
+    }
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    assert!(readme.contains("stores/todo.rux"));
+    assert!(readme.contains("rux check components/task-row.rux"), "{readme}");
+}
+
+/// The Rust half is on unless it is asked off, and off leaves no trace of it.
+#[test]
+fn native_is_on_by_default_and_off_leaves_nothing_behind() {
+    let scratch = Scratch::new("no-native");
+    let (code, _, stderr) = run(scratch.path(), &["new", "plain", "--no-native"]);
+    assert_eq!(code, 0, "stderr: {stderr}");
+    let root = scratch.path().join("plain");
+    assert!(!root.join("native").exists(), "native/ was written");
+    assert!(!root.join(".vscode").exists(), "the rust-analyzer settings were written");
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    assert!(!readme.contains("native/"), "the README describes a directory that is not there");
+    assert!(!readme.contains("cargo add"), "{readme}");
+    // And what is left is a project that still checks.
+    let (code, stdout, stderr) = run(&root, &["check"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+}
+
+/// Without Rust the minimal project still shows something real: the greeting is
+/// computed in the page, not left as an empty card.
+#[test]
+fn the_minimal_project_without_native_renders_its_greeting() {
+    fn texts(node: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = node.text.iter().map(|t| t.text.trim().to_string()).collect();
+        for child in &node.children {
+            out.extend(texts(child));
+        }
+        out
+    }
+    let scratch = Scratch::new("greeting");
+    assert_eq!(run(scratch.path(), &["new", "app", "--no-native"]).0, 0);
+    let doc = rux_runtime::Document::load(scratch.path().join("app/app.rux")).expect("loads");
+    let shown = texts(&doc.root);
+    assert!(shown.contains(&"Hello, World!".to_string()), "{shown:?}");
+    assert!(shown.contains(&"app".to_string()), "the project name is not the header: {shown:?}");
+}
+
+/// The native crate is read by Rux the way a build would read it, and its
+/// dependency is the version of Rux that wrote it.
+#[test]
+fn the_scaffolded_native_crate_is_the_one_rux_sees() {
+    let scratch = Scratch::new("native-crate");
+    assert_eq!(run(scratch.path(), &["new", "app"]).0, 0);
+    let root = scratch.path().join("app");
+
+    let (code, stdout, stderr) = run(&root, &["native"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+    assert!(stdout.contains("greet"), "Rux does not see the export: {stdout}");
+
+    let cargo = std::fs::read_to_string(root.join("native/Cargo.toml")).unwrap();
+    assert!(
+        cargo.contains(&format!("version = \"{}\"", env!("CARGO_PKG_VERSION"))),
+        "the native crate does not depend on this Rux: {cargo}"
+    );
+    assert!(!cargo.contains("%%"), "a placeholder reached the file: {cargo}");
+}
+
+/// **The scaffold fills in its own placeholders and touches nothing else.** The
+/// first version replaced every `{name}` in every file, which rewrote the Rust's
+/// own `format!("Hello, {name}!")` into `format!("Hello, demo!")`: it compiled,
+/// it checked clean, and it greeted everyone by the project's name. Only typing
+/// into the window showed it.
+#[test]
+fn the_scaffold_leaves_the_authors_own_braces_alone() {
+    fn files(dir: &Path, out: &mut Vec<PathBuf>) {
+        for entry in std::fs::read_dir(dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.is_dir() {
+                files(&path, out);
+            } else {
+                out.push(path);
+            }
+        }
+    }
+    let scratch = Scratch::new("braces");
+    assert_eq!(run(scratch.path(), &["new", "demo"]).0, 0);
+    let root = scratch.path().join("demo");
+
+    let rust = std::fs::read_to_string(root.join("native/src/hello.rs")).unwrap();
+    assert!(rust.contains(r#"format!("Hello, {name}!")"#), "the Rust was rewritten:\n{rust}");
+
+    let mut all = Vec::new();
+    files(&root, &mut all);
+    for path in all {
+        let text = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(!text.contains("%%"), "a placeholder reached {}", path.display());
+    }
+    let app = std::fs::read_to_string(root.join("app.rux")).unwrap();
+    assert!(app.contains(r#"<text class="brand">demo</text>"#), "the name did not reach the header:\n{app}");
+}
+
+/// A build writes `dist/`, `.rux-build/` and `target/`, and the kept locks are
+/// the one thing there that should be committed.
+#[test]
+fn the_gitignore_names_what_a_build_writes_and_not_the_locks() {
+    let scratch = Scratch::new("gitignore");
+    assert_eq!(run(scratch.path(), &["new", "app"]).0, 0);
+    let ignore = std::fs::read_to_string(scratch.path().join("app/.gitignore")).unwrap();
+    let rules: Vec<&str> = ignore.lines().map(str::trim).filter(|l| !l.starts_with('#')).collect();
+    for ignored in ["dist/", ".rux-build/", "target/"] {
+        assert!(rules.contains(&ignored), "{ignored} is not ignored");
+    }
+    assert!(!rules.iter().any(|r| r.contains("locks")), "the locks are ignored");
+}
+
+#[test]
+fn an_unknown_template_is_refused_and_named() {
+    let scratch = Scratch::new("bad-template");
+    let (code, _, stderr) = run(scratch.path(), &["new", "app", "--template", "banana"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("`banana`") && stderr.contains("minimal"), "stderr: {stderr}");
 }
 
 /// The whole point of scaffolding: what comes out runs.
 #[test]
 fn what_the_scaffold_writes_checks_clean() {
     let scratch = Scratch::new("check");
-    assert_eq!(run(scratch.path(), &["new", "app"]).0, 0);
-    let root = scratch.path().join("app");
+    for (dir, args, component) in [
+        ("minimal", vec!["new", "minimal"], "components/message-card.rux"),
+        ("tasks", vec!["new", "tasks", "--template", "tasks"], "components/task-row.rux"),
+    ] {
+        assert_eq!(run(scratch.path(), &args).0, 0);
+        let root = scratch.path().join(dir);
 
-    let (code, stdout, stderr) = run(&root, &["check"]);
-    assert_eq!(code, 0, "a fresh project does not check clean\n{stdout}\n{stderr}");
+        let (code, stdout, stderr) = run(&root, &["check"]);
+        assert_eq!(code, 0, "a fresh {dir} project does not check clean\n{stdout}\n{stderr}");
 
-    // The component is skipped by the walk, because a file read alone is
-    // missing the props its caller passes, so it is named explicitly. A broken
-    // component would otherwise go unnoticed until it is run.
-    let (code, stdout, stderr) = run(&root, &["check", "components/task-row.rux"]);
-    assert_eq!(code, 0, "the scaffolded component does not check clean
-{stdout}
-{stderr}");
+        // The component is skipped by the walk, because a file read alone is
+        // missing the props its caller passes, so it is named explicitly. A
+        // broken component would otherwise go unnoticed until it is run.
+        let (code, stdout, stderr) = run(&root, &["check", component]);
+        assert_eq!(code, 0, "the {dir} component does not check clean\n{stdout}\n{stderr}");
+    }
 
     // The **pages** are deliberately not checked alone here, and that is a
     // finding rather than an omission: a page calls functions declared in
@@ -128,7 +271,7 @@ fn the_scaffolds_detail_page_follows_its_task() {
         node.children.iter().find_map(|c| tappable(c, label))
     }
     let scratch = Scratch::new("detail");
-    assert_eq!(run(scratch.path(), &["new", "app"]).0, 0);
+    assert_eq!(run(scratch.path(), &["new", "app", "--template", "tasks"]).0, 0);
     let mut doc = rux_runtime::Document::load(scratch.path().join("app/app.rux")).expect("loads");
     doc.navigate("/task/2");
     assert!(texts(&doc.root).contains(&"Add a task of your own".to_string()), "{:?}", texts(&doc.root));
@@ -147,14 +290,19 @@ fn the_scaffolds_detail_page_follows_its_task() {
 #[test]
 fn what_the_scaffold_writes_is_already_formatted() {
     let scratch = Scratch::new("fmt");
-    assert_eq!(run(scratch.path(), &["new", "app"]).0, 0);
-    let root = scratch.path().join("app");
+    for (dir, args) in [
+        ("minimal", vec!["new", "minimal"]),
+        ("tasks", vec!["new", "tasks", "--template", "tasks"]),
+    ] {
+        assert_eq!(run(scratch.path(), &args).0, 0);
+        let root = scratch.path().join(dir);
 
-    let (code, stdout, stderr) = run(&root, &["fmt", "--check", "."]);
-    assert_eq!(
-        code, 0,
-        "the scaffold is not formatted the way `rux fmt` would write it\n{stdout}\n{stderr}"
-    );
+        let (code, stdout, stderr) = run(&root, &["fmt", "--check", "."]);
+        assert_eq!(
+            code, 0,
+            "the {dir} scaffold is not formatted the way `rux fmt` would write it\n{stdout}\n{stderr}"
+        );
+    }
 }
 
 #[test]

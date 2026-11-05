@@ -1,4 +1,14 @@
-//! `rux new <name>`: scaffold a project.
+//! `rux new [name]`: scaffold a project.
+//!
+//! **Two templates and one convention.** `minimal` is the default: a frame, one
+//! page, one component, with nothing to delete before the first line of the
+//! author's own. `tasks` is the larger worked example, the shape a bigger
+//! project splits into. The Rust half, `native/` beside `rux.toml`, is on for
+//! both unless `--no-native` says otherwise, because it is the one convention
+//! every serious project meets, and it is learned by finding it in the same
+//! place each time. The first real app on Rux put its entire window in one
+//! 4,000-line `app.rux` and never used `pages/` at all, so the scaffold's job
+//! is also to make the split the path of least resistance.
 //!
 //! This exists because the on-disk shape of a Rux project existed nowhere. Every
 //! shipped example is a single file, so someone who had read all of `/learn`
@@ -426,7 +436,7 @@ const MISSING: &str = r#"<!-- The fallback route: shown for any path no other ro
   <view class="page">
     <text class="title">Nothing at that address</text>
     <view class="home" to="/">
-      <text class="home-label">Back to the list</text>
+      <text class="home-label">Back home</text>
     </view>
   </view>
 </template>
@@ -590,84 +600,277 @@ const TODO: &str = r#"<!-- The app's state. A file with no <template> is a modul
 </script>
 "#;
 
-const README: &str = r#"# {name}
+/// The `minimal` template's entry point: a frame, one route and a fallback.
+///
+/// Everything a project needs to show where things go, and nothing to delete
+/// first. The `tasks` template is the same shape grown into a whole app.
+const MIN_APP: &str = r#"<!-- The entry point. `rux run` looks for this file here and in every parent
+     directory, so it works from anywhere inside the project.
 
-A [Rux](https://ruxlang.dev) app.
+     This file owns two things: the window's frame and the routes. Each page
+     lives in `pages/`. Add a page by writing a file there, importing it in the
+     script below, and naming it in a <route>. -->
+<template>
+  <screen class="app">
+    <view class="header">
+      <text class="brand">%%NAME%%</text>
+    </view>
 
-## Run it
+    <view class="stage">
+      <router>
+        <route path="/" view="home" name="home" />
+        <route fallback view="missing" />
+      </router>
+    </view>
+  </screen>
+</template>
 
-```bash
-rux run
-```
+<style>
+  * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
 
-`rux run` looks for `app.rux` here and in every parent directory, so it works
-from anywhere inside the project. Edits reload in the open window; nothing needs
-rebuilding.
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: #1e1e2e;
+    font-family: sans-serif;
+    /* The edges a phone will not let an app draw in: the status bar at the
+       top, the gesture bar or the home indicator at the bottom. Both are zero
+       on a desktop, so this changes nothing there. Try it with
+       `rux run --preview phone`. */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
 
-## What is here
+  .header { padding: 20px 20px 12px 20px; }
+  .brand { color: #cdd6f4; font-size: 26px; font-weight: 700; }
 
-```
-app.rux              the frame and the routes
-stores/              the app's state
-  todo.rux           the tasks, and the functions that change them
-pages/               one file per route
-  home.rux           the list
-  new-task.rux       the form
-  detail.rux         one task, by id
-  missing.rux        the fallback, for a path nothing matches
-components/          one file per component
-  task-row.rux       one row of the list
-assets/              images; `src` resolves relative to the .rux file
-```
+  /* The router's page sits here. `overflow-y: auto` is what makes a long page
+     scroll: nothing scrolls in Rux unless it is told to. */
+  .stage {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 20px 20px 20px;
+  }
+</style>
 
-`components/` and `pages/` are conventions the runtime already follows:
-`use pages::new_task;` names `pages/new-task.rux`, and an
-`<image src="assets/logo.png">` resolves from the document's own directory, not
-from wherever you happened to run `rux`.
-
-## How it fits together
-
-**`stores/todo.rux` owns the state.** A page is a component, and a component
-gets its own copy of anything it declares, so state that outlives one screen
-lives in a store: a file with no `<template>`, loaded once, so every file that
-imports it with `use stores::todo;` reads the same tasks. A page reads
-`todo.tasks` and changes the list by calling what the store exports,
-`todo.add(…)` or `todo.toggle(id)`; nothing outside the store writes it.
-
-**A name is written twice, deliberately.** `use pages::new_task;` names a file,
-so it is written the way files are; `<new-task>` is a custom element, so it is
-written the way elements are. Either spelling resolves.
-
-**An id is text.** A route carries `:id` out of the path as text, so the tasks
-carry text ids and the two can be compared without converting anything.
-
-## While you work
-
-```bash
-rux check          what is wrong, without opening a window
-rux fmt            re-indent, and format the CSS
-```
-
-`rux check` on its own walks the project and skips components, because a
-component read alone is missing the props its caller passes. Name one to check
-it in full: `rux check pages/home.rux`.
+<script>
+  use pages::home;
+  use pages::missing;
+</script>
 "#;
 
-const GITIGNORE: &str = "# Rux keeps no build output yet; `rux build` will land in a later release.\n\
-                         # Editors and OS cruft, though, start on day one.\n\
+/// The `minimal` template's page: a field, and a greeting that Rust writes.
+const MIN_HOME: &str = r#"<!-- The home page. A page is an ordinary component that a `<route>` names, so
+     its root is a `<view>` and not a second `<screen>`.
+
+     %%ORIGIN%% -->
+<template>
+  <view class="page">
+    <text class="heading">Hello from Rux</text>
+    <text class="lead">Type a name. %%LEAD%%</text>
+
+    <view class="field">
+      <text class="field-label">Your name</text>
+      <input class="input" r-model="who" placeholder="World" />
+    </view>
+
+    <message-card :message="greeting" note="%%NOTE%%" />
+  </view>
+</template>
+
+<style>
+  * { box-sizing: border-box; }
+
+  .page {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    padding: 8px 0 24px 0;
+  }
+
+  .heading { color: #cdd6f4; font-size: 20px; font-weight: 700; }
+  .lead { color: #6c7086; font-size: 14px; }
+  .field { display: flex; flex-direction: column; gap: 6px; }
+  .field-label { color: #6c7086; font-size: 12px; }
+
+  .input {
+    padding: 12px;
+    border: 1px #45475a solid;
+    border-radius: 10px;
+    color: #cdd6f4;
+    background: #313244;
+    font-size: 15px;
+  }
+
+  .input:focus { border: 1px #89b4fa solid; }
+</style>
+
+"#;
+
+/// The script when the project has a `native/` crate: Rust writes the greeting.
+const MIN_HOME_NATIVE_SCRIPT: &str = r#"<script>
+  use components::message_card;
+  use native::hello;
+
+  /* Every `<input>` needs an `r-model`: it is the binding that makes the field
+     editable at all. */
+  let who = signal("");
+
+  /* A `computed` runs again whenever a signal it reads changes, and a call into
+     Rust is no different from any other expression. */
+  computed greeting = hello.greet(who);
+</script>
+"#;
+
+/// The same page for `--no-native`: the greeting is written here instead, so
+/// the project still runs with no Rust in it.
+const MIN_HOME_PLAIN_SCRIPT: &str = r#"<script>
+  use components::message_card;
+
+  /* Every `<input>` needs an `r-model`: it is the binding that makes the field
+     editable at all. */
+  let who = signal("");
+
+  /* A `computed` runs again whenever a signal it reads changes. */
+  computed greeting = if who.trim() == "" { "Hello, World!" } else { "Hello, " + who.trim() + "!" };
+</script>
+"#;
+
+/// The home page for the choices made.
+fn min_home(native: bool) -> String {
+    let (origin, lead, note, script) = if native {
+        (
+            "The greeting is computed by Rust, in `native/src/hello.rs`.",
+            "The greeting is written by Rust.",
+            "From native/src/hello.rs",
+            MIN_HOME_NATIVE_SCRIPT,
+        )
+    } else {
+        (
+            "The greeting is computed here, in the script below.",
+            "The greeting is written in Rux.",
+            "Computed in the script",
+            MIN_HOME_PLAIN_SCRIPT,
+        )
+    };
+    let top = MIN_HOME.replace("%%ORIGIN%%", origin).replace("%%LEAD%%", lead).replace("%%NOTE%%", note);
+    format!("{top}
+{script}")
+}
+
+/// The `minimal` template's component: the file that shows how a prop arrives.
+const MIN_CARD: &str = r#"<!-- A card with a message.
+
+     A component declares its props at the bottom (`message`, `note`) and reads
+     nothing else of its caller's, so this file can be dropped into another app
+     as it is. Its CSS styles this subtree only. -->
+<template>
+  <view class="card">
+    <text class="message">{{ message }}</text>
+    <text class="note" r-if='note != ""'>{{ note }}</text>
+  </view>
+</template>
+
+<style>
+  * { box-sizing: border-box; }
+
+  .card {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 18px;
+    border-radius: 14px;
+    background: #313244;
+  }
+
+  .message { color: #cdd6f4; font-size: 20px; font-weight: 700; }
+  .note { color: #6c7086; font-size: 12px; }
+</style>
+
+<script>
+  prop message: string;
+  prop note = "";
+</script>
+"#;
+
+/// The Rust half, when there is one. The crate's name is fixed: the generated
+/// crate `rux build` makes is named after the app, so two of one name would
+/// collide, and nothing refers to this one by name except its own Cargo.toml.
+const NATIVE_CARGO: &str = r#"[package]
+name = "app-native"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+# What every app's native/ crate depends on, under the name `rux`. It has to be
+# the version of Rux that builds the app: a second copy would be a second
+# registry, and the exports would land in the one nobody reads.
+rux = { package = "rux-native", version = "%%RUX%%" }
+
+# Crates from crates.io go here, added with `cargo add` from this directory.
+# They are compiled into the app for every target, and not every crate builds
+# for Android or the web: one that links OpenSSL or starts threads is the usual
+# trouble. `rux build` keeps the versions it resolved in locks/.
+"#;
+
+const NATIVE_LIB: &str = "//! The Rust half of this app: what its pages reach as `native::<module>`.\n\
+    //!\n\
+    //! A `pub mod hello;` here is `use native::hello;` in a `.rux` file.\n\
+    \n\
+    pub mod hello;\n";
+
+const NATIVE_HELLO: &str = r#"//! The greeting on the home page: `use native::hello;` in `pages/home.rux`.
+
+/// A greeting for `name`, or for the world when there is no name.
+///
+/// `#[rux::export]` is what makes a function reachable from a `.rux` file.
+/// `rux check` reads its signature from this source, without building anything,
+/// so a wrong call is reported where it is written.
+#[rux::export]
+pub fn greet(name: String) -> String {
+    let name = name.trim();
+    if name.is_empty() {
+        "Hello, World!".to_string()
+    } else {
+        format!("Hello, {name}!")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_name_is_greeted_and_no_name_greets_the_world() {
+        assert_eq!(greet("Ada".into()), "Hello, Ada!");
+        assert_eq!(greet("  ".into()), "Hello, World!");
+    }
+}
+"#;
+
+/// Points rust-analyzer at the crate, which is not at the project root where it
+/// looks.
+const VSCODE_SETTINGS: &str = "{\n  \"rust-analyzer.linkedProjects\": [\"native/Cargo.toml\"]\n}\n";
+
+const GITIGNORE: &str = "# Build output: `rux build` writes dist/, and the generated crate it\n\
+                         # compiles lives in .rux-build/. locks/ is NOT ignored: commit it.\n\
+                         dist/\n\
+                         .rux-build/\n\
+                         # The native/ crate's own build output, if cargo is run there.\n\
+                         target/\n\
+                         \n\
+                         # Editors and OS cruft.\n\
                          .DS_Store\n\
                          Thumbs.db\n\
                          *.swp\n";
-
-/// `assets/` has to exist to be a convention, and an empty directory does not
-/// survive `git add`. A note is more honest than a placeholder image.
-const ASSETS_NOTE: &str = "Images go here.\n\
-    \n\
-    An `<image src=\"assets/logo.png\">` resolves this path relative to the\n\
-    `.rux` file that names it, not relative to the directory you ran `rux` in,\n\
-    so it keeps working wherever the app is launched from.\n\
-    \n\
-    PNG, JPEG, GIF and WebP.\n";
 
 /// The manifest a scaffolded project starts with.
 ///
@@ -677,17 +880,29 @@ const ASSETS_NOTE: &str = "Images go here.\n\
 /// name things that do not exist yet in a new project, and a manifest full of
 /// commented-out keys is a manifest nobody reads.
 const MANIFEST_TEMPLATE: &str = r#"[app]
-name = "{name}"
+name = "%%NAME%%"
 
 # Reverse-DNS, and the one field worth getting right before you ship. An
 # operating system files the app under this, so changing it later produces a
 # different app rather than an update. `dev.example` is a placeholder.
-id = "{id}"
+id = "%%ID%%"
 
 version = "0.1.0"
 "#;
 
-const FILES: &[File] = &[
+/// What every template shares.
+const COMMON_FILES: &[File] = &[
+    File { path: ".gitignore", body: GITIGNORE },
+    File { path: "assets/.gitkeep", body: "" },
+];
+
+const MINIMAL_FILES: &[File] = &[
+    File { path: "app.rux", body: MIN_APP },
+    File { path: "pages/missing.rux", body: MISSING },
+    File { path: "components/message-card.rux", body: MIN_CARD },
+];
+
+const TASKS_FILES: &[File] = &[
     File { path: "app.rux", body: APP },
     File { path: "stores/todo.rux", body: TODO },
     File { path: "pages/home.rux", body: HOME },
@@ -695,23 +910,240 @@ const FILES: &[File] = &[
     File { path: "pages/detail.rux", body: DETAIL },
     File { path: "pages/missing.rux", body: MISSING },
     File { path: "components/task-row.rux", body: TASK_ROW },
-    File { path: "assets/README.md", body: ASSETS_NOTE },
-    File { path: ".gitignore", body: GITIGNORE },
 ];
+
+const NATIVE_FILES: &[File] = &[
+    File { path: "native/Cargo.toml", body: NATIVE_CARGO },
+    File { path: "native/src/lib.rs", body: NATIVE_LIB },
+    File { path: "native/src/hello.rs", body: NATIVE_HELLO },
+    File { path: ".vscode/settings.json", body: VSCODE_SETTINGS },
+];
+
+/// Which project `rux new` writes.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Template {
+    /// A frame, one page that calls Rust, one component. The default: nothing
+    /// to delete before the first line of your own.
+    Minimal,
+    /// A small tasks app: routes, a store, forms, a detail page. The worked
+    /// example of how a larger project is split.
+    Tasks,
+}
+
+impl Template {
+    fn parse(name: &str) -> Result<Self, String> {
+        match name {
+            "minimal" => Ok(Template::Minimal),
+            "tasks" => Ok(Template::Tasks),
+            other => Err(format!("unknown template `{other}`; the ones that exist are `minimal` and `tasks`")),
+        }
+    }
+
+    fn files(self) -> &'static [File] {
+        match self {
+            Template::Minimal => MINIMAL_FILES,
+            Template::Tasks => TASKS_FILES,
+        }
+    }
+
+    /// The tree the README draws, without the native half.
+    fn tree(self) -> &'static str {
+        match self {
+            Template::Minimal => {
+                "app.rux              the frame and the routes\n\
+                 pages/               one file per route\n\
+                 \x20 home.rux           the home page\n\
+                 \x20 missing.rux        the fallback, for a path nothing matches\n\
+                 components/          one file per component\n\
+                 \x20 message-card.rux   a card that takes props\n"
+            }
+            Template::Tasks => {
+                "app.rux              the frame and the routes\n\
+                 stores/              the app's state\n\
+                 \x20 todo.rux           the tasks, and the functions that change them\n\
+                 pages/               one file per route\n\
+                 \x20 home.rux           the list\n\
+                 \x20 new-task.rux       the form\n\
+                 \x20 detail.rux         one task, by id\n\
+                 \x20 missing.rux        the fallback, for a path nothing matches\n\
+                 components/          one file per component\n\
+                 \x20 task-row.rux       one row of the list\n"
+            }
+        }
+    }
+
+    /// The component the README tells the reader to check by name.
+    fn component(self) -> &'static str {
+        match self {
+            Template::Minimal => "components/message-card.rux",
+            Template::Tasks => "components/task-row.rux",
+        }
+    }
+}
+
+/// The project's README, written for the choices that were made.
+fn readme(name: &str, template: Template, native: bool) -> String {
+    let mut out = format!(
+        "# {name}\n\
+         \n\
+         A [Rux](https://ruxlang.dev) app.\n\
+         \n\
+         ## Run it\n\
+         \n\
+         ```bash\n\
+         rux run\n\
+         ```\n\
+         \n\
+         `rux run` looks for `app.rux` here and in every parent directory, so it works\n\
+         from anywhere inside the project. Edits to a `.rux` file reload in the open\n\
+         window; nothing needs rebuilding.\n"
+    );
+    if native {
+        out.push_str(
+            "\nThe first run compiles the app's Rust together with Rux, which takes several\n\
+             minutes. Later runs reuse that, and rebuild only when something under `native/`\n\
+             changes.\n",
+        );
+    }
+    out.push_str("\n## What is here\n\n```\n");
+    out.push_str(template.tree());
+    if native {
+        out.push_str(
+            "native/              the app's Rust, always here, beside rux.toml\n\
+             \x20 Cargo.toml         its dependencies\n\
+             \x20 src/lib.rs         one `pub mod` per `native::<module>`\n\
+             \x20 src/hello.rs       the greeting on the home page\n",
+        );
+    }
+    out.push_str(
+        "assets/              images; `src` resolves relative to the .rux file\n\
+         rux.toml             name, id and version\n\
+         locks/               dependency versions, written by `rux build`: commit it\n\
+         ```\n\
+         \n\
+         `components/` and `pages/` are conventions the runtime already follows:\n\
+         `use pages::new_task;` names `pages/new-task.rux`, and an\n\
+         `<image src=\"assets/logo.png\">` resolves from the document's own directory, not\n\
+         from wherever you happened to run `rux`.\n",
+    );
+    if native {
+        out.push_str(
+            "\n## Rust\n\
+             \n\
+             **The Rust half of an app lives in `native/`, beside `rux.toml`.** It is an\n\
+             ordinary library crate. A function marked `#[rux::export]` in\n\
+             `native/src/hello.rs` is `hello.greet(...)` after `use native::hello;` in a\n\
+             `.rux` file, and `rux check` reads its signature from the source without building.\n\
+             `rux native` prints what Rux sees.\n\
+             \n\
+             To use a crate from crates.io, add it from inside `native/`:\n\
+             \n\
+             ```bash\n\
+             cd native\n\
+             cargo add serde_json\n\
+             cargo test        # the crate's own tests\n\
+             ```\n\
+             \n\
+             Everything in `native/Cargo.toml` is compiled into the app for every target,\n\
+             and not every crate builds for Android or the web. A crate that links OpenSSL\n\
+             or starts threads is the usual trouble, so check a crate's target support\n\
+             before depending on it.\n",
+        );
+    }
+    out.push_str(
+        "\n## Building\n\
+         \n\
+         ```bash\n\
+         rux build                    # dist/<name>.exe\n\
+         rux build --release          # embeds the documents\n\
+         rux build --target android   # dist/<name>.apk\n\
+         rux build --target web       # dist/web/\n\
+         ```\n\
+         \n\
+         What comes out is in `dist/`. The crate `rux build` generates and compiles is in\n\
+         `.rux-build/`, and its compiled output is in `.rux-build/<target>/target/`; both\n\
+         are disposable. Set `CARGO_TARGET_DIR` to share one compiled copy of Rux across\n\
+         projects instead of compiling it in each.\n\
+         \n\
+         The first build writes `locks/<target>.lock`, the dependency versions it\n\
+         resolved. Commit them, so every machine builds the same versions, and pass\n\
+         `--locked` in CI to fail instead of resolving anything new.\n",
+    );
+    if template == Template::Tasks {
+        out.push_str(
+            "\n## How it fits together\n\
+             \n\
+             **`stores/todo.rux` owns the state.** A page is a component, and a component\n\
+             gets its own copy of anything it declares, so state that outlives one screen\n\
+             lives in a store: a file with no `<template>`, loaded once, so every file that\n\
+             imports it with `use stores::todo;` reads the same tasks. A page reads\n\
+             `todo.tasks` and changes the list by calling what the store exports,\n\
+             `todo.add(…)` or `todo.toggle(id)`; nothing outside the store writes it.\n\
+             \n\
+             **A name is written twice, deliberately.** `use pages::new_task;` names a file,\n\
+             so it is written the way files are; `<new-task>` is a custom element, so it is\n\
+             written the way elements are. Either spelling resolves.\n\
+             \n\
+             **An id is text.** A route carries `:id` out of the path as text, so the tasks\n\
+             carry text ids and the two can be compared without converting anything.\n",
+        );
+    }
+    out.push_str(&
+        "\n## While you work\n\
+         \n\
+         ```bash\n\
+         rux check          what is wrong, without opening a window\n\
+         rux fmt            re-indent, and format the CSS\n\
+         ```\n\
+         \n\
+         `rux check` on its own walks the project and skips components, because a\n\
+         component read alone is missing the props its caller passes. Name one to check\n\
+         it in full: `rux check {}`.\n"
+            .replace("{}", template.component()),
+    );
+    out
+}
 
 /// Create the project. Returns a process exit code.
 pub fn create(args: &[String]) -> i32 {
     let mut name = None;
-    for arg in args {
-        if arg.starts_with('-') {
-            eprintln!("rux: unknown option `{arg}` for `new`");
-            return 2;
+    let mut template = Template::Minimal;
+    // **On unless asked off.** The Rust half of an app is not an extra: any
+    // project past a demo reaches for it, and a convention that has to be
+    // opted into is one people meet by accident, in the wrong place.
+    let mut native = true;
+    let mut i = 0;
+    while i < args.len() {
+        let arg = &args[i];
+        match arg.as_str() {
+            "--template" => {
+                let Some(value) = args.get(i + 1) else {
+                    eprintln!("rux: --template needs a name: `minimal` or `tasks`");
+                    return 2;
+                };
+                match Template::parse(value) {
+                    Ok(t) => template = t,
+                    Err(why) => {
+                        eprintln!("rux: {why}");
+                        return 2;
+                    }
+                }
+                i += 1;
+            }
+            "--no-native" => native = false,
+            _ if arg.starts_with('-') => {
+                eprintln!("rux: unknown option `{arg}` for `new`");
+                return 2;
+            }
+            _ => {
+                if name.is_some() {
+                    eprintln!("rux: `new` takes one name, not several");
+                    return 2;
+                }
+                name = Some(arg.clone());
+            }
         }
-        if name.is_some() {
-            eprintln!("rux: `new` takes one name, not several");
-            return 2;
-        }
-        name = Some(arg.clone());
+        i += 1;
     }
 
     // No name given: ask for one, as `rux new my-app` would have been told it.
@@ -750,7 +1182,7 @@ pub fn create(args: &[String]) -> i32 {
         }
     }
 
-    if let Err(e) = write_all(&target, &display) {
+    if let Err(e) = write_all(&target, &display, template, native) {
         eprintln!("rux: {e}");
         return 1;
     }
@@ -761,6 +1193,9 @@ pub fn create(args: &[String]) -> i32 {
     println!("  rux run");
     println!();
     println!("`rux run` finds app.rux from anywhere inside the project. Edits reload live.");
+    if native {
+        println!("The first run compiles the app's Rust with Rux, which takes several minutes.");
+    }
     0
 }
 
@@ -802,21 +1237,40 @@ fn prompt_name(
     }
 }
 
-fn write_all(target: &Path, name: &str) -> Result<(), String> {
-    for file in FILES {
-        let path = target.join(file.path);
+/// The files a project of these choices is made of, as path and contents.
+fn files_for(template: Template, native: bool) -> Vec<(&'static str, String)> {
+    let mut files: Vec<&File> = COMMON_FILES.iter().chain(template.files()).collect();
+    if native {
+        files.extend(NATIVE_FILES);
+    }
+    let mut out: Vec<(&'static str, String)> =
+        files.iter().map(|f| (f.path, f.body.to_string())).collect();
+    if template == Template::Minimal {
+        out.push(("pages/home.rux", min_home(native)));
+    }
+    out
+}
+
+fn write_all(target: &Path, name: &str, template: Template, native: bool) -> Result<(), String> {
+    for (file_path, body) in files_for(template, native) {
+        let path = target.join(file_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
         }
-        fs::write(&path, file.body).map_err(|e| format!("writing {}: {e}", path.display()))?;
+        // The two placeholders a template may carry: the project's name, and the
+        // version of Rux that wrote it, which the native crate has to match.
+        let body = body
+            .replace("%%NAME%%", name)
+            .replace("%%RUX%%", env!("CARGO_PKG_VERSION"));
+        fs::write(&path, body).map_err(|e| format!("writing {}: {e}", path.display()))?;
     }
-    let readme = README.replace("{name}", name);
+    let readme = readme(name, template, native);
     let path = target.join("README.md");
     fs::write(&path, readme).map_err(|e| format!("writing {}: {e}", path.display()))?;
 
     let manifest = MANIFEST_TEMPLATE
-        .replace("{name}", name)
-        .replace("{id}", &default_id(name));
+        .replace("%%NAME%%", name)
+        .replace("%%ID%%", &default_id(name));
     let path = target.join(crate::manifest::MANIFEST);
     fs::write(&path, manifest).map_err(|e| format!("writing {}: {e}", path.display()))?;
     Ok(())
@@ -905,19 +1359,31 @@ mod tests {
     /// one names which import is wrong.
     #[test]
     fn every_scaffolded_import_names_a_file_the_scaffold_writes() {
-        let written: Vec<&str> = FILES.iter().map(|f| f.path).collect();
-        for body in [APP, HOME, NEW_TASK, DETAIL, MISSING, TASK_ROW, TODO] {
-            for line in body.lines().map(str::trim) {
-                let Some(path) = line.strip_prefix("use ").and_then(|l| l.strip_suffix(';')) else {
-                    continue;
-                };
-                // `use pages::new_task;` -> `pages/new-task.rux`, the runtime's
-                // own mapping.
-                let file = format!("{}.rux", path.replace("::", "/").replace('_', "-"));
-                assert!(
-                    written.contains(&file.as_str()),
-                    "`{line}` names `{file}`, which the scaffold does not write"
-                );
+        for (template, bodies) in [
+            (Template::Tasks, vec![APP, HOME, NEW_TASK, DETAIL, MISSING, TASK_ROW, TODO]),
+            (
+                Template::Minimal,
+                vec![MIN_APP, MIN_HOME_NATIVE_SCRIPT, MIN_HOME_PLAIN_SCRIPT, MISSING, MIN_CARD],
+            ),
+        ] {
+            let written: Vec<&str> = files_for(template, true).iter().map(|f| f.0).collect();
+            for body in bodies {
+                for line in body.lines().map(str::trim) {
+                    let Some(path) = line.strip_prefix("use ").and_then(|l| l.strip_suffix(';')) else {
+                        continue;
+                    };
+                    // The app's Rust is a crate, not a `.rux` file.
+                    if path.starts_with("native::") {
+                        continue;
+                    }
+                    // `use pages::new_task;` -> `pages/new-task.rux`, the
+                    // runtime's own mapping.
+                    let file = format!("{}.rux", path.replace("::", "/").replace('_', "-"));
+                    assert!(
+                        written.contains(&file.as_str()),
+                        "`{line}` names `{file}`, which the {template:?} scaffold does not write"
+                    );
+                }
             }
         }
     }
@@ -929,7 +1395,7 @@ mod tests {
     fn the_component_is_written_as_a_tag() {
         assert!(HOME.contains("<task-row"), "the row is never written");
         assert!(HOME.contains("use components::task_row;"), "and never imported");
-        assert!(FILES.iter().any(|f| f.path == "components/task-row.rux"));
+        assert!(TASKS_FILES.iter().any(|f| f.path == "components/task-row.rux"));
         assert!(
             !APP.contains("<home"),
             "a page is named in a `view=`, not written as a tag"
@@ -942,14 +1408,16 @@ mod tests {
     /// diagnostic.
     #[test]
     fn every_route_names_an_imported_view_and_there_is_a_fallback() {
-        assert!(APP.contains("<route fallback"), "a mistyped path must land somewhere");
-        for line in APP.lines().map(str::trim).filter(|l| l.starts_with("<route ")) {
-            let Some(rest) = line.split("view=\"").nth(1) else { continue };
-            let view = rest.split('"').next().unwrap_or_default();
-            assert!(
-                APP.contains(&format!("use pages::{view};")),
-                "`view=\"{view}\"` is not imported"
-            );
+        for app in [APP, MIN_APP] {
+            assert!(app.contains("<route fallback"), "a mistyped path must land somewhere");
+            for line in app.lines().map(str::trim).filter(|l| l.starts_with("<route ")) {
+                let Some(rest) = line.split("view=\"").nth(1) else { continue };
+                let view = rest.split('"').next().unwrap_or_default();
+                assert!(
+                    app.contains(&format!("use pages::{view};")),
+                    "`view=\"{view}\"` is not imported"
+                );
+            }
         }
     }
 }

@@ -1,6 +1,6 @@
 +++
 title = "rux new"
-description = "Create a project: the entry point, a component, and the two directories the runtime already looks in."
+description = "Create a project: the entry point, a page, a component, the Rust half in native/, and the directories the runtime already looks in."
 weight = 1
 +++
 
@@ -12,33 +12,84 @@ cd my-app
 rux run
 ```
 
+Run at a terminal with no name, it asks for one (`Project name:`) and carries on
+as if the name had been given. A script or CI job has nobody to answer, so there
+it still stops with an error.
+
+```
+rux new [name] [--template minimal|tasks] [--no-native]
+```
+
 ## What it writes
 
 ```
 my-app/
-  app.rux              the entry point
+  app.rux              the frame and the routes
+  pages/
+    home.rux           the home page, which calls Rust
+    missing.rux        the fallback, for a path nothing matches
   components/
-    task.rux           imported by `use components::task;`
+    message-card.rux   a card that takes props
+  native/              the app's Rust, always here, beside rux.toml
+    Cargo.toml         its dependencies
+    src/lib.rs         one `pub mod` per `native::<module>`
+    src/hello.rs       the greeting on the home page
   assets/              images
+  rux.toml             name, id and version
   README.md
   .gitignore
+  .vscode/settings.json
 ```
 
-Both directory names are conventions the runtime already followed, which is the
-reason they are the ones scaffolded:
+That is the `minimal` template, and the default: a frame, one page, one
+component, and nothing to delete before the first line of your own. The README
+it writes describes exactly this tree and is written for the choices made, so it
+never names a directory that is not there.
 
-- `use components::task;` in a `<script>` names the file `components/task.rux`.
-  An underscore in the path becomes a hyphen in the tag, so
-  `use components::crew_detail;` gives you `<crew-detail>`.
+`--template tasks` writes the larger worked example instead: a small task list
+with four pages, a store in `stores/`, a form and a component. It is the answer
+to "how is a bigger project split", and uses every idea the language has: state
+with `signal`, a two-way bound `<input>` with `r-model`, a `@tap` handler that
+calls a named function, a list with `r-for` and `r-key`, and a component
+receiving props.
+
+`pages/`, `components/` and `assets/` are conventions the runtime already
+followed, which is the reason they are the ones scaffolded:
+
+- `use components::message_card;` in a `<script>` names the file
+  `components/message-card.rux`. An underscore in the path becomes a hyphen in
+  the tag, so `use components::crew_detail;` gives you `<crew-detail>`.
 - `<image src="assets/logo.png">` resolves **relative to the `.rux` file that
   names it**, not relative to the directory you ran `rux` from. An app launched
   from anywhere finds its own images.
 
-The generated app is a small task list. It is deliberately not a hello world:
-it uses every idea the language has, so the file answers "how do I do this"
-for the five things people reach for first. State with `signal`, a two-way
-bound `<input>` with `r-model`, a `@tap` handler that calls a named function,
-a list with `r-for` and `r-key`, and a component receiving props.
+## The Rust half
+
+**An app's Rust lives in `native/`, beside `rux.toml`, in every project.** It is
+an ordinary library crate, so the convention is one a person learns once and
+finds in the same place every time. It is on unless `--no-native` turns it off,
+which also leaves out `.vscode/settings.json`, the file that points
+rust-analyzer at a crate that is not at the project root.
+
+A function marked `#[rux::export]` in `native/src/hello.rs` is `hello.greet(...)`
+after `use native::hello;`, and `rux check` reads its signature from the source
+without building anything. `rux native` prints what Rux sees.
+
+Crates from crates.io go in `native/Cargo.toml`, added with `cargo add` from
+inside `native/`. They are compiled into the app for every target, and not every
+crate builds for Android or the web; one that links OpenSSL or starts threads is
+the usual trouble. The first `rux run` compiles the app's Rust together with
+Rux, which takes several minutes, and later runs rebuild only when something
+under `native/` changes.
+
+The `rux-native` dependency is written with the version of the `rux` that
+created the project. It has to be the version that builds the app, because a
+second copy would be a second registry, and the exports would land in the one
+nobody reads.
+
+The generated `.gitignore` covers what a build writes (`dist/`, `.rux-build/`,
+`target/`) and not `locks/`, which is meant to be committed. See
+[`rux build`](@/tooling/build.md) for where builds land and why the locks exist.
 
 ## The manifest it writes
 

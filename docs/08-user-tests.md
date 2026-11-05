@@ -3359,6 +3359,27 @@ The same AW-048 page.
 | Script | tap "select 0..8" | 0 to 8 selected, no toolbar; Ctrl+C then puts `query { ` on the clipboard | pass |
 | A finger | long press a word on a touch screen, or a phone's browser | the word selected, handles and the toolbar | not driven: no touch screen here, and Windows' injected touch did not reach the window |
 
+## `rux new`, native/ and kept locks, 2026-11-05
+
+The scaffold was rethought: `rux new` asks for a name at a terminal, writes a
+`minimal` project by default (`--template tasks` for the larger one), puts the
+app's Rust in `native/` unless `--no-native`, and `rux build` keeps
+`locks/<target>.lock`. Under test in `crates/rux-cli/tests/new.rs`, `new.rs` and
+`build.rs`. Driven on scratch projects outside the repository, desktop only,
+with the dev `rux` building against the checkout and one shared
+`CARGO_TARGET_DIR`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A default scaffold with its Rust builds | `rux new demo`, `rux build` | `dist/demo.exe` and `locks/desktop.lock` | desktop: pass, 10 min 27 s on a fresh target, 4.0 GB of target |
+| The home page renders | open `dist/demo.exe` | header `demo`, `Hello, World!` from Rust | desktop: pass |
+| The greeting follows the field | click the field, type `Ada` | `Hello, Ada!` | desktop: **fail, then pass.** It said `Hello, demo!` for any input, including `hello.greet("Zed")`. The scaffold replaced every `{name}` in every file, which rewrote the Rust's own `format!("Hello, {name}!")`. Compiled, checked clean and passed every test; only typing showed it. Fixed with tokens that cannot occur in Rust or Rux (`%%NAME%%`), pinned by `the_scaffold_leaves_the_authors_own_braces_alone`. Passes on a rebuilt fresh scaffold |
+| A kept lock rebuilds a fresh clone | delete `.rux-build/`, `rux build --locked` | builds, lock unchanged | desktop: pass |
+| `--locked` with no lock | `rux build --locked` first | refuses, says to build once without it | desktop: pass |
+| `--locked` after a dependency is added | add `itoa` to `native/Cargo.toml`, `rux build --locked` | refuses rather than resolving | desktop: pass |
+| `cargo test` inside `native/` | not driven | needs `rux-native` on crates.io | **not driven**: `rux-native`, `rux-native-macros` and `rux-bindgen` are not published yet |
+| Android and web builds of a scaffold with native | not driven | | **not driven** |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
