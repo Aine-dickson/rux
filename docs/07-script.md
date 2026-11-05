@@ -346,6 +346,11 @@ can name these without a `use`:
 | `DragEvent` | `@drag` | `totalX`, `totalY`, `moveX`, `moveY`, `phase` |
 | `SwipeEvent` | `@swipe` | `totalX`, `totalY`, `moveX`, `moveY`, `direction` |
 | `KeyEvent` | `@key` | none of those, only `key`, `ctrl`, `shift`, `alt`, `meta`, `primary`, `repeat` |
+| `SelectEvent` | `@select` on a field | none of those, only `value`, `start`, `end`, `caret` |
+
+`TextMark` is one range of a field's `:marks`, `{ start: int, end: int,
+class: string }`, so a function that builds them from `[]` can say what it
+returns: `fn marks(src: string): TextMark[]`.
 
 ```rux
 <view @key="onKey(event)">

@@ -1444,6 +1444,22 @@ fn build(
                 );
             }
             Paint::Text(t) => {
+                // A field's text with marks: the marks' backgrounds go down
+                // first, so the selection covers them (Tracer's AW-048).
+                let split = t.content.selection.is_some_and(|(s, e)| s != e)
+                    && TextEngine::has_highlights(&text_style(&t.content));
+                if split {
+                    text.draw_highlights(
+                        &mut scene,
+                        t.x,
+                        t.y,
+                        &t.content.text,
+                        &text_style(&t.content),
+                        to_align(t.content.align),
+                        Some(t.width),
+                        cur,
+                    );
+                }
                 // The selection highlight goes behind the glyphs: the author's
                 // `::selection` background, or the platform's highlight.
                 let mut selected = Vec::new();
@@ -1480,7 +1496,9 @@ fn build(
                     Some(look) => TextStyle { look: Some(look), ..text_style(&t.content) },
                     None => text_style(&t.content),
                 };
-                text.draw(
+                let draw = if split { TextEngine::draw_glyphs } else { TextEngine::draw };
+                draw(
+                    text,
                     &mut scene,
                     t.x,
                     t.y,

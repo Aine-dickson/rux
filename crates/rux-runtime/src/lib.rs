@@ -1063,7 +1063,7 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
         "drag" => "DragEvent".to_string(),
         "swipe" => "SwipeEvent".to_string(),
         // Where the caret and the selection are, in characters of the value.
-        "select" if el.tag == "input" => "{ value: string, start: int, end: int, caret: int }".to_string(),
+        "select" if el.tag == "input" => "SelectEvent".to_string(),
         "input" | "change" | "focus" | "blur" if el.tag == "input" => {
             // A number field bound to a signal hands over the number the signal
             // holds; everything else hands over text, or has not been measured.
@@ -1170,6 +1170,7 @@ fn bound_type(tag: &str, name: &str) -> Option<rux_script::types::Type> {
         ("image" | "audio" | "video", "src") | ("video", "poster") | ("path", "d") => "string",
         ("audio" | "video", "controls" | "autoplay" | "loop" | "muted") => "bool",
         ("input", "options") => "string[]",
+        ("input", "marks") => "TextMark[]",
         ("input" | "button", "disabled") | ("input", "readonly" | "required") => "bool",
         _ => return None,
     };

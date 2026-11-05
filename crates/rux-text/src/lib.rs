@@ -136,6 +136,17 @@ impl Wrap {
     }
 }
 
+/// What one call of the drawing paints: everything, the one-colour second
+/// pass of `::selection { color }`, or the runs' highlights and the rest
+/// apart, so a selection can go between them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Pass {
+    All,
+    Ink,
+    Highlights,
+    Glyphs,
+}
+
 /// The shaping inputs for a run of text, gathered into one struct so the engine
 /// methods don't take a dozen positional arguments. Everything except
 /// `font_size`/`weight` is optional and off by default. Lengths are logical px.
@@ -1167,7 +1178,7 @@ impl TextEngine {
         max_width: Option<f32>,
         transform: Affine,
     ) {
-        self.draw_inked(scene, x, y, text, style, color, false, align, max_width, transform);
+        self.draw_inked(scene, x, y, text, style, color, Pass::All, align, max_width, transform);
     }
 
     /// For `text-overflow: ellipsis`, when the text is one line too wide for
@@ -1245,6 +1256,48 @@ impl TextEngine {
         Some((cut(lo), unclamped))
     }
 
+    /// Only the runs' `background` highlights of [`draw`](Self::draw), so
+    /// something can go between them and the glyphs: a field's selection,
+    /// which covers a mark's background as a browser's does (Tracer's
+    /// AW-048). [`draw_glyphs`](Self::draw_glyphs) draws the rest.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_highlights(
+        &mut self,
+        scene: &mut Scene,
+        x: f32,
+        y: f32,
+        text: &str,
+        style: &TextStyle,
+        align: Align,
+        max_width: Option<f32>,
+        transform: Affine,
+    ) {
+        self.draw_inked(scene, x, y, text, style, Color::TRANSPARENT, Pass::Highlights, align, max_width, transform);
+    }
+
+    /// [`draw`](Self::draw) without the runs' highlights, which
+    /// [`draw_highlights`](Self::draw_highlights) drew underneath.
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_glyphs(
+        &mut self,
+        scene: &mut Scene,
+        x: f32,
+        y: f32,
+        text: &str,
+        style: &TextStyle,
+        color: Color,
+        align: Align,
+        max_width: Option<f32>,
+        transform: Affine,
+    ) {
+        self.draw_inked(scene, x, y, text, style, color, Pass::Glyphs, align, max_width, transform);
+    }
+
+    /// Whether [`draw`](Self::draw) paints any run highlight for `style`.
+    pub fn has_highlights(style: &TextStyle) -> bool {
+        style.rich.is_some_and(|r| r.runs.iter().any(|run| run.style.background.is_some()))
+    }
+
     /// [`draw`](Self::draw) with every glyph and decoration in `color`, runs
     /// included, and no run highlights: the second pass `::selection { color }`
     /// paints over the selected part.
@@ -1261,7 +1314,7 @@ impl TextEngine {
         max_width: Option<f32>,
         transform: Affine,
     ) {
-        self.draw_inked(scene, x, y, text, style, color, true, align, max_width, transform);
+        self.draw_inked(scene, x, y, text, style, color, Pass::Ink, align, max_width, transform);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1273,7 +1326,7 @@ impl TextEngine {
         text: &str,
         style: &TextStyle,
         color: Color,
-        ink: bool,
+        pass: Pass,
         align: Align,
         max_width: Option<f32>,
         transform: Affine,
@@ -1283,16 +1336,17 @@ impl TextEngine {
         // edited as the whole text.
         if let Some((cut, look)) = self.clamped(text, style, max_width) {
             let style = TextStyle { look: Some(&look), ..*style };
-            return self.draw_inked(scene, x, y, &cut, &style, color, ink, align, max_width, transform);
+            return self.draw_inked(scene, x, y, &cut, &style, color, pass, align, max_width, transform);
         }
         if let Some((cut, look)) = self.ellipsized(text, style, max_width) {
             let style = TextStyle { look: Some(&look), ..*style };
-            return self.draw_inked(scene, x, y, &cut, &style, color, ink, align, max_width, transform);
+            return self.draw_inked(scene, x, y, &cut, &style, color, pass, align, max_width, transform);
         }
         let key = KeyRef::new(text, style, max_width, align as u8);
         self.ensure_shaped(key, text, style, max_width, align);
         let layout = &self.shaped[&key as &dyn AsKey];
         let strut = Self::strut(layout, style);
+        let ink = pass == Pass::Ink;
 
         // A run's own colour and decorations, or the paragraph's.
         let look = |id: RunId| -> (Color, bool, bool, Option<&TextLook>) {
@@ -1308,7 +1362,7 @@ impl TextEngine {
 
         // Highlights first, under every glyph: `background` on a run covers its
         // part of each line it is on, the full height of that line.
-        if let Some(rich) = style.rich.filter(|r| !ink && r.runs.iter().any(|run| run.style.background.is_some())) {
+        if let Some(rich) = style.rich.filter(|r| matches!(pass, Pass::All | Pass::Highlights) && r.runs.iter().any(|run| run.style.background.is_some())) {
             let off = shift(text, style);
             let lines: Vec<LineBox> = {
                 let mut top = 0.0;
@@ -1338,6 +1392,9 @@ impl TextEngine {
                     scene.fill(Fill::NonZero, transform, Color::new([bg.r, bg.g, bg.b, bg.a]), None, &r);
                 }
             }
+        }
+        if pass == Pass::Highlights {
+            return;
         }
 
         let mut line_top = y;

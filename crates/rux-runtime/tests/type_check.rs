@@ -244,3 +244,31 @@ fn an_event_has_the_type_of_what_sent_it() {
     assert!(!f.iter().any(|(_, _, m)| m.contains("`values`") && m.contains("`email`") && !m.contains("emial")), "values.email reads plainly: {f:?}");
     assert!(f.iter().any(|(l, e, m)| *l == Some(3) && *e && m.contains("`@invalid` on <view>") && m.contains("event.errors?.email")), "{f:?}");
 }
+
+/// `@select`'s event and `:marks`' ranges have names a function can take and
+/// give (Tracer's AW-049), and a mark that is not one is caught.
+#[test]
+fn select_events_and_marks_have_names() {
+    let src = "<template><screen><input type=\"textarea\" r-model=\"text\" :marks=\"marks(text)\" @select=\"onSel(event)\" /></screen></template>\n\
+<script>\n\
+let text = signal(\"query { user }\");\n\
+let caret = signal(0);\n\
+fn onSel(e: SelectEvent) { caret = e.caret + e.start + e.end + e.value.len(); }\n\
+fn marks(src: string): TextMark[] {\n\
+  let out: TextMark[] = [];\n\
+  if src.startsWith(\"query\") { out.push({ start: 0, end: 5, class: \"kw\" }); }\n\
+  out\n\
+}\n\
+</script>\n";
+    let dir = project(&[("app.rux", src)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    assert!(f.is_empty(), "{f:?}");
+
+    let bad = "<template><screen><input r-model=\"text\" :marks=\"[{ start: 0, end: 5, klass: 1 }]\" /></screen></template>\n\
+<script>\nlet text = signal(\"q\");\n</script>\n";
+    let dir = project(&[("app.rux", bad)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    assert!(f.iter().any(|(_, err, m)| *err && m.contains(":marks")), "{f:?}");
+}

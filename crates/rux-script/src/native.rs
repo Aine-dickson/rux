@@ -214,6 +214,12 @@ pub fn event_types() -> Vec<(&'static str, String)> {
             "SwipeEvent",
             format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, direction: \"left\" | \"right\" | \"up\" | \"down\" }}"),
         ),
+        // A field's `@select`: where the selection and the caret are, in
+        // characters of the value (Tracer's AW-049).
+        ("SelectEvent", "{ value: string, start: int, end: int, caret: int }".to_string()),
+        // One of `:marks`' ranges, which is not an event but is named with
+        // them so a function building marks from `[]` can say what it holds.
+        ("TextMark", "{ start: int, end: int, class: string }".to_string()),
     ]
 }
 

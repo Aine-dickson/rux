@@ -36,7 +36,15 @@ impl<'u> Printer<'u> {
             // A program's own `File`, replacing the built-in one, goes too.
             if matches!(
                 name.as_str(),
-                "Result" | "File" | "Sound" | "TapEvent" | "KeyEvent" | "DragEvent" | "SwipeEvent"
+                "Result"
+                    | "File"
+                    | "Sound"
+                    | "TapEvent"
+                    | "KeyEvent"
+                    | "DragEvent"
+                    | "SwipeEvent"
+                    | "SelectEvent"
+                    | "TextMark"
             ) {
                 continue;
             }
