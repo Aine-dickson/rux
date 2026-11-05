@@ -2076,6 +2076,10 @@ struct App {
     /// An undo or redo is writing the field, so the write is not itself an
     /// edit to remember.
     replaying_history: bool,
+    /// What the next write to the focused field is, as `@input`'s
+    /// `event.kind` says it: `"type"` unless whatever writes says otherwise
+    /// (Tracer's AW-050). Taken, and put back to `"type"`, by every write.
+    edit_kind: &'static str,
     /// Scrollable regions from the most recent layout.
     scrolls: Vec<ScrollRegion>,
     /// Boxes with `resize`, from the most recent layout.
@@ -2415,6 +2419,7 @@ impl App {
             select_reported: None,
             field_gone: false,
             replaying_history: false,
+            edit_kind: "type",
             scrolls: Vec::new(),
             resizes: Vec::new(),
             resize_drag: None,
@@ -3957,6 +3962,7 @@ impl App {
                 if at >= hi { at - (hi - lo) } else if at > lo { lo } else { at }
             };
             let (from, to) = put_in(&mut value, at, &text, words);
+            self.edit_kind = "drop";
             if let Some((_, caret)) = self.write_focused(&value, to, false) {
                 self.select_dropped(&target, caret - (to - from), caret);
             }
@@ -3967,6 +3973,7 @@ impl App {
         if !copy {
             let mut value = source.clone();
             cut_out(&mut value, start, end, words);
+            self.edit_kind = "drop";
             if self.write_focused(&value, start.min(value.len()), false).is_none() {
                 return; // a source that refuses the edit keeps its text
             }
@@ -3977,6 +3984,7 @@ impl App {
         let mut value = self.document.value_in(&target.model, target.row.as_deref(), target.instance.as_deref());
         let at = at.min(value.len());
         let (from, to) = put_in(&mut value, at, &text, words);
+        self.edit_kind = "drop";
         if let Some((_, caret)) = self.write_focused(&value, to, false) {
             self.select_dropped(&target, caret.saturating_sub(to - from), caret);
         }
@@ -4792,6 +4800,16 @@ impl App {
                 self.focused_row.as_deref(),
                 self.focused_instance.as_deref(),
             );
+            // `clearHistory()`: the field's undo and redo forgotten, where it
+            // is kept, focused or not, and its focus left alone.
+            let Some(text) = text else {
+                if here {
+                    self.field_history = FieldHistory::default();
+                } else {
+                    self.histories.remove(&(focus.model.clone(), focus.row.clone(), focus.instance.clone()));
+                }
+                continue;
+            };
             if !here {
                 self.set_focus_range(Some(focus.clone()));
             }
@@ -5459,6 +5477,7 @@ impl App {
         let (start, end) = self.selection();
         let mut value = value;
         value.replace_range(start.min(value.len())..end.min(value.len()), "");
+        self.edit_kind = "cut";
         if self.write_focused(&value, start, false).is_none() {
             return;
         }
@@ -5506,6 +5525,7 @@ impl App {
     /// AW-047), with `@input` after it.
     fn insert_text(&mut self, model: &str, text: &str) {
         self.field_history.boundary();
+        self.edit_kind = "insert";
         self.apply_paste(model, text);
         self.field_history.boundary();
     }
@@ -5524,6 +5544,9 @@ impl App {
         let mut value = value;
         let (start, end) = (start.min(value.len()), end.min(value.len()));
         value.replace_range(start..end, &pasted);
+        if self.edit_kind != "insert" {
+            self.edit_kind = "paste";
+        }
         let Some((value, caret)) = self.write_focused(&value, start + pasted.len(), false) else {
             return;
         };
@@ -5746,6 +5769,7 @@ impl App {
         let now = (self.focused_value(), self.caret, self.anchor);
         let Some(to) = self.field_history.step(now, redo) else { return };
         self.replaying_history = true;
+        self.edit_kind = if redo { "redo" } else { "undo" };
         let written = self.write_focused(&to.0, to.1, false);
         self.replaying_history = false;
         if let Some((text, _)) = written {
@@ -6146,6 +6170,7 @@ impl App {
         caret: usize,
         composing: bool,
     ) -> Option<(String, usize)> {
+        let edit = std::mem::replace(&mut self.edit_kind, "type");
         let model = self.focused.clone()?;
         let field = self.live_field();
         if field.readonly {
@@ -6179,7 +6204,7 @@ impl App {
             }
             let written = self.document.value_in(&model, row.as_deref(), instance.as_deref());
             if written != old {
-                self.queue_field_event(field.on_input.as_deref(), &written);
+                self.queue_input_event(field.on_input.as_deref(), &written, edit);
             }
             self.typed_draft = Some((value.clone(), written));
             self.document.set_draft(Some(value.clone()));
@@ -6187,7 +6212,7 @@ impl App {
         }
         self.document.apply_edit_in(&model, row.as_deref(), instance.as_deref(), &value);
         if value != old {
-            self.queue_field_event(field.on_input.as_deref(), &value);
+            self.queue_input_event(field.on_input.as_deref(), &value, edit);
         }
         Some((value, caret))
     }
@@ -6216,6 +6241,20 @@ impl App {
             _ => rux_reactive::Value::Text(value.to_string()),
         };
         self.queue_field_event_in(body, self.focused_instance.clone(), value);
+    }
+
+    /// [`queue_field_event`](Self::queue_field_event) for `@input`, whose
+    /// event also says what kind of edit it was: `event.kind`, so an app
+    /// keeping its own undo can leave the field's own undos out of it
+    /// (Tracer's AW-050).
+    fn queue_input_event(&mut self, body: Option<&str>, value: &str, kind: &str) {
+        let before = self.field_events.len();
+        self.queue_field_event(body, value);
+        if self.field_events.len() > before {
+            if let Some((_, _, rux_reactive::Value::Map(fields))) = self.field_events.back_mut() {
+                fields.push(("kind".to_string(), rux_reactive::Value::Text(kind.to_string())));
+            }
+        }
     }
 
     fn queue_field_event_in(
@@ -8523,13 +8562,20 @@ impl ApplicationHandler<RuxEvent> for App {
                         // connection's empty report then wiped the fill.
                         // It queues the field's `@input` itself, as for typing,
                         // and hands back where the caret goes: after the text.
+                        self.edit_kind = "autofill";
                         if let Some((_, caret)) = self.write_focused(&value, value.len(), false) {
                             self.set_focus_range(Some(self.focus_here(&model, caret)));
                         }
                     } else {
                         self.document.apply_edit_in(&model, row.as_deref(), instance.as_deref(), &value);
                         let text = rux_reactive::Value::Text(value);
-                        self.queue_field_event_in(field.on_input.as_deref(), instance.clone(), text.clone());
+                        if let Some(body) = field.on_input.as_deref() {
+                            let event = rux_reactive::Value::Map(vec![
+                                ("value".to_string(), text.clone()),
+                                ("kind".to_string(), rux_reactive::Value::Text("autofill".to_string())),
+                            ]);
+                            self.field_events.push_back((body.to_string(), instance.clone(), event));
+                        }
                         self.queue_field_event_in(field.on_change.as_deref(), instance, text);
                     }
                     self.request_redraw();

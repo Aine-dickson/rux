@@ -237,7 +237,9 @@ pub struct Document {
     /// `insertText` calls the shell has not taken yet: the field, with the
     /// selection the text replaces, and the text. The shell's, because the
     /// edit joins the field's undo, which the shell keeps.
-    pending_inserts: Vec<(Focus, String)>,
+    /// `clearHistory` calls go in the same queue, as `None`, so they keep
+    /// their order with the inserts around them.
+    pending_inserts: Vec<(Focus, Option<String>)>,
     /// Where each text field's selection was last, by `(model, row,
     /// instance)`, as `(anchor, caret)` in bytes: the focused one's as it
     /// moves, and a field left keeps where it was, as `el.selection` reports
@@ -1053,6 +1055,12 @@ fn runtime_type(text: &str) -> rux_script::types::Type {
     rux_script::types::parse_type(text).unwrap_or_else(|e| panic!("`{text}`: {}", e.message))
 }
 
+/// What a text field's `@input` says its edit was, as `event.kind`: typed
+/// (keys and the keyboard's own input), or the field's undo or redo, a
+/// paste, a cut, a script's `insertText`, a dragged text, or autofill.
+const INPUT_KINDS: &str =
+    r#""type" | "paste" | "cut" | "undo" | "redo" | "insert" | "drop" | "autofill""#;
+
 /// What `event` is in `@name` on `el`. `any` where nothing is known. The
 /// gestures' and keys' are named, in `rux_script::native::event_types`.
 fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_script::types::Type {
@@ -1075,7 +1083,17 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
                 Some("file") => "File",
                 _ => "string",
             };
-            format!("{{ value: {value} }}")
+            // A typed-in field's `@input` says what kind of edit it was
+            // (Tracer's AW-050).
+            let typed = !matches!(
+                el.attr("type"),
+                Some("checkbox" | "switch" | "slider" | "file" | "select" | "radio")
+            );
+            if name == "input" && typed {
+                format!("{{ value: {value}, kind: {INPUT_KINDS} }}")
+            } else {
+                format!("{{ value: {value} }}")
+            }
         }
         // Where the sound is, as it is now.
         "play" | "pause" | "ended" | "timeupdate" if matches!(el.tag.as_str(), "audio" | "video") => {
@@ -5013,9 +5031,10 @@ impl Document {
         Some(FormReport { form, instance, values, failures })
     }
 
-    /// Take the `insertText` calls the last handler made: each field, with
-    /// the selection its text replaces, and the text.
-    pub fn take_inserts(&mut self) -> Vec<(Focus, String)> {
+    /// Take the `insertText` and `clearHistory` calls the last handler made,
+    /// in order: each field, with the selection an insert replaces, and the
+    /// text, or `None` for `clearHistory` (Tracer's AW-050).
+    pub fn take_inserts(&mut self) -> Vec<(Focus, Option<String>)> {
         std::mem::take(&mut self.pending_inserts)
     }
 
@@ -5128,7 +5147,7 @@ impl Document {
                         acted = true;
                     }
                     None => rux_script::warn_script(
-                        "setSelectionRange() was called on an element that is not a text field, so nothing was                          selected"
+                        "setSelectionRange() was called on an element that is not a text field, so nothing was selected"
                             .to_string(),
                     ),
                 },
@@ -5136,11 +5155,21 @@ impl Document {
                     Some(focus) => {
                         // After a `setSelectionRange` in the same handler,
                         // the selection it set is the one replaced.
-                        self.pending_inserts.push((focus, text));
+                        self.pending_inserts.push((focus, Some(text)));
                         acted = true;
                     }
                     None => rux_script::warn_script(
-                        "insertText() was called on an element that is not a text field, so nothing was                          inserted"
+                        "insertText() was called on an element that is not a text field, so nothing was inserted"
+                            .to_string(),
+                    ),
+                },
+                rux_script::ElementAction::ClearHistory(path) => match self.field_focus(&path) {
+                    Some(focus) => {
+                        self.pending_inserts.push((focus, None));
+                        acted = true;
+                    }
+                    None => rux_script::warn_script(
+                        "clearHistory() was called on an element that is not a text field, so there was no undo to clear"
                             .to_string(),
                     ),
                 },

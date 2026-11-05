@@ -554,6 +554,7 @@ const ELEMENT_METHODS: &[Entry] = &[
     Entry { name: "tap", detail: "tap()", doc: "Tap this element as though a finger had. This is how a `mounted` hook drives the document, and how most of the lifecycle was verified." },
     Entry { name: "setSelectionRange", detail: "setSelectionRange(start, end)", doc: "Select characters `start` to `end` of a text field, the caret at `end`, and give it focus. Equal numbers put the caret there." },
     Entry { name: "insertText", detail: "insertText(text)", doc: "Replace a text field's selection with `text`, as typing it would: the field's undo takes it as a step of its own, `@input` runs, and the caret ends after it. The selection is where the field's is, or where it was left, or the end of a field never focused." },
+    Entry { name: "clearHistory", detail: "clearHistory()", doc: "Forget a text field's undo and redo, so an app keeping one undo for a whole editor can drop the field's steps once its own undo has moved past them. The text and the focus stay as they are." },
 ];
 
 /// Methods on strings and arrays: JavaScript's names, deliberately.

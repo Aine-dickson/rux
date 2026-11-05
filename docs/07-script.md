@@ -245,6 +245,29 @@ since an undo would put back text the app replaced. An edit made with
 it had been typed. With nothing left to undo, Ctrl+Z goes on to the `@key`s
 around the field, so an app's own undo can follow the field's.
 
+**An app that keeps one undo for a whole editor** has three ways to line it
+up with the fields' own:
+
+- `@input`'s `event.kind` says what the edit was: `"type"` (keys and the
+  keyboard's own input), `"undo"` or `"redo"` (the field's own history),
+  `"paste"`, `"cut"`, `"insert"` (`insertText`), `"drop"` (text dragged in or
+  out) or `"autofill"`. Leave `"undo"` and `"redo"` out of the app's history
+  and it records only what was done, not the field stepping back through it.
+- `el.clearHistory()` forgets a field's undo and redo, for when the app's
+  own undo has moved past them.
+- A field's own `@key` sees Ctrl+Z before the field does, so answering
+  `false` there keeps the key from the field and the app owns undo outright:
+
+```rux
+<input r-model="body" type="textarea" @key="editorKey(event)" />
+<script>
+  fn editorKey(e: KeyEvent) {
+    if e.primary && e.key == "z" && !e.shift { undo(); return false; }
+    if e.primary && (e.key == "y" || e.key == "Z") { redo(); return false; }
+  }
+</script>
+```
+
 On a component's tag, `@key` is a listener for an `emit("key")`, as every
 `@name` there is.
 
@@ -1347,6 +1370,7 @@ state, and the next build produces the tree it would have produced anyway.
 | `el.scrollIntoView()` | Scrolls the containing scroller until it is visible |
 | `el.setSelectionRange(start, end)` | Selects characters `start` to `end` of a text field, the caret at `end`, and gives it focus |
 | `el.insertText(text)` | Replaces a text field's selection with `text` as typing would: one undo step, `@input` after it, the caret after the text |
+| `el.clearHistory()` | Forgets a text field's undo and redo; its text and focus stay as they are |
 
 **A text field's selection** is `el.selection`, `{ start, end, caret }` in
 characters, as strings index, the caret at one end of it. It is where the

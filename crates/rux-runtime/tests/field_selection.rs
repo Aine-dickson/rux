@@ -97,9 +97,22 @@ fn insert_text_is_handed_to_the_shell_with_the_selection_it_replaces() {
     let inserts = d.take_inserts();
     assert_eq!(inserts.len(), 1);
     let (f, text) = &inserts[0];
-    assert_eq!((f.model.as_str(), f.caret, text.as_str()), ("text", 3, "XY"));
+    assert_eq!((f.model.as_str(), f.caret, text.as_deref()), ("text", 3, Some("XY")));
     // Anything but a text field is said and left alone.
     d.apply_handler(r##"query("#plain")[0].insertText("XY")"##);
+    assert!(d.take_inserts().is_empty());
+}
+
+/// `clearHistory()` goes to the shell, which keeps the undo, in order with
+/// the inserts beside it (Tracer's AW-050).
+#[test]
+fn clear_history_is_handed_to_the_shell_in_order() {
+    let mut d = doc();
+    d.apply_handler(r##"let q = query("#q")[0]; q.insertText("A"); q.clearHistory()"##);
+    let asks = d.take_inserts();
+    let shape: Vec<_> = asks.iter().map(|(f, t)| (f.model.as_str(), t.as_deref())).collect();
+    assert_eq!(shape, [("text", Some("A")), ("text", None)]);
+    d.apply_handler(r##"query("#plain")[0].clearHistory()"##);
     assert!(d.take_inserts().is_empty());
 }
 

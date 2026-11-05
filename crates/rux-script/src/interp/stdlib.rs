@@ -40,7 +40,7 @@ pub const METHODS: &[&str] = &[
     "endsWith", "ends_with", "repeat", "charAt", "substring", "sub_string", "split", "chars", "to_chars", "replace",
     "pad", "to_int", "trunc", "floor", "ceil", "ceiling", "round", "to_float", "toFloat", "sqrt", "abs", "is_nan",
     "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "tap", "play", "pause",
-    "setSelectionRange", "insertText", "call", "set",
+    "setSelectionRange", "insertText", "clearHistory", "call", "set",
     "concat", "flat", "flatMap", "findLast", "findLastIndex", "lastIndexOf", "at", "fill", "toReversed", "toSorted",
     "unshift", "replaceAll", "padStart", "padEnd", "trimStart", "trimEnd", "toFixed",
 ];
@@ -1097,6 +1097,7 @@ impl Interp {
                         }
                     }
                     ("insertText", 1) => ElementAction::Insert(path, argv[0].display()),
+                    ("clearHistory", 0) => ElementAction::ClearHistory(path),
                     _ => return Ok(None),
                 };
                 crate::ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(action));

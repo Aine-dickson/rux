@@ -1331,6 +1331,9 @@ pub enum ElementAction {
     /// (`insertText`): the field's undo takes it as a step, `@input` runs, and
     /// the caret ends after it.
     Insert(Vec<usize>, String),
+    /// Forget this text field's undo and redo (`clearHistory`), so an app
+    /// keeping its own undo can drop the field's steps (Tracer's AW-050).
+    ClearHistory(Vec<usize>),
 }
 
 /// What is asked of an `<audio>`'s sound.

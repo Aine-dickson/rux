@@ -3329,6 +3329,26 @@ Escape, which both blur through the shell first and hide the defect.
 | Focusing it again | click it, type `y` | tinted, `aby` | pass |
 | Android, the emulator | tap the field, type `ab`, F2 (`input keyevent`), F2 | the keyboard goes down as the field leaves; the field comes back plain | pass |
 
+## A selection over marks, and an edit's kind, 2026-11-05
+
+Tracer's AW-048 and AW-050 (AW-049, the `SelectEvent` and `TextMark` names,
+is under test in `rux-runtime`'s `tests/type_check.rs`, with `event.kind`'s
+type; `clearHistory()` reaching the shell in order is in
+`tests/field_selection.rs`). Driven on desktop with a debug `rux` from this
+checkout. AW-048: a 32px textarea `query { user }`, `query` marked `.kw {
+color: #0055ff; background: #e0e8ff; }`, a button calling
+`setSelectionRange(0, 8)`. AW-050: a field whose `@input` writes down
+`event.kind`, buttons for `clearHistory()` and `insertText("!")`, and a
+`<screen @key>` counting Ctrl+Z.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Selection over a mark | tap "select 0..8" | the selection shows over `query` and ` {` alike; sampled `#b3caf5` behind `query` (the selection over the mark's tint) and `#c4d6f5` after it, no `#e0e8ff` left | pass |
+| Kinds | type `abc`, Ctrl+Z, Ctrl+Y, Ctrl+V | `type type type undo redo paste` | pass |
+| Cut and insert | Shift+Left, Ctrl+X, tap "insert" | `cut insert` | pass |
+| `clearHistory()` | tap "clear history", click the field, Ctrl+Z | the text stays `abcP!`; the app counts 1 | pass |
+| Web, Android | | not driven; the web compiles (`cargo check` for wasm) | open |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

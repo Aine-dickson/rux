@@ -265,6 +265,25 @@ fn marks(src: string): TextMark[] {\n\
     let f = found(&doc);
     assert!(f.is_empty(), "{f:?}");
 
+    // `@input` says what kind of edit it was, by a name it can be (AW-050).
+    let kinds = "<template><screen><input r-model=\"text\" @input=\"onInput(event)\" /></screen></template>\n\
+<script>\n\
+let text = signal(\"\");\n\
+let mine = signal(0);\n\
+fn onInput(e: { value: string, kind: string }) { if e.kind != \"undo\" && e.kind != \"redo\" { mine = mine + 1; } }\n\
+</script>\n";
+    let dir = project(&[("app.rux", kinds)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    assert!(f.is_empty(), "{f:?}");
+    let wrong = "<template><screen><input r-model=\"text\" @input=\"onInput(event)\" /></screen></template>\n\
+<script>\nlet text = signal(\"\");\nlet n = signal(0);\n\
+fn onInput(e: { value: string, kind: \"type\" | \"undone\" }) { n = 1; }\n</script>\n";
+    let dir = project(&[("app.rux", wrong)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let f = found(&doc);
+    assert!(f.iter().any(|(_, _, m)| m.contains("\"paste\"") || m.contains("kind")), "{f:?}");
+
     let bad = "<template><screen><input r-model=\"text\" :marks=\"[{ start: 0, end: 5, klass: 1 }]\" /></screen></template>\n\
 <script>\nlet text = signal(\"q\");\n</script>\n";
     let dir = project(&[("app.rux", bad)]);
