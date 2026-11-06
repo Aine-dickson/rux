@@ -528,3 +528,30 @@ fn seed_dump() {
         }
     }
 }
+
+/// A nudged box is drawn away from where it was laid out, with its hit region
+/// and metrics, and nothing around it moves.
+#[test]
+fn a_nudged_box_moves_with_its_regions_and_leaves_its_sibling() {
+    let sized = |h: f32| Style { height: Some(Len::Px(h)), width: Some(Len::Px(100.0)), ..Default::default() };
+    let mut row = |h: f32| {
+        let mut n = Node::new(sized(h));
+        n.on_tap = Some("x".into());
+        n
+    };
+    let mut root = Node::new(Style { display: Display::Flex, axis: Axis::Column, ..Default::default() });
+    root.children.push(row(40.0));
+    root.children.push(row(40.0));
+    let mut measure = |_: &TextContent, _: Option<f32>| (0.0, 0.0);
+    let mut state = LayoutState::new();
+    let before = state.layout_scrolled(&root, 300.0, 400.0, &[], &mut measure);
+    state.set_nudges([(vec![1], (7.0, -30.0))].into_iter().collect());
+    let after = state.layout_scrolled(&root, 300.0, 400.0, &[], &mut measure);
+
+    let at = |l: &Layout, p: &[usize]| l.metrics.iter().find(|m| *m.path == *p).map(|m| (m.x, m.y)).unwrap();
+    assert_eq!(at(&before, &[0]), at(&after, &[0]), "the sibling stays");
+    let (bx, by) = at(&before, &[1]);
+    assert_eq!(at(&after, &[1]), (bx + 7.0, by - 30.0));
+    let hit = after.hits.iter().find(|h| h.on_tap.is_some() && (h.x, h.y) == (bx + 7.0, by - 30.0));
+    assert!(hit.is_some(), "the hit region moved with it");
+}

@@ -43,6 +43,7 @@ mod filter;
 mod clipboard;
 mod settings;
 mod caption;
+mod slides;
 mod window_module;
 
 pub use settings::set_app_id;
@@ -2154,6 +2155,8 @@ struct App {
     fling: Option<Fling>,
     /// Smooth scrolls under way, one per scroller at most.
     glides: Vec<Glide>,
+    /// Keyed rows sliding to their new places. See `slides.rs`.
+    slides: slides::Slides,
     /// The pointer handlers of whatever is being pressed, and what has happened
     /// to that press so far. `None` when nothing is held, or when the press
     /// landed on something with no pointer handlers at all.
@@ -2468,6 +2471,7 @@ impl App {
             scroll_target: None,
             fling: None,
             glides: Vec::new(),
+            slides: Default::default(),
             focused: None,
             focused_row: None,
             focused_instance: None,
@@ -7852,6 +7856,8 @@ impl App {
             text,
             images,
             glides,
+            slides,
+            anim_deadline,
             hits,
             focuses,
             selects,
@@ -7910,16 +7916,53 @@ impl App {
 
         // Layout (text sized via the engine's measure), then paint. Cache the
         // hit regions for tap dispatch.
-        let mut layout = profile::time(Phase::Layout, || {
-            layout_state.lay_out_revision(
-                &document.root,
-                document.root.revision(),
-                logical.0 as f32,
-                logical.1 as f32,
-                offsets,
-                &mut rux_paint::EngineMeasure(text),
-            )
-        });
+        //
+        // Keyed rows that slide are drawn away from their laid-out place by
+        // `layout_state`'s nudges; a row that lands elsewhere after the tree
+        // changed starts one, which is only known once it has been laid out,
+        // so that frame is placed again (the walk only, not the layout).
+        let revision = document.root.revision();
+        let tree_changed = slides.prepare(&document.root, revision);
+        let frame = Instant::now();
+        if let Some(n) = slides.changed_nudges(frame) {
+            layout_state.set_nudges(n);
+        }
+        let mut lay = |layout_state: &mut rux_layout::LayoutState| {
+            profile::time(Phase::Layout, || {
+                layout_state.lay_out_revision(
+                    &document.root,
+                    revision,
+                    logical.0 as f32,
+                    logical.1 as f32,
+                    offsets,
+                    &mut rux_paint::EngineMeasure(text),
+                )
+            })
+        };
+        let mut layout = lay(layout_state);
+        if !slides.idle() {
+            let wanted: std::collections::HashSet<&[usize]> = slides.paths().collect();
+            let drawn: HashMap<Vec<usize>, (f32, f32)> = layout
+                .metrics
+                .iter()
+                .filter(|m| wanted.contains(&*m.path))
+                .map(|m| {
+                    // Where the scroller it is in has not scrolled it: a
+                    // scroll is not a move.
+                    let by = m.scroll.and_then(|id| offsets.get(id)).copied().unwrap_or_default();
+                    (m.path.to_vec(), (m.x + by.x, m.y + by.y))
+                })
+                .collect();
+            slides.observe(&drawn, tree_changed, frame);
+            if let Some(n) = slides.changed_nudges(frame) {
+                layout_state.set_nudges(n);
+                layout = lay(layout_state);
+            }
+            if slides.animating() {
+                let due = frame + slides::Slides::FRAME;
+                *anim_deadline = Some(anim_deadline.map_or(due, |d| d.min(due)));
+            }
+        }
         // Keep offsets in step with the scrollers the new layout actually has, and
         // re-clamp them (the content may have shrunk under us). `collect` clamps
         // the shift it applies the same way, so doing this before the scrollbars

@@ -6296,6 +6296,8 @@ struct Walk {
     filters: u32,
     /// Where each box in `contained` is.
     contained_at: Vec<Rect4>,
+    /// See [`LayoutState::set_nudges`].
+    nudges: std::rc::Rc<HashMap<Vec<usize>, (f32, f32)>>,
 }
 
 /// A rectangle as `(x, y, width, height)`.
@@ -6483,6 +6485,17 @@ fn collect(
         );
         x = nx;
         y = ny;
+    }
+
+    // A box sliding to its place (see `LayoutState::set_nudges`), moved here
+    // for the same reason sticky is: before anything is recorded.
+    if !walk.nudges.is_empty() {
+        if let Some((_, path)) = at.path.map(|i| &b.paths[i as usize]) {
+            if let Some((dx, dy)) = walk.nudges.get(&path[..]) {
+                x += dx;
+                y += dy;
+            }
+        }
     }
 
     // r-show=false: the node kept its layout slot but paints nothing (nor its
@@ -7765,6 +7778,11 @@ pub struct LayoutState {
     /// The revision of the tree this call lays out, when the caller keeps
     /// one. See [`LayoutState::lay_out_revision`].
     revision: Option<u64>,
+    /// Boxes drawn away from where they were laid out, by path: a keyed row
+    /// sliding to its new place. An input of the walk and not of the layout,
+    /// so setting it re-places the boxes without laying anything out again.
+    /// See [`LayoutState::set_nudges`].
+    nudges: std::rc::Rc<HashMap<Vec<usize>, (f32, f32)>>,
 }
 
 /// A frame's layout short of where the scroll offsets put it: the boxes
@@ -7845,7 +7863,18 @@ impl LayoutState {
             sizes: HashMap::new(),
             prepared: None,
             revision: None,
+            nudges: Default::default(),
         }
+    }
+
+    /// Draw the boxes at these paths `(dx, dy)` away from where they were
+    /// laid out, in logical px, for every frame after this until it is set
+    /// again. The box, what is inside it, its hit region and its metrics all
+    /// move together, as a `sticky` box's do; nothing around it reflows.
+    /// What the shell uses to slide a keyed row from its old place to its new
+    /// one, since only the shell knows where the row was.
+    pub fn set_nudges(&mut self, nudges: HashMap<Vec<usize>, (f32, f32)>) {
+        self.nudges = std::rc::Rc::new(nudges);
     }
 
     /// Drop everything kept, so the next frame is laid out whole.
@@ -7891,6 +7920,7 @@ impl LayoutState {
             fresh.tried = self.tried.clone();
             fresh.shown = self.shown.clone();
             fresh.sizes = self.sizes.clone();
+            fresh.nudges = self.nudges.clone();
             let whole = fresh.lay_out(root, avail_w, avail_h, offsets, measure);
             let (kept, whole) = (format!("{out:#?}"), format!("{whole:#?}"));
             if kept != whole {
@@ -8028,6 +8058,7 @@ impl LayoutState {
                 dry,
                 tried_before: std::rc::Rc::clone(&tried_before),
                 inline: std::rc::Rc::clone(geometry),
+                nudges: std::rc::Rc::clone(&self.nudges),
                 ..Walk::default()
             };
             // The root is the outermost stacking context. This one only holds
