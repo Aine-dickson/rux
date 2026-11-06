@@ -83,7 +83,7 @@ than an update).
 | `[app] scheme` | a custom URL scheme: `myapp://settings` opens the app on `/settings` |
 | `[app] link-hosts` | https domains whose links open the app on their path (Android; a build writes an `assetlinks.json` beside the APK) |
 | `[signing] keystore`, `alias` | the key a release is signed with; the passwords come from `RUX_KEYSTORE_PASSWORD` and `RUX_KEY_PASSWORD` (which falls back to the first), never from the file |
-| `[window] width`, `height`, `min-width`, `min-height`, `maximized`, `decorations` | the desktop window, in logical pixels, every key optional; the title is `name`; `decorations = false` drops the frame (see `app-region` and the `window` module in `07-script`) |
+| `[window] width`, `height`, `min-width`, `min-height`, `maximized`, `decorations`, `title-bar` | the desktop window, in logical pixels, every key optional; the title is `name`; `decorations = false` drops the frame; `title-bar = "overlay"` keeps it and lets the page into the title row beside the window buttons (see `app-region` and the `window` module in `07-script`) |
 | `[dev] watch` | commands kept running beside `rux run` (a Tailwind watcher, say) |
 | `[build] before` | commands run to completion before a build and before `rux run` opens the window |
 | `[fmt] imports` | `"use"` or `"import"`: the spelling `rux fmt` writes imports in |
@@ -1765,9 +1765,13 @@ does and is the only reading that lets a fallback mean "you are somewhere that
 has no such thing". An unknown name with no fallback makes the declaration
 invalid and is warned about once, the same as an undefined variable.
 
-The other `env()` names in CSS (`titlebar-area-*`, `viewport-segment-*`) name
-surfaces Rux does not have, so they are unknown here; answering for one would be
-inventing a number rather than reporting one.
+`titlebar-area-x`, `-y`, `-width` and `-height` are the part of the title row
+the window buttons leave free, and exist only in a window with
+`[window] title-bar = "overlay"` (Windows and macOS). Anywhere else they are
+undefined: a fallback is used, and with none the declaration is dropped with the
+usual "not a length" warning, so write one. The other `env()` name in CSS
+(`viewport-segment-*`) names a surface Rux does not have, so it is unknown here;
+answering for it would be inventing a number rather than reporting one.
 
 To see a non-zero inset on a desktop, see `rux run --preview` below.
 

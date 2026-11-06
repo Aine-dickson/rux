@@ -1872,12 +1872,19 @@ fn resolve_env(value: &str) -> String {
             Some((n, f)) => (n.trim(), Some(f.trim())),
             None => (inner.trim(), None),
         };
-        match safe_area_inset(name, env.safe_area) {
+        match env_length(name, &env) {
             Some(px) => out.push_str(&format!("{px}px")),
             None => match fallback {
                 Some(f) => out.push_str(f),
                 None => {
-                    warn_unknown_env(name);
+                    // A titlebar-area name is one Rux knows, undefined here
+                    // because this window has no overlay: the declaration is
+                    // invalid at computed-value time, as in CSS. Not the
+                    // "unknown name" warning, which would be wrong; the
+                    // ordinary one for the leftover value follows.
+                    if !is_titlebar_name(name) {
+                        warn_unknown_env(name);
+                    }
                     out.push_str("env(");
                     out.push_str(inner);
                     out.push(')');
@@ -1890,18 +1897,28 @@ fn resolve_env(value: &str) -> String {
     out
 }
 
-/// The four names, and nothing else. `safe-area-inset-*` only: the other
-/// `env()` names in CSS (`titlebar-area-*`, `viewport-segment-*`) describe
+/// The names Rux answers: `safe-area-inset-*`, and `titlebar-area-*` while the
+/// window has a title row the app extends into (`[window] title-bar =
+/// "overlay"`). The rest of CSS's `env()` names (`viewport-segment-*`) describe
 /// surfaces Rux does not have, and answering for one would be inventing a
 /// number rather than reporting one.
-fn safe_area_inset(name: &str, insets: Insets) -> Option<f32> {
+fn env_length(name: &str, env: &Environment) -> Option<f32> {
+    let insets = env.safe_area;
     match name {
         "safe-area-inset-top" => Some(insets.top),
         "safe-area-inset-right" => Some(insets.right),
         "safe-area-inset-bottom" => Some(insets.bottom),
         "safe-area-inset-left" => Some(insets.left),
+        "titlebar-area-x" => env.titlebar_area.map(|a| a.x),
+        "titlebar-area-y" => env.titlebar_area.map(|a| a.y),
+        "titlebar-area-width" => env.titlebar_area.map(|a| a.width),
+        "titlebar-area-height" => env.titlebar_area.map(|a| a.height),
         _ => None,
     }
+}
+
+fn is_titlebar_name(name: &str) -> bool {
+    matches!(name, "titlebar-area-x" | "titlebar-area-y" | "titlebar-area-width" | "titlebar-area-height")
 }
 
 /// Where a function call named `name` starts, ignoring a match that is really
@@ -1947,8 +1964,9 @@ fn warn_unknown_env(name: &str) {
     static SEEN: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
     let message = format!(
         "`env({name})` is not an environment value Rux knows, so the declaration using it is \
-         ignored. The four it knows are `safe-area-inset-top`, `-right`, `-bottom` and \
-         `-left`, and any name at all takes a fallback: `env({name}, 0px)`"
+         ignored. It knows `safe-area-inset-top`, `-right`, `-bottom` and `-left`, and \
+         `titlebar-area-x`, `-y`, `-width` and `-height`; any name at all takes a \
+         fallback: `env({name}, 0px)`"
     );
     warn(message.clone());
     let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
@@ -4223,6 +4241,17 @@ pub enum ColorScheme {
     Dark,
 }
 
+/// The rectangle of the title row the app may use when its content extends
+/// into it beside the system's window buttons (`env(titlebar-area-*)`), in
+/// logical px from the window's top left.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+pub struct Area {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
 /// The edges of the display a phone will not let a window use: a notch, a
 /// rounded corner, a home indicator, a status bar.
 ///
@@ -4266,6 +4295,9 @@ pub struct Environment {
     /// What the person points with, which `@media (hover: hover)` and
     /// `(pointer: fine)` ask.
     pub pointer: Pointer,
+    /// The title row's usable rectangle, `None` unless the window's content
+    /// extends into the title row. `env(titlebar-area-*)` is undefined then.
+    pub titlebar_area: Option<Area>,
 }
 
 /// What the person points with. A mouse or a trackpad is `Fine` and can
@@ -4310,6 +4342,7 @@ impl Environment {
         safe_area: Insets { top: 0.0, right: 0.0, bottom: 0.0, left: 0.0 },
         density: 1.0,
         pointer: Pointer::Fine,
+        titlebar_area: None,
     };
 }
 
@@ -17903,6 +17936,68 @@ mod tests {
         );
         assert_eq!(padding.top, 0.0, "a known inset answers zero");
         assert_eq!(padding.bottom, 12.0, "an unknown name takes the fallback");
+    }
+
+    /// Build with this environment and return the padding of the first child.
+    fn padding_in(src: &str, environment: Environment) -> rux_layout::Sides {
+        let sfc = rux_parser::parse_sfc(src).unwrap();
+        let mut engine = Builder::new().build(&sfc.script).unwrap();
+        let mut instances = super::Instances::new();
+        let root = super::build_styled_tree_stateful(
+            &sfc,
+            &HashMap::new(),
+            &HashMap::new(),
+            &mut engine,
+            &mut instances,
+            &mut crate::Swaps::new(),
+            &InteractionState::default(),
+            environment,
+        )
+        .unwrap();
+        root.0.children[0].style.padding
+    }
+
+    const TITLEBAR_DOC: &str = r#"<template><screen><view class="bar" /></screen></template>
+        <style>
+          .bar {
+            padding-top: env(titlebar-area-height, 5px);
+            padding-left: env(titlebar-area-x, 6px);
+            padding-right: env(titlebar-area-width, 7px);
+          }
+        </style>"#;
+
+    /// With an overlay title row the four `titlebar-area-*` names answer, and
+    /// the fallback is not used: a known name that has a value wins.
+    #[test]
+    fn env_reads_the_titlebar_area_when_there_is_one() {
+        let area = super::Area { x: 3.0, y: 0.0, width: 400.0, height: 32.0 };
+        let padding = padding_in(TITLEBAR_DOC, Environment { titlebar_area: Some(area), ..Environment::sane() });
+        assert_eq!((padding.top, padding.left, padding.right), (32.0, 3.0, 400.0));
+    }
+
+    /// Without an overlay the area is undefined, so a fallback applies, as in
+    /// CSS where window controls overlay is off.
+    #[test]
+    fn the_titlebar_area_is_undefined_without_an_overlay() {
+        let padding = padding_in(TITLEBAR_DOC, Environment::sane());
+        assert_eq!((padding.top, padding.left, padding.right), (5.0, 6.0, 7.0));
+    }
+
+    /// No fallback and no area: the declaration is dropped, as CSS drops it.
+    /// The warning is the ordinary "not a length" one, not the unknown-name
+    /// one: the name is known, it is only undefined in this window.
+    #[test]
+    fn an_undefined_titlebar_area_with_no_fallback_is_ignored() {
+        let _ = take_warnings();
+        let padding = padding_in(
+            r#"<template><screen><view class="bar" /></screen></template>
+            <style>.bar { padding-top: env(titlebar-area-height); }</style>"#,
+            Environment::sane(),
+        );
+        assert_eq!(padding.top, 0.0);
+        let said: Vec<_> = take_warnings().into_iter().map(|w| w.message).collect();
+        assert!(said.iter().any(|m| m.contains("not a length")), "{said:?}");
+        assert!(!said.iter().any(|m| m.contains("not an environment value")), "{said:?}");
     }
 
     /// An unknown name with no fallback leaves the declaration unparseable, so

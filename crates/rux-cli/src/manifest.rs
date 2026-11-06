@@ -115,6 +115,9 @@ pub struct Window {
     pub maximized: bool,
     /// `decorations = false`: no title bar and no border, the app draws its own.
     pub frameless: bool,
+    /// `title-bar = "overlay"`: the system's frame and buttons stay and the
+    /// app's content extends into the title row beside them.
+    pub title_overlay: bool,
 }
 
 /// The launcher icon, as two layers.
@@ -416,6 +419,7 @@ impl Manifest {
             min_height: self.window.min_height,
             maximized: self.window.maximized,
             frameless: self.window.frameless,
+            title_overlay: self.window.title_overlay,
         }
     }
 
@@ -516,7 +520,8 @@ const TAKEN_SCHEMES: [&str; 10] =
 /// match nothing a browser sent it, so the one spelling that works is the only
 /// one written into the filter.
 fn read_window(table: &toml::Table) -> Result<Window, String> {
-    const KEYS: [&str; 6] = ["width", "height", "min-width", "min-height", "maximized", "decorations"];
+    const KEYS: [&str; 7] =
+        ["width", "height", "min-width", "min-height", "maximized", "decorations", "title-bar"];
     for key in table.keys() {
         if KEYS.contains(&key.as_str()) {
             continue;
@@ -562,7 +567,18 @@ fn read_window(table: &toml::Table) -> Result<Window, String> {
             Some(toml::Value::Boolean(b)) => !*b,
             Some(_) => return Err("[window] `decorations` must be true or false".into()),
         },
+        title_overlay: match table.get("title-bar") {
+            None => false,
+            Some(toml::Value::String(s)) if s == "system" => false,
+            Some(toml::Value::String(s)) if s == "overlay" => true,
+            Some(_) => return Err("[window] `title-bar` must be \"system\" or \"overlay\"".into()),
+        },
     };
+    if window.title_overlay && window.frameless {
+        return Err("[window] `title-bar = \"overlay\"` keeps the system's frame and buttons, and \
+                    `decorations = false` removes them: use one or the other"
+            .into());
+    }
     // A window asked to open smaller than it may ever be is two numbers that
     // disagree, and the platform would quietly pick one.
     for (open, min, axis) in [
@@ -768,6 +784,21 @@ entry = "Cargo.toml"
         assert!(manifest.window_settings().frameless);
         let text = format!("{MINIMAL}\n[window]\ndecorations = true\n");
         assert!(!parse(&text).unwrap().window.frameless);
+    }
+
+    /// `title-bar = "overlay"` keeps the frame and lets the app into the title row.
+    #[test]
+    fn title_bar_overlay_is_read_and_cannot_join_decorations_false() {
+        let overlay = |body: &str| parse(&format!("{MINIMAL}\n[window]\n{body}\n"));
+        let manifest = overlay("title-bar = \"overlay\"").unwrap();
+        assert!(manifest.window.title_overlay && !manifest.window.frameless);
+        assert!(manifest.window_settings().title_overlay);
+        assert!(!overlay("title-bar = \"system\"").unwrap().window.title_overlay);
+        assert!(!parse(MINIMAL).unwrap().window.title_overlay);
+        let both = overlay("title-bar = \"overlay\"\ndecorations = false").unwrap_err();
+        assert!(both.contains("title-bar") && both.contains("decorations"), "{both}");
+        assert!(overlay("title-bar = \"custom\"").unwrap_err().contains("\"overlay\""));
+        assert!(overlay("title-bar = true").unwrap_err().contains("\"system\""));
     }
 
     #[test]

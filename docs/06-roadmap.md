@@ -69,14 +69,7 @@ does.
    web; elsewhere `@error` fires with `kind` `"unsupported"`.
 7. **The 0.9 publish**, including `rux-native`, `rux-native-macros` and
    `rux-bindgen`.
-8. **A title row beside the system's own buttons.** `decorations = false` gives
-   an app the whole title row, window buttons included. The other model keeps
-   the native frame (its buttons, snap layouts, border and corners) and lets
-   the app's content extend into the title row, as VS Code's does. Needs
-   `env(titlebar-area-*)` for the space the buttons take and, on Windows, a
-   hook on the window's frame messages that winit does not expose; macOS has
-   the full-size content view for it. Not decided.
-9. **Child windows.** An app spawning a second window from script. A design
+8. **Child windows.** An app spawning a second window from script. A design
    question first: whether it shares the document's state, how it is opened
    and closed, and what `window` then means. Asked for 2026-11-06; needs its
    own plan.

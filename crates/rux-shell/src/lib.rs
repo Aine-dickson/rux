@@ -42,6 +42,7 @@ mod files;
 mod filter;
 mod clipboard;
 mod settings;
+mod caption;
 mod window_module;
 
 pub use settings::set_app_id;
@@ -4123,6 +4124,33 @@ impl App {
         }
     }
 
+    /// Whether the window's content extends into the title row, beside the
+    /// system's own buttons (`title-bar = "overlay"`). Only where the shell can
+    /// do it: Windows and macOS, in a real window.
+    fn overlay_active(&self) -> bool {
+        self.window_settings.title_overlay
+            && !self.window_settings.frameless
+            && self.preview.is_none()
+            && cfg!(any(windows, target_os = "macos"))
+    }
+
+    /// The rectangle `env(titlebar-area-*)` answers, `None` without an overlay.
+    fn titlebar_area(&self) -> Option<rux_runtime::Area> {
+        if !self.overlay_active() {
+            return None;
+        }
+        let width = self.state.as_ref().map(|s| (s.surface.config.width as f64 / s.window.scale_factor()) as f32)?;
+        if cfg!(target_os = "macos") {
+            return Some(rux_runtime::Area {
+                x: caption::MAC_LIGHTS_WIDTH,
+                y: 0.0,
+                width: (width - caption::MAC_LIGHTS_WIDTH).max(0.0),
+                height: caption::MAC_HEIGHT,
+            });
+        }
+        Some(caption::area(width))
+    }
+
     /// Tell the document the window's *logical* size, so `@media` queries are
     /// evaluated against the same units the stylesheet is written in. The document
     /// only re-cascades if a query actually changed answer, so calling this on
@@ -4169,6 +4197,7 @@ impl App {
             // A finger on a phone, and in a preview of one, so `hover:` rules
             // are off there as they will be on the device.
             // In a browser, what the browser says.
+            titlebar_area: self.titlebar_area(),
             pointer: if cfg!(target_os = "android") || self.preview.is_some() || web_coarse() {
                 rux_runtime::Pointer::Coarse
             } else {
@@ -4775,12 +4804,14 @@ impl App {
     /// the press was taken.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     fn press_window_frame(&mut self, here: (f32, f32)) -> bool {
-        if !self.window_settings.frameless || self.preview.is_some() {
+        if !(self.window_settings.frameless || self.overlay_active()) || self.preview.is_some() {
             return false;
         }
         // The border a native frame would have had: a thin band round the
         // edge, which resizes the window from that side or corner. winit's
-        // undecorated window has none of its own on Windows.
+        // undecorated window has none of its own on Windows. (An overlay
+        // keeps the native frame, which has its own, so `frame_edge` is
+        // none there.)
         if let Some(direction) = self.frame_edge(here) {
             if let Some(state) = &self.state {
                 let _ = state.window.drag_resize_window(direction);
@@ -7777,6 +7808,8 @@ impl App {
         });
         let caret_visible = self.caret_visible;
         let safe_top = self.safe_top();
+        #[cfg_attr(not(windows), allow(unused_variables))]
+        let overlay = self.overlay_active();
         // Whether the selection toolbar is up, as its hit test sees it, so the
         // two never disagree.
         let toolbar_up = self.toolbar_field().is_some();
@@ -8168,6 +8201,19 @@ impl App {
             }
         }
 
+        // The window buttons of an overlay title row, over the page. The
+        // system cannot draw its own over a GPU surface, so they are drawn
+        // here, and answered for in `caption`.
+        #[cfg(windows)]
+        if overlay {
+            let mut look = caption::state();
+            look.maximized = state.window.is_maximized();
+            let ink_light = caption::behind_is_dark(&layout.paints, logical.0 as f32, dark(&document.root));
+            let paints = caption::paints(logical.0 as f32, look, ink_light);
+            let scene = rux_paint::build_scene(&paints, text, images, false);
+            state.scene.append(&scene, Some(Affine::scale(scale)));
+        }
+
         // The selection handles, over the page and the toolbar, under a
         // dropdown. Only an end that is inside its field gets one: a handle
         // pointing at text scrolled out of sight points at nothing.
@@ -8485,6 +8531,15 @@ impl ApplicationHandler<RuxEvent> for App {
                 ));
             }
             attributes = attributes.with_maximized(settings.maximized).with_decorations(!settings.frameless);
+            // The real traffic lights stay, over the app's content.
+            #[cfg(target_os = "macos")]
+            if settings.title_overlay && !settings.frameless {
+                use winit::platform::macos::WindowAttributesExtMacOS;
+                attributes = attributes
+                    .with_titlebar_transparent(true)
+                    .with_title_hidden(true)
+                    .with_fullsize_content_view(true);
+            }
         }
         // Android ignores the title, the size and the visibility above: an
         // activity gets the display it is given. They are set anyway rather than
@@ -8498,6 +8553,11 @@ impl ApplicationHandler<RuxEvent> for App {
             &window,
             self.proxy.clone(),
         );
+        #[cfg(windows)]
+        if self.overlay_active() {
+            caption::set_metrics(0.0, window.scale_factor());
+            caption::attach(&window);
+        }
         window.set_visible(true);
         window_module::attach(&window);
         // A window with no frame still gets what the OS gives a frame: its drop
@@ -8989,6 +9049,9 @@ impl ApplicationHandler<RuxEvent> for App {
             WindowEvent::CloseRequested => self.close_requested(event_loop),
             WindowEvent::Resized(size) => {
                 window_module::follow();
+                if let Some(state) = self.state.as_ref() {
+                    caption::set_metrics(0.0, state.window.scale_factor());
+                }
                 if let Some(state) = self.state.as_mut() {
                     self.context.resize_surface(
                         &mut state.surface,
@@ -9063,6 +9126,8 @@ impl ApplicationHandler<RuxEvent> for App {
             // The pointer left the window entirely, no CursorMoved follows, so
             // hover/active have to be dropped here or they stay lit.
             WindowEvent::CursorLeft { .. } => self.clear_pointer_state(),
+            // An overlay title row's buttons dim while another window is active.
+            WindowEvent::Focused(active) => caption::set_active(active),
             // Touch follows the same path as the mouse: press, drag, release.
             // It used to only scroll, which meant a finger could never tap
             // anything. That went unnoticed because there was no touch hardware
@@ -11737,6 +11802,10 @@ pub struct WindowSettings {
     /// No native title bar or border: the app draws its own, with
     /// `app-region: drag` for the part that moves the window.
     pub frameless: bool,
+    /// `title-bar = "overlay"`: the system's frame stays and the app's content
+    /// extends into the title row beside the window buttons (Windows and macOS;
+    /// elsewhere the normal title bar stays).
+    pub title_overlay: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]

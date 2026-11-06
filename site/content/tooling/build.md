@@ -248,6 +248,7 @@ min-width = 960     # the smallest it can be dragged to
 min-height = 600
 maximized = true    # open maximized; false without it
 decorations = false # no title bar or border: the app draws its own
+title-bar = "overlay" # keep the frame, and let the page into the title row
 ```
 
 Every key is optional. `rux run` reads the same table, so the window you work
@@ -267,6 +268,14 @@ moves it (and snaps it on Windows), double-clicking the row maximizes and
 restores it, and a six pixel band round the edge resizes it. On Windows the
 window also gets the system's own drop shadow and rounded corners. See "The
 desktop window" in the script reference.
+
+`title-bar = "overlay"` is the other way, for an app that wants its content in
+the title row but the system's own frame: the border, shadow, rounded corners,
+resize edges, snap layouts and window buttons stay. The page starts at the top
+of the window, and `env(titlebar-area-x)`, `-y`, `-width` and `-height` give the
+part of the row the buttons leave free. It works on Windows and macOS; elsewhere
+the window keeps its ordinary title bar. It cannot be combined with
+`decorations = false`.
 
 ## Other tools: `[dev]` and `[build]`
 

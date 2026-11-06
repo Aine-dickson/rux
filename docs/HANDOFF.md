@@ -72,9 +72,21 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   module (MS-012). Driven on Windows only: touch long press, the web, macOS,
   Linux, Android and Windows snap are not (rows in `docs/08-user-tests.md`).
   Probes and drivers: `C:\Users\USER\Mobile\rux-harness\ms011` and `ms012`.
-- **Asked for, not designed**: child windows an app can spawn (roadmap item 9),
-  and a title row beside the system's own buttons (item 8). Both need an Opus
-  plan and the owner's say on the syntax before code.
+- **Title row beside the system's buttons (roadmap item 8): built 2026-11-06.**
+  `[window] title-bar = "overlay"` (owner's syntax) keeps the native frame and
+  lets the page into the title row; `env(titlebar-area-x|y|width|height)` is the
+  free part of the row (undefined without an overlay, so fallbacks apply). On
+  Windows a subclass on winit's window procedure (`rux-shell/src/caption.rs`)
+  takes the caption's height back in `WM_NCCALCSIZE` and answers `WM_NCHITTEST`
+  (top edge, the three buttons; `HTMAXBUTTON` gives the Windows 11 snap flyout),
+  and the shell draws the buttons itself at a fixed 32 px, with the ink picked
+  from the box behind them. macOS uses winit's full-size content view (written,
+  not run). Driven on Windows 11 at 150% only; the rows and the gaps are in
+  `docs/08-user-tests.md`. Known gaps: the drawn buttons have no accessibility
+  nodes; `min-width`/`min-height` count the caption's height on Windows.
+  Probe and driver: `C:\Users\USER\Mobile\rux-harness\titlebar-overlay`.
+- **Asked for, not designed**: child windows an app can spawn (roadmap item 8
+  now), which needs an Opus plan and the owner's say on the syntax before code.
 - `Style` has a size budget (744 bytes, watchlist #41): a new rarely used
   style property goes in `Rare`, as `app_region` does. One byte over it
   overflowed `rux check` on the tasks scaffold in a debug build.
@@ -100,8 +112,12 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
 
 ## Next action
 
-Attend to the Mava Studio reports in a new session. After that, decide with the
-owner when to push `build/v0.9` and cut v0.9.
+MS-010 (drag and drop between containers) in a session on Opus plan mode: its
+design sets how drag works in general. Then child windows. After that, decide
+with the owner when to push `build/v0.9` and cut v0.9. The Mava field report
+(`docs/field-reports/mava-studio-2.md`) was being edited by another session
+(MS-013 added) and is not part of the title-row commit; its MS-012 status line
+still says the overlay is not built.
 
 ## Verified on 2026-11-06
 

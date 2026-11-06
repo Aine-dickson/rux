@@ -3420,6 +3420,38 @@ buttons) and `drive.ps1` beside it, with real mouse input.
 | macOS and Linux | | drag, maximize, resize band | **not driven** |
 | The web and Android | call `window.minimize()` | throws `unsupported`; `maximized` reads false | **not driven** |
 
+## A title row beside the system's buttons, 2026-11-06
+
+Roadmap item 8: `[window] title-bar = "overlay"`. Driven on the Windows 11
+desktop at 150% scale with the project
+`C:\Users\USER\Mobile\rux-harness\titlebar-overlay` (a dark row using
+`env(titlebar-area-*)` with `app-region: drag`, and a `tool` button in it) and
+`drive.ps1` beside it, with real mouse input.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| The frame stays, the row is the app's | open it | no system caption; the app's row at the very top; the window's border, shadow and corners kept | desktop: pass |
+| The size asked for | open a 640 by 420 window | the page is 640 by 420 logical (960 by 630 at 150%) | desktop: pass (outer 982 by 641: the frame is the rest) |
+| The buttons look native | look at the right end of the row; hover each | 46 by 32 each; a grey wash on minimize and maximize; a red close with a white glyph | desktop: pass |
+| The glyph ink follows the row | a dark row on a light page | light glyphs | desktop: **fail, then pass.** the first build chose the ink from the page's colour scheme and drew black on the dark row; it now reads the box under the middle button |
+| Snap layouts | hover the maximize button for a second | Windows 11's snap layout flyout | desktop: pass |
+| The buttons act | click minimize, maximize, restore (the same button), close | each does it, with the system's own animation | desktop: pass; close hid the window |
+| `@close` on the close button | give the app a `@close` that says no | the close button asks it, as the frame's does | **not driven**: it posts `WM_CLOSE`, which is what winit turns into the same event |
+| Drag the row | press on the row's blank part and drag | the window moves with the pointer | desktop: pass |
+| Double-press the row | twice, quickly | maximizes, then restores | desktop: pass |
+| The app's own button in the row | click `tool` | its `@tap` runs and the window does not move | desktop: pass |
+| A maximized window | maximize it | the row is whole, not cut off by the frame's overhang | desktop: pass |
+| `window.maximized` | maximize by the row and by the button | the value follows | desktop: pass |
+| Resize from the top and right edges | drag the top edge up, the right edge out | the window grows from that edge | desktop: pass |
+| Resize from the left, bottom and corners | | the system's own | **not driven** (the frame's; only the top edge is the shell's) |
+| Win+Arrow, and dragging to the screen's edge to snap | | Windows snaps it | **not driven** |
+| Inactive window | click another window | the glyphs dim | **not driven** |
+| Other scales, Windows 10, a dark system theme | | the same | **not driven** |
+| `env(titlebar-area-*)` without an overlay | the same page in a plain window | each use takes its fallback | pass, in the style crate's tests |
+| macOS | | the real traffic lights over the row; `env(titlebar-area-x)` is 78 | **not driven**: no Mac |
+| Linux, Android, the web | | the ordinary title bar, and the fallbacks | **not driven** |
+| A screen reader | | the three buttons are announced | **not built**: the buttons are drawn by the shell and have no accessibility nodes |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

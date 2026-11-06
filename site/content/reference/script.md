@@ -252,9 +252,47 @@ window's drop shadow and rounded corners, so a frameless window has the
 host's own, not a copy of them.
 
 **Frameless is one way to put content in the title row, not the only one.** It
-means the app owns the whole row, window buttons included. The other way, which
-keeps the system's own buttons, snap layouts, border and corners and lets the
-app's content sit beside them, is not built; see the roadmap.
+means the app owns the whole row, window buttons included. The other way keeps
+the system's frame (its border, shadow, corners, resize edges and snap layouts)
+and lets the app's content sit beside the window buttons, as VS Code's does:
+
+```toml
+[window]
+title-bar = "overlay"   # "system", the default, is the ordinary title bar
+```
+
+The page then starts at the top of the window, under where the title bar was,
+and the app draws its own row there. `env(titlebar-area-x)`, `-y`, `-width` and
+`-height` give the part of the row the window buttons leave free, so the row
+stops short of them:
+
+```rux
+<view class="bar">
+  <text>Studio</text>
+  <button @tap="open()">Open</button>
+</view>
+<style>
+.bar {
+  app-region: drag;
+  display: flex;
+  height: env(titlebar-area-height, 40px);
+  width: env(titlebar-area-width, 100%);
+}
+</style>
+```
+
+`app-region: drag` works as it does without a frame, and a second press maximizes
+or restores. **On Windows** the shell draws the three window buttons itself, in
+the system's look (46 by 32, its glyphs, a red close on hover), because the
+system cannot draw them over a GPU surface; the maximize button still opens
+Windows 11's snap layouts, and the glyphs take a light or dark ink from the
+colour behind them. The buttons are 32 logical pixels high, and the row below
+them is the app's. **On macOS** the real traffic lights stay over the content,
+and `env(titlebar-area-*)` leaves 78 pixels free at the left of a 28 pixel row.
+Where there is no overlay (Linux, Android, the web, a `--preview`) the window
+keeps its ordinary title bar and `env(titlebar-area-*)` is undefined, so each
+use takes its fallback, as in CSS. `title-bar = "overlay"` and
+`decorations = false` together are refused.
 
 ## Keys
 

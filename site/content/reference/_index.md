@@ -538,9 +538,13 @@ does and is the only reading that lets a fallback mean "you are somewhere that
 has no such thing". An unknown name with no fallback makes the declaration
 invalid and is warned about once, the same as an undefined variable.
 
-The other `env()` names in CSS (`titlebar-area-*`, `viewport-segment-*`) name
-surfaces Rux does not have, so they are unknown here; answering for one would be
-inventing a number rather than reporting one.
+`titlebar-area-x`, `-y`, `-width` and `-height` are the part of the title row
+the window buttons leave free, and exist only in a window with
+`[window] title-bar = "overlay"` (Windows and macOS). Anywhere else they are
+undefined: a fallback is used, and with none the declaration is dropped with the
+usual "not a length" warning, so write one. The other `env()` name in CSS
+(`viewport-segment-*`) names a surface Rux does not have, so it is unknown here;
+answering for it would be inventing a number rather than reporting one.
 
 To see a non-zero inset on a desktop, see `rux run --preview` below.
 

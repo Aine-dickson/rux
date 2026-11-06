@@ -43,7 +43,7 @@ use rux_style::{BindingRegistry, Instances, Namespace, Swaps, DOCUMENT_NAMESPACE
 /// without depending on `rux-style` directly.
 pub use rux_reactive::json_string;
 pub use rux_style::{
-    ColorScheme, Environment, Insets, InteractionState, Pointer, RoutePattern, Viewport, Warning,
+    Area, ColorScheme, Environment, Insets, InteractionState, Pointer, RoutePattern, Viewport, Warning,
 };
 /// Re-exported for the same reason: the shell owns the animator, because the
 /// clock and the previous frame are its business and not the document's.
@@ -3507,7 +3507,8 @@ impl Document {
         // environment: `env(safe-area-inset-*)` reads the insets directly, so a
         // rotation that moves a notch from one edge to another has to
         // re-cascade even though every query still answers the same way.
-        let insets_moved = environment.safe_area != self.environment.safe_area;
+        let insets_moved = environment.safe_area != self.environment.safe_area
+            || environment.titlebar_area != self.environment.titlebar_area;
         // And a viewport unit the cascade put in pixels (`padding: 2vw`) is
         // stale at the new size. Layout resolves the ones it reads itself.
         let viewport_read = rux_style::reads_viewport() && environment.viewport != self.environment.viewport;
@@ -9805,6 +9806,20 @@ use components::detail;
             doc.root.children[0].style.padding.top, 59.0,
             "and the padding is the inset the device reported"
         );
+    }
+
+    /// `env(titlebar-area-*)` reads the environment directly too: the width of
+    /// the title row follows the window, with no query crossed.
+    #[test]
+    fn moving_the_titlebar_area_re_cascades() {
+        let mut doc = Document::from_source(
+            "<template><screen><view class=\"bar\" /></screen></template>             <style>.bar { padding-left: env(titlebar-area-x, 9px) }</style>",
+        )
+        .expect("loads");
+        assert_eq!(doc.root.children[0].style.padding.left, 9.0, "no overlay: the fallback");
+        let area = rux_style::Area { x: 4.0, y: 0.0, width: 300.0, height: 32.0 };
+        assert!(doc.set_environment(Environment { titlebar_area: Some(area), ..Environment::sane() }));
+        assert_eq!(doc.root.children[0].style.padding.left, 4.0);
     }
 
     /// `<screen>` means the whole display, not a box. Written inside a small
