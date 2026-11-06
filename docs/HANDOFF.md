@@ -245,7 +245,11 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
    component import, a misused type, an unknown name. The owner's reference:
    how Vue's tooling checks a single-file component alone. Plan first: how a
    required prop is satisfied when nothing calls the component, and whether
-   `native/` and `locks/` are skipped.
+   `locks/` is skipped (generated). Native: `rux check` owns the seam (the
+   module a `use native::x` names exists; calls match the exported signatures'
+   arity and types; `use type native::...` resolves) and leaves the Rust bodies to
+   `rustc`, with at most an opt-in `--native` that runs `cargo check` (slow, so
+   off by default). Confirm the seam is already checked before adding to it.
 2. **`rux new` asks whether to include a router.** Both a prompt and a flag; the
    flag skips the prompt (prompt only when stdin is a terminal, as the name is).
    `pages/`, `stores/` and the rest are settled and independent of this. Opting
