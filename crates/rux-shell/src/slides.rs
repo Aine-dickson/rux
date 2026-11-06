@@ -125,6 +125,11 @@ impl Slides {
         true
     }
 
+    /// How far from its laid-out place the layout draws the box at `path`.
+    pub fn nudge_at(&self, path: &[usize]) -> (f32, f32) {
+        self.applied.get(path).copied().unwrap_or((0.0, 0.0))
+    }
+
     /// The paths of the rows to look for.
     pub fn paths(&self) -> impl Iterator<Item = &[usize]> {
         self.rows.iter().map(|r| &r.path[..])

@@ -3473,6 +3473,28 @@ click and screenshots through the slide.
 | A list inside a scroller that scrolls | | scrolling is not a move | **not driven** |
 | Touch, the web, Android, macOS, Linux | | the same | **not driven** |
 
+## Drag and drop, 2026-11-06
+
+MS-010, step 2. Driven on the Windows 11 desktop at 150% with
+`examples/sortable.rux` (two lists sharing a group, handles on the rows, a live
+move in `@dragover`, a copy the app draws from `@dragmove`, undo on a cancelled
+drag) copied to `C:\Users\USER\Mobile\rux-harness\ms010-dnd` with `drive.ps1`,
+with real mouse and keyboard input and screenshots.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Pick up by the handle | press the grip of "Intro", move out of the row | the drag starts; the row dims (`:dragging`); the app's copy follows the pointer | desktop: pass |
+| Live move into the other list | move over the second list, between two rows | the target lights (`:drag-over`); the dragged row appears between them; the others make room | desktop: pass |
+| Drop | release there | `@drop` and `@dragend` run (`dropped`); the order stays | desktop: pass |
+| Escape | pick up, move over the other list, press Escape | `@dragend` with `dropped` false; the app undoes the move; the copy goes | desktop: pass |
+| The body is not the handle | press a row's body and drag | nothing is picked up | desktop: pass |
+| The slot, by the pointer's height | in the other list: above the first row, between two, below the last | `index` 0, 1, 2 | pass, in the shell's tests (a column, a row, a wrapping run, with the dragged item left out); driven for between two rows |
+| A section into itself, nested targets, groups | | the deepest accepting target wins; never one inside the dragged source; another group is refused | pass, in the shell's tests; **not driven** |
+| Drop on an empty list | drag the last row out of a list, then back | the empty list takes it at 0 | **not driven** |
+| Touch: handle, and a long press without one | | the handle picks up at once; without one, half a second still; a scroll still scrolls | **not driven**: no touch hardware in this run |
+| A box over a source | a menu over a row, press | the row is not picked up | **not driven** |
+| Web, Android, macOS, Linux | | the same | **not driven** |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

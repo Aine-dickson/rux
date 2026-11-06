@@ -122,14 +122,28 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
   whose `transition` names `transform` slides when it moves
   (`LayoutState::set_nudges`, `crates/rux-shell/src/slides.rs`). Driven on
   Windows (`rux-harness\ms010`).
-- **Step 2 next:** `:drag-data`, `drag-group`, `drag-handle`, `drop-group`;
-  `@dragstart/@dragmove/@dragenter/@dragover/@dragleave/@drop/@dragend` with
-  one `DropEvent` type; `:dragging` and `:drag-over`; slot rule and nested
-  targets as pure functions in `rux-layout` with unit tests; the shell's
-  `DragDrop` state beside `GesturePress` (`begin_gesture`/`move_gesture`/
-  `end_gesture`, `crates/rux-shell/src/lib.rs` near 4628). Follow `66b4536`
-  for where a new event touches the tree. Then `scrollBy`, checks, vocab,
-  `examples/sortable.rux`, docs, drive `rux-harness\ms010`.
+- **Step 2 built, driven on Windows, not yet committed when this was
+  written** (check `git log`): `drag-data`, `drag-group`, `drag-handle`,
+  `drop-group`, the seven events with one `DropEvent`, `:dragging` and
+  `:drag-over`. Geometry (what a press picks up, the target, the slot) is pure
+  and tested in `crates/rux-shell/src/dnd.rs`; the press and session state is
+  `dnd_session.rs`, hooked into `begin_gesture`, `move_gesture`, `end_gesture`,
+  the long-press deadline, Escape (`dispatch_key`) and touch cancel. The parser
+  tables, `rux check` rules (in `check_attribute_shapes`), vocab, docs
+  (`07-script.md` "Drag and drop", `10-types.md`, `08-user-tests.md`) and
+  `examples/sortable.rux` are written. Probe: `rux-harness\ms010-dnd`.
+  A target is any element with `drop-group` or an enter/over/leave/drop
+  handler (the plan said `@drop` required; live moves need only `@dragover`).
+  Spots are read from the Node tree and boxes from the last frame's metrics
+  (untransformed).
+- **Still to do:** `scrollBy` on an element (script has `scrollIntoView`
+  only; follow `ElementAction::ScrollIntoView` through `rux-script`,
+  `rux-runtime` `apply_element_actions`, and the shell's `take_reveals`), so
+  an author can scroll a list from `@dragmove` near its edge. Regenerate
+  `editors/vscode/vocabulary.json` with `rux vocab` (see
+  `scripts/dev-install.sh`), then `./site/sync-docs.sh` from Git Bash. Not
+  driven: touch, a box over a source, an empty target, web, macOS, Linux,
+  Android. Set MS-010's status in `docs/field-reports/mava-studio-2.md`.
 - Python heredocs lose backslashes: use Edit for docs with Windows paths.
 
 ## Next action

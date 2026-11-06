@@ -166,9 +166,6 @@ and the environment struct already carries safe areas, density and orientation.
 - **`docs/03-guide.md` should be deleted.** It opens by saying it does not work
   as written and is excluded from the site build; `/learn` covers the same
   ground against the runtime that exists.
-- **Drag and drop.** Not built, because `@tap` and the gesture events are the
-  vocabulary rather than pointer events. A sortable list is a component, so
-  v0.11 is where the need will be felt; left until something asks.
 - **Multiple windows.** No demand has appeared, and it is a large change to the
   shell.
 

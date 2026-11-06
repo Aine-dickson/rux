@@ -3459,6 +3459,49 @@ desktop at 150% scale with the project
 | Linux, Android, the web | | the ordinary title bar, and the fallbacks | **not driven** |
 | A screen reader | | the three buttons are announced | **not built**: the buttons are drawn by the shell and have no accessibility nodes |
 
+## Keyed rows that slide, 2026-11-06
+
+MS-010, step 1: a row of a keyed `r-for` whose `transition` names `transform`
+slides from where it was to where the list has put it. Driven on the Windows 11
+desktop at 150% with `C:\Users\USER\Mobile\rux-harness\ms010` (four keyed rows
+with `transition: transform 1500ms linear`, four plain keyed rows beside them,
+and a button that moves the first item to the end) and `drive.ps1`, with a real
+click and screenshots through the slide.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A moved row slides | click the button | the first row travels down past the others, the other three move up one place | desktop: pass |
+| It arrives | wait past the 1500 ms | every row at its place, in the new order | desktop: pass |
+| A row with no `transform` transition | the plain rows beside | they jump | desktop: pass |
+| Reversing a list | reverse four rows | they cross at the middle of the slide, the last in the tree painting on top | desktop: pass (not a bug: it is what linear crossing looks like) |
+| Moved again mid-slide | | carries on from where it is drawn | pass, in the shell's tests; **not driven** |
+| A hit on a sliding row | click a row mid-slide | the row under the pointer takes it | pass, in the layout's tests (the region moves with the box); **not driven** |
+| A resize under a list | resize the window | rows reflow and do not slide | pass, in the shell's tests; **not driven** |
+| A list inside a scroller that scrolls | | scrolling is not a move | **not driven** |
+| Touch, the web, Android, macOS, Linux | | the same | **not driven** |
+
+## Drag and drop, 2026-11-06
+
+MS-010, step 2. Driven on the Windows 11 desktop at 150% with
+`examples/sortable.rux` (two lists sharing a group, handles on the rows, a live
+move in `@dragover`, a copy the app draws from `@dragmove`, undo on a cancelled
+drag) copied to `C:\Users\USER\Mobile\rux-harness\ms010-dnd` with `drive.ps1`,
+with real mouse and keyboard input and screenshots.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Pick up by the handle | press the grip of "Intro", move out of the row | the drag starts; the row dims (`:dragging`); the app's copy follows the pointer | desktop: pass |
+| Live move into the other list | move over the second list, between two rows | the target lights (`:drag-over`); the dragged row appears between them; the others make room | desktop: pass |
+| Drop | release there | `@drop` and `@dragend` run (`dropped`); the order stays | desktop: pass |
+| Escape | pick up, move over the other list, press Escape | `@dragend` with `dropped` false; the app undoes the move; the copy goes | desktop: pass |
+| The body is not the handle | press a row's body and drag | nothing is picked up | desktop: pass |
+| The slot, by the pointer's height | in the other list: above the first row, between two, below the last | `index` 0, 1, 2 | pass, in the shell's tests (a column, a row, a wrapping run, with the dragged item left out); driven for between two rows |
+| A section into itself, nested targets, groups | | the deepest accepting target wins; never one inside the dragged source; another group is refused | pass, in the shell's tests; **not driven** |
+| Drop on an empty list | drag the last row out of a list, then back | the empty list takes it at 0 | **not driven** |
+| Touch: handle, and a long press without one | | the handle picks up at once; without one, half a second still; a scroll still scrolls | **not driven**: no touch hardware in this run |
+| A box over a source | a menu over a row, press | the row is not picked up | **not driven** |
+| Web, Android, macOS, Linux | | the same | **not driven** |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

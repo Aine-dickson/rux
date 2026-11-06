@@ -72,7 +72,8 @@ pub fn element_tags() -> &'static [&'static str] {
 /// tree reads it before an element's own text) and advertised nowhere.
 const GLOBAL_ATTRIBUTES: &[&str] = &[
     "class", "id", "style", "role", "label", "to", "dir", //
-    "r-for", "r-key", "r-if", "r-elif", "r-else", "r-show", "r-transition",
+    "r-for", "r-key", "r-if", "r-elif", "r-else", "r-show", "r-transition", //
+    "drag-data", "drag-group", "drag-handle", "drop-group",
 ];
 
 /// Attributes that mean something on one element only. `rux vocab` advertises
@@ -100,7 +101,8 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[&str])] = &[
 
 /// The attributes with a bound `:name` form, and where. Everything else is read
 /// once, as written, so `:id="row + n"` used to be accepted and thrown away.
-const BOUND_GLOBAL: &[&str] = &["class", "style", "to", "r-transition"];
+const BOUND_GLOBAL: &[&str] =
+    &["class", "style", "to", "r-transition", "drag-data", "drag-group", "drop-group"];
 const BOUND_ELEMENT: &[(&str, &[&str])] = &[
     ("image", &["src"]),
     ("path", &["d"]),

@@ -210,6 +210,15 @@ pub fn event_types() -> Vec<(&'static str, String)> {
             "{ key: string, ctrl: bool, shift: bool, alt: bool, meta: bool, primary: bool, repeat: bool }".to_string(),
         ),
         ("DragEvent", format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, phase: \"start\" | \"move\" | \"end\" }}")),
+        // Every event of a drag that carries something: `@dragstart`,
+        // `@dragmove`, `@dragenter`, `@dragover`, `@dragleave`, `@drop` and
+        // `@dragend`. `data` is what the source's `drag-data` held.
+        (
+            "DropEvent",
+            format!(
+                "{{ {POINTER_FIELDS}, data: any, group: string?, index: int, before: any, dropped: bool,                  grabX: float, grabY: float }}"
+            ),
+        ),
         (
             "SwipeEvent",
             format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, direction: \"left\" | \"right\" | \"up\" | \"down\" }}"),

@@ -43,6 +43,8 @@ mod filter;
 mod clipboard;
 mod settings;
 mod caption;
+mod dnd;
+mod dnd_session;
 mod slides;
 mod window_module;
 
@@ -2157,6 +2159,8 @@ struct App {
     glides: Vec<Glide>,
     /// Keyed rows sliding to their new places. See `slides.rs`.
     slides: slides::Slides,
+    /// A press that may become a drag, and a drag. See `dnd_session.rs`.
+    drag_drop: dnd_session::DragDrop,
     /// The pointer handlers of whatever is being pressed, and what has happened
     /// to that press so far. `None` when nothing is held, or when the press
     /// landed on something with no pointer handlers at all.
@@ -2472,6 +2476,7 @@ impl App {
             fling: None,
             glides: Vec::new(),
             slides: Default::default(),
+            drag_drop: Default::default(),
             focused: None,
             focused_row: None,
             focused_instance: None,
@@ -4630,6 +4635,10 @@ impl App {
     /// Called from both the mouse and the touchscreen, with the position already
     /// in logical pixels, so the two cannot drift apart in what a gesture means.
     fn begin_gesture(&mut self, fx: f32, fy: f32, from_touch: bool) {
+        // A press on something that can be picked up and put down. It has no
+        // pointer handlers of its own necessarily, but the press is tracked all
+        // the same, so a finger that picks it up is the gesture's.
+        let source = self.dnd_press(fx, fy, from_touch);
         let found = rux_layout::gesture_at(&self.hits, fx, fy)
             .map(|h| {
                 let rect = ((h.x, h.y), (h.width, h.height));
@@ -4645,13 +4654,18 @@ impl App {
             let h = rux_layout::context_at(&self.hits, fx, fy)?;
             Some((Vec::new(), h.instance.clone(), ((h.x, h.y), (h.width, h.height)), h.touch_action))
         });
+        let found = found.or_else(|| {
+            let (r, _) = source?;
+            Some((Vec::new(), None, ((r.0, r.1), (r.2, r.3)), rux_layout::TouchAction::default()))
+        });
         let Some((handlers, instance, (origin, size), touch_action)) = found else {
             self.gesture = None;
             self.gesture_deadline = None;
             return;
         };
-        let listening_long =
-            menu || handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::LongPress);
+        let listening_long = menu
+            || handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::LongPress)
+            || self.dnd_waits_for_long_press();
         self.gesture = Some(GesturePress {
             origin,
             size,
@@ -4675,6 +4689,10 @@ impl App {
     /// Follow a press that is moving: start or continue a drag, and give up on
     /// the long press once the finger has wandered.
     fn move_gesture(&mut self, fx: f32, fy: f32) {
+        // A drag that carries something has the pointer, or is about to.
+        if self.dnd_move(fx, fy) {
+            return;
+        }
         let Some(press) = self.gesture.clone() else { return };
         let travelled = (fx - press.start.0).hypot(fy - press.start.1);
         if travelled > TAP_SLOP as f32 {
@@ -4738,6 +4756,11 @@ impl App {
 
     /// End a press: `@release` always, then the one thing it turned out to be.
     fn end_gesture(&mut self, fx: f32, fy: f32) {
+        if self.dnd_release(fx, fy) {
+            self.gesture = None;
+            self.gesture_deadline = None;
+            return;
+        }
         let Some(press) = self.gesture.take() else {
             self.gesture_deadline = None;
             return;
@@ -5851,6 +5874,10 @@ impl App {
     /// and outside one reaches the app's own undo, and Ctrl+S, which no field
     /// uses, reaches the app from anywhere (Mava Studio's MS-004).
     fn dispatch_key(&mut self, key: &Key, repeat: bool) {
+        // Escape lets go of what is being dragged, and nothing is dropped.
+        if matches!(key, Key::Named(NamedKey::Escape)) && self.dnd_cancel() {
+            return;
+        }
         // Escape leaves a fullscreen video before anything else sees it, as
         // in a browser, where a page cannot keep it.
         if matches!(key, Key::Named(NamedKey::Escape)) && media::leave_fullscreen() {
@@ -9355,7 +9382,8 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.touch_track.clear();
                         self.points.retain(|(id, _)| *id != touch.id);
                         // A cancelled touch is not a release: nothing fires, and
-                        // the press is simply forgotten.
+                        // the press is simply forgotten. A drag in hand is let go.
+                        self.dnd_cancel();
                         self.gesture = None;
                         self.gesture_deadline = None;
                         self.bar_drag = None;
@@ -9668,7 +9696,10 @@ impl ApplicationHandler<RuxEvent> for App {
             if Instant::now() >= deadline {
                 self.gesture_deadline = None;
                 let resting = self.gesture.as_ref().map(|g| (g.start, g.long_fired));
-                if let Some((start, false)) = resting {
+                // A finger resting on something that can be picked up picks it
+                // up, and that is all the rest is for.
+                let picked = resting.is_some_and(|(_, fired)| !fired) && self.dnd_long_press();
+                if let Some((start, false)) = resting.filter(|_| !picked) {
                     if let Some(g) = self.gesture.as_mut() {
                         g.long_fired = true;
                     }

@@ -42,6 +42,7 @@ impl<'u> Printer<'u> {
                     | "TapEvent"
                     | "KeyEvent"
                     | "DragEvent"
+                    | "DropEvent"
                     | "SwipeEvent"
                     | "SelectEvent"
                     | "InputEvent"

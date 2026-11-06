@@ -1,0 +1,120 @@
+<template>
+  <screen class="app">
+    <text class="title">drag and drop</text>
+    <text class="lead">Drag a row by its handle: within a list to reorder it, or into the other list, or onto an empty one. Escape lets go. Rux says where the pointer is and what it is over; the data, the gap and the copy under the pointer are written here.</text>
+
+    <view class="cols">
+      <view class="list" drop-group="rows" @dragover="place('a', event)">
+        <text class="head">Week one</text>
+        <view class="row" r-for="t in a" r-key="t.id" r-transition
+              :drag-data="t.id" drag-group="rows"
+              @dragstart="started(t.name, event)"
+              @dragmove="follow(t.name, event)"
+              @dragend="ended(event)">
+          <view class="grip" drag-handle><text class="grip-mark">::</text></view>
+          <text class="name">{{ t.name }}</text>
+        </view>
+        <text class="empty" r-if="a.length == 0">drop here</text>
+      </view>
+
+      <view class="list" drop-group="rows" @dragover="place('b', event)">
+        <text class="head">Week two</text>
+        <view class="row" r-for="t in b" r-key="t.id" r-transition
+              :drag-data="t.id" drag-group="rows"
+              @dragstart="started(t.name, event)"
+              @dragmove="follow(t.name, event)"
+              @dragend="ended(event)">
+          <view class="grip" drag-handle><text class="grip-mark">::</text></view>
+          <text class="name">{{ t.name }}</text>
+        </view>
+        <text class="empty" r-if="b.length == 0">drop here</text>
+      </view>
+    </view>
+
+    <text class="foot">{{ status }}</text>
+
+    <view class="ghost" r-if="ghost.on" :style="`left: ${ghost.x - 20}px; top: ${ghost.y - 16}px`">
+      <text class="name">{{ ghost.name }}</text>
+    </view>
+  </screen>
+</template>
+
+<script>
+  type Item = { id: int, name: string };
+
+  let a: Item[] = signal([
+    { id: 1, name: "Intro" },
+    { id: 2, name: "Setup" },
+    { id: 3, name: "Basics" }
+  ]);
+  let b: Item[] = signal([
+    { id: 4, name: "Advanced" },
+    { id: 5, name: "Wrap up" }
+  ]);
+  let ghost = signal({ on: false, x: 0.0, y: 0.0, name: "" });
+  let status = signal("idle");
+  // What the lists were when a drag began, to put back if it is let go of.
+  let saved_a: Item[] = signal([]);
+  let saved_b: Item[] = signal([]);
+
+  // The copy under the pointer is a box of the app's own, put where the pointer is.
+  fn follow(name: string, e: DropEvent) {
+    ghost = { on: true, x: e.pageX, y: e.pageY, name: name };
+  }
+
+  fn started(name: string, e: DropEvent) {
+    saved_a = a;
+    saved_b = b;
+    follow(name, e);
+  }
+
+  fn ended(e: DropEvent) {
+    if !e.dropped {
+      a = saved_a;
+      b = saved_b;
+    }
+    ghost = { on: false, x: 0.0, y: 0.0, name: "" };
+    status = if e.dropped { "dropped" } else { "cancelled" };
+  }
+
+  // The thing under the pointer is moved as it travels, so the other rows make
+  // room by themselves: this is called whenever the slot changes, and `index`
+  // already leaves the dragged row out, so it is where to splice.
+  fn place(to: string, e: DropEvent) {
+    let item = a.concat(b).find(t => t.id == e.data);
+    if item == none { return; }
+    let rest_a = a.filter(t => t.id != e.data);
+    let rest_b = b.filter(t => t.id != e.data);
+    if to == "a" { rest_a.splice(e.index, 0, item); } else { rest_b.splice(e.index, 0, item); }
+    a = rest_a;
+    b = rest_b;
+  }
+</script>
+
+<style>
+  * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
+
+  .app { display: flex; flex-direction: column; gap: 12px; padding: 24px; background: #1e1e2e; }
+  .title { color: #cdd6f4; font-size: 22px; font-weight: 700; }
+  .lead { color: #9399b2; font-size: 13px; max-width: 520px; }
+  .foot { color: #9399b2; font-size: 12px; }
+
+  .cols { display: flex; flex-direction: row; gap: 16px; }
+  .list { flex: 1; display: flex; flex-direction: column; gap: 8px; padding: 10px; min-height: 120px;
+          background: #181825; border: 2px solid #313244; border-radius: 10px; }
+  .list:drag-over { border-color: #89b4fa; background: #1b2033; }
+  .head { color: #89b4fa; font-size: 12px; font-weight: 700; }
+  .empty { color: #585b70; font-size: 13px; }
+
+  .row { display: flex; flex-direction: row; align-items: center; gap: 10px; padding: 8px 10px;
+         background: #313244; border-radius: 8px; transition: transform 150ms ease; }
+  .row:dragging { opacity: 0.35; }
+  .grip { width: 22px; height: 22px; cursor: grab; background: #45475a; border-radius: 4px;
+          display: flex; align-items: center; justify-content: center; }
+  .grip-mark { color: #cdd6f4; font-size: 12px; }
+  .name { color: #cdd6f4; font-size: 14px; }
+
+  .ghost { position: fixed; padding: 8px 12px; background: #45475a; border-radius: 8px;
+           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5); pointer-events: none; }
+</style>

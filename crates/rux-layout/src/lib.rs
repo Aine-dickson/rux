@@ -1266,6 +1266,9 @@ impl Outline {
 /// [`Style`] so each costs a box nothing until it is written (watchlist #41).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rare {
+    /// What the element is to dragging and dropping. Layout ignores it; the
+    /// shell finds it by the node's path. See [`Dnd`].
+    pub dnd: Option<Box<Dnd>>,
     /// `app-region`: whether a press here drags the desktop window. Only an
     /// app with its own title bar sets it.
     pub app_region: AppRegion,
@@ -3007,6 +3010,11 @@ pub struct Form {
 }
 
 impl Node {
+    /// What this element is to dragging and dropping, if anything.
+    pub fn dnd(&self) -> Option<&Dnd> {
+        self.style.rare.as_ref().and_then(|r| r.dnd.as_deref())
+    }
+
     pub fn new(style: Style) -> Self {
         Self {
             style,
@@ -3650,6 +3658,101 @@ impl Gesture {
             "doubletap" => Some(Gesture::DoubleTap),
             _ => None,
         }
+    }
+}
+
+/// One of the events of a drag that carries something from one box to another.
+///
+/// Apart from [`Gesture`] because these are not raw pointer traffic on the
+/// element that was pressed: they go to the source and to the box it is over,
+/// and none of them starts a press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DragEvent {
+    /// On the source, when the drag is picked up.
+    Start,
+    /// On the source, at every pointer move of the drag.
+    Move,
+    /// On a target, when the dragged thing comes over it.
+    Enter,
+    /// On a target, on entering and again each time the slot changes.
+    Over,
+    /// On a target, when the dragged thing leaves it, or the drag ends over it
+    /// without a drop.
+    Leave,
+    /// On a target, when the dragged thing is let go over it.
+    Drop,
+    /// On the source, when the drag is over, dropped or not.
+    End,
+}
+
+impl DragEvent {
+    /// In the order they are dispatched and listed.
+    pub const ALL: [DragEvent; 7] = [
+        DragEvent::Start,
+        DragEvent::Move,
+        DragEvent::Enter,
+        DragEvent::Over,
+        DragEvent::Leave,
+        DragEvent::Drop,
+        DragEvent::End,
+    ];
+
+    /// The attribute that declares it, without the `@`.
+    pub fn name(self) -> &'static str {
+        match self {
+            DragEvent::Start => "dragstart",
+            DragEvent::Move => "dragmove",
+            DragEvent::Enter => "dragenter",
+            DragEvent::Over => "dragover",
+            DragEvent::Leave => "dragleave",
+            DragEvent::Drop => "drop",
+            DragEvent::End => "dragend",
+        }
+    }
+
+    pub fn from_attr(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|e| e.name() == name)
+    }
+}
+
+/// What an element is to dragging and dropping: a source of something, a
+/// handle that picks its source up, a place something can be put, or several.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Dnd {
+    /// `drag-data`: this element can be picked up, and this is what it carries,
+    /// as a literal of the script language. Equal values are equal text, which
+    /// is how `:dragging` finds the thing being dragged again after a list has
+    /// been rebuilt around it.
+    pub data: Option<String>,
+    /// `drag-group`, on a source.
+    pub group: Option<String>,
+    /// `drag-handle`: a press here picks up the source this is inside. A
+    /// source with a handle anywhere inside it is picked up by a handle only.
+    pub handle: bool,
+    /// `drop-group`, on a target: the group of source it takes. With none, a
+    /// source with no group.
+    pub accepts: Option<String>,
+    /// `@dragstart` and the rest, by event.
+    pub handlers: Vec<(DragEvent, String)>,
+}
+
+impl Dnd {
+    /// Whether this element can be picked up.
+    pub fn is_source(&self) -> bool {
+        self.data.is_some()
+    }
+
+    /// Whether something can be put on this element: it listens for a drop
+    /// or for what comes before one, or it names a group.
+    pub fn is_target(&self) -> bool {
+        self.accepts.is_some()
+            || self.handlers.iter().any(|(e, _)| {
+                matches!(e, DragEvent::Enter | DragEvent::Over | DragEvent::Leave | DragEvent::Drop)
+            })
+    }
+
+    pub fn handler(&self, event: DragEvent) -> Option<&str> {
+        self.handlers.iter().find(|(e, _)| *e == event).map(|(_, h)| h.as_str())
     }
 }
 

@@ -410,8 +410,10 @@ fn check_handlers(
 /// than derived, because `tap` is not a `Gesture` (it is the finished gesture,
 /// and is also what a keyboard activation produces) and a list of five that
 /// silently means six is worse than a list of six.
-const EVENT_NAMES: &[&str] =
-    &["tap", "press", "release", "longpress", "swipe", "drag", "contextmenu", "doubletap"];
+const EVENT_NAMES: &[&str] = &[
+    "tap", "press", "release", "longpress", "swipe", "drag", "contextmenu", "doubletap",
+    "dragstart", "dragmove", "dragenter", "dragover", "dragleave", "drop", "dragend",
+];
 
 /// The events only an `<input>` has, on top of [`EVENT_NAMES`]: what happens to
 /// its value and its focus, which no other element has.
@@ -451,6 +453,35 @@ const VALUELESS_ATTRS: &[&str] = &["r-else", "fallback"];
 /// exists to close, and it is worse here because the gesture vocabulary is
 /// fixed and known: there is no "not yet honored" to hide behind.
 fn check_attribute_shapes(el: &rux_parser::Element, component_tags: &TagProps) {
+    // Dragging and dropping. Only an element that carries something
+    // (`drag-data`) can be picked up, so what belongs to a source says so.
+    if rux_parser::is_element(&el.tag) {
+        let has = |n: &str| el.attr(n).is_some() || el.attr(&format!(":{n}")).is_some();
+        if !has("drag-data") {
+            for name in ["drag-group", "@dragstart", "@dragmove", "@dragend"] {
+                let bound = format!(":{name}");
+                if let Some(attr) = el.attrs.iter().find(|a| a.name == name || a.name == bound) {
+                    rux_script::located(Some(attr.line), || {
+                        rux_script::error_script(format!(
+                            "`{}` on <{}> does nothing without `drag-data`: only an element \
+                             that carries something can be picked up. Add `drag-data=\"\u{2026}\"` \
+                             (or `:drag-data`) to it",
+                            attr.name, el.tag
+                        ));
+                    });
+                }
+            }
+        } else if let Some(attr) = el.attrs.iter().find(|a| a.name == "@drag") {
+            rux_script::located(Some(attr.line), || {
+                rux_script::error_script(format!(
+                    "`@drag` on <{}> will never run: it has `drag-data`, so a press that \
+                     moves picks it up, and `@dragstart`, `@dragmove` and `@dragend` say so. \
+                     Put `@drag` on another element, or drop `drag-data`",
+                    el.tag
+                ));
+            });
+        }
+    }
     let is_component = props_of(component_tags, &el.tag).is_some();
     for attr in &el.attrs {
         if let Some(event) = attr.name.strip_prefix('@') {
@@ -1077,6 +1108,9 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
         "tap" | "press" | "release" | "longpress" | "contextmenu" | "doubletap" => "TapEvent".to_string(),
         "key" => "KeyEvent".to_string(),
         "drag" => "DragEvent".to_string(),
+        "dragstart" | "dragmove" | "dragenter" | "dragover" | "dragleave" | "drop" | "dragend" => {
+            "DropEvent".to_string()
+        }
         "swipe" => "SwipeEvent".to_string(),
         // Where the caret and the selection are, in characters of the value.
         "select" if el.tag == "input" => "SelectEvent".to_string(),
@@ -3467,6 +3501,8 @@ impl Document {
             && next.focus_visible == self.state.focus_visible
             && next.touched == self.state.touched
             && next.attempted == self.state.attempted
+            && next.dragging == self.state.dragging
+            && next.drag_over == self.state.drag_over
         {
             roots.push(divergence(self.state.hovered.as_deref(), next.hovered.as_deref()));
             roots.push(divergence(self.state.active.as_deref(), next.active.as_deref()));
@@ -4144,6 +4180,12 @@ impl Document {
     }
 
     /// An input's current value, read in its own row's and instance's scope.
+    /// A literal the layout carried (a `drag-data`, as
+    /// `Value::to_rhai_literal` wrote it) as the value it was.
+    pub fn eval_literal(&mut self, literal: &str) -> Option<rux_reactive::Value> {
+        self.engine.eval_value(literal, &[])
+    }
+
     pub fn value_in(&mut self, model: &str, row: Option<&str>, instance: Option<&str>) -> String {
         let locals = self.scope_for(model, row, instance);
         self.engine.get_string_in(model, &locals)
@@ -7595,6 +7637,31 @@ mod tests {
         assert!(named.iter().any(|m| m.contains("@contextmenus")), "{named:?}");
         assert!(!named.iter().any(|m| m.contains("`@contextmenu` on") || m.contains("`@doubletap` on")), "{named:?}");
         assert!(!named.iter().any(|m| m.contains("button")), "event.button is typed: {named:?}");
+    }
+
+    /// The drag-and-drop events are events and their attributes are attributes
+    /// (MS-010), a `DropEvent` is what they hand over, and what belongs to a
+    /// source says so when there is no source.
+    #[test]
+    fn drag_and_drop_attributes_and_events_are_known() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><view class=\"t\" drop-group=\"g\" @dragover=\"n = event.index\" @drop=\"n = event.data\">\
+             <view :drag-data=\"1\" drag-group=\"g\" drag-handle @dragstart=\"n = 1\" @dragmove=\"n = event.pageX\" \
+             @dragend=\"if !event.dropped { n = 0 }\">x</view></view>\
+             <view drag-group=\"g\" @dragend=\"n = 2\">y</view>\
+             <view drag-data=\"a\" @drag=\"n = 3\">z</view></screen></template>\n\
+             <script>let n = signal(0);</script>",
+        )
+        .expect("renders anyway");
+        let named: Vec<_> = doc.diagnostics.warnings.iter().map(|w| w.message.clone()).collect();
+        // The first pair of views is whole and says nothing.
+        assert!(!named.iter().any(|m| m.contains("is not an attribute") || m.contains("is not an event")), "{named:?}");
+        // A group and an end with nothing to carry, and a `@drag` on a source.
+        assert!(named.iter().any(|m| m.contains("`drag-group` on <view> does nothing without `drag-data`")), "{named:?}");
+        assert!(named.iter().any(|m| m.contains("`@dragend` on <view> does nothing without `drag-data`")), "{named:?}");
+        assert!(named.iter().any(|m| m.contains("`@drag` on <view> will never run")), "{named:?}");
+        assert_eq!(named.iter().filter(|m| m.contains("does nothing without `drag-data`")).count(), 2, "{named:?}");
     }
 
     /// A valueless directive given a value says something with nowhere to go.

@@ -3509,6 +3509,11 @@ enum Pseudo {
     /// The side an element ends at as it leaves. Held from the moment the swap
     /// opens until it commits, so it is a target the whole way.
     LeaveTo,
+    /// `:dragging`: this element carries what is being dragged, found again by
+    /// its `drag-data` after a list has been rebuilt around it.
+    Dragging,
+    /// `:drag-over`: the drop target the dragged thing is over.
+    DragOver,
     /// `:disabled`, a control with `disabled` on it.
     Disabled,
     /// `:enabled`, a control without.
@@ -3586,6 +3591,11 @@ pub struct ElemStates {
     /// This element is leaving: the build no longer asks for it, and it is on
     /// screen only because a swap is holding it there.
     pub leave_to: bool,
+    /// See [`Pseudo::Dragging`] and [`Pseudo::DragOver`]. From the shell, like
+    /// the pointer states, but through [`InteractionState`] and a whole
+    /// re-cascade, as focus is: a drag starts, ends and changes target seldom.
+    pub dragging: bool,
+    pub drag_over: bool,
     /// A `disabled` `<input>` or `<button>`. Resolved at build time from the
     /// attribute, like `checked`.
     pub disabled: bool,
@@ -3638,6 +3648,11 @@ pub struct InteractionState {
     /// Forms whose submission has been tried, by tree path. Every field in
     /// one counts as touched from then on.
     pub attempted: Vec<Vec<usize>>,
+    /// The `drag-data` of what is being dragged, as the literal the layout
+    /// carries, which `:dragging` is matched by.
+    pub dragging: Option<String>,
+    /// The tree path of the drop target it is over, for `:drag-over`.
+    pub drag_over: Option<Vec<usize>>,
 }
 
 impl InteractionState {
@@ -3713,6 +3728,8 @@ impl Pseudo {
             "checked" => Self::Checked,
             "current" => Self::Current,
             "enter-from" => Self::EnterFrom,
+            "dragging" => Self::Dragging,
+            "drag-over" => Self::DragOver,
             "leave-to" => Self::LeaveTo,
             "disabled" => Self::Disabled,
             "enabled" => Self::Enabled,
@@ -3788,6 +3805,8 @@ impl Pseudo {
             Self::Checked => s.checked,
             Self::Current => s.current,
             Self::EnterFrom => s.enter_from,
+            Self::Dragging => s.dragging,
+            Self::DragOver => s.drag_over,
             Self::LeaveTo => s.leave_to,
             Self::Disabled => s.disabled,
             Self::Enabled => s.enabled,
@@ -5628,7 +5647,7 @@ pub fn honored_pseudo_classes() -> &'static [&'static str] {
 
 const HONORED_PSEUDO_CLASSES: &[&str] =
     &[
-        "hover", "focus", "focus-visible", "active", "checked", "current", "enter-from",
+        "hover", "focus", "focus-visible", "active", "checked", "current", "dragging", "drag-over", "enter-from",
         "leave-to", "disabled", "enabled", "valid", "invalid", "user-valid", "user-invalid",
         "required", "optional", "first-child", "last-child", "only-child", "nth-child",
         "nth-last-child", "not", "is", "where", "dir", "root",
@@ -7554,7 +7573,100 @@ fn build_node(
             node.on_key = Some(bind_locals(h, &baked));
         }
     }
+    attach_dnd(&mut node, el, engine, locals, path, reg, instance, instances);
     node
+}
+
+/// Dragging and dropping is for Rux's own elements: on a component's tag these
+/// are props and listeners, and its root carries its own. Out of line to keep
+/// [`build_node`]'s frame small.
+#[inline(never)]
+#[allow(clippy::too_many_arguments)]
+fn attach_dnd(
+    node: &mut LayoutNode,
+    el: &Element,
+    engine: &mut Engine,
+    locals: &[(String, Value)],
+    path: &[usize],
+    reg: &mut BindingRegistry,
+    instance: Option<&str>,
+    instances: &Instances,
+) {
+    if node.dnd().is_none() && rux_parser::is_element(&el.tag) {
+        if let Some(dnd) = build_dnd(el, engine, locals, path, reg, handler_locals(locals, instance, instances)) {
+            node.style.rare_mut().dnd = Some(dnd);
+        }
+    }
+}
+
+/// `:dragging` and `:drag-over`. `:dragging` is matched by the element's
+/// `drag-data`, not its path: a live move rebuilds the list and the thing being
+/// dragged is in another place by then. Only read while a drag is on.
+///
+/// Out of line, like [`build_dnd`]: the builders recurse once per element and a
+/// debug build's stack is spent (watchlist #41).
+#[inline(never)]
+fn drag_states(
+    states: &mut ElemStates,
+    el: &Element,
+    state: &InteractionState,
+    engine: &mut Engine,
+    locals: &[(String, Value)],
+    path: &[usize],
+) {
+    if let Some(dragged) = &state.dragging {
+        states.dragging = el
+            .attr(":drag-data")
+            .and_then(|expr| engine.eval_value(expr, locals))
+            .or_else(|| el.attr("drag-data").map(|t| Value::Text(t.to_string())))
+            .is_some_and(|v| v.to_rhai_literal() == *dragged);
+    }
+    states.drag_over = state.drag_over.as_deref() == Some(path);
+}
+
+/// What `drag-data`, `drag-group`, `drag-handle`, `drop-group` and the seven
+/// drag events make of an element. A bound one is read here and subscribes the
+/// node to what it reads, as `:class` does, so a row whose data changes is
+/// built again.
+///
+/// Its own function, and not inlined, for the reason [`resolve_lengths`] is.
+#[inline(never)]
+fn build_dnd(
+    el: &Element,
+    engine: &mut Engine,
+    locals: &[(String, Value)],
+    path: &[usize],
+    reg: &mut BindingRegistry,
+    baked: &[(String, Value)],
+) -> Option<Box<rux_layout::Dnd>> {
+    use rux_layout::{DragEvent, Dnd};
+    let mut deps: HashSet<String> = HashSet::new();
+    let mut read = |name: &str| -> Option<Value> {
+        if let Some(text) = el.attr(name) {
+            return Some(Value::Text(text.to_string()));
+        }
+        let bound = format!(":{name}");
+        let expr = el.attr(&bound)?;
+        let (value, read) = located(el.attr_line(&bound), || engine.eval_value_tracked(expr, locals));
+        deps.extend(read);
+        value
+    };
+    let data = read("drag-data").map(|v| v.to_rhai_literal());
+    let group = read("drag-group").map(|v| v.to_display());
+    let accepts = read("drop-group").map(|v| v.to_display());
+    let handle = el.attr("drag-handle").is_some();
+    let handlers: Vec<(DragEvent, String)> = DragEvent::ALL
+        .into_iter()
+        .filter_map(|e| el.attr(&format!("@{}", e.name())).map(|h| (e, bind_locals(h, baked))))
+        .collect();
+    if !deps.is_empty() {
+        match reg.styled.iter_mut().find(|b| b.path == path) {
+            Some(b) => b.deps.extend(deps),
+            None => reg.styled.push(StyledBinding { path: path.to_vec(), deps }),
+        }
+    }
+    let dnd = Dnd { data, group, handle, accepts, handlers };
+    (dnd != Dnd::default()).then(|| Box::new(dnd))
 }
 
 /// Puts every relative unit in `props` into pixels and returns the element's own
@@ -8441,6 +8553,7 @@ fn build_node_inner(
     // survives a reconcile that moves nodes around.
     desc.states.hover = state.hovers(path);
     desc.states.active = state.activates(path);
+    drag_states(&mut desc.states, el, state, engine, locals, path);
     // The swap states. `:enter-from` is held for the first frame only, and that
     // asymmetry is the whole trick: dropping it next frame turns the swap into an
     // ordinary style change, which is exactly what tier 1 already animates.
@@ -18488,6 +18601,8 @@ mod tests {
             current: false,
             enter_from: false,
             leave_to: false,
+            dragging: false,
+            drag_over: false,
             disabled: true,
             enabled: false,
             valid: Some(false),
@@ -18529,6 +18644,8 @@ mod tests {
             current: true,
             enter_from: true,
             leave_to: true,
+            dragging: true,
+            drag_over: true,
             disabled: true,
             enabled: true,
             valid: Some(true),

@@ -449,6 +449,92 @@ the press) the event follows suit. On a touchscreen `@longpress` fires first.
 `@doubletap` runs after both taps' `@tap`, in the order a browser's `dblclick`
 comes, and a third tap starts counting again.
 
+### Drag and drop
+
+Picking something up in one place and putting it down in another is four
+questions Rux answers and an author cannot: which element a press picks up,
+which target the pointer is over, which slot among that target's items it is
+at, and when each of those changes. Everything else is written in the app:
+what the thing looks like in the air, the gap it leaves, a row sliding aside,
+and what a drop does to the data. Rux draws nothing for a drag.
+
+```rux
+<view class="lessons" drop-group="outline"
+      @dragover="place(section.id, event)"
+      @drop="save()">
+  <view r-for="l in section.lessons" r-key="l.id" class="row"
+        :drag-data="l.id" drag-group="outline"
+        @dragend="if !event.dropped { undo() }">
+    <view drag-handle>≡</view> {{ l.title }}
+  </view>
+</view>
+```
+
+| Attribute | On | Means |
+|---|---|---|
+| `drag-data` (or `:drag-data="expr"`) | a source | this element can be picked up, and carries this value |
+| `drag-group` | a source | which targets take it; none means those with no group |
+| `drag-handle` | inside a source | a press here picks the source up; a source with a handle is picked up by a handle only |
+| `drop-group` | a target | the group of source it takes |
+| `@dragstart` | the source | it was picked up |
+| `@dragmove` | the source | every pointer move of the drag: where to draw its copy |
+| `@dragenter`, `@dragover`, `@dragleave` | a target | the dragged thing came over it, is at a slot (on entering and each time the slot changes), left it |
+| `@drop` | a target | it was let go over it |
+| `@dragend` | the source | the drag is over, dropped or not |
+
+A target is any element with `drop-group` or one of `@dragenter`, `@dragover`,
+`@dragleave` and `@drop`. A press moves a source after the pointer has gone a
+few pixels, as `@drag` does, and the source's own `@drag`, `@swipe` and
+`@longpress` stay out of it. On a finger a source with a handle is picked up
+by the handle at once, and one without is picked up by holding it still for
+half a second, so a scroll still scrolls; a source picked up by a long press
+does not also open its `@contextmenu`. Escape lets go: nothing is dropped.
+
+`event` in all seven is a `DropEvent`:
+
+| Field | Is |
+|---|---|
+| `data` | what the source's `drag-data` held |
+| `group` | its `drag-group`, or `null` |
+| `index` | the slot in the target the pointer is at, **counted without the dragged item**, so splicing the data at it is right; `-1` on the source's events and when over no target |
+| `before` | the `drag-data` of the item it would land in front of, or `null` at the end |
+| `dropped` | on `@dragend`: whether it was dropped on a target |
+| `grabX`, `grabY` | where in the source the press landed |
+| `x`, `y`, `pageX`, `pageY`, `width`, `height`, `touches` | as for `@tap`; `x` and `y` are in the element the handler is on |
+
+The items of a target are the sources whose nearest target is it, so an
+outline's items are its sections and a section's are its lessons, and the
+deepest target under the pointer that takes the group is the one it is over.
+A target inside the thing being dragged is never the one: a section cannot be
+dropped into itself. The slot is read from where the items are: a column by
+the pointer's height against each item's middle, a row by its width, and a
+run that wraps in reading order. An empty target that has a size takes a drop
+at slot 0.
+
+`:dragging` matches the elements carrying what is being dragged, found by
+their `drag-data` and not their place, so it stays on the row when a live move
+has rebuilt the list around it. `:drag-over` matches the target the pointer is
+over. Both are ordinary selectors:
+
+```css
+.row:dragging { opacity: 0.35; }
+.lessons:drag-over { background: #1b2033; }
+```
+
+**To move the data as the pointer travels** (the other rows then make room by
+themselves), do it in `@dragover`, which runs when the slot changes, and undo
+it in `@dragend` when `event.dropped` is false. **To move it only on a drop**,
+do it in `@drop`, and draw the gap from `index` in `@dragover` if one is wanted.
+**The copy under the pointer** is a box of the app's own, `position: fixed` and
+`pointer-events: none`, put at `event.pageX` and `event.pageY` by `@dragmove`.
+**A row sliding aside** is a keyed row's `transition: transform` (see "A keyed
+row slides when it moves" in [as built](/reference/)). Driven in
+`examples/sortable.rux`.
+
+A source's position is read from where the layout put it: a source inside
+something `transform`ed has its untransformed box. A box drawn over a source
+(a menu, a backdrop) keeps a press from it.
+
 ## What an event hands you
 
 Every handler above, and `@tap` too, has an `event` in scope:
@@ -487,6 +573,7 @@ can name these without a `use`:
 |---|---|---|
 | `TapEvent` | `@tap`, `@press`, `@release`, `@longpress`, `@contextmenu`, `@doubletap` | `button` |
 | `DragEvent` | `@drag` | `totalX`, `totalY`, `moveX`, `moveY`, `phase` |
+| `DropEvent` | `@dragstart`, `@dragmove`, `@dragenter`, `@dragover`, `@dragleave`, `@drop`, `@dragend` | `data`, `group`, `index`, `before`, `dropped`, `grabX`, `grabY` (see "Drag and drop") |
 | `SwipeEvent` | `@swipe` | `totalX`, `totalY`, `moveX`, `moveY`, `direction` |
 | `KeyEvent` | `@key` | none of those, only `key`, `ctrl`, `shift`, `alt`, `meta`, `primary`, `repeat` |
 | `SelectEvent` | `@select` on a field | none of those, only `value`, `start`, `end`, `caret` |

@@ -401,7 +401,11 @@ A template is checked against the script it binds to.
   `x`, `y`, `pageX`, `pageY`, `width`, `height` and `touches`. `@drag` adds
   `phase`, `"start" | "move" | "end"`, and the four distances, `totalX`,
   `totalY`, `moveX` and `moveY`; `@swipe` adds those distances and
-  `direction`, `"left" | "right" | "up" | "down"`. `@key` hands over a
+  `direction`, `"left" | "right" | "up" | "down"`. The seven drag-and-drop
+  events (`@dragstart`, `@dragmove`, `@dragenter`, `@dragover`, `@dragleave`,
+  `@drop`, `@dragend`) hand over a `DropEvent`: the pointer fields, and
+  `data: any`, `group: string?`, `index: int`, `before: any`, `dropped: bool`,
+  `grabX` and `grabY`. `@key` hands over a
   `KeyEvent`. A field's `@select` hands over a `SelectEvent` (`value`,
   `start`, `end`, `caret`). A text field's `@input` hands over an
   `InputEvent`: `value`, and `kind`, the sort of edit, one of `"type"`,
