@@ -146,16 +146,16 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next action
 
-Two items, each in its own session on Opus plan mode (they set design):
+One item left, in its own session on Opus plan mode (it sets design):
 
 1. **Child windows** an app can spawn (roadmap item 8): needs the owner's say
    on the syntax before code.
-2. **MS-013, elliptical `border-radius`** (`docs/field-reports/mava-studio-2.md`,
-   open): CSS draws `50%` on a 200 by 100 box as an ellipse, Rux draws a pill.
-   `Corners` is `[f32; 4]` and reaches layout, paint, shadows, clips, outlines
-   and the animator, and kurbo's `RoundedRect` is circular only, so it needs a
-   plan. Option A (recommended, CSS-correct): an x and a y radius per corner.
-   Option B: an `<ellipse>` primitive (new syntax, owner first).
+2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,
+   two-value longhands; drawn by an elliptical path in `rux-paint`
+   (`rounded_rect` takes `radius_y`). Driven in no window yet; tests only.
+   Gaps: outer `box-shadow` on an elliptical corner uses the shorter radius;
+   `transition: border-radius` animates horizontal radii only. Boxes that
+   relied on the old pill must use `9999px`.
 
 After those, decide with the owner when to push `build/v0.9` and cut v0.9.
 MS-012's status line in the Mava report still says the overlay is not built.
