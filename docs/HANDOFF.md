@@ -33,6 +33,9 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   roadmap). Not reviewed in this pass: `02-spec`, `03-guide` (both known to be
   history, still published to the site), `08-user-tests` (a log), `09-author-notes`
   (19 open rows, statuses not re-checked), field reports.
+- The full audit record (method, what was left unverified per doc, questions
+  for the owner) is `docs/archive/docs-audit-2026-11-06.md`. Read it before
+  auditing the docs again.
 - The owner will decide the docs and site redesign. Open questions for it:
   `07-script`, `10-types` and `11-next` overlap heavily and could become one
   document; much of the CSS section of `05-as-built` is not CSS (r-transition,
