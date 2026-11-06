@@ -8323,7 +8323,7 @@ impl App {
         // here, and answered for in `caption`.
         #[cfg(windows)]
         if overlay {
-            let mut look = caption::state();
+            let mut look = caption::state(&state.window);
             look.maximized = state.window.is_maximized();
             let ink_light = caption::behind_is_dark(&layout.paints, logical.0 as f32, dark(&document.root));
             let paints = caption::paints(logical.0 as f32, look, ink_light);
@@ -8673,7 +8673,6 @@ impl ApplicationHandler<RuxEvent> for App {
         );
         #[cfg(windows)]
         if self.overlay_active() {
-            caption::set_metrics(0.0, window.scale_factor());
             caption::attach(&window);
         }
         window.set_visible(true);
@@ -9139,7 +9138,7 @@ impl ApplicationHandler<RuxEvent> for App {
     fn window_event(
         &mut self,
         event_loop: &ActiveEventLoop,
-        _id: WindowId,
+        id: WindowId,
         event: WindowEvent,
     ) {
         // The adapter needs to see window events (focus, resize) to keep the
@@ -9166,9 +9165,9 @@ impl ApplicationHandler<RuxEvent> for App {
         match event {
             WindowEvent::CloseRequested => self.close_requested(event_loop),
             WindowEvent::Resized(size) => {
-                window_module::follow();
+                window_module::follow(id);
                 if let Some(state) = self.state.as_ref() {
-                    caption::set_metrics(0.0, state.window.scale_factor());
+                    caption::set_metrics(&state.window, state.window.scale_factor());
                 }
                 if let Some(state) = self.state.as_mut() {
                     self.context.borrow().resize_surface(
@@ -9245,7 +9244,11 @@ impl ApplicationHandler<RuxEvent> for App {
             // hover/active have to be dropped here or they stay lit.
             WindowEvent::CursorLeft { .. } => self.clear_pointer_state(),
             // An overlay title row's buttons dim while another window is active.
-            WindowEvent::Focused(active) => caption::set_active(active),
+            WindowEvent::Focused(active) => {
+                if let Some(state) = self.state.as_ref() {
+                    caption::set_active(&state.window, active);
+                }
+            }
             // Touch follows the same path as the mouse: press, drag, release.
             // It used to only scroll, which meant a finger could never tap
             // anything. That went unnoticed because there was no touch hardware
@@ -9895,6 +9898,15 @@ impl Shell {
         self.parked.iter_mut().chain(self.windows.values_mut())
     }
 
+    /// Run `f` on every window, each as the window its code runs in (what
+    /// `window.*` means: see [`window_module::as_window`]).
+    fn each(&mut self, mut f: impl FnMut(&mut App)) {
+        for app in self.apps() {
+            let id = app.state.as_ref().map(|s| s.window.id());
+            window_module::as_window(id, || f(app));
+        }
+    }
+
     fn main_app(&mut self) -> Option<&mut App> {
         match self.main {
             Some(id) => self.windows.get_mut(&id),
@@ -9929,11 +9941,11 @@ impl Shell {
     /// the shared stores again, and redraws if either moved. A store written
     /// in one window is how another one finds out.
     fn after_event(&mut self) {
-        for app in self.apps() {
+        self.each(|app| {
             if app.document.refresh_native_signals() {
                 app.request_redraw();
             }
-        }
+        });
     }
 }
 
@@ -9957,41 +9969,36 @@ impl ApplicationHandler<RuxEvent> for Shell {
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RuxEvent) {
         match event {
             // Wake-ups that are not about any one window: all of them look.
-            RuxEvent::Answered => {
-                for app in self.apps() {
-                    app.user_event(event_loop, RuxEvent::Answered);
-                }
-            }
+            RuxEvent::Answered => self.each(|app| app.user_event(event_loop, RuxEvent::Answered)),
             #[cfg(not(target_arch = "wasm32"))]
-            RuxEvent::VideoFrame => {
-                for app in self.apps() {
-                    app.user_event(event_loop, RuxEvent::VideoFrame);
-                }
-            }
+            RuxEvent::VideoFrame => self.each(|app| app.user_event(event_loop, RuxEvent::VideoFrame)),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-            RuxEvent::Reload => {
-                for app in self.apps() {
-                    app.user_event(event_loop, RuxEvent::Reload);
-                }
-            }
+            RuxEvent::Reload => self.each(|app| app.user_event(event_loop, RuxEvent::Reload)),
             // The picker does not say who opened it: the window that is
             // waiting on one, else the main window.
             RuxEvent::PickedFiles { files } => {
-                let asked = self.apps().find(|a| a.pending_file.is_some());
-                match asked {
-                    Some(app) => app.user_event(event_loop, RuxEvent::PickedFiles { files }),
-                    None => {
-                        if let Some(app) = self.main_app() {
+                let mut files = Some(files);
+                self.each(|app| {
+                    if app.pending_file.is_some() {
+                        if let Some(files) = files.take() {
                             app.user_event(event_loop, RuxEvent::PickedFiles { files });
                         }
+                    }
+                });
+                // Nobody was waiting: the main window gets it, as before.
+                if let Some(files) = files {
+                    if let Some(app) = self.main_app() {
+                        let id = app.state.as_ref().map(|s| s.window.id());
+                        window_module::as_window(id, || app.user_event(event_loop, RuxEvent::PickedFiles { files }));
                     }
                 }
             }
             // Assistive technology names its window.
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             RuxEvent::Access(access) => {
-                if let Some(app) = self.windows.get_mut(&access.window_id) {
-                    app.user_event(event_loop, RuxEvent::Access(access));
+                let id = access.window_id;
+                if let Some(app) = self.windows.get_mut(&id) {
+                    window_module::as_window(Some(id), || app.user_event(event_loop, RuxEvent::Access(access)));
                 }
             }
             // The phone's and the page's own events (the keyboard, a picker, a
@@ -9999,7 +10006,8 @@ impl ApplicationHandler<RuxEvent> for Shell {
             #[cfg(any(target_arch = "wasm32", target_os = "android"))]
             other => {
                 if let Some(app) = self.main_app() {
-                    app.user_event(event_loop, other);
+                    let id = app.state.as_ref().map(|s| s.window.id());
+                    window_module::as_window(id, || app.user_event(event_loop, other));
                 }
             }
         }
@@ -10015,16 +10023,14 @@ impl ApplicationHandler<RuxEvent> for Shell {
             false => self.parked.as_mut(),
         };
         if let Some(app) = app {
-            app.window_event(event_loop, id, event);
+            window_module::as_window(Some(id), || app.window_event(event_loop, id, event));
         }
         self.after_event();
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let mut next: Option<Instant> = None;
-        for app in self.apps() {
-            next = [next, app.tick(event_loop)].into_iter().flatten().min();
-        }
+        self.each(|app| next = [next, app.tick(event_loop)].into_iter().flatten().min());
         // What a window's clocks did may have written a store.
         self.after_event();
         match next {

@@ -181,14 +181,15 @@ pub(crate) use win::{attach, set_active, set_metrics, state};
 
 /// Nothing to attach elsewhere: only Windows draws its own buttons.
 #[cfg(not(windows))]
-pub(crate) fn set_metrics(_logical_width: f32, _scale: f64) {}
+pub(crate) fn set_metrics(_window: &winit::window::Window, _scale: f64) {}
 #[cfg(not(windows))]
-pub(crate) fn set_active(_active: bool) {}
+pub(crate) fn set_active(_window: &winit::window::Window, _active: bool) {}
 
 #[cfg(windows)]
 mod win {
     use super::{hit, Button, State};
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
+    use std::collections::HashMap;
     use std::sync::Arc;
     use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
     use winit::window::Window;
@@ -209,7 +210,8 @@ mod win {
     };
 
     /// What the window procedure needs from the shell, and what it tells back.
-    /// One window, one thread: the procedure runs on the thread that made it.
+    /// Kept per window (by its `HWND`) since an app may have several: the
+    /// procedure runs on the thread that made the window.
     #[derive(Clone, Copy)]
     struct Shared {
         /// Physical px per logical px.
@@ -218,50 +220,56 @@ mod win {
     }
 
     thread_local! {
-        static SHARED: Cell<Shared> = const { Cell::new(Shared { scale: 1.0, state: State { hover: None, pressed: None, active: true, maximized: false } }) };
-        static WINDOW: RefCell<Option<Arc<Window>>> = const { RefCell::new(None) };
+        static SHARED: RefCell<HashMap<isize, Shared>> = RefCell::new(HashMap::new());
+        static WINDOWS: RefCell<HashMap<isize, Arc<Window>>> = RefCell::new(HashMap::new());
+    }
+
+    const FRESH: Shared = Shared { scale: 1.0, state: State { hover: None, pressed: None, active: true, maximized: false } };
+
+    fn shared(hwnd: isize) -> Shared {
+        SHARED.with(|s| s.borrow().get(&hwnd).copied().unwrap_or(FRESH))
+    }
+
+    /// The window's handle, which is what its state is kept under.
+    fn key(window: &Window) -> Option<isize> {
+        let RawWindowHandle::Win32(h) = window.window_handle().ok()?.as_raw() else { return None };
+        Some(h.hwnd.get())
     }
 
     const ID: usize = 0x7275_7863; // "ruxc"
 
     /// Tell the procedure the window's scale (physical px per logical px).
-    pub(crate) fn set_metrics(_logical_width: f32, scale: f64) {
-        SHARED.with(|s| {
-            let mut v = s.get();
-            v.scale = scale;
-            s.set(v);
-        });
+    pub(crate) fn set_metrics(window: &Window, scale: f64) {
+        if let Some(hwnd) = key(window) {
+            SHARED.with(|s| s.borrow_mut().entry(hwnd).or_insert(FRESH).scale = scale);
+        }
     }
 
-    pub(crate) fn set_active(active: bool) {
-        SHARED.with(|s| {
-            let mut v = s.get();
-            v.state.active = active;
-            s.set(v);
-        });
-        redraw();
+    pub(crate) fn set_active(window: &Window, active: bool) {
+        if let Some(hwnd) = key(window) {
+            SHARED.with(|s| s.borrow_mut().entry(hwnd).or_insert(FRESH).state.active = active);
+            redraw(hwnd);
+        }
     }
 
     /// What the buttons are showing now (`maximized` is the caller's to fill).
-    pub(crate) fn state() -> State {
-        SHARED.with(|s| s.get().state)
+    pub(crate) fn state(window: &Window) -> State {
+        key(window).map_or(FRESH.state, |hwnd| shared(hwnd).state)
     }
 
-    fn update(change: impl FnOnce(&mut State)) {
-        SHARED.with(|s| {
-            let mut v = s.get();
-            let before = v.state;
-            change(&mut v.state);
-            s.set(v);
-            if v.state != before {
-                redraw();
-            }
-        });
+    fn update(hwnd: isize, change: impl FnOnce(&mut State)) {
+        let mut v = shared(hwnd);
+        let before = v.state;
+        change(&mut v.state);
+        SHARED.with(|s| s.borrow_mut().insert(hwnd, v));
+        if v.state != before {
+            redraw(hwnd);
+        }
     }
 
-    fn redraw() {
-        WINDOW.with(|w| {
-            if let Some(w) = w.borrow().as_ref() {
+    fn redraw(hwnd: isize) {
+        WINDOWS.with(|w| {
+            if let Some(w) = w.borrow().get(&hwnd) {
                 w.request_redraw();
             }
         });
@@ -275,7 +283,8 @@ mod win {
         let RawWindowHandle::Win32(h) = handle.as_raw() else { return };
         let hwnd = h.hwnd.get() as HWND;
         let kept = window.inner_size();
-        WINDOW.with(|w| *w.borrow_mut() = Some(window.clone()));
+        WINDOWS.with(|w| w.borrow_mut().insert(h.hwnd.get(), window.clone()));
+        SHARED.with(|s| s.borrow_mut().entry(h.hwnd.get()).or_insert(FRESH).scale = window.scale_factor());
         // SAFETY: `hwnd` is this window's, on its own thread; the procedure
         // reads only thread-locals.
         unsafe {
@@ -324,7 +333,7 @@ mod win {
 
     /// A client-area point in logical px, and the client's logical width.
     unsafe fn logical(hwnd: HWND, px: i32, py: i32) -> (f32, f32, f32) {
-        let scale = SHARED.with(|s| s.get().scale) as f32;
+        let scale = shared(hwnd as isize).scale as f32;
         let mut rc: RECT = std::mem::zeroed();
         GetClientRect(hwnd, &mut rc);
         (px as f32 / scale, py as f32 / scale, rc.right as f32 / scale)
@@ -341,6 +350,10 @@ mod win {
     unsafe fn button_at_client(hwnd: HWND, l: LPARAM) -> Option<Button> {
         let (x, y, w) = logical(hwnd, lo(l), hi(l));
         hit(w, x, y)
+    }
+
+    fn state_of(hwnd: HWND) -> State {
+        shared(hwnd as isize).state
     }
 
     unsafe fn frame_y(hwnd: HWND) -> i32 {
@@ -404,7 +417,7 @@ mod win {
             }
             WM_NCMOUSEMOVE => {
                 let over = button_at_screen(hwnd, lparam);
-                update(|s| s.hover = over);
+                update(hwnd as isize, |s| s.hover = over);
                 if over.is_some() {
                     let mut track = TRACKMOUSEEVENT {
                         cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
@@ -417,14 +430,14 @@ mod win {
                 DefSubclassProc(hwnd, msg, wparam, lparam)
             }
             WM_NCMOUSELEAVE => {
-                update(|s| s.hover = None);
+                update(hwnd as isize, |s| s.hover = None);
                 DefSubclassProc(hwnd, msg, wparam, lparam)
             }
             WM_NCLBUTTONDOWN | WM_NCLBUTTONDBLCLK
                 if matches!(wparam as u32, HTMINBUTTON | HTMAXBUTTON | HTCLOSE) =>
             {
                 let button = button_at_screen(hwnd, lparam);
-                update(|s| {
+                update(hwnd as isize, |s| {
                     s.pressed = button;
                     s.hover = button;
                 });
@@ -433,21 +446,21 @@ mod win {
             }
             // While a button is held the mouse is captured, so its moves and
             // its release arrive as client messages, and are the buttons'.
-            WM_MOUSEMOVE if state().pressed.is_some() => {
+            WM_MOUSEMOVE if state_of(hwnd).pressed.is_some() => {
                 let over = button_at_client(hwnd, lparam);
-                update(|s| s.hover = over);
+                update(hwnd as isize, |s| s.hover = over);
                 0
             }
             WM_MOUSEMOVE => {
-                if state().hover.is_some() {
-                    update(|s| s.hover = None);
+                if state_of(hwnd).hover.is_some() {
+                    update(hwnd as isize, |s| s.hover = None);
                 }
                 DefSubclassProc(hwnd, msg, wparam, lparam)
             }
-            WM_LBUTTONUP if state().pressed.is_some() => {
-                let held = state().pressed;
+            WM_LBUTTONUP if state_of(hwnd).pressed.is_some() => {
+                let held = state_of(hwnd).pressed;
                 let over = button_at_client(hwnd, lparam);
-                update(|s| {
+                update(hwnd as isize, |s| {
                     s.pressed = None;
                     s.hover = over;
                 });
@@ -469,12 +482,14 @@ mod win {
                 0
             }
             WM_CAPTURECHANGED => {
-                if state().pressed.is_some() {
-                    update(|s| s.pressed = None);
+                if state_of(hwnd).pressed.is_some() {
+                    update(hwnd as isize, |s| s.pressed = None);
                 }
                 DefSubclassProc(hwnd, msg, wparam, lparam)
             }
             WM_NCDESTROY => {
+                WINDOWS.with(|w| w.borrow_mut().remove(&(hwnd as isize)));
+                SHARED.with(|s| s.borrow_mut().remove(&(hwnd as isize)));
                 RemoveWindowSubclass(hwnd, Some(proc_), ID);
                 DefSubclassProc(hwnd, msg, wparam, lparam)
             }
