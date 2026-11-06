@@ -58,6 +58,10 @@ pub use rux_style::{set_icons, IconPath, MemoryIcons};
 /// Re-exported so the shell can report a script-facing problem it is the only
 /// one able to see, such as `tap()` naming an element with no box on screen.
 pub use rux_script::warn_script;
+
+/// Forget the state of every store shared between documents, as a hot reload
+/// does so that the stores start again.
+pub use rux_script::shared::reset as reset_shared_stores;
 /// The same for a styling problem only a laid-out frame shows, such as an
 /// `anchor()` naming nothing on screen.
 pub use rux_style::warn_stylesheet;
@@ -2543,7 +2547,22 @@ impl Document {
     /// Load a document, keeping the failure's position so a checker can point at
     /// it. [`Document::load`] is this with the structure discarded.
     pub fn load_checked(path: impl AsRef<Path>) -> Result<Self, LoadError> {
-        let path = path.as_ref();
+        Self::load_with(path.as_ref(), None)
+    }
+
+    /// Load `path` as a window an app opened with `window.open`: its own
+    /// document, with the opener's `props` as the values of the props it
+    /// declares. A prop with a default may be left out; one without must be
+    /// given; a name it does not declare is an error.
+    ///
+    /// Its `use` lines resolve as any file's do, beside the file and then from
+    /// the project root, so `use stores::project;` is the app's store, which
+    /// every window shares ([`reset_shared_stores`]).
+    pub fn load_window(path: impl AsRef<Path>, props: &[(String, Value)]) -> Result<Self, LoadError> {
+        Self::load_with(path.as_ref(), Some(props))
+    }
+
+    fn load_with(path: &Path, window_props: Option<&[(String, Value)]>) -> Result<Self, LoadError> {
         // The painter reads image bytes through this, so that an `<image>`
         // resolves the same way a component or a stylesheet does. Installed on
         // every load rather than once, because the provider may have changed
@@ -2564,7 +2583,10 @@ impl Document {
             let root = workspace_root(base).unwrap_or_else(|| base.to_path_buf());
             modules::load(modules::name_of(path, &root), path.to_path_buf(), main_script.clone(), sfc.script_line)?;
         }
-        let main_script = own_props(&mut sfc, &main_script, Some(path));
+        let main_script = match window_props {
+            None => own_props(&mut sfc, &main_script, Some(path)),
+            Some(given) => window_own_props(&mut sfc, &main_script, path, given)?,
+        };
         let (main_script, computeds, effects, hooks) = extract_reactives(&main_script);
         let main_script = defer_computeds(&sfc, main_script, &computeds);
 
@@ -5508,10 +5530,18 @@ impl Document {
     /// rather than merely react to it. It is also where their dependency sets
     /// come from: an effect subscribes to what it read, so it has to read first.
     fn init_reactive(&mut self) {
+        // One that comes out different from what the engine worked out when it
+        // was built read a store another document had already changed: the
+        // tree was built from the old answer.
+        let mut differ = false;
         for i in 0..self.computeds.len() {
             let (name, expr) = (self.computeds[i].name.clone(), self.computeds[i].expr.clone());
-            let (_, deps) = self.engine.recompute(&name, &expr);
+            let (moved, deps) = self.engine.recompute(&name, &expr);
+            differ |= moved;
             self.computeds[i].deps = deps;
+        }
+        if differ {
+            self.rebuild();
         }
         let mut writes: HashSet<String> = HashSet::new();
         self.effect_writers.clear();
@@ -6221,7 +6251,7 @@ impl Document {
     /// Whether Rust has set a signal since [`Document::refresh_native_signals`]
     /// last looked: a load and a compare, for deciding whether a frame is due.
     pub fn native_signals_moved(&self) -> bool {
-        rux_native::signal_epoch() != self.native_epoch
+        rux_native::signal_epoch() != self.native_epoch || self.engine.stores_moved()
     }
 
     /// Native code set a [`rux_native::Signal`]: give the document what each
@@ -6231,11 +6261,14 @@ impl Document {
     /// look.
     pub fn refresh_native_signals(&mut self) -> bool {
         let epoch = rux_native::signal_epoch();
-        if epoch == self.native_epoch {
+        let native_moved = epoch != self.native_epoch;
+        if !native_moved && !self.engine.stores_moved() {
             return false;
         }
         self.native_epoch = epoch;
-        let moved = self.engine.provide_native_signals();
+        let mut moved = if native_moved { self.engine.provide_native_signals() } else { HashSet::new() };
+        // What another document changed in a store, as if Rust had set it.
+        moved.extend(self.engine.adopt_stores());
         if moved.is_empty() {
             return false;
         }
@@ -6801,6 +6834,152 @@ fn own_props(sfc: &mut rux_parser::Sfc, script: &str, file: Option<&Path>) -> St
     script
 }
 
+/// [`own_props`] for a window an app opened: the props it declares take the
+/// values the opener gave, as `let`s ahead of the script's first line, so no
+/// line moves. A declared prop is never owed here, since the opener is the
+/// caller and has answered for all of them.
+fn window_own_props(
+    sfc: &mut rux_parser::Sfc,
+    script: &str,
+    file: &Path,
+    given: &[(String, Value)],
+) -> Result<String, LoadError> {
+    let (script, props, problems) = extract_props(script, false);
+    if let Some((at, message)) = problems.first() {
+        return Err(LoadError::at_line(message.clone(), sfc.script_line + at - 1, file));
+    }
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let declared = || {
+        if props.is_empty() {
+            "it declares no props".to_string()
+        } else {
+            format!("it declares {}", props.iter().map(|p| format!("`{}`", p.name)).collect::<Vec<_>>().join(", "))
+        }
+    };
+    for (key, _) in given {
+        if !props.iter().any(|p| p.name == *key) {
+            return Err(LoadError::plain(format!(
+                "window.open passed the prop `{key}`, and {name} does not declare it: {}",
+                declared()
+            )));
+        }
+    }
+    let mut lets = String::new();
+    for prop in &props {
+        let value = match given.iter().find(|(k, _)| *k == prop.name) {
+            Some((_, v)) => {
+                if let Some(Ok(ty)) = prop.ty.as_deref().map(rux_script::types::parse_type) {
+                    if !value_fits(&ty, v) {
+                        return Err(LoadError::plain(format!(
+                            "window.open passed the prop `{}` {}, and {name} declares it `{ty}`",
+                            prop.name,
+                            value_kind(v)
+                        )));
+                    }
+                }
+                script_literal(v)
+            }
+            .ok_or_else(|| {
+                LoadError::plain(format!(
+                    "window.open passed the prop `{}` a value a window cannot take (a name that is not a plain word in a map)",
+                    prop.name
+                ))
+            })?,
+            None => match &prop.default {
+                Some(default) => default.clone(),
+                None => {
+                    return Err(LoadError::plain(format!(
+                        "{name} needs the prop `{0}`: pass it in `props`, as in `window.open(\"{name}\", {{ props: {{ {0}: … }} }})`",
+                        prop.name
+                    )))
+                }
+            },
+        };
+        match &prop.ty {
+            Some(ty) => lets.push_str(&format!("let {}: {ty} = {value}; ", prop.name)),
+            None => lets.push_str(&format!("let {} = {value}; ", prop.name)),
+        }
+    }
+    rux_script::set_declared_props(std::iter::empty());
+    sfc.props = props;
+    Ok(format!("{lets}{script}"))
+}
+
+/// Whether `v` is something a prop declared `ty` can hold. A type this cannot
+/// judge from a value (a named type, a function, a resource) is let through:
+/// the checker has already read the script against it.
+fn value_fits(ty: &rux_script::types::Type, v: &Value) -> bool {
+    use rux_script::types::Type;
+    match (ty, v) {
+        (Type::Any, _) => true,
+        (Type::Float, Value::Number(_)) | (Type::String, Value::Text(_)) | (Type::Bool, Value::Bool(_)) => true,
+        (Type::Int, Value::Number(n)) => n.fract() == 0.0,
+        (Type::Null, Value::Null) => true,
+        (Type::Literal(l), Value::Text(t)) => l == t,
+        (Type::Array(t), Value::List(items)) => items.iter().all(|i| value_fits(t, i)),
+        (Type::Dict(t), Value::Map(entries)) => entries.iter().all(|(_, e)| value_fits(t, e)),
+        (Type::Record(fields), Value::Map(entries)) => fields.iter().all(|f| match entries.iter().find(|(k, _)| *k == f.name) {
+            Some((_, e)) => value_fits(&f.ty, e),
+            None => f.optional,
+        }),
+        (Type::Union(members), _) => members.iter().any(|m| value_fits(m, v)),
+        (Type::Named(_) | Type::Generic(..) | Type::Opaque(_) | Type::Function(..), _) => true,
+        _ => false,
+    }
+}
+
+/// What kind of value `v` is, for a message.
+fn value_kind(v: &Value) -> &'static str {
+    match v {
+        Value::Number(_) => "a number",
+        Value::Text(_) => "text",
+        Value::Bool(_) => "a bool",
+        Value::List(_) => "a list",
+        Value::Map(_) => "a map",
+        Value::Null => "none",
+    }
+}
+
+/// A value as script reads it, or `None` for a map key that is not a plain
+/// word.
+fn script_literal(v: &Value) -> Option<String> {
+    Some(match v {
+        Value::Null => "none".to_string(),
+        Value::Bool(b) => b.to_string(),
+        Value::Number(n) if n.is_finite() && n.fract() == 0.0 && n.abs() < 1e15 => format!("{}", *n as i64),
+        Value::Number(n) => format!("{n:?}"),
+        Value::Text(s) => {
+            let mut out = String::from("\"");
+            for c in s.chars() {
+                match c {
+                    '\\' => out.push_str("\\\\"),
+                    '"' => out.push_str("\\\""),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        }
+        Value::List(items) => {
+            let parts: Option<Vec<String>> = items.iter().map(script_literal).collect();
+            format!("[{}]", parts?.join(", "))
+        }
+        Value::Map(entries) => {
+            let mut parts = Vec::new();
+            for (k, v) in entries {
+                if !is_identifier(k) {
+                    return None;
+                }
+                parts.push(format!("{k}: {}", script_literal(v)?));
+            }
+            format!("{{ {} }}", parts.join(", "))
+        }
+    })
+}
+
 /// In a component opened on its own, start each `computed` as a placeholder.
 ///
 /// A computed is a top-level `let` of its expression, run as the script
@@ -7361,6 +7540,8 @@ fn build_engine_linked(
     engine.set_provided(rux_script::CAN_FORWARD_SIGNAL, Value::Bool(false));
     // What native code has set already, so the first frame shows it.
     let _ = engine.provide_native_signals();
+    // The stores another document in this process already holds.
+    engine.join_stores();
     Ok(engine)
 }
 
@@ -9488,6 +9669,247 @@ use components::detail;
         // The document's own `{{ count }}` has nothing to read, and says so
         // rather than borrowing the component's.
         assert_eq!(doc.value_in("count", None, None), "", "{:?}", text_of(&doc.root));
+    }
+
+    /// Two documents over one project, as a main window and a child window
+    /// are: the same store file, each document loaded on its own.
+    fn shared_pair(app: &str, store: &str) -> (Document, Document) {
+        use std::fs;
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rux_shared_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("stores")).unwrap();
+        fs::write(dir.join("stores/probe.rux"), store).unwrap();
+        fs::write(dir.join("app.rux"), app).unwrap();
+        let a = Document::load(dir.join("app.rux")).expect("load a");
+        let b = Document::load(dir.join("app.rux")).expect("load b");
+        let _ = fs::remove_dir_all(&dir);
+        (a, b)
+    }
+
+    const COUNTER_APP: &str = "<template><screen>          <text>n={{ probe.count }} twice={{ twice }}</text>          <view @tap=\"probe.bump()\"><text>go</text></view>        </screen></template>
+        <script>
+use stores::probe;
+computed twice = probe.count * 2;
+</script>";
+    const COUNTER_STORE: &str =
+        "export let count = signal(0);
+export fn bump() { count = count + 1; }";
+
+    /// A write in one window shows in the other once it looks: the binding is
+    /// patched and a computed that reads the store is read again.
+    #[test]
+    fn a_store_written_in_one_document_reaches_the_other() {
+        let (mut a, mut b) = shared_pair(COUNTER_APP, COUNTER_STORE);
+        assert!(find_text(&b.root, "n=0 twice=0"), "{:?}", text_of(&b.root));
+        let go = a.root.children[1].clone();
+        assert!(tap(&mut a, &go));
+        assert!(find_text(&a.root, "n=1 twice=2"), "{:?}", text_of(&a.root));
+        // B has not looked yet.
+        assert!(find_text(&b.root, "n=0 twice=0"), "{:?}", text_of(&b.root));
+        assert!(b.engine.stores_moved(), "B can tell a store moved");
+        assert!(b.refresh_native_signals());
+        assert!(find_text(&b.root, "n=1 twice=2"), "{:?}", text_of(&b.root));
+        assert_eq!(probe_value(&b, "count"), "1");
+    }
+
+    /// What a document adopts is not written back: the writer has nothing new
+    /// to read afterwards, and neither has the reader.
+    #[test]
+    fn adopting_a_store_does_not_echo() {
+        let (mut a, mut b) = shared_pair(COUNTER_APP, COUNTER_STORE);
+        let go = a.root.children[1].clone();
+        assert!(tap(&mut a, &go));
+        assert!(!a.engine.stores_moved(), "the writer is up to date");
+        assert!(b.refresh_native_signals());
+        assert!(!b.engine.stores_moved());
+        assert!(!a.engine.stores_moved(), "B's adopting wrote nothing");
+    }
+
+    /// Either window can write, and they stay in step.
+    #[test]
+    fn the_second_document_can_write_too() {
+        let (mut a, mut b) = shared_pair(COUNTER_APP, COUNTER_STORE);
+        let go = a.root.children[1].clone();
+        assert!(tap(&mut a, &go));
+        assert!(b.refresh_native_signals());
+        let go = b.root.children[1].clone();
+        assert!(tap(&mut b, &go));
+        assert!(a.refresh_native_signals());
+        assert!(find_text(&a.root, "n=2 twice=4"), "{:?}", text_of(&a.root));
+        assert!(find_text(&b.root, "n=2 twice=4"), "{:?}", text_of(&b.root));
+    }
+
+    /// A document opened later finds the state as it is, not as the store's
+    /// source starts it.
+    #[test]
+    fn a_later_document_adopts_the_state_as_it_is() {
+        use std::fs;
+        let dir = std::env::temp_dir().join(format!("rux_shared_late_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("stores")).unwrap();
+        fs::write(dir.join("stores/probe.rux"), COUNTER_STORE).unwrap();
+        fs::write(dir.join("app.rux"), COUNTER_APP).unwrap();
+        let mut a = Document::load(dir.join("app.rux")).expect("load a");
+        let go = a.root.children[1].clone();
+        assert!(tap(&mut a, &go));
+        assert!(tap(&mut a, &go));
+        let b = Document::load(dir.join("app.rux")).expect("load b");
+        let _ = fs::remove_dir_all(&dir);
+        assert!(find_text(&b.root, "n=2 twice=4"), "{:?}", text_of(&b.root));
+        assert!(!b.engine.stores_moved());
+    }
+
+    /// An `int` stays an `int`, a list changed in place and a record keep what
+    /// they are across the hand-over.
+    #[test]
+    fn shared_values_keep_their_kind() {
+        let (mut a, mut b) = shared_pair(
+            "<template><screen>               <text>items={{ probe.items.length }} first={{ probe.items[0] }} who={{ probe.who.name }}</text>               <view @tap=\"probe.grow()\"><text>go</text></view>             </screen></template>
+             <script>
+use stores::probe;
+</script>",
+            "type Who = { name: string, age: int };
+             export let items = signal([1]);
+             export let who = signal({ name: \"ann\", age: 3 });
+             export fn grow() { items.push(2); who = { name: \"bo\", age: who.age + 1 }; }",
+        );
+        let go = a.root.children[1].clone();
+        assert!(tap(&mut a, &go));
+        assert!(b.refresh_native_signals());
+        assert!(find_text(&b.root, "items=2 first=1 who=bo"), "{:?}", text_of(&b.root));
+        let go = b.root.children[1].clone();
+        assert!(tap(&mut b, &go));
+        assert!(find_text(&b.root, "items=3 first=1 who=bo"), "{:?}", text_of(&b.root));
+        assert!(a.refresh_native_signals());
+        assert!(find_text(&a.root, "items=3 first=1 who=bo"), "{:?}", text_of(&a.root));
+        assert_eq!(probe_value(&a, "who"), probe_value(&b, "who"));
+    }
+
+    /// A project with a main page, a store, and a window file under
+    /// `windows/`; returns the directory, to be removed by the caller.
+    fn window_project(window: &str) -> std::path::PathBuf {
+        use std::fs;
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let dir = std::env::temp_dir().join(format!(
+            "rux_window_{}_{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("stores")).unwrap();
+        fs::create_dir_all(dir.join("windows")).unwrap();
+        fs::write(dir.join("rux.toml"), "[app]
+name = \"probe\"
+").unwrap();
+        fs::write(dir.join("stores/probe.rux"), COUNTER_STORE).unwrap();
+        fs::write(dir.join("app.rux"), COUNTER_APP).unwrap();
+        fs::write(dir.join("windows/inspector.rux"), window).unwrap();
+        dir
+    }
+
+    const INSPECTOR: &str = "<template><screen>          <text>id={{ id }} title={{ title }} n={{ probe.count }}</text>          <view @tap=\"probe.bump()\"><text>go</text></view>        </screen></template>
+        <script>
+use stores::probe;
+prop id: int;
+prop title = \"none\";
+</script>";
+
+    fn given(pairs: &[(&str, Value)]) -> Vec<(String, Value)> {
+        pairs.iter().map(|(k, v)| (k.to_string(), v.clone())).collect()
+    }
+
+    /// The opener's props are the values of the props the file declares, a
+    /// default fills one the opener left out, and the window shares the app's
+    /// store with the main page, though it lives under `windows/`.
+    #[test]
+    fn a_window_takes_its_props_and_shares_the_apps_store() {
+        let dir = window_project(INSPECTOR);
+        let mut main = Document::load(dir.join("app.rux")).expect("main");
+        let mut win = Document::load_window(dir.join("windows/inspector.rux"), &given(&[("id", Value::Number(3.0))]))
+            .expect("window");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(find_text(&win.root, "id=3 title=none n=0"), "{:?}", text_of(&win.root));
+        let go = main.root.children[1].clone();
+        assert!(tap(&mut main, &go));
+        assert!(win.refresh_native_signals());
+        assert!(find_text(&win.root, "id=3 title=none n=1"), "{:?}", text_of(&win.root));
+        // And the other way.
+        let go = win.root.children[1].clone();
+        assert!(tap(&mut win, &go));
+        assert!(main.refresh_native_signals());
+        assert!(find_text(&main.root, "n=2 twice=4"), "{:?}", text_of(&main.root));
+    }
+
+    #[test]
+    fn a_window_takes_text_lists_and_maps_as_props() {
+        let dir = window_project(
+            "<template><screen><text>{{ title }}|{{ tags.length }}|{{ who.name }}</text></screen></template>
+             <script>
+prop title: string;
+prop tags: string[];
+prop who: { name: string };
+</script>",
+        );
+        let win = Document::load_window(
+            dir.join("windows/inspector.rux"),
+            &given(&[
+                ("title", Value::Text("say \"hi\" \\ {x}".into())),
+                ("tags", Value::list(vec![Value::Text("a".into()), Value::Text("b".into())])),
+                ("who", Value::Map(vec![("name".into(), Value::Text("bo".into()))])),
+            ]),
+        )
+        .expect("window");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(find_text(&win.root, "say \"hi\" \\ {x}|2|bo"), "{:?}", text_of(&win.root));
+    }
+
+    #[test]
+    fn a_window_missing_a_required_prop_says_which() {
+        let dir = window_project(INSPECTOR);
+        let err = Document::load_window(dir.join("windows/inspector.rux"), &[]).err().expect("an error");
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(err.to_string().contains("needs the prop `id`"), "{err}");
+    }
+
+    #[test]
+    fn a_window_given_a_prop_it_does_not_declare_says_which() {
+        let dir = window_project(INSPECTOR);
+        let err = Document::load_window(
+            dir.join("windows/inspector.rux"),
+            &given(&[("id", Value::Number(1.0)), ("colour", Value::Text("red".into()))]),
+        )
+        .err()
+        .expect("an error");
+        let _ = std::fs::remove_dir_all(&dir);
+        let said = err.to_string();
+        assert!(said.contains("`colour`") && said.contains("declares `id`, `title`"), "{said}");
+    }
+
+    #[test]
+    fn a_window_given_the_wrong_kind_of_prop_does_not_open() {
+        let dir = window_project(INSPECTOR);
+        let err = Document::load_window(dir.join("windows/inspector.rux"), &given(&[("id", Value::Text("x".into()))]))
+            .err()
+            .expect("an error");
+        let _ = std::fs::remove_dir_all(&dir);
+        let said = err.to_string();
+        assert!(said.contains("`id`") && said.contains("text") && said.contains("int"), "{said}");
+    }
+
+    /// A reload starts the stores again.
+    #[test]
+    fn resetting_the_shared_stores_lets_a_reload_start_fresh() {
+        let (mut a, _b) = shared_pair(COUNTER_APP, COUNTER_STORE);
+        let go = a.root.children[1].clone();
+        assert!(tap(&mut a, &go));
+        reset_shared_stores();
+        let (c, _) = shared_pair(COUNTER_APP, COUNTER_STORE);
+        assert!(find_text(&c.root, "n=0 twice=0"), "{:?}", text_of(&c.root));
     }
 
     /// A component's names are its own, all of them (step 7.4 of

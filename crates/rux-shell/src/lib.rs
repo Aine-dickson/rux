@@ -2651,6 +2651,9 @@ impl App {
     /// [`RuxEvent::DevFiles`].
     #[cfg(not(target_arch = "wasm32"))]
     fn reload(&mut self) {
+        // The stores start again, or the new document would adopt the old
+        // state in place of what its own source says.
+        rux_runtime::reset_shared_stores();
         match Document::load(&self.path) {
             Ok(doc) => {
                 // Keeps the window's own state (viewport, hover) and drops the

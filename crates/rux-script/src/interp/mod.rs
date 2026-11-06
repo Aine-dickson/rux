@@ -379,6 +379,12 @@ impl Interp {
         self.by_name.get(name).is_some_and(|g| self.set[g.0 as usize])
     }
 
+    /// What kind of global `name` is, when it is one.
+    pub fn global_kind(&self, name: &str) -> Option<rux_ir::ir::GlobalKind> {
+        let g = self.by_name.get(name)?;
+        Some(self.unit.globals[g.0 as usize].kind)
+    }
+
     pub fn global(&self, name: &str) -> Option<&V> {
         let g = self.by_name.get(name)?;
         self.set[g.0 as usize].then(|| &self.globals[g.0 as usize])

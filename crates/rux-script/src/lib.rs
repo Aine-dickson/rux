@@ -20,6 +20,7 @@ pub mod link;
 pub mod lower;
 pub mod native;
 pub mod profile;
+pub mod shared;
 pub use rux_ir::types;
 pub mod validate;
 
@@ -900,6 +901,9 @@ pub struct Engine {
     /// The component whose text the load-time checks are reading, by key:
     /// see [`Engine::in_scope`].
     check_scope: std::cell::RefCell<Option<String>>,
+    /// Where the shared stores were when this engine last looked: see
+    /// [`shared`].
+    store_epoch: u64,
 }
 
 // ── Warning collection ──────────────────────────────────────────────────────
@@ -1714,6 +1718,7 @@ impl Engine {
             unit_sources: HashMap::new(),
             source_hash: 0,
             check_scope: std::cell::RefCell::new(None),
+            store_epoch: 0,
         }
     }
 
@@ -1919,7 +1924,86 @@ impl Engine {
     fn tracking<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> (T, HashSet<String>) {
         self.ir.begin_track();
         let out = f(self);
-        (out, self.ir.end_track())
+        let changed = self.ir.end_track();
+        self.publish_stores(&changed);
+        (out, changed)
+    }
+
+    // ----- Stores shared with other documents --------------------------------
+
+    /// Whether `name` is state of a script module: a store's signal, or a
+    /// plain `let` a store's functions write.
+    fn is_store(&self, name: &str) -> bool {
+        let Some((module, _)) = link::split(name) else { return false };
+        self.linking.exports.contains_key(module)
+            && !native::is_native(module)
+            && matches!(
+                self.ir.global_kind(name),
+                Some(rux_ir::ir::GlobalKind::Signal | rux_ir::ir::GlobalKind::Let)
+            )
+    }
+
+    /// Hand the stores in `changed` to the other documents.
+    fn publish_stores(&mut self, changed: &HashSet<String>) {
+        for name in changed {
+            if !self.is_store(name) {
+                continue;
+            }
+            let Some(v) = self.ir.global(name).filter(|v| shared::shareable(v)).cloned() else { continue };
+            if let Some((was, now)) = shared::put(name, v) {
+                // Still up to date, since the only change is this one.
+                if was == self.store_epoch {
+                    self.store_epoch = now;
+                }
+            }
+        }
+    }
+
+    /// A document has just been built: take the stores another document
+    /// already holds, and give it the ones nobody does.
+    pub fn join_stores(&mut self) {
+        let names: Vec<String> = self
+            .ir
+            .unit()
+            .globals
+            .iter()
+            .filter(|g| self.is_store(&g.name))
+            .map(|g| g.name.clone())
+            .collect();
+        for name in names {
+            match shared::get(&name) {
+                Some(v) => self.ir.set_global(&name, v),
+                None => {
+                    if let Some(v) = self.ir.global(&name).filter(|v| shared::shareable(v)).cloned() {
+                        shared::put(&name, v);
+                    }
+                }
+            }
+        }
+        self.store_epoch = shared::epoch();
+    }
+
+    /// Whether another document has changed a store since this one looked.
+    pub fn stores_moved(&self) -> bool {
+        shared::epoch() != self.store_epoch
+    }
+
+    /// Read what other documents changed in the stores, and say which of this
+    /// document's names moved.
+    pub fn adopt_stores(&mut self) -> HashSet<String> {
+        let epoch = shared::epoch();
+        if epoch == self.store_epoch {
+            return HashSet::new();
+        }
+        self.store_epoch = epoch;
+        let mut moved = HashSet::new();
+        for (name, v) in shared::all() {
+            if self.ir.has_global(&name) && self.is_store(&name) && self.ir.global(&name) != Some(&v) {
+                self.ir.set_global(&name, v);
+                moved.insert(name);
+            }
+        }
+        moved
     }
 
     /// Evaluate an expression *and* report which signals it read, the binding's
