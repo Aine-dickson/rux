@@ -2086,6 +2086,8 @@ struct App {
     /// The file input whose picker is open, until it answers. See
     /// [`RuxEvent::PickedFiles`].
     pending_file: Option<files::PendingFile>,
+    /// The window decided to close the whole app; the shell acts on it.
+    quit: bool,
     /// Keyboard-focusable elements in Tab order, from the most recent layout.
     focusables: Vec<FocusItem>,
     /// Index into `focusables` of the keyboard-focused element, if any.
@@ -2480,6 +2482,7 @@ impl App {
             selects: Vec::new(),
             files: Vec::new(),
             pending_file: None,
+            quit: false,
             focusables: Vec::new(),
             focus_index: None,
             keyboard_modality: false,
@@ -6178,9 +6181,12 @@ impl App {
     /// Close for good, with no question asked: every `unmounted` runs, then the
     /// loop ends. On Android, ending the loop is what closes the activity (see
     /// the Back handling in `window_event`).
-    fn close_now(&mut self, event_loop: &ActiveEventLoop) {
-        self.document.shut_down();
-        event_loop.exit();
+    ///
+    /// This only records the decision: the [`Shell`] closes the windows the app
+    /// opened first (their `unmounted`), then this one's, then ends the loop
+    /// (see `Shell::finish_quit`).
+    fn close_now(&mut self, _event_loop: &ActiveEventLoop) {
+        self.quit = true;
     }
 
     /// Answer a Back. `false` means there was nowhere to go and the app should
@@ -10123,7 +10129,12 @@ impl Shell {
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     fn close_child(&mut self, id: WindowId) {
         let Some(child) = self.children.remove(&id) else { return };
-        let app = self.windows.remove(&id);
+        let mut app = self.windows.remove(&id);
+        // Its context is destroyed as the main window's is: components'
+        // `unmounted` deepest first, then the document's.
+        if let Some(app) = app.as_mut() {
+            window_module::as_window(Some(id), || app.document.shut_down());
+        }
         let window = app.as_ref().and_then(|a| a.state.as_ref().map(|s| s.window.clone()));
         // What holds the window besides its own state, or it would not close.
         window_module::detach(id);
@@ -10140,6 +10151,54 @@ impl Shell {
                 }
             }
         }
+    }
+
+    /// A window decided to close the app. A child that did closes alone. The
+    /// main window's decision closes every window the app opened first (their
+    /// `unmounted`, a child's opener's after it, none asked their own
+    /// `@close`), then the main window's `unmounted`, then the loop ends.
+    fn finish_quit(&mut self, event_loop: &ActiveEventLoop) {
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        {
+            let quit: Vec<WindowId> =
+                self.children.keys().copied().filter(|id| self.windows.get(id).is_some_and(|a| a.quit)).collect();
+            for id in quit {
+                self.close_child(id);
+            }
+        }
+        if !self.main_app().is_some_and(|a| a.quit) {
+            return;
+        }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        {
+            // Deepest opener chain first, so a window opened by a child goes
+            // before the child.
+            let depth = |mut id: WindowId, children: &HashMap<WindowId, Child>| {
+                let mut n = 0;
+                while let Some(opener) = children.get(&id).and_then(|c| c.opener) {
+                    n += 1;
+                    id = opener;
+                    if n > 64 {
+                        break;
+                    }
+                }
+                n
+            };
+            let mut ids: Vec<WindowId> = self.children.keys().copied().collect();
+            ids.sort_by_key(|id| std::cmp::Reverse(depth(*id, &self.children)));
+            for id in ids {
+                // The opener is told nothing: the whole app is going.
+                if let Some(child) = self.children.get_mut(&id) {
+                    child.on_close = None;
+                }
+                self.close_child(id);
+            }
+        }
+        let id = self.main;
+        if let Some(app) = self.main_app() {
+            window_module::as_window(id, || app.document.shut_down());
+        }
+        event_loop.exit();
     }
 
     /// What every handler ends with: each window reads the native signals and
@@ -10224,6 +10283,7 @@ impl ApplicationHandler<RuxEvent> for Shell {
         self.seat();
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         self.serve(event_loop);
+        self.finish_quit(event_loop);
         self.after_event();
     }
 
@@ -10231,7 +10291,18 @@ impl ApplicationHandler<RuxEvent> for Shell {
         // A window the app opened closes on its own: the app goes on.
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         if matches!(event, WindowEvent::CloseRequested) && self.children.contains_key(&id) {
-            self.close_child(id);
+            // Its own `@close` may keep it (a `false`); the answer is drawn.
+            let app = self.windows.get_mut(&id);
+            let leave = app.map_or(true, |app| {
+                let leave = window_module::as_window(Some(id), || app.document.ask_close());
+                if !leave {
+                    app.request_redraw();
+                }
+                leave
+            });
+            if leave {
+                self.close_child(id);
+            }
             self.serve(event_loop);
             self.after_event();
             return;
@@ -10247,6 +10318,7 @@ impl ApplicationHandler<RuxEvent> for Shell {
         }
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         self.serve(event_loop);
+        self.finish_quit(event_loop);
         self.after_event();
     }
 
@@ -10269,6 +10341,7 @@ impl ApplicationHandler<RuxEvent> for Shell {
         self.each(|app| next = [next, app.tick(event_loop)].into_iter().flatten().min());
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         self.serve(event_loop);
+        self.finish_quit(event_loop);
         // What a window's clocks did may have written a store.
         self.after_event();
         match next {
