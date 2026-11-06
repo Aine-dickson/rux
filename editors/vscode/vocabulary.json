@@ -245,6 +245,7 @@
   ],
   "elementMethods": [
     { "name": "focus", "detail": "focus()", "doc": "Give this element keyboard focus. Recorded and applied **after the handler finishes**, so a handler that focuses something and then changes state does not race its own tree." },
+    { "name": "scrollBy", "detail": "scrollBy(dx, dy)", "doc": "Scroll this box by `dx` and `dy` logical pixels, clamped to what it can scroll. On an element that does not scroll, the box it is in. Applied after the handler, like the rest: the way to scroll a list from `@dragmove` when the pointer nears its edge." },
     { "name": "scrollIntoView", "detail": "scrollIntoView()", "doc": "Scroll whichever box scrolls until this element is visible. Applied after the handler, like the rest." },
     { "name": "tap", "detail": "tap()", "doc": "Tap this element as though a finger had. This is how a `mounted` hook drives the document, and how most of the lifecycle was verified." },
     { "name": "setSelectionRange", "detail": "setSelectionRange(start, end)", "doc": "Select characters `start` to `end` of a text field, the caret at `end`, and give it focus. Equal numbers put the caret there." },

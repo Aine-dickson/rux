@@ -39,7 +39,7 @@ pub const METHODS: &[&str] = &[
     "toUpperCase", "to_upper", "toLowerCase", "to_lower", "make_upper", "make_lower", "startsWith", "starts_with",
     "endsWith", "ends_with", "repeat", "charAt", "substring", "sub_string", "split", "chars", "to_chars", "replace",
     "pad", "to_int", "trunc", "floor", "ceil", "ceiling", "round", "to_float", "toFloat", "sqrt", "abs", "is_nan",
-    "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "tap", "play", "pause",
+    "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "scrollBy", "tap", "play", "pause",
     "setSelectionRange", "insertText", "clearHistory", "call", "set",
     "concat", "flat", "flatMap", "findLast", "findLastIndex", "lastIndexOf", "at", "fill", "toReversed", "toSorted",
     "unshift", "replaceAll", "padStart", "padEnd", "trimStart", "trimEnd", "toFixed",
@@ -101,6 +101,22 @@ fn bounds(len: usize, start: f64, end: Option<f64>) -> (usize, usize) {
     let from = resolve(start);
     let to = end.map_or(len, resolve);
     (from, to.max(from))
+}
+
+/// `el.scrollBy(dx, dy)`: queue the action, or fail when an argument is not a
+/// number. A function of its own, and not inlined, for the reason above.
+#[inline(never)]
+fn scroll_by(path: Vec<usize>, argv: &[V]) -> R<Option<V>> {
+    let by = |v: &V| match v {
+        V::Int(i) => Some(*i as f32),
+        V::Float(f) if f.is_finite() => Some(*f as f32),
+        _ => None,
+    };
+    let (Some(dx), Some(dy)) = (by(&argv[0]), by(&argv[1])) else {
+        return fail("scrollBy takes two numbers: `el.scrollBy(dx, dy)`");
+    };
+    crate::ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::ScrollBy(path, dx, dy)));
+    Ok(Some(V::None))
 }
 
 /// A whole-number answer where the type says `int`: an `int` in stays one.
@@ -1086,6 +1102,10 @@ impl Interp {
                 let action = match (name, n) {
                     ("focus", 0) => ElementAction::Focus(path),
                     ("scrollIntoView", 0) => ElementAction::ScrollIntoView(path),
+                    // Nothing else here: a debug build gives every arm its own
+                    // locals, and this function's frame is the one `rux check`
+                    // overflowed on (watchlist #41).
+                    ("scrollBy", 2) => return scroll_by(path, argv),
                     ("tap", 0) => ElementAction::Tap(path),
                     ("play", 0) => ElementAction::Play(path),
                     ("pause", 0) => ElementAction::Pause(path),

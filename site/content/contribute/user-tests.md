@@ -3498,6 +3498,7 @@ with real mouse and keyboard input and screenshots.
 | The slot, by the pointer's height | in the other list: above the first row, between two, below the last | `index` 0, 1, 2 | pass, in the shell's tests (a column, a row, a wrapping run, with the dragged item left out); driven for between two rows |
 | A section into itself, nested targets, groups | | the deepest accepting target wins; never one inside the dragged source; another group is refused | pass, in the shell's tests; **not driven** |
 | Drop on an empty list | drag the last row out of a list, then back | the empty list takes it at 0 | **not driven** |
+| `scrollBy` | a button calls `query("#s")[0].scrollBy(0, 60)` on a 160 px scroller, twice | the list scrolls 60 px each time | desktop: pass (probe `rux-harness\ms010-scroll`); the edge-of-list drag use is **not driven** |
 | Touch: handle, and a long press without one | | the handle picks up at once; without one, half a second still; a scroll still scrolls | **not driven**: no touch hardware in this run |
 | A box over a source | a menu over a row, press | the row is not picked up | **not driven** |
 | Web, Android, macOS, Linux | | the same | **not driven** |

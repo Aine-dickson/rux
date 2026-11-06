@@ -122,28 +122,26 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
   whose `transition` names `transform` slides when it moves
   (`LayoutState::set_nudges`, `crates/rux-shell/src/slides.rs`). Driven on
   Windows (`rux-harness\ms010`).
-- **Step 2 built, driven on Windows, not yet committed when this was
-  written** (check `git log`): `drag-data`, `drag-group`, `drag-handle`,
-  `drop-group`, the seven events with one `DropEvent`, `:dragging` and
-  `:drag-over`. Geometry (what a press picks up, the target, the slot) is pure
-  and tested in `crates/rux-shell/src/dnd.rs`; the press and session state is
-  `dnd_session.rs`, hooked into `begin_gesture`, `move_gesture`, `end_gesture`,
-  the long-press deadline, Escape (`dispatch_key`) and touch cancel. The parser
-  tables, `rux check` rules (in `check_attribute_shapes`), vocab, docs
-  (`07-script.md` "Drag and drop", `10-types.md`, `08-user-tests.md`) and
-  `examples/sortable.rux` are written. Probe: `rux-harness\ms010-dnd`.
-  A target is any element with `drop-group` or an enter/over/leave/drop
-  handler (the plan said `@drop` required; live moves need only `@dragover`).
-  Spots are read from the Node tree and boxes from the last frame's metrics
-  (untransformed).
-- **Still to do:** `scrollBy` on an element (script has `scrollIntoView`
-  only; follow `ElementAction::ScrollIntoView` through `rux-script`,
-  `rux-runtime` `apply_element_actions`, and the shell's `take_reveals`), so
-  an author can scroll a list from `@dragmove` near its edge. Regenerate
-  `editors/vscode/vocabulary.json` with `rux vocab` (see
-  `scripts/dev-install.sh`), then `./site/sync-docs.sh` from Git Bash. Not
-  driven: touch, a box over a source, an empty target, web, macOS, Linux,
-  Android. Set MS-010's status in `docs/field-reports/mava-studio-2.md`.
+- **MS-010 is built and committed** (steps 1 and 2, `7c3edc3`, `d5c141e`; then
+  `scrollBy`). Rux ships primitives only: `drag-data`, `drag-group`,
+  `drag-handle`, `drop-group`, seven events with one `DropEvent`, `:dragging`,
+  `:drag-over`, `el.scrollBy(dx, dy)`, and keyed rows that slide
+  (`transition: transform`). Geometry is pure and tested in
+  `crates/rux-shell/src/dnd.rs`; press and session state is `dnd_session.rs`.
+  Driven on Windows only (`rux-harness\ms010`, `ms010-dnd`, `ms010-scroll`);
+  not driven: touch (handle pickup, long press), a box over a source, an empty
+  target, auto-scroll from `@dragmove`, web, macOS, Linux, Android. Spots are
+  read from the Node tree and boxes from the last frame's metrics
+  (untransformed). A target is any element with `drop-group` or an
+  enter/over/leave/drop handler (the plan said `@drop` required).
+- **`rux check` on the tasks scaffold is one frame from a stack overflow in a
+  debug build** (watchlist #41, `what_the_scaffold_writes_checks_clean`). It
+  tipped twice in MS-010: a field on `Node` (moved into `Style::rare`) and a
+  match arm in the interpreter's `method` (made a bare call to an `inline(never)`
+  fn). Also the recursive style builders. A debug build gives every match arm
+  its own locals. It passes alone and can fail under `--workspace`, so run
+  `cargo test --workspace --test new` after touching any of those. Worth
+  deciding: run `rux check` on a thread with a larger stack.
 - Python heredocs lose backslashes: use Edit for docs with Windows paths.
 
 ## Next action

@@ -404,6 +404,15 @@ fn check_handlers(
     }
 }
 
+thread_local! {
+    /// `scrollBy` requests the shell has not taken yet. Not a field of
+    /// [`Document`]: it is held by value on `rux check`'s recursion, whose
+    /// debug-build stack is spent (watchlist #41), and a request is made and
+    /// taken within one frame.
+    static PENDING_SCROLLS: std::cell::RefCell<Vec<(Vec<usize>, f32, f32)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
 /// The events the runtime actually dispatches, without the `@`.
 ///
 /// `tap` plus the seven in [`rux_layout::Gesture`]. Kept beside the check rather
@@ -5010,6 +5019,12 @@ impl Document {
         std::mem::take(&mut self.pending_reveals)
     }
 
+    /// Take the `scrollBy` requests the last handler made: the element's path
+    /// and how far to scroll it.
+    pub fn take_scrolls(&mut self) -> Vec<(Vec<usize>, f32, f32)> {
+        PENDING_SCROLLS.with(|p| std::mem::take(&mut *p.borrow_mut()))
+    }
+
     /// Take the `tap()` requests the last handler made.
     ///
     /// The shell's, because a press is an interaction and the shell owns those:
@@ -5164,6 +5179,10 @@ impl Document {
                 }
                 rux_script::ElementAction::ScrollIntoView(path) => {
                     self.pending_reveals.push(path);
+                    acted = true;
+                }
+                rux_script::ElementAction::ScrollBy(path, dx, dy) => {
+                    PENDING_SCROLLS.with(|p| p.borrow_mut().push((path, dx, dy)));
                     acted = true;
                 }
                 // Handed to the shell rather than run here. Running the
@@ -12731,6 +12750,23 @@ async fn go() {
         let reveals = doc.take_reveals();
         assert_eq!(reveals.len(), 1, "the element is queued");
         assert!(doc.take_reveals().is_empty(), "and taking it empties the queue");
+    }
+
+    /// `scrollBy(dx, dy)` is the shell's too: it queues the element and how far.
+    /// Whole numbers and floats both count, and anything else is refused.
+    #[test]
+    fn scroll_by_is_queued_for_the_shell() {
+        let mut doc = Document::from_source(
+            r#"<template><screen><view id="list"></view></screen></template>"#,
+        )
+        .unwrap();
+        assert!(doc.take_scrolls().is_empty());
+
+        doc.apply_handler("query(\"#list\")[0].scrollBy(0, 12.5)");
+        let scrolls = doc.take_scrolls();
+        assert_eq!(scrolls.len(), 1, "{scrolls:?}");
+        assert_eq!((scrolls[0].1, scrolls[0].2), (0.0, 12.5));
+        assert!(doc.take_scrolls().is_empty(), "and taking it empties the queue");
     }
 
     // ── Handlers are compiled at load ───────────────────────────────────────

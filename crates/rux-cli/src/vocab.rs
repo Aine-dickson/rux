@@ -586,6 +586,7 @@ const ELEMENT_PROPERTIES: &[Entry] = &[
 /// The actions on an element handle. Each returns nothing.
 const ELEMENT_METHODS: &[Entry] = &[
     Entry { name: "focus", detail: "focus()", doc: "Give this element keyboard focus. Recorded and applied **after the handler finishes**, so a handler that focuses something and then changes state does not race its own tree." },
+    Entry { name: "scrollBy", detail: "scrollBy(dx, dy)", doc: "Scroll this box by `dx` and `dy` logical pixels, clamped to what it can scroll. On an element that does not scroll, the box it is in. Applied after the handler, like the rest: the way to scroll a list from `@dragmove` when the pointer nears its edge." },
     Entry { name: "scrollIntoView", detail: "scrollIntoView()", doc: "Scroll whichever box scrolls until this element is visible. Applied after the handler, like the rest." },
     Entry { name: "tap", detail: "tap()", doc: "Tap this element as though a finger had. This is how a `mounted` hook drives the document, and how most of the lifecycle was verified." },
     Entry { name: "setSelectionRange", detail: "setSelectionRange(start, end)", doc: "Select characters `start` to `end` of a text field, the caret at `end`, and give it focus. Equal numbers put the caret there." },

@@ -1302,6 +1302,9 @@ pub enum ElementAction {
     Blur,
     /// Scroll whatever scroller contains this element until it is visible.
     ScrollIntoView(Vec<usize>),
+    /// Scroll this element, which is the scroller, by `(dx, dy)` logical px.
+    /// An element that does not scroll scrolls the one it is in.
+    ScrollBy(Vec<usize>, f32, f32),
     /// Press this element as a finger would.
     ///
     /// Deliberately the *whole* gesture rather than "run its `@tap` body": a

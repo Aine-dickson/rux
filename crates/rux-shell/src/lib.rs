@@ -8021,6 +8021,26 @@ impl App {
         // after `set_metrics` so a reveal asked for by the handler that just ran
         // is resolved against the frame it was looking at.
         let mut revealed = false;
+        // `scrollBy(dx, dy)`: the element is the scroller. One that does not
+        // scroll hands it to the scroller it is in, as a wheel over it would.
+        for (path, dx, dy) in document.take_scrolls() {
+            let Some(m) = layout.metrics.iter().find(|e| *e.path == path[..]) else { continue };
+            let same = |r: &rux_layout::ScrollRegion| {
+                (r.x - m.x).abs() < 0.5 && (r.y - m.y).abs() < 0.5 && (r.width - m.width).abs() < 0.5
+            };
+            let region = layout
+                .scrolls
+                .iter()
+                .find(|r| same(r) && (r.height - m.height).abs() < 0.5)
+                .or_else(|| m.scroll.and_then(|id| layout.scrolls.get(id)));
+            let Some(region) = region else { continue };
+            if let Some(off) = offsets.get_mut(region.id) {
+                off.x += dx;
+                off.y += dy;
+                *off = off.clamp_to(region.max);
+                revealed = true;
+            }
+        }
         for path in document.take_reveals() {
             // An element inside a box whose contents `content-visibility`
             // skipped has no box of its own this frame: the box standing in

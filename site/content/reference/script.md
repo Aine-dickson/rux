@@ -527,7 +527,9 @@ it in `@dragend` when `event.dropped` is false. **To move it only on a drop**,
 do it in `@drop`, and draw the gap from `index` in `@dragover` if one is wanted.
 **The copy under the pointer** is a box of the app's own, `position: fixed` and
 `pointer-events: none`, put at `event.pageX` and `event.pageY` by `@dragmove`.
-**A row sliding aside** is a keyed row's `transition: transform` (see "A keyed
+**Scrolling a list when the pointer nears its edge** is `scrollBy` from
+`@dragmove`: Rux does not scroll for a drag, since how fast and how near are the
+app's. **A row sliding aside** is a keyed row's `transition: transform` (see "A keyed
 row slides when it moves" in [as built](/reference/)). Driven in
 `examples/sortable.rux`.
 
@@ -1556,6 +1558,7 @@ state, and the next build produces the tree it would have produced anyway.
 | `el.focus()` | Puts the caret in a text input |
 | `blur()` | Drops focus entirely |
 | `el.scrollIntoView()` | Scrolls the containing scroller until it is visible |
+| `el.scrollBy(dx, dy)` | Scrolls this box by that many logical pixels, clamped to what it can scroll; an element that does not scroll hands it to the box it is in |
 | `el.setSelectionRange(start, end)` | Selects characters `start` to `end` of a text field, the caret at `end`, and gives it focus |
 | `el.insertText(text)` | Replaces a text field's selection with `text` as typing would: one undo step, `@input` after it, the caret after the text |
 | `el.clearHistory()` | Forgets a text field's undo and redo; its text and focus stay as they are |
