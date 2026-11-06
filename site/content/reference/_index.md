@@ -1430,7 +1430,8 @@ the order and the reasons.
 - **A capability model for native code.** A native module has full trust.
 - **Drag and drop** of elements. `@tap` and the gesture events are the
   vocabulary; dragging selected text inside a field is built.
-- **Multiple windows.**
+- **Multiple windows on Android and the web.** `window.open` is desktop only
+  (`window.canOpen`); see `07-script`.
 - **CSS left out:** table properties, `writing-mode`, `column-span`, and
   `user-select` on static text outside a field.
 

@@ -308,10 +308,12 @@ these that layout never reads: only paint does, and paint knows the box. So
 a circle. It works on the corner longhands too, and a longhand in px after a
 shorthand in `%` replaces that corner in both units.
 
-A percentage resolves against the **shorter side**, not per axis. Rux draws
-circular corners (one radius per corner), so `50%` on a 160x60 box is a pill of
-radius 30 rather than the ellipse CSS would draw. On a square the two agree
-exactly, and the pill is what someone writing `50%` on a button is after.
+A percentage is of the width across and of the height down, as in CSS, so `50%`
+on a 160x60 box is an ellipse with radii 80 and 30. `border-radius: 10px / 20px`
+and a longhand with two values (`border-top-left-radius: 30px 10px`) give each
+corner its own horizontal and vertical radius. Not yet drawn exactly: an outer
+`box-shadow` on an elliptical corner uses the shorter radius, and `transition` of
+`border-radius` moves the horizontal radii only.
 
 `border-radius: 9999px` still works and still means "as round as it goes", since
 a radius larger than the box is clamped to it. That is what the runtime itself

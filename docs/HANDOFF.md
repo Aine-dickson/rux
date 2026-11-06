@@ -85,9 +85,9 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   `docs/08-user-tests.md`. Known gaps: the drawn buttons have no accessibility
   nodes; `min-width`/`min-height` count the caption's height on Windows.
   Probe and driver: `C:\Users\USER\Mobile\rux-harness\titlebar-overlay`.
-- **Child windows (roadmap item 8): designed and approved 2026-11-06, steps 1
-  to 4 built (`db718e2`, `2965f9f`, `c596d7f`, `ba53f85`, `0097020`, and 4d).** Plan: `C:\Users\USER\.claude\plans\optimized-shimmying-aho.md`
-  (copy to `docs/archive/child-windows-plan.md` when done). Owner's choices:
+- **Child windows (roadmap item 8): built 2026-11-06, steps 1 to 6
+  (`db718e2` to `cd746f1`, then the docs commit).** Docs: `07-script` "Other windows". Plan: `C:\Users\USER\.claude\plans\optimized-shimmying-aho.md`
+  (copied to `docs/archive/child-windows-plan.md`). Owner's choices:
   `window.open(path, options)` opens a `.rux` file as its own document; stores
   are process-wide; the opener passes `props`; `close()` in a child closes that
   child; the handle has `close()`, `focus()`, `isOpen`, and `onClose` in the
@@ -155,19 +155,14 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
     `onClose` when the opener is itself a child, a child with `titleBar:
     "overlay"` or `decorations: false`, Android and web (`canOpen` is `false`,
     `open` throws `unsupported`; not compiled here).
-  - **Next**: (5) closing: the child's `@close` (a `false` keeps it) and
-    `unmounted` on `close_child` (it drops the `App` without `shut_down`);
-    the main window closing (button, Alt+F4, `close()`): `@close` of the main
-    decides, then every child's `unmounted`, then the main's, then exit
-    (`close_now` still `event_loop.exit()`s with the children simply dying).
-    Children are not asked their own `@close`. A child opens at the OS's
-    default place (the first at 0,0), not over its opener. Check the
-    broadcast `Answered`: `settle_tasks` per document should take only its own
-    task answers (`collect_answers` is per engine, but two documents with
-    pending tasks were not driven). (6) docs (`docs/05-as-built.md`,
-    `07-script.md`, roadmap item 8, user-tests and author-note rows: the two
-    traps are init side effects running per window and opening twice giving
-    two windows), then `./site/sync-docs.sh`.
+  - **Done (5)**: a child's X asks its own `@close` (`false` keeps it); `close_child` runs
+    `shut_down` first. `App::close_now` only sets `App::quit`; `Shell::finish_quit` (end of
+    every handler) closes a child that set it, or for the main closes every child (deepest
+    opener chain first, no `onClose`), then the main's `shut_down`, then exits. Driven:
+    kept by `@close`, closed with `unmounted`, main close runs child then main (log order).
+    `settle_tasks` is per engine, read not driven with two pending tasks. A child opens at
+    the OS's default place, not over its opener (not changed).
+  - **Done (6)**: docs, user-tests and author-notes rows, `sync-docs.sh` run.
   - **Decided (owner, 2026-11-06)**: when the main window closes, every child
     closes with it and its context is destroyed as the main's is: components'
     `unmounted` deepest first, then the document's; children are not asked
@@ -243,8 +238,7 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 One item left, in its own session on Opus plan mode (it sets design):
 
-1. **Child windows**, step 5 (closing) onward; see the
-   child windows entry above. The syntax is settled.
+1. ~~Child windows~~ done (steps 1 to 6).
 2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,
    two-value longhands; drawn by an elliptical path in `rux-paint`
    (`rounded_rect` takes `radius_y`). Driven in no window yet; tests only.

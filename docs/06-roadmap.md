@@ -69,10 +69,9 @@ does.
    web; elsewhere `@error` fires with `kind` `"unsupported"`.
 7. **The 0.9 publish**, including `rux-native`, `rux-native-macros` and
    `rux-bindgen`.
-8. **Child windows.** An app spawning a second window from script. A design
-   question first: whether it shares the document's state, how it is opened
-   and closed, and what `window` then means. Asked for 2026-11-06; needs its
-   own plan.
+8. **Child windows: built 2026-11-06** (`window.open`, see `07-script`). Driven
+   on Windows only; macOS and Linux are not driven, and Android and the web
+   have no child windows.
 
 ## CSS left out, each needing a decision
 
@@ -156,8 +155,6 @@ and the environment struct already carries safe areas, density and orientation.
 - **`docs/03-guide.md` should be deleted.** It opens by saying it does not work
   as written and is excluded from the site build; `/learn` covers the same
   ground against the runtime that exists.
-- **Multiple windows.** No demand has appeared, and it is a large change to the
-  shell.
 
 ## Decisions that still bind
 

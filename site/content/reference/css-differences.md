@@ -14,7 +14,6 @@ window. So this list is short on purpose, and each entry says why it exists.
 
 | Difference | Why |
 |---|---|
-| `border-radius` in percent resolves against the **shorter side**, so `50%` on a 160x60 box is a pill and not CSS's ellipse | Rux draws one radius per corner and cannot draw an elliptical corner |
 | No `display: inline` or `inline-block`: two `<text>` siblings stack, and a line holds only words, nested `<text>`, `<image>` and `<path>` | inline flow is built for text (a `<text>` inside a `<text>`), not for boxes with their own layout |
 
 Defaults are CSS's: `display` is `block`, `flex: 1` means `1 1 0%`, a flex

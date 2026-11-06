@@ -287,6 +287,66 @@ keeps its ordinary title bar and `env(titlebar-area-*)` is undefined, so each
 use takes its fallback, as in CSS. `title-bar = "overlay"` and
 `decorations = false` together are refused.
 
+## Other windows
+
+**`window.open(path, options)`** opens a `.rux` file as a window of its own and
+returns a `Window`. `path` is read from the app's folder (where `rux.toml` is),
+and the file's root must be a `<screen>`. `window.canOpen` is `false` on Android
+and the web, where `open` throws `unsupported`.
+
+```rux
+<script>
+use stores::project;
+use type native::rux::window::Window;
+let inspector: Window? = signal(none);
+fn inspect() {
+  inspector = window.open("windows/inspector.rux", {
+    title: "Inspector", width: 360, height: 300,
+    props: { id: 7 },
+    onClose: () => { inspector = none; }
+  });
+}
+</script>
+```
+
+The options are `title`, `width`, `height`, `minWidth`, `minHeight`,
+`maximized`, `decorations`, `titleBar`, `resizable`, `owned`, `props` and
+`onClose`; a name that is not one throws kind `option`. `rux check` reads a
+`window.open` whose path is written out: the file must exist, `props` must name
+and type the file's `prop`s, and the options must be known. A path built at run
+time is only a warning.
+
+The `Window` has `close()`, `focus()` and `isOpen`, which follows the window
+however it closed. `onClose` runs in the window that opened it, after the
+window is gone. The closure is an arrow, `() => { ... }`.
+
+**What a new window shares, and what it does not.** Stores (`use stores::...`)
+are one set for the whole app: a store changed in one window repaints the
+others. Everything else is the window's own: its signals, its `window.*`
+(`window.maximized`, `window.minimize()` and the rest mean the window the code
+runs in), its focus and its scroll. Props are how the opener hands a value over;
+they arrive as `let`s at the top of the child's `<script>`.
+
+A window is **owned by the one that opened it**, so it stays above it and goes
+with it when it is minimized. `owned: false` gives it a taskbar button of its
+own.
+
+**Closing.** The title-bar button asks the child's own `@close`; a `false` keeps
+it open. `w.close()` from the opener and `close()` inside the child have
+decided, so nothing is asked. Either way the child's components' `unmounted`
+run, deepest first, then the document's. Closing the main window (its `@close`
+decides) closes every other window with it: each one's `unmounted` runs, a window
+opened by another before the one that opened it, none of them asked their own
+`@close`, and then the main window's.
+
+Two things to know before using it:
+
+- A store file's top-level code runs **once per window** that uses the store, so
+  a side effect there (a request, a print) repeats. Put one-time work in a
+  function the opener calls.
+- Calling `window.open` twice opens **two windows**. Keep the handle in a signal
+  and test `isOpen`, or `focus()` the one that is there.
+
 ## Keys
 
 **`@key`** runs when a key is pressed while focus is on the element or inside

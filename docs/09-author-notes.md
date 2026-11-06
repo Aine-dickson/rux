@@ -132,6 +132,8 @@ Found by a user asking a question rather than hitting a bug: *would the keyboard
 | **A text field under `pointer-events: none` still takes a tap** | `pointer-events: none` lets taps pass through ordinary boxes, but a text field inside one still answers the tap and takes focus. In a browser the field would not hear it. Left alone for now because changing how a field is hit risked keyboard focus. Until it is fixed, disable the field (or leave it out) rather than relying on `pointer-events: none` to make it inert | `/reference/css/` beside `pointer-events` | **fixed 2026-10-22** with the one above: a press reaches a field only when the field, or what it draws, is the topmost box there (watchlist #47). Tab still reaches it |
 
 ---
+| **A store file's top-level code runs once per window** | Stores are shared by every window, but each window loads the store file itself, so a side effect at the top of one (a request, a print, a write) happens once for each window that uses it. Right, since a window is a document of its own | `/reference/script/` beside `window.open` | documented, open |
+| **Calling `window.open` twice opens two windows** | Nothing remembers an earlier call: each is a new window with its own handle. Right, since two inspectors may be wanted. An app that wants one keeps the handle in a signal and checks `isOpen`, or calls `focus()` | `/reference/script/` beside `window.open` | documented |
 
 ## The pattern worth noticing
 

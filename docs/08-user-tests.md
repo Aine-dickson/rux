@@ -3496,6 +3496,27 @@ with real mouse and keyboard input and screenshots.
 | A box over a source | a menu over a row, press | the row is not picked up | **not driven** |
 | Web, Android, macOS, Linux | | the same | **not driven** |
 
+## Child windows, 2026-11-06
+
+Steps 3 to 5. Driven on the Windows 11 desktop with the project
+`C:\Users\USER\Mobile\rux-harness\child-windows` (`start.ps1`, `act*.ps1`,
+`s5*.ps1`), real mouse input, and a `print` in each `unmounted`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Shared store | `+1` in either window | both show the same count | desktop: pass |
+| Props | open the inspector with `props: { id: 7 }` | `id: 7` | desktop: pass |
+| `window.*` is the window's own | toggle maximize in the child | only the child's `maximized` changes | desktop: pass |
+| `w.close()`, the child's X, `close()` in the child | each | only the child closes; `onClose` runs once | desktop: pass |
+| The child's `@close` | `@close` answers `false`, press X; then `true`, press X | the first keeps the window; the second closes it and its `unmounted` runs | desktop: pass |
+| The main window closes | open the child, press the main's X | the child's `unmounted`, then the main's, then the process exits | desktop: pass (log order) |
+| Owned and not owned | `owned: true`, `owned: false`, minimize the main | the owned child hides with it; the other has no owner | desktop: pass |
+| The taskbar button, macOS, Linux | | | **not driven** |
+| A child's hot reload; a load failure on the overlay | | | **not driven** |
+| `onClose` when the opener is itself a child; `titleBar: "overlay"` or `decorations: false` in a child | | | **not driven** |
+| Two documents with tasks waiting at once | | each takes its own answers | read in the code (`collect_answers` is per engine); **not driven** |
+| Android and the web | `window.canOpen` | `false`; `open` throws `unsupported` | **not driven** (not compiled here) |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
