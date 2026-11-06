@@ -141,6 +141,7 @@ Found by a user asking a question rather than hitting a bug: *would the keyboard
 ---
 | **A store file's top-level code runs once per window** | Stores are shared by every window, but each window loads the store file itself, so a side effect at the top of one (a request, a print, a write) happens once for each window that uses it. Right, since a window is a document of its own | `/reference/script/` beside `window.open` | documented, open |
 | **Calling `window.open` twice opens two windows** | Nothing remembers an earlier call: each is a new window with its own handle. Right, since two inspectors may be wanted. An app that wants one keeps the handle in a signal and checks `isOpen`, or calls `focus()` | `/reference/script/` beside `window.open` | documented |
+| A component calls a `fn` its parent declared, and `rux check` warns | A component read on its own (which a bare `rux check` now does) cannot see the parent's functions, though the engine shares them at run time, so the call is a *warning* and not an error. A name it reads that is neither a `prop` nor its own is an error. | `docs/05-as-built.md` "What gets checked" | open |
 
 ## The pattern worth noticing
 

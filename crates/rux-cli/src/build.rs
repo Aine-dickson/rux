@@ -284,14 +284,9 @@ fn wrapper_manifest(
                 literal(&format!("{dir}/vendor/vello_encoding")),
             );
             if native.is_some() {
-                patch.push_str(&format!(
-                    "rux-native = {{ path = {} }}\n\
-                     rux-native-macros = {{ path = {} }}\n\
-                     rux-bindgen = {{ path = {} }}\n",
-                    literal(&format!("{dir}/crates/rux-native")),
-                    literal(&format!("{dir}/crates/rux-native-macros")),
-                    literal(&format!("{dir}/crates/rux-bindgen")),
-                ));
+                for (name, path) in crate::native::checkout_crates(Path::new(&dir)) {
+                    patch.push_str(&format!("{name} = {{ path = {} }}\n", literal(&path)));
+                }
             }
             patch
         }

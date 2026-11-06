@@ -155,6 +155,140 @@ pub fn declare_for(files: &[PathBuf]) -> Vec<crate::check::Diagnostic> {
     out
 }
 
+/// The crates of a Rux checkout that an app's `native/` crate depends on, as
+/// (crate name, path with `/` separators). A checkout's own `[patch]` never
+/// reaches a crate outside its workspace, and crates.io has no `-dev` version,
+/// so a build or a `cargo check` of the app's Rust names them itself. One list,
+/// so the wrapper in `build.rs` and `rux check --native` cannot drift apart.
+pub fn checkout_crates(checkout: &Path) -> Vec<(&'static str, String)> {
+    let dir = checkout.display().to_string().replace('\\', "/");
+    ["rux-native", "rux-native-macros", "rux-bindgen"]
+        .into_iter()
+        .map(|name| (name, format!("{dir}/crates/{name}")))
+        .collect()
+}
+
+/// `rux check --native`: run `cargo check` on the native crate of every project
+/// `files` belong to and report what `rustc` says as diagnostics, so the JSON
+/// output, `--deny-warnings` and the exit code treat the Rust like any other
+/// file. Slow, which is why it is asked for.
+pub fn cargo_check(files: &[PathBuf]) -> Vec<crate::check::Diagnostic> {
+    use crate::check::{Diagnostic, Severity};
+    let mut crates: Vec<NativeCrate> = Vec::new();
+    for file in files {
+        if let Some(c) = find_above(file) {
+            if !crates.iter().any(|seen| seen.dir == c.dir) {
+                crates.push(c);
+            }
+        }
+    }
+    if crates.is_empty() {
+        eprintln!("rux: --native: no native/ crate found, so there is no Rust to check");
+    }
+    let checkout = default_rux_source();
+    let mut out = Vec::new();
+    for c in crates {
+        let mut command = std::process::Command::new("cargo");
+        command.current_dir(&c.dir).args(["check", "--message-format=short", "--color", "never"]);
+        if let Some(checkout) = &checkout {
+            for (name, path) in checkout_crates(checkout) {
+                command.arg("--config").arg(format!("patch.crates-io.{name}.path={path:?}"));
+            }
+        }
+        let run = command.output();
+        let (code, stderr) = match run {
+            Ok(o) => (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stderr).into_owned()),
+            Err(e) => {
+                out.push(Diagnostic {
+                    file: c.dir.join("Cargo.toml"),
+                    line: None,
+                    column: None,
+                    severity: Severity::Error,
+                    message: format!("could not run cargo: {e}"),
+                });
+                continue;
+            }
+        };
+        let found: Vec<Diagnostic> = stderr.lines().filter_map(|l| parse_short(l, &c.dir)).collect();
+        let errors = found.iter().any(|d| d.severity == Severity::Error);
+        out.extend(found);
+        if code != 0 && !errors {
+            // Cargo failed before `rustc` had anything to say about a line:
+            // an unresolvable dependency, a broken manifest.
+            let why: Vec<&str> = stderr.lines().filter(|l| l.starts_with("error")).take(3).collect();
+            out.push(Diagnostic {
+                file: c.dir.join("Cargo.toml"),
+                line: None,
+                column: None,
+                severity: Severity::Error,
+                message: format!("`cargo check` failed: {}", if why.is_empty() { "see `cargo check` in native/".to_string() } else { why.join(" / ") }),
+            });
+        }
+    }
+    out
+}
+
+/// One line of `cargo check --message-format=short`:
+/// `src/shop.rs:10:5: error[E0308]: mismatched types`. Lines with no position
+/// (`error: could not compile`, `warning: 1 warning emitted`) are not findings
+/// in a file and give `None`. The path is read from the right, because on
+/// Windows it can hold a `C:`.
+fn parse_short(line: &str, crate_dir: &Path) -> Option<crate::check::Diagnostic> {
+    use crate::check::{Diagnostic, Severity};
+    let at = [": error", ": warning"].iter().filter_map(|m| line.find(m)).min()?;
+    let mut place = line[..at].rsplitn(3, ':');
+    let column: usize = place.next()?.parse().ok()?;
+    let row: usize = place.next()?.parse().ok()?;
+    let path = place.next()?;
+    let rest = &line[at + 2..];
+    let severity = if rest.starts_with("error") { Severity::Error } else { Severity::Warning };
+    let message = rest.split_once(": ")?.1.trim().to_string();
+    let path = Path::new(path);
+    let file = if path.is_absolute() { path.to_path_buf() } else { crate_dir.join(path) };
+    Some(Diagnostic { file, line: Some(row), column: Some(column), severity, message })
+}
+
+#[cfg(test)]
+mod cargo_tests {
+    use super::*;
+    use crate::check::Severity;
+
+    #[test]
+    fn a_short_error_is_located_in_the_crate() {
+        let d = parse_short("src/shop.rs:10:5: error[E0308]: mismatched types", Path::new("app/native")).unwrap();
+        assert_eq!(d.file, Path::new("app/native").join("src/shop.rs"));
+        assert_eq!((d.line, d.column, d.severity), (Some(10), Some(5), Severity::Error));
+        assert_eq!(d.message, "mismatched types");
+    }
+
+    #[test]
+    fn a_warning_and_an_absolute_windows_path_are_read() {
+        let d = parse_short(r"C:\work\app\native\src\lib.rs:3:9: warning: unused variable: `x`", Path::new("n")).unwrap();
+        assert_eq!(d.file, Path::new(r"C:\work\app\native\src\lib.rs"));
+        assert_eq!((d.line, d.severity), (Some(3), Severity::Warning));
+        assert_eq!(d.message, "unused variable: `x`");
+    }
+
+    #[test]
+    fn a_line_with_no_position_is_not_a_finding() {
+        for line in [
+            "error: could not compile `app-native` (lib) due to 1 previous error",
+            "warning: `app-native` (lib) generated 1 warning",
+            "    Checking app-native v0.1.0",
+            "",
+        ] {
+            assert!(parse_short(line, Path::new("n")).is_none(), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_checkout_crates_are_named_with_forward_slashes() {
+        let list = checkout_crates(Path::new(r"C:\rux"));
+        assert_eq!(list[0], ("rux-native", "C:/rux/crates/rux-native".to_string()));
+        assert_eq!(list.len(), 3);
+    }
+}
+
 /// The dependency line the wrapper crate gets for the native crate.
 pub fn dependency(c: &NativeCrate) -> String {
     let dir = c.dir.display().to_string().replace('\\', "/");

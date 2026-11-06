@@ -348,16 +348,29 @@ from, as `a.rux:4: error: ...`.
 
 ### What gets checked, and through what
 
-Walking a directory **skips components**, and a component is a file that
-something else in the project writes as a tag. A component's `{{ prop }}`
-values come from whoever uses it, so loading one on its own has nothing to
-show for them. Naming one explicitly checks it anyway, since that was asked for
-on purpose. Its declared props say nothing there, being owed by a caller, and
-a name it reads without declaring is a warning rather than an error, because
-the document that uses the component is not loaded.
+A bare `rux check` walks the project (the folder with `rux.toml`, found from
+the current directory upward) and reads **every `.rux` file**, except `target/`,
+`node_modules/`, `locks/`, `dist/` and `native/`. Each is checked in its own
+context.
 
-What decides whether a file is a component is whether something imports it,
-not its root tag: a page under a router has a `<view>` root and is checked.
+**A component is checked on its own**, the way Vue's tooling checks a
+single-file component. What its `prop`s declare is what its template may use: a
+declared prop is owed by a caller and says nothing (it keeps its declared type),
+and any other name it reads is an error. A call to a `fn` it does not declare is
+only a warning, because the engine shares a parent's functions into a component.
+A `<slot>` or `<router-view />` in a component is not reported as stray, since
+the caller fills it. What decides whether a file is a component is whether
+something imports it, not its root tag.
+
+**A store is a script with a scope**, and is checked whether or not anything
+imports it. The same finding reached two ways (a component alone and through its
+caller) is reported once, worded as the component's own read words it.
+
+`rux check` owns the seam to `native/`: the module a `use native::x` names must
+exist, calls match the exported signatures' arity and types, and `use type
+native::...` must resolve. The Rust bodies are left to `rustc`.
+`rux check --native` also runs `cargo check` on `native/`, off by default and
+with a warning first that it can take several minutes.
 
 **Pages are checked through the document that routes to them.** A router builds
 the matching route and nothing else, so loading a document reaches exactly one

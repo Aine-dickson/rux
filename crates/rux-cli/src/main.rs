@@ -92,6 +92,9 @@ Check options:
   --types                    With --format json: also the types the checker
                              worked out, for hover and completion
   --deny-warnings            Exit non-zero on warnings as well as errors
+  --native                   Also run `cargo check` on the app's native/ crate,
+                             to check the Rust bodies. Can take several minutes,
+                             so it is off unless asked for
 
 Build options:
   --release                  Embed the documents, so the artifact carries
@@ -457,12 +460,13 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
 }
 
 fn check(args: &[String]) -> i32 {
-    let mut options = check::Options { paths: Vec::new(), json: false, types: false, deny_warnings: false };
+    let mut options = check::Options { paths: Vec::new(), json: false, types: false, deny_warnings: false, native: false };
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
             "--deny-warnings" => options.deny_warnings = true,
             "--types" => options.types = true,
+            "--native" => options.native = true,
             "--format" => match rest.next().map(String::as_str) {
                 Some("json") => options.json = true,
                 Some("text") => options.json = false,

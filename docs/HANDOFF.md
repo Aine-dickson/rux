@@ -236,21 +236,23 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next sessions (owner's decisions, 2026-11-06; each its own Opus plan session, then Sonnet builds)
 
-1. **`rux check` checks every `.rux` file under the root** (the folder with `rux.toml`),
-   not just what the routes reach: components, pages, stores and the rest, each by
-   its own context. A component is checked alone (what its props declare is what
-   its template may use; today it is skipped with "name one to check it on its
-   own"). A store is only a script, but its scope still catches what is wrong in
-   it. A page is checked by itself as a file that must be written right: a wrong
-   component import, a misused type, an unknown name. The owner's reference:
-   how Vue's tooling checks a single-file component alone. Plan first: how a
-   required prop is satisfied when nothing calls the component, and whether
-   `locks/` is skipped (generated). Native: `rux check` owns the seam (the
-   module a `use native::x` names exists; calls match the exported signatures'
-   arity and types; `use type native::...` resolves) and leaves the Rust bodies to
-   `rustc`, with an opt-in `--native` (owner approved) that runs `cargo check` on
-   `native/`. It is off by default and prints a warning first that it can take
-   several minutes, so the author runs it knowingly. Confirm the seam is already checked before adding to it.
+1. ~~`rux check` checks every `.rux` file~~ **done 2026-11-06** (plan:
+   `C:\Users\USER\.claude\plans\valiant-kindling-tulip.md`). A bare `rux check` walks the
+   `rux.toml` folder from any subfolder (skips `target`, `node_modules`, `locks`, `dist`,
+   `native`). A component is read on its own: a declared prop is owed and keeps its type,
+   any other undefined name is an **error** (`level_for` in `rux-script`), an unresolvable
+   call stays a warning, and `<slot>` and `<router-view />` are not reported as stray in a
+   file with a caller. A routed page is dropped from the list and reached through the
+   entry. Findings seen two ways print once, and a caller's wording of a component's own
+   mistake is left to the component's own read. In a folder with no `app.rux` a component
+   resolves `use` from the folder the walk started in (`rux_runtime::set_loose_root`), so
+   `rux check examples/components` alone cannot find `stores/`. The native seam is tested
+   end to end (`the_native_seam` in `tests/check.rs`; no gap found). `rux check --native`
+   runs `cargo check` on `native/` (`native::cargo_check`; the patch list for a `-dev` CLI
+   is `native::checkout_crates`, shared with `build.rs`); its e2e test is `#[ignore]`
+   (`cargo test -p ruxlang --test check -- --ignored`) and was driven by hand too.
+   Found, not fixed: a method call on an `int` (`n.trim()`) in a template is not
+   type-checked.
 2. **`rux new` asks whether to include a router.** Both a prompt and a flag; the
    flag skips the prompt (prompt only when stdin is a terminal, as the name is).
    `pages/`, `stores/` and the rest are settled and independent of this. Opting
@@ -260,7 +262,8 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next action
 
-One item left, in its own session on Opus plan mode (it sets design):
+Next: item 2 under "Next sessions" (the router prompt for `rux new`), in its own Opus-plan
+session. The older list follows:
 
 1. ~~Child windows~~ done (steps 1 to 6).
 2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,

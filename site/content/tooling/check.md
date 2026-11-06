@@ -39,22 +39,21 @@ a false `r-if` is where a broken handler hides longest.
 It is syntax only. A handler naming an `r-for` local or a component's own state
 is fine, because those are runtime lookups and not compile errors.
 
-## Walking a directory skips components
+## Every file is checked, each in its own context
 
-A component's `{{ prop }}` values come from whoever uses it, so loading one on
-its own would report every prop as undefined. A component is a file that
-something else in the project writes as a tag, and those are skipped when
-walking.
+A bare `rux check` reads every `.rux` file in the project, from any folder in
+it. The folder is the one with `rux.toml`; `target/`, `node_modules/`, `locks/`,
+`dist/` and `native/` are left out.
 
-Naming a component explicitly checks it anyway, because that was asked for on
-purpose, and there its undeclared names are warnings rather than errors:
+A **component** is checked on its own. What its `prop`s declare is what its
+template may use: a declared prop is owed by whoever uses the component, keeps
+the type it was declared with, and says nothing, while any other name it reads is
+an error. A **store** is checked as the script it is, whether or not anything
+imports it.
 
 ```bash
-rux check components/task.rux
+rux check components/task.rux   # or just one of them
 ```
-
-A file that nothing uses is a document and is checked like one. Nobody can
-supply a name it never declares, so a name it never declares is wrong.
 
 ## Pages are checked through the app
 
