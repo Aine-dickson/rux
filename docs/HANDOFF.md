@@ -110,10 +110,31 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   - Two doc statements rest on one grep only: slider arrow keys, a drawn desktop
     date picker and dropping a file on the input are listed as not built.
 
+## MS-010 in progress (2026-11-06)
+
+Plan approved by the owner: `C:\Users\USER\.claude\plans\twinkly-floating-pebble.md`
+(copied to `docs/archive/ms010-drag-drop-plan.md`). **Owner rule: Rux ships primitives, not
+effects.** So there is no shell-drawn drag copy and no auto-scroll feature: the
+author draws the copy from `@dragmove` (every pointer move) and scrolls with a
+`scrollBy` call (not built; script has `scrollIntoView` only).
+
+- **Step 1 done and committed** (`7c3edc3`, docs `22b68fb`): a keyed `r-for` row
+  whose `transition` names `transform` slides when it moves
+  (`LayoutState::set_nudges`, `crates/rux-shell/src/slides.rs`). Driven on
+  Windows (`rux-harness\ms010`).
+- **Step 2 next:** `:drag-data`, `drag-group`, `drag-handle`, `drop-group`;
+  `@dragstart/@dragmove/@dragenter/@dragover/@dragleave/@drop/@dragend` with
+  one `DropEvent` type; `:dragging` and `:drag-over`; slot rule and nested
+  targets as pure functions in `rux-layout` with unit tests; the shell's
+  `DragDrop` state beside `GesturePress` (`begin_gesture`/`move_gesture`/
+  `end_gesture`, `crates/rux-shell/src/lib.rs` near 4628). Follow `66b4536`
+  for where a new event touches the tree. Then `scrollBy`, checks, vocab,
+  `examples/sortable.rux`, docs, drive `rux-harness\ms010`.
+- Python heredocs lose backslashes: use Edit for docs with Windows paths.
+
 ## Next action
 
-MS-010 (drag and drop between containers) in a session on Opus plan mode: its
-design sets how drag works in general. Then child windows. After that, decide
+MS-010 step 2 (above), then child windows. After that, decide
 with the owner when to push `build/v0.9` and cut v0.9. The Mava field report
 (`docs/field-reports/mava-studio-2.md`) was being edited by another session
 (MS-013 added) and is not part of the title-row commit; its MS-012 status line
