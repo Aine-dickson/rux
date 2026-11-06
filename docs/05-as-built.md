@@ -27,10 +27,18 @@ With no name given it asks for one at a terminal ("Project name:"); in a script
 or CI job, where nobody can answer, it exits with an error instead. It refuses a
 directory that already exists and is not empty.
 
+At a terminal, `minimal` also asks `Include a router? [Y/n]` (Enter is yes);
+`--router` or `--no-router` answers it. Where nobody can answer, the router is on.
+With it, the project has a second page (`pages/about.rux`), a tab bar and a
+fallback; without it, `app.rux` writes `<home />` and `pages/missing.rux` and
+`about.rux` are not written. `tasks` is always routed, and `--no-router` with it
+is refused.
+
 ```
 rux new my-app                      # the minimal template, with native/
 rux new my-app --template tasks     # a larger example
 rux new my-app --no-native          # leave out the native/ Rust crate
+rux new my-app --no-router          # one page, no router
 ```
 
 The default template, `minimal`, is a frame, one page and one component, with

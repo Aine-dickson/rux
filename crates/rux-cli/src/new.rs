@@ -609,7 +609,8 @@ const MIN_APP: &str = r#"<!-- The entry point. `rux run` looks for this file her
 
      This file owns two things: the window's frame and the routes. Each page
      lives in `pages/`. Add a page by writing a file there, importing it in the
-     script below, and naming it in a <route>. -->
+     script below, and naming it in a <route>. A view with `to="/path"` goes
+     there when tapped, and `route` is the path showing now. -->
 <template>
   <screen class="app">
     <view class="header">
@@ -619,8 +620,18 @@ const MIN_APP: &str = r#"<!-- The entry point. `rux run` looks for this file her
     <view class="stage">
       <router>
         <route path="/" view="home" name="home" />
+        <route path="/about" view="about" name="about" />
         <route fallback view="missing" />
       </router>
+    </view>
+
+    <view class="tabs">
+      <view class="tab" to="/" :class='{ here: route == "/" }'>
+        <text class="tab-label">Home</text>
+      </view>
+      <view class="tab" to="/about" :class='{ here: route == "/about" }'>
+        <text class="tab-label">About</text>
+      </view>
     </view>
   </screen>
 </template>
@@ -656,17 +667,128 @@ const MIN_APP: &str = r#"<!-- The entry point. `rux run` looks for this file her
     overflow-x: hidden;
     padding: 0 20px 20px 20px;
   }
+
+  .tabs {
+    display: flex;
+    gap: 8px;
+    padding: 12px 20px 20px 20px;
+    border-top: 1px #313244 solid;
+  }
+
+  .tab {
+    flex: 1;
+    display: flex;
+    justify-content: center;
+    padding: 12px;
+    border-radius: 10px;
+    background: #313244;
+    transition: background 140ms ease-out;
+  }
+
+  .tab:hover { background: #45475a; }
+  /* `:class` adds `here` on the tab whose route is the one showing. */
+  .tab.here { background: #89b4fa; }
+  .tab-label { color: #cdd6f4; font-size: 15px; font-weight: 700; }
+  .tab.here .tab-label { color: #11111b; }
 </style>
 
 <script>
   use pages::home;
+  use pages::about;
   use pages::missing;
 </script>
 "#;
 
+/// The `minimal` template's entry point without a router: a frame and one page.
+const MIN_APP_PLAIN: &str = r#"<!-- The entry point. `rux run` looks for this file here and in every parent
+     directory, so it works from anywhere inside the project.
+
+     This file owns two things: the window's frame and the page it shows. The
+     page lives in `pages/home.rux`, imported in the script below and written
+     as `<home />`. A second page means a router: `rux new --router` writes
+     a project that has one. -->
+<template>
+  <screen class="app">
+    <view class="header">
+      <text class="brand">%%NAME%%</text>
+    </view>
+
+    <view class="stage">
+      <home />
+    </view>
+  </screen>
+</template>
+
+<style>
+  * { box-sizing: border-box; }
+  :root { color-scheme: dark; }
+
+  .app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: #1e1e2e;
+    font-family: sans-serif;
+    /* The edges a phone will not let an app draw in: the status bar at the
+       top, the gesture bar or the home indicator at the bottom. Both are zero
+       on a desktop, so this changes nothing there. Try it with
+       `rux run --preview phone`. */
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .header { padding: 20px 20px 12px 20px; }
+  .brand { color: #cdd6f4; font-size: 26px; font-weight: 700; }
+
+  /* The page sits here. `overflow-y: auto` is what makes a long page scroll:
+     nothing scrolls in Rux unless it is told to. */
+  .stage {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 0 20px 20px 20px;
+  }
+</style>
+
+<script>
+  use pages::home;
+</script>
+"#;
+
+/// The `minimal` template's second page, which the tab bar reaches.
+const MIN_ABOUT: &str = r#"<!-- A second page. It is here to show what a route is: `app.rux` names this
+     file in `<route path="/about" view="about" />`, and the tab that has
+     `to="/about"` goes to it. To add a page, write a file in `pages/`, import
+     it in `app.rux`, and add a `<route>` for it. -->
+<template>
+  <view class="page">
+    <text class="heading">About</text>
+    <text class="lead">This page is a route. Its path is /about.</text>
+    <text class="lead">Tap Home below to go back.</text>
+  </view>
+</template>
+
+<style>
+  * { box-sizing: border-box; }
+
+  .page {
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 8px 0 24px 0;
+  }
+
+  .heading { color: #cdd6f4; font-size: 20px; font-weight: 700; }
+  .lead { color: #6c7086; font-size: 14px; }
+</style>
+"#;
+
 /// The `minimal` template's page: a field, and a greeting that Rust writes.
-const MIN_HOME: &str = r#"<!-- The home page. A page is an ordinary component that a `<route>` names, so
-     its root is a `<view>` and not a second `<screen>`.
+const MIN_HOME: &str = r#"<!-- The home page. %%HOW%%, so its root is a `<view>` and not a second
+     `<screen>`.
 
      %%ORIGIN%% -->
 <template>
@@ -744,7 +866,12 @@ const MIN_HOME_PLAIN_SCRIPT: &str = r#"<script>
 "#;
 
 /// The home page for the choices made.
-fn min_home(native: bool) -> String {
+fn min_home(native: bool, router: bool) -> String {
+    let how = if router {
+        "A page is an ordinary component that a `<route>` names"
+    } else {
+        "A page is an ordinary component that `app.rux` writes as `<home />`"
+    };
     let (origin, lead, note, script) = if native {
         (
             "The greeting is computed by Rust, in `native/src/hello.rs`, through `stores/greeter.rux`.",
@@ -760,7 +887,7 @@ fn min_home(native: bool) -> String {
             MIN_HOME_PLAIN_SCRIPT,
         )
     };
-    let top = MIN_HOME.replace("%%ORIGIN%%", origin).replace("%%LEAD%%", lead).replace("%%NOTE%%", note);
+    let top = MIN_HOME.replace("%%HOW%%", how).replace("%%ORIGIN%%", origin).replace("%%LEAD%%", lead).replace("%%NOTE%%", note);
     format!("{top}
 {script}")
 }
@@ -925,11 +1052,9 @@ const COMMON_FILES: &[File] = &[
     File { path: "assets/.gitkeep", body: "" },
 ];
 
-const MINIMAL_FILES: &[File] = &[
-    File { path: "app.rux", body: MIN_APP },
-    File { path: "pages/missing.rux", body: MISSING },
-    File { path: "components/message-card.rux", body: MIN_CARD },
-];
+/// What `minimal` writes whichever way the router question went. `app.rux` and
+/// the pages that depend on the router are added by `files_for`.
+const MINIMAL_FILES: &[File] = &[File { path: "components/message-card.rux", body: MIN_CARD }];
 
 const TASKS_FILES: &[File] = &[
     File { path: "app.rux", body: APP },
@@ -976,12 +1101,22 @@ impl Template {
     }
 
     /// The tree the README draws, without the native half.
-    fn tree(self) -> &'static str {
+    fn tree(self, router: bool) -> &'static str {
         match self {
+            Template::Minimal if !router => {
+                "app.rux              the frame and the page\n\
+                 pages/               one file per page\n\
+                 \x20 home.rux           the home page, written as <home /> in app.rux\n\
+                 stores/              the app's state and rules\n\
+                 \x20 greeter.rux        writes the greeting\n\
+                 components/          one file per component\n\
+                 \x20 message-card.rux  a card that takes props\n"
+            }
             Template::Minimal => {
                 "app.rux              the frame and the routes\n\
                  pages/               one file per route\n\
                  \x20 home.rux           the home page\n\
+                 \x20 about.rux          a second page, reached by the tab bar\n\
                  \x20 missing.rux        the fallback, for a path nothing matches\n\
                  stores/              the app's state and rules\n\
                  \x20 greeter.rux        writes the greeting\n\
@@ -1013,7 +1148,7 @@ impl Template {
 }
 
 /// The project's README, written for the choices that were made.
-fn readme(name: &str, template: Template, native: bool) -> String {
+fn readme(name: &str, template: Template, native: bool, router: bool) -> String {
     let mut out = format!(
         "# {name}\n\
          \n\
@@ -1037,7 +1172,7 @@ fn readme(name: &str, template: Template, native: bool) -> String {
         );
     }
     out.push_str("\n## What is here\n\n```\n");
-    out.push_str(template.tree());
+    out.push_str(template.tree(router));
     if native {
         out.push_str(
             "native/              the app's Rust, always here, beside rux.toml\n\
@@ -1144,6 +1279,8 @@ pub fn create(args: &[String]) -> i32 {
     // project past a demo reaches for it, and a convention that has to be
     // opted into is one people meet by accident, in the wrong place.
     let mut native = true;
+    // `None` until a flag says: then the question is asked, if anyone can answer.
+    let mut router: Option<bool> = None;
     let mut i = 0;
     while i < args.len() {
         let arg = &args[i];
@@ -1163,6 +1300,14 @@ pub fn create(args: &[String]) -> i32 {
                 i += 1;
             }
             "--no-native" => native = false,
+            "--router" | "--no-router" => {
+                let wanted = arg == "--router";
+                if router.is_some_and(|r| r != wanted) {
+                    eprintln!("rux: `--router` and `--no-router` both given; pick one");
+                    return 2;
+                }
+                router = Some(wanted);
+            }
             _ if arg.starts_with('-') => {
                 eprintln!("rux: unknown option `{arg}` for `new`");
                 return 2;
@@ -1203,6 +1348,27 @@ pub fn create(args: &[String]) -> i32 {
         return 2;
     }
 
+    // The tasks app is a list, a form and a page per task, so it is built on
+    // routes and has no router-less form. The minimal one asks.
+    let router = match (template, router) {
+        (Template::Tasks, Some(false)) => {
+            eprintln!(
+                "rux: the tasks template is built on routes (a list, a form, a page per task), \
+                 so it has no `--no-router`; `rux new {name} --no-router` writes the minimal one"
+            );
+            return 2;
+        }
+        (Template::Tasks, _) => true,
+        (_, Some(answer)) => answer,
+        (_, None) => match ask_router() {
+            Some(answer) => answer,
+            None => {
+                eprintln!("rux: `new` needs an answer; pass `--router` or `--no-router`");
+                return 2;
+            }
+        },
+    };
+
     // Refusing a non-empty directory rather than merging into it: a scaffold
     // that silently overwrote an `app.rux` someone had been working in would be
     // unforgivable, and there is no way to ask here.
@@ -1214,7 +1380,7 @@ pub fn create(args: &[String]) -> i32 {
         }
     }
 
-    if let Err(e) = write_all(&target, &display, template, native) {
+    if let Err(e) = write_all(&target, &display, template, native, router) {
         eprintln!("rux: {e}");
         return 1;
     }
@@ -1246,6 +1412,44 @@ fn ask_name() -> Option<String> {
     prompt_name(&mut stdin.lock(), &mut std::io::stdout(), &mut std::io::stderr())
 }
 
+/// Ask whether the project gets a router.
+///
+/// Not a terminal: yes, which is what `rux new` has always written, so a script
+/// or CI job is unchanged and nothing hangs. `None` only when a terminal closed
+/// before answering.
+fn ask_router() -> Option<bool> {
+    use std::io::IsTerminal;
+
+    let stdin = std::io::stdin();
+    if !stdin.is_terminal() {
+        return Some(true);
+    }
+    prompt_router(&mut stdin.lock(), &mut std::io::stdout(), &mut std::io::stderr())
+}
+
+/// The router question and its retries. Enter means yes.
+fn prompt_router(
+    input: &mut impl std::io::BufRead,
+    out: &mut impl std::io::Write,
+    err: &mut impl std::io::Write,
+) -> Option<bool> {
+    loop {
+        let _ = write!(out, "Include a router? [Y/n] ");
+        let _ = out.flush();
+        let mut line = String::new();
+        if input.read_line(&mut line).ok()? == 0 {
+            return None;
+        }
+        match line.trim().to_ascii_lowercase().as_str() {
+            "" | "y" | "yes" => return Some(true),
+            "n" | "no" => return Some(false),
+            _ => {
+                let _ = writeln!(err, "rux: answer y or n");
+            }
+        }
+    }
+}
+
 /// The question and its retries, over any reader, so a test can answer it.
 fn prompt_name(
     input: &mut impl std::io::BufRead,
@@ -1270,7 +1474,7 @@ fn prompt_name(
 }
 
 /// The files a project of these choices is made of, as path and contents.
-fn files_for(template: Template, native: bool) -> Vec<(&'static str, String)> {
+fn files_for(template: Template, native: bool, router: bool) -> Vec<(&'static str, String)> {
     let mut files: Vec<&File> = COMMON_FILES.iter().chain(template.files()).collect();
     if native {
         files.extend(NATIVE_FILES);
@@ -1278,14 +1482,27 @@ fn files_for(template: Template, native: bool) -> Vec<(&'static str, String)> {
     let mut out: Vec<(&'static str, String)> =
         files.iter().map(|f| (f.path, f.body.to_string())).collect();
     if template == Template::Minimal {
-        out.push(("pages/home.rux", min_home(native)));
+        if router {
+            out.push(("app.rux", MIN_APP.to_string()));
+            out.push(("pages/about.rux", MIN_ABOUT.to_string()));
+            out.push(("pages/missing.rux", MISSING.to_string()));
+        } else {
+            out.push(("app.rux", MIN_APP_PLAIN.to_string()));
+        }
+        out.push(("pages/home.rux", min_home(native, router)));
         out.push(("stores/greeter.rux", if native { MIN_STORE_NATIVE } else { MIN_STORE_PLAIN }.to_string()));
     }
     out
 }
 
-fn write_all(target: &Path, name: &str, template: Template, native: bool) -> Result<(), String> {
-    for (file_path, body) in files_for(template, native) {
+fn write_all(
+    target: &Path,
+    name: &str,
+    template: Template,
+    native: bool,
+    router: bool,
+) -> Result<(), String> {
+    for (file_path, body) in files_for(template, native, router) {
         let path = target.join(file_path);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|e| format!("creating {}: {e}", parent.display()))?;
@@ -1297,7 +1514,7 @@ fn write_all(target: &Path, name: &str, template: Template, native: bool) -> Res
             .replace("%%RUX%%", env!("CARGO_PKG_VERSION"));
         fs::write(&path, body).map_err(|e| format!("writing {}: {e}", path.display()))?;
     }
-    let readme = readme(name, template, native);
+    let readme = readme(name, template, native, router);
     let path = target.join("README.md");
     fs::write(&path, readme).map_err(|e| format!("writing {}: {e}", path.display()))?;
 
@@ -1370,6 +1587,23 @@ mod tests {
         assert!(check_name("app/inner").is_err(), "a separator is not part of the name");
     }
 
+    /// Enter is yes, a stray answer asks again, and end of input is the way out.
+    #[test]
+    fn the_router_prompt_defaults_to_yes_and_asks_again_on_a_stray_answer() {
+        let ask = |text: &str| {
+            let (mut out, mut err) = (Vec::new(), Vec::new());
+            let got = prompt_router(&mut std::io::Cursor::new(text.to_string()), &mut out, &mut err);
+            (got, String::from_utf8(err).unwrap())
+        };
+        assert_eq!(ask("\n").0, Some(true));
+        assert_eq!(ask("N\n").0, Some(false));
+        assert_eq!(ask(" No \n").0, Some(false));
+        let (got, err) = ask("maybe\nyes\n");
+        assert_eq!(got, Some(true));
+        assert_eq!(err.matches("answer y or n").count(), 1, "{err}");
+        assert_eq!(ask("").0, None, "end of input is the way out");
+    }
+
     /// The prompt asks again after a slip and gives up only at end of input.
     #[test]
     fn the_name_prompt_asks_again_until_the_name_is_usable() {
@@ -1392,14 +1626,20 @@ mod tests {
     /// one names which import is wrong.
     #[test]
     fn every_scaffolded_import_names_a_file_the_scaffold_writes() {
-        for (template, bodies) in [
-            (Template::Tasks, vec![APP, HOME, NEW_TASK, DETAIL, MISSING, TASK_ROW, TODO]),
+        for (template, router, bodies) in [
+            (Template::Tasks, true, vec![APP, HOME, NEW_TASK, DETAIL, MISSING, TASK_ROW, TODO]),
             (
                 Template::Minimal,
-                vec![MIN_APP, MIN_HOME_NATIVE_SCRIPT, MIN_HOME_PLAIN_SCRIPT, MISSING, MIN_CARD],
+                true,
+                vec![MIN_APP, MIN_ABOUT, MIN_HOME_NATIVE_SCRIPT, MIN_HOME_PLAIN_SCRIPT, MISSING, MIN_CARD],
+            ),
+            (
+                Template::Minimal,
+                false,
+                vec![MIN_APP_PLAIN, MIN_HOME_NATIVE_SCRIPT, MIN_HOME_PLAIN_SCRIPT, MIN_CARD],
             ),
         ] {
-            let written: Vec<&str> = files_for(template, true).iter().map(|f| f.0).collect();
+            let written: Vec<&str> = files_for(template, true, router).iter().map(|f| f.0).collect();
             for body in bodies {
                 for line in body.lines().map(str::trim) {
                     let Some(path) = line.strip_prefix("use ").and_then(|l| l.strip_suffix(';')) else {
@@ -1441,6 +1681,8 @@ mod tests {
     /// diagnostic.
     #[test]
     fn every_route_names_an_imported_view_and_there_is_a_fallback() {
+        assert!(!MIN_APP_PLAIN.contains("<router"), "no router was asked for");
+        assert!(MIN_APP_PLAIN.contains("<home />"), "the page has to be written somewhere");
         for app in [APP, MIN_APP] {
             assert!(app.contains("<route fallback"), "a mistyped path must land somewhere");
             for line in app.lines().map(str::trim).filter(|l| l.starts_with("<route ")) {

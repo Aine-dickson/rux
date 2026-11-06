@@ -142,10 +142,13 @@ fn the_minimal_project_without_native_renders_its_greeting() {
     }
     let scratch = Scratch::new("greeting");
     assert_eq!(run(scratch.path(), &["new", "app", "--no-native"]).0, 0);
-    let doc = rux_runtime::Document::load(scratch.path().join("app/app.rux")).expect("loads");
-    let shown = texts(&doc.root);
-    assert!(shown.contains(&"Hello, World!".to_string()), "{shown:?}");
-    assert!(shown.contains(&"app".to_string()), "the project name is not the header: {shown:?}");
+    assert_eq!(run(scratch.path(), &["new", "flat", "--no-native", "--no-router"]).0, 0);
+    for dir in ["app", "flat"] {
+        let doc = rux_runtime::Document::load(scratch.path().join(dir).join("app.rux")).expect("loads");
+        let shown = texts(&doc.root);
+        assert!(shown.contains(&"Hello, World!".to_string()), "{dir}: {shown:?}");
+        assert!(shown.contains(&dir.to_string()), "the project name is not the header: {shown:?}");
+    }
 }
 
 /// The native crate is read by Rux the way a build would read it, and its
@@ -249,6 +252,53 @@ fn what_the_scaffold_writes_checks_clean() {
     }
 }
 
+/// Opting out of the router still scaffolds a project that checks clean, and
+/// writes none of what only a router needs.
+#[test]
+fn a_project_without_a_router_checks_clean_and_has_no_routes() {
+    let scratch = Scratch::new("no-router");
+    assert_eq!(run(scratch.path(), &["new", "plain", "--no-router"]).0, 0);
+    let root = scratch.path().join("plain");
+
+    let (code, stdout, stderr) = run(&root, &["check"]);
+    assert_eq!(code, 0, "a router-less project does not check clean\n{stdout}\n{stderr}");
+    let (code, stdout, stderr) = run(&root, &["check", "components/message-card.rux"]);
+    assert_eq!(code, 0, "{stdout}\n{stderr}");
+
+    for absent in ["pages/missing.rux", "pages/about.rux"] {
+        assert!(!root.join(absent).exists(), "{absent} is only for a router");
+    }
+    assert!(root.join("pages/home.rux").is_file(), "pages/ is there with or without a router");
+    let app = std::fs::read_to_string(root.join("app.rux")).unwrap();
+    assert!(!app.contains("<router") && !app.contains("<route"), "{app}");
+    let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
+    assert!(!readme.contains("missing.rux"), "the README names a file that is not there");
+}
+
+/// The default, which is also what a script with no terminal gets.
+#[test]
+fn the_router_is_on_unless_declined_and_a_page_is_reached_through_it() {
+    let scratch = Scratch::new("router");
+    assert_eq!(run(scratch.path(), &["new", "routed"]).0, 0);
+    let root = scratch.path().join("routed");
+    assert!(root.join("pages/about.rux").is_file());
+    let app = std::fs::read_to_string(root.join("app.rux")).unwrap();
+    assert!(app.contains("<route path=\"/about\" view=\"about\""), "{app}");
+    assert_eq!(run(scratch.path(), &["new", "explicit", "--router"]).0, 0);
+}
+
+#[test]
+fn router_flags_that_cannot_be_honoured_are_refused_and_named() {
+    let scratch = Scratch::new("router-flags");
+    let (code, _, stderr) = run(scratch.path(), &["new", "a", "--template", "tasks", "--no-router"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("--no-router") && stderr.contains("tasks"), "{stderr}");
+    let (code, _, stderr) = run(scratch.path(), &["new", "b", "--router", "--no-router"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("pick one"), "{stderr}");
+    assert!(!scratch.path().join("a").exists() && !scratch.path().join("b").exists());
+}
+
 /// The detail page reads its task through a `computed`, which has to follow
 /// both the route and the store.
 #[test]
@@ -289,6 +339,7 @@ fn what_the_scaffold_writes_is_already_formatted() {
     for (dir, args) in [
         ("minimal", vec!["new", "minimal"]),
         ("tasks", vec!["new", "tasks", "--template", "tasks"]),
+        ("plain", vec!["new", "plain", "--no-router"]),
     ] {
         assert_eq!(run(scratch.path(), &args).0, 0);
         let root = scratch.path().join(dir);

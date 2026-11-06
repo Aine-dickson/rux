@@ -17,8 +17,23 @@ as if the name had been given. A script or CI job has nobody to answer, so there
 it still stops with an error.
 
 ```
-rux new [name] [--template minimal|tasks] [--no-native]
+rux new [name] [--template minimal|tasks] [--router|--no-router] [--no-native]
 ```
+
+## The router question
+
+At a terminal, the `minimal` template asks `Include a router? [Y/n]`. Enter means
+yes. `--router` or `--no-router` answers it and skips the question. Where nobody
+can answer (a script, CI) the router is on, so those runs are unchanged.
+
+With a router, `app.rux` has a tab bar and two routes, `/` and `/about`, plus a
+fallback, and `pages/about.rux` is the second page. Without one, `app.rux` shows
+`pages/home.rux` as `<home />`, there is no `pages/missing.rux` or `about.rux`,
+and the project still checks clean. A router can be added later by writing the
+`<router>` and a `<route>` for each page.
+
+The `tasks` template is a list, a form and a page per task, so it is always
+routed, and `--no-router` with it is an error.
 
 ## What it writes
 

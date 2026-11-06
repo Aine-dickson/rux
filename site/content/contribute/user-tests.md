@@ -3524,6 +3524,16 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | Two documents with tasks waiting at once | | each takes its own answers | read in the code (`collect_answers` is per engine); **not driven** |
 | Android and the web | `window.canOpen` | `false`; `open` throws `unsupported` | **not driven** (not compiled here) |
 
+## The router question in `rux new`, 2026-11-06
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| No terminal | `rux new y` with stdin closed or piped | routed, no question (tests) | pass (`tests/new.rs`) |
+| Flags | `--no-router`, `--router`, both, `--template tasks --no-router` | plain, routed, refused, refused | pass (`tests/new.rs`) |
+| Router off checks and formats clean | `rux check`, `rux fmt --check` | no findings | pass (`tests/new.rs`) |
+| At a real terminal: Enter, `n`, a stray answer then `y`, Ctrl+Z | `rux new demo` | routed; plain; one `answer y or n`; error exit | **not driven** |
+| The routed project in a window | `rux run`, tap About then Home | the tab highlights and the page changes | **not driven** |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

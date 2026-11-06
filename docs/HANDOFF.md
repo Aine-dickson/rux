@@ -254,24 +254,21 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
    A method a number does not have (`n.trim()` on an `int` or `float`) is now an error in
    a template (`method` in `rux-script/src/check.rs`); other receivers' unknown methods are
    still unchecked.
-   **New, open (owner, 2026-11-06): MS-014 in `docs/field-reports/mava-studio-2.md`**
-   (`<icon>` is blank in a desktop dev build with a native crate: `set_icons` is never
-   called when `embed_icons` is skipped, `build.rs` desktop branch near line 836). A
-   small follow-up, so do it before 2, in its own Sonnet-sized step: the report suggests a
-   dev build installs the icon set too (the names the project names, or the full set with
-   the cost said in the build output). Read the report entry first; the report file's edit
-   is the owner's and was still uncommitted.
-2. **`rux new` asks whether to include a router.** Both a prompt and a flag; the
-   flag skips the prompt (prompt only when stdin is a terminal, as the name is).
-   `pages/`, `stores/` and the rest are settled and independent of this. Opting
-   in must make the router central to the scaffold (the planner chooses how);
-   opting out is the developer's choice and must still scaffold a project that
-   checks clean. Do 1 first: 2 relies on it for a router-less project.
+   ~~MS-014~~ **done 2026-11-06**: a dev build's wrapper embeds the full icon set
+   (`embed_all_icons` in `build.rs`) and says so in the build output; covered by a wrapper
+   test, **not yet driven in a real native-crate window**.
+2. ~~`rux new` asks whether to include a router~~ **done 2026-11-06** (plan:
+   `C:\Users\USER\.claude\plans\deep-popping-raccoon.md`). `--router` / `--no-router`;
+   at a terminal `minimal` asks `Include a router? [Y/n]` (Enter = yes); no terminal = on.
+   Routed minimal gains `pages/about.rux` and a tab bar; router-off writes `<home />` in
+   `app.rux` and no `missing.rux`/`about.rux`. `tasks` is always routed (`--no-router`
+   refused). **Not driven:** the prompt at a real terminal, and the routed project in a
+   window (listed in `docs/08-user-tests.md`).
 
 ## Next action
 
-Next: item 2 under "Next sessions" (the router prompt for `rux new`), in its own Opus-plan
-session. The older list follows:
+Next: the owner decides (see the list below). Open from 11-06: drive the `rux new` prompt
+and the routed scaffold, and an MS-014 dev build with icons. The older list follows:
 
 1. ~~Child windows~~ done (steps 1 to 6).
 2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,
