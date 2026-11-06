@@ -2065,6 +2065,11 @@ struct App {
     /// What the app asked of its window in `rux.toml`. Desktop only.
     #[cfg(not(target_arch = "wasm32"))]
     window_settings: WindowSettings,
+    /// What the opener passed, when this window was opened by `window.open`:
+    /// a reload loads the file as a window again, with the same props. `None`
+    /// for the app's own window.
+    #[cfg(not(target_arch = "wasm32"))]
+    window_props: Option<Vec<(String, rux_reactive::Value)>>,
     document: Document,
     /// Shared by every window: fonts are loaded once.
     text: Shared<rux_text::TextEngine>,
@@ -2433,6 +2438,23 @@ impl App {
     ) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
         let document = load_document(&path);
+        Self::with_document(
+            #[cfg(not(target_arch = "wasm32"))]
+            path,
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            proxy,
+            document,
+        )
+    }
+
+    /// Build the app around a document already loaded: what a window the app
+    /// opens is, since it is loaded with its props rather than from the path
+    /// alone.
+    fn with_document(
+        #[cfg(not(target_arch = "wasm32"))] path: PathBuf,
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))] proxy: winit::event_loop::EventLoopProxy<RuxEvent>,
+        document: Document,
+    ) -> Self {
         Self {
             context: Rc::new(RefCell::new(RenderContext::new())),
             state: None,
@@ -2448,6 +2470,8 @@ impl App {
             preview: None,
             #[cfg(not(target_arch = "wasm32"))]
             window_settings: WindowSettings::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            window_props: None,
             document,
             text: Rc::new(RefCell::new(rux_text::TextEngine::new())),
             images: Rc::new(RefCell::new(rux_paint::ImageCache::new())),
@@ -2657,10 +2681,15 @@ impl App {
     /// [`RuxEvent::DevFiles`].
     #[cfg(not(target_arch = "wasm32"))]
     fn reload(&mut self) {
-        // The stores start again, or the new document would adopt the old
-        // state in place of what its own source says.
-        rux_runtime::reset_shared_stores();
-        match Document::load(&self.path) {
+        // A window the app opened is loaded again as a window, with the props
+        // its opener gave it. (The stores start again first, in the shell, or
+        // the new document would adopt the old state in place of what its own
+        // source says.)
+        let loaded = match &self.window_props {
+            Some(props) => Document::load_window(&self.path, props).map_err(|e| e.to_string()),
+            None => Document::load(&self.path),
+        };
+        match loaded {
             Ok(doc) => {
                 // Keeps the window's own state (viewport, hover) and drops the
                 // previous error, so fixing the file clears the overlay.
@@ -8593,17 +8622,14 @@ fn make_renderer(context: &RenderContext, surface: &RenderSurface<'static>) -> R
     .expect("create renderer")
 }
 
-impl ApplicationHandler<RuxEvent> for App {
-    #[cfg(not(target_arch = "wasm32"))]
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() {
-            return;
-        }
-        // A debug build's proofs that what Rux kept is what it would have
-        // built are for Rux's own tests; in an app's window each one is the
-        // whole document again.
-        rux_layout::set_self_checks(std::env::var_os("RUX_SELF_CHECK").is_some());
-
+/// An app's window, made when the loop first resumes and again for each window
+/// the app opens.
+#[cfg(not(target_arch = "wasm32"))]
+impl App {
+    /// Make this app's window and its surface. `owner` is the window it
+    /// belongs to (a window the app opened is owned by the main one); with
+    /// `resizable` set, the app's own choice is kept over the platform's.
+    fn open_window(&mut self, event_loop: &ActiveEventLoop, owner: Option<&Window>, resizable: Option<bool>) {
         // The app's own name when its `rux.toml` gives one; a bare file run
         // with no manifest is still named after the file.
         let title = self.window_settings.title.clone().unwrap_or_else(|| {
@@ -8658,6 +8684,12 @@ impl ApplicationHandler<RuxEvent> for App {
                     .with_title_hidden(true)
                     .with_fullsize_content_view(true);
             }
+        }
+        if let Some(resizable) = resizable {
+            attributes = attributes.with_resizable(resizable);
+        }
+        if let Some(owner) = owner {
+            attributes = Self::owned_by(attributes, owner);
         }
         // Android ignores the title, the size and the visibility above: an
         // activity gets the display it is given. They are set anyway rather than
@@ -8715,6 +8747,43 @@ impl ApplicationHandler<RuxEvent> for App {
             access,
         });
         self.request_redraw();
+    }
+
+    /// `attributes` with the window owned by `owner`: kept above it,
+    /// minimized with it, and (on Windows) with no taskbar button of its own.
+    /// macOS and X11 give a parent window; Wayland has no such thing, and
+    /// there the window is simply a separate one.
+    fn owned_by(attributes: winit::window::WindowAttributes, owner: &Window) -> winit::window::WindowAttributes {
+        use winit::raw_window_handle::HasWindowHandle;
+        let Ok(handle) = owner.window_handle() else { return attributes };
+        #[cfg(windows)]
+        {
+            use winit::platform::windows::WindowAttributesExtWindows;
+            if let winit::raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
+                return attributes.with_owner_window(h.hwnd.get()).with_skip_taskbar(true);
+            }
+            attributes
+        }
+        #[cfg(not(windows))]
+        {
+            // SAFETY: the owner is a live window of this process, and the
+            // handle is taken from it just now.
+            unsafe { attributes.with_parent_window(Some(handle.as_raw())) }
+        }
+    }
+}
+
+impl ApplicationHandler<RuxEvent> for App {
+    #[cfg(not(target_arch = "wasm32"))]
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.state.is_some() {
+            return;
+        }
+        // A debug build's proofs that what Rux kept is what it would have
+        // built are for Rux's own tests; in an app's window each one is the
+        // whole document again.
+        rux_layout::set_self_checks(std::env::var_os("RUX_SELF_CHECK").is_some());
+        self.open_window(event_loop, None, None);
     }
 
     /// Android takes the activity's surface away whenever the app leaves the
@@ -8919,6 +8988,7 @@ impl ApplicationHandler<RuxEvent> for App {
                 if let Some(files) = self.dev_files.as_mut() {
                     if apply_dev_changes(files, changes) {
                         rux_runtime::set_source(std::rc::Rc::new(files.clone()));
+                        rux_runtime::reset_shared_stores();
                         self.reload();
                         android_log("hot reload: reloaded");
                         self.request_redraw();
@@ -9886,11 +9956,29 @@ struct Shell {
     main: Option<WindowId>,
     /// The main window's state while it has no window to be filed under.
     parked: Option<App>,
+    /// The windows the app opened with `window.open`, by their window's id.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    children: HashMap<WindowId, Child>,
+}
+
+/// A window the app opened: who opened it, the handle script holds, and what
+/// to run in the opener when it closes.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+struct Child {
+    opener: Option<WindowId>,
+    handle: Arc<window_module::WindowHandle>,
+    on_close: Option<rux_runtime::native::Handle>,
 }
 
 impl Shell {
     fn new(app: App) -> Self {
-        Self { windows: HashMap::new(), main: None, parked: Some(app) }
+        Self {
+            windows: HashMap::new(),
+            main: None,
+            parked: Some(app),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            children: HashMap::new(),
+        }
     }
 
     /// Every window's state, the parked one included.
@@ -9937,6 +10025,121 @@ impl Shell {
         }
     }
 
+    /// Do what `window.open`, `close()` and `focus()` asked of the shell since
+    /// the last time, in the order they were asked. What they do may ask for
+    /// more (a window's first build can open another), so until none is left.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn serve(&mut self, event_loop: &ActiveEventLoop) {
+        use window_module::Request;
+        loop {
+            let requests = window_module::take_requests();
+            if requests.is_empty() {
+                return;
+            }
+            for request in requests {
+                match request {
+                    Request::Open(open) => self.open_child(event_loop, open),
+                    Request::Close(handle) => {
+                        if let Some(id) = self.child_of(handle) {
+                            self.close_child(id);
+                        }
+                    }
+                    Request::Focus(handle) => {
+                        let window = self
+                            .child_of(handle)
+                            .and_then(|id| self.windows.get(&id))
+                            .and_then(|app| app.state.as_ref())
+                            .map(|state| state.window.clone());
+                        if let Some(window) = window {
+                            window.focus_window();
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// The window opened for the handle numbered `handle`, while it is open.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn child_of(&self, handle: u64) -> Option<WindowId> {
+        self.children.iter().find(|(_, c)| c.handle.id == handle).map(|(id, _)| *id)
+    }
+
+    /// Open the window `window.open` asked for: load its file as a document
+    /// with the props the opener passed, make its window (owned by the main
+    /// one unless it asked not to be), and share the main window's GPU device,
+    /// fonts and pictures with it. A file that does not load opens nothing:
+    /// the handle reads closed and the opener is told why.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn open_child(&mut self, event_loop: &ActiveEventLoop, open: window_module::OpenRequest) {
+        let opener = open.opener.or(self.main);
+        let Some(main) = self.main_app() else {
+            open.handle.mark_closed();
+            return;
+        };
+        let (context, text, images) = (main.context.clone(), main.text.clone(), main.images.clone());
+        let proxy = main.proxy.clone();
+        let owner = main.state.as_ref().map(|s| s.window.clone());
+        // The file is named from the app's own folder, as its `use` lines are.
+        let path = main.path.parent().map(|d| d.join(&open.path)).unwrap_or_else(|| PathBuf::from(&open.path));
+        // Loaded as no window's document: it has none yet.
+        let loaded = window_module::as_window(None, || Document::load_window(&path, &open.props));
+        let document = match loaded {
+            Ok(document) => document,
+            Err(err) => {
+                eprintln!("rux: window.open could not open {}: {err}", path.display());
+                open.handle.mark_closed();
+                let message = format!("window.open could not open `{}`: {err}", open.path);
+                match opener.and_then(|id| self.windows.get_mut(&id)) {
+                    Some(app) => {
+                        window_module::as_window(opener, || rux_runtime::warn_script(message));
+                        app.request_redraw();
+                    }
+                    None => rux_runtime::warn_script(message),
+                }
+                return;
+            }
+        };
+        let mut app = App::with_document(path, proxy, document);
+        app.context = context;
+        app.text = text;
+        app.images = images;
+        app.window_settings = open.settings;
+        app.window_props = Some(open.props);
+        let owner = if open.owned { owner } else { None };
+        app.open_window(event_loop, owner.as_deref(), open.resizable);
+        let Some(id) = app.state.as_ref().map(|s| s.window.id()) else {
+            open.handle.mark_closed();
+            return;
+        };
+        self.children.insert(id, Child { opener, handle: open.handle, on_close: open.on_close });
+        self.windows.insert(id, app);
+    }
+
+    /// Close a window the app opened: drop its state and its window, say so
+    /// through its handle, and run the opener's `onClose`.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn close_child(&mut self, id: WindowId) {
+        let Some(child) = self.children.remove(&id) else { return };
+        let app = self.windows.remove(&id);
+        let window = app.as_ref().and_then(|a| a.state.as_ref().map(|s| s.window.clone()));
+        // What holds the window besides its own state, or it would not close.
+        window_module::detach(id);
+        if let Some(window) = &window {
+            caption::detach(window);
+        }
+        drop(app);
+        drop(window);
+        child.handle.mark_closed();
+        if let (Some(on_close), Some(opener)) = (child.on_close, child.opener) {
+            if let Some(app) = self.windows.get_mut(&opener) {
+                if window_module::as_window(Some(opener), || app.document.run_callback(&on_close)) {
+                    app.request_redraw();
+                }
+            }
+        }
+    }
+
     /// What every handler ends with: each window reads the native signals and
     /// the shared stores again, and redraws if either moved. A store written
     /// in one window is how another one finds out.
@@ -9973,7 +10176,12 @@ impl ApplicationHandler<RuxEvent> for Shell {
             #[cfg(not(target_arch = "wasm32"))]
             RuxEvent::VideoFrame => self.each(|app| app.user_event(event_loop, RuxEvent::VideoFrame)),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-            RuxEvent::Reload => self.each(|app| app.user_event(event_loop, RuxEvent::Reload)),
+            RuxEvent::Reload => {
+                // The stores start again, once for every window: each one
+                // would otherwise adopt the state the last left behind.
+                rux_runtime::reset_shared_stores();
+                self.each(|app| app.user_event(event_loop, RuxEvent::Reload));
+            }
             // The picker does not say who opened it: the window that is
             // waiting on one, else the main window.
             RuxEvent::PickedFiles { files } => {
@@ -10012,10 +10220,20 @@ impl ApplicationHandler<RuxEvent> for Shell {
             }
         }
         self.seat();
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        self.serve(event_loop);
         self.after_event();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // A window the app opened closes on its own: the app goes on.
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        if matches!(event, WindowEvent::CloseRequested) && self.children.contains_key(&id) {
+            self.close_child(id);
+            self.serve(event_loop);
+            self.after_event();
+            return;
+        }
         // A window with no surface yet (the web's, while its setup runs) is
         // the parked one and gets what arrives.
         let app = match self.windows.contains_key(&id) {
@@ -10025,12 +10243,30 @@ impl ApplicationHandler<RuxEvent> for Shell {
         if let Some(app) = app {
             window_module::as_window(Some(id), || app.window_event(event_loop, id, event));
         }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        self.serve(event_loop);
         self.after_event();
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // A window the app opened that called `close()` closes itself, not
+        // the app.
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        {
+            let asked: Vec<WindowId> = self
+                .children
+                .keys()
+                .copied()
+                .filter(|id| self.windows.get_mut(id).is_some_and(|app| app.document.take_close()))
+                .collect();
+            for id in asked {
+                self.close_child(id);
+            }
+        }
         let mut next: Option<Instant> = None;
         self.each(|app| next = [next, app.tick(event_loop)].into_iter().flatten().min());
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        self.serve(event_loop);
         // What a window's clocks did may have written a store.
         self.after_event();
         match next {

@@ -310,6 +310,13 @@ pub fn window_interface() -> rux_native::Interface {
         name: name.into(),
         kind: ItemKind::Fn(Sig { params: Vec::new(), result: "void".into(), is_async: false }),
     };
+    let method = |name: &str| Item {
+        name: name.into(),
+        kind: ItemKind::Method {
+            on: "Window".into(),
+            sig: Sig { params: Vec::new(), result: "void".into(), is_async: false },
+        },
+    };
     rux_native::Interface {
         path: "rux::window".into(),
         items: vec![
@@ -318,6 +325,26 @@ pub fn window_interface() -> rux_native::Interface {
             f("restore"),
             f("toggleMaximize"),
             Item { name: "maximized".into(), kind: ItemKind::Signal("bool?".into()) },
+            // A window the app opened: `window.open(path, options)` gives one.
+            Item { name: "Window".into(), kind: ItemKind::Resource },
+            Item {
+                name: "open".into(),
+                kind: ItemKind::Fn(Sig {
+                    params: vec![("path".into(), "string".into()), ("options".into(), "any".into())],
+                    result: "Window".into(),
+                    is_async: false,
+                }),
+            },
+            method("close"),
+            method("focus"),
+            // Whether it is still there. Follows the window as it closes.
+            Item {
+                name: "isOpen".into(),
+                kind: ItemKind::Property { on: "Window".into(), ty: "bool".into(), writable: false },
+            },
+            // Whether this build can open windows at all: desktop yes,
+            // Android and the web no.
+            Item { name: "canOpen".into(), kind: ItemKind::Signal("bool".into()) },
         ],
     }
 }

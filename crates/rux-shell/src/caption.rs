@@ -177,9 +177,11 @@ fn glyph(button: Button, maximized: bool) -> &'static [&'static str] {
 }
 
 #[cfg(windows)]
-pub(crate) use win::{attach, set_active, set_metrics, state};
+pub(crate) use win::{attach, detach, set_active, set_metrics, state};
 
 /// Nothing to attach elsewhere: only Windows draws its own buttons.
+#[cfg(not(windows))]
+pub(crate) fn detach(_window: &winit::window::Window) {}
 #[cfg(not(windows))]
 pub(crate) fn set_metrics(_window: &winit::window::Window, _scale: f64) {}
 #[cfg(not(windows))]
@@ -242,6 +244,15 @@ mod win {
     pub(crate) fn set_metrics(window: &Window, scale: f64) {
         if let Some(hwnd) = key(window) {
             SHARED.with(|s| s.borrow_mut().entry(hwnd).or_insert(FRESH).scale = scale);
+        }
+    }
+
+    /// The window is closing: let go of what the procedure kept for it, so
+    /// the window can be destroyed (it holds a reference to redraw it).
+    pub(crate) fn detach(window: &Window) {
+        if let Some(hwnd) = key(window) {
+            WINDOWS.with(|w| w.borrow_mut().remove(&hwnd));
+            SHARED.with(|s| s.borrow_mut().remove(&hwnd));
         }
     }
 

@@ -10,11 +10,20 @@
 //! when a maximize, a restore or a snap lands, so a button can show the right
 //! glyph.
 //!
+//! `window.open(path, options)` opens another `.rux` file as its own document
+//! in its own window and gives back a [`WindowHandle`]: `w.close()`,
+//! `w.focus()` and `w.isOpen`. The call only **asks**: it queues an
+//! [`OpenRequest`], and the shell, which owns the windows, drains the queue
+//! after the event it came from ([`take_requests`]).
+//!
 //! Android and the web have no such window: the calls throw `unsupported`,
-//! and `maximized` reads `false`.
+//! `maximized` reads `false` and `canOpen` is `false`.
 
 use rux_runtime::native::{install, Any, Call, Error, Module, Signal};
 use winit::window::WindowId;
+
+/// Whether this build can open windows: desktop yes, Android and the web no.
+static CAN_OPEN: Signal<bool> = Signal::new();
 
 /// Moves whenever any window's `maximized` does. It is the change trigger and
 /// not the value: every document reads its own window's value again when it
@@ -65,9 +74,226 @@ pub(crate) fn install_window() {
         );
     }
     calls.insert("maximized".to_string(), Call::sync(|_args: Vec<Any>| read_maximized()));
+    calls.insert("open".to_string(), Call::sync(open));
+    calls.insert("Window.close".to_string(), Call::sync(|args| ask(args, true)));
+    calls.insert("Window.focus".to_string(), Call::sync(|args| ask(args, false)));
+    calls.insert("Window.isOpen".to_string(), Call::sync(is_open));
+    calls.insert("canOpen".to_string(), Call::sync(|_args: Vec<Any>| CAN_OPEN.__read()));
     let _ = install(Module { interface, calls });
+    CAN_OPEN.set(cfg!(not(any(target_arch = "wasm32", target_os = "android"))));
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     MAXIMIZED.set(false);
+}
+
+/// The window the running code belongs to, for the shell to note as the
+/// opener of a window it opens.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn current() -> Option<WindowId> {
+    CURRENT.with(|c| c.get())
+}
+
+/// A window an app opened, as script holds it: `isOpen` follows it, `close()`
+/// and `focus()` ask the shell. A resource, so script can keep it in a signal.
+pub(crate) struct WindowHandle {
+    pub(crate) id: u64,
+    open: std::sync::atomic::AtomicBool,
+}
+
+impl rux_runtime::native::Resource for WindowHandle {
+    const NAME: &'static str = "Window";
+}
+
+impl WindowHandle {
+    /// The window is gone: `isOpen` is `false` from now, wherever it was read.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    pub(crate) fn mark_closed(&self) {
+        if self.open.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            rux_runtime::native::notify();
+        }
+    }
+}
+
+/// The window a `Window` method or property was called on.
+fn handle_of(args: &[Any]) -> Result<std::sync::Arc<WindowHandle>, Error> {
+    match args.first() {
+        Some(Any::Resource(h)) => h.get::<WindowHandle>().ok_or_else(|| Error::new("type", "that is not a Window")),
+        _ => Err(Error::new("type", "that is not a Window")),
+    }
+}
+
+fn is_open(args: Vec<Any>) -> Result<Any, Error> {
+    Ok(Any::Bool(handle_of(&args)?.open.load(std::sync::atomic::Ordering::Acquire)))
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn ask(args: Vec<Any>, close: bool) -> Result<Any, Error> {
+    let id = handle_of(&args)?.id;
+    REQUESTS.with(|r| r.borrow_mut().push(if close { Request::Close(id) } else { Request::Focus(id) }));
+    Ok(Any::None)
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+fn ask(_args: Vec<Any>, _close: bool) -> Result<Any, Error> {
+    Err(unsupported())
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+fn open(_args: Vec<Any>) -> Result<Any, Error> {
+    Err(unsupported())
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+fn unsupported() -> Error {
+    Error::new("unsupported", "this build has no desktop windows to open: check `window.canOpen` first")
+}
+
+/// What `window.open` asked for, once its options are read.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(crate) struct OpenRequest {
+    pub(crate) handle: std::sync::Arc<WindowHandle>,
+    /// The window the code that opened it was running in.
+    pub(crate) opener: Option<WindowId>,
+    pub(crate) path: String,
+    pub(crate) settings: crate::WindowSettings,
+    pub(crate) resizable: Option<bool>,
+    /// Above the opener, minimizing with it and with no taskbar button.
+    pub(crate) owned: bool,
+    pub(crate) props: Vec<(String, rux_reactive::Value)>,
+    /// What to run in the opener when the window closes: a script `fn`, as a
+    /// callback handle (`rux_script::native::Callback`).
+    pub(crate) on_close: Option<rux_runtime::native::Handle>,
+}
+
+/// What the shell is asked to do, in the order it was asked.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(crate) enum Request {
+    Open(OpenRequest),
+    Close(u64),
+    Focus(u64),
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+thread_local! {
+    static REQUESTS: std::cell::RefCell<Vec<Request>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The requests made since the last call.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(crate) fn take_requests() -> Vec<Request> {
+    REQUESTS.with(|r| std::mem::take(&mut *r.borrow_mut()))
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// The options `window.open` takes, as the message for a wrong one lists them.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+const OPTIONS: &str = "title, width, height, minWidth, minHeight, maximized, decorations, titleBar, \
+                       resizable, owned, props, onClose";
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn option_error(message: String) -> Error {
+    Error::new("option", message)
+}
+
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn open(args: Vec<Any>) -> Result<Any, Error> {
+    let Some(Any::Str(path)) = args.first() else {
+        return Err(option_error(
+            "window.open takes the path of a .rux file first: window.open(\"windows/inspector.rux\", { ... })".into(),
+        ));
+    };
+    let options = match args.get(1) {
+        Some(Any::Map(m)) => m.clone(),
+        None | Some(Any::None) => Default::default(),
+        Some(other) => {
+            return Err(option_error(format!("window.open takes its options as a map, not a {}", other.kind())));
+        }
+    };
+    let number = |key: &str, v: &Any| match v {
+        Any::Int(i) => Ok(*i as f64),
+        Any::Float(f) => Ok(*f),
+        other => Err(option_error(format!("`{key}` takes a number, not a {}", other.kind()))),
+    };
+    let flag = |key: &str, v: &Any| match v {
+        Any::Bool(b) => Ok(*b),
+        other => Err(option_error(format!("`{key}` takes true or false, not a {}", other.kind()))),
+    };
+    let mut settings = crate::WindowSettings::default();
+    let mut resizable = None;
+    let mut owned = true;
+    let mut props = Vec::new();
+    let mut on_close = None;
+    for (key, v) in &options {
+        match (key.as_str(), v) {
+            (_, Any::None) => {}
+            ("title", Any::Str(t)) => settings.title = Some(t.clone()),
+            ("title", other) => {
+                return Err(option_error(format!("`title` takes text, not a {}", other.kind())));
+            }
+            ("width", v) => settings.width = Some(number(key, v)?),
+            ("height", v) => settings.height = Some(number(key, v)?),
+            ("minWidth", v) => settings.min_width = Some(number(key, v)?),
+            ("minHeight", v) => settings.min_height = Some(number(key, v)?),
+            ("maximized", v) => settings.maximized = flag(key, v)?,
+            ("decorations", v) => settings.frameless = !flag(key, v)?,
+            ("titleBar", Any::Str(t)) if t == "overlay" => settings.title_overlay = true,
+            ("titleBar", _) => return Err(option_error("`titleBar` takes \"overlay\"".into())),
+            ("resizable", v) => resizable = Some(flag(key, v)?),
+            ("owned", v) => owned = flag(key, v)?,
+            ("props", Any::Map(m)) => {
+                for (name, value) in m {
+                    props.push((name.clone(), prop_value(name, value)?));
+                }
+            }
+            ("props", other) => {
+                return Err(option_error(format!("`props` takes a map of the window's props, not a {}", other.kind())));
+            }
+            ("onClose", Any::Resource(h)) if h.type_name() == "Callback" => on_close = Some(h.clone()),
+            ("onClose", _) => return Err(option_error("`onClose` takes a function".into())),
+            (other, _) => {
+                return Err(option_error(format!("window.open has no option `{other}`: it takes {OPTIONS}")));
+            }
+        }
+    }
+    let handle = std::sync::Arc::new(WindowHandle {
+        id: NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        open: std::sync::atomic::AtomicBool::new(true),
+    });
+    REQUESTS.with(|r| {
+        r.borrow_mut().push(Request::Open(OpenRequest {
+            handle: handle.clone(),
+            opener: current(),
+            path: path.clone(),
+            settings,
+            resizable,
+            owned,
+            props,
+            on_close,
+        }))
+    });
+    Ok(Any::Resource(rux_runtime::native::Handle::from_arc(handle)))
+}
+
+/// A prop the opener passed, as a document takes one. A resource cannot be
+/// one: it is Rust's, and the window is a document of its own.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn prop_value(name: &str, v: &Any) -> Result<rux_reactive::Value, Error> {
+    use rux_reactive::Value;
+    Ok(match v {
+        Any::None => Value::Null,
+        Any::Bool(b) => Value::Bool(*b),
+        Any::Int(i) => Value::Number(*i as f64),
+        Any::Float(f) => Value::Number(*f),
+        Any::Str(s) => Value::Text(s.clone()),
+        Any::Array(items) => Value::list(items.iter().map(|i| prop_value(name, i)).collect::<Result<_, _>>()?),
+        Any::Map(m) => {
+            Value::Map(m.iter().map(|(k, v)| Ok((k.clone(), prop_value(name, v)?))).collect::<Result<_, Error>>()?)
+        }
+        Any::Resource(_) => {
+            return Err(option_error(format!("the prop `{name}` holds a resource, and a window's props are plain values")));
+        }
+    })
 }
 
 #[derive(Clone, Copy)]
@@ -130,6 +356,14 @@ pub(crate) fn attach(window: &std::sync::Arc<winit::window::Window>) {
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub(crate) fn attach(_window: &std::sync::Arc<winit::window::Window>) {}
+
+/// A window is gone: its calls have nothing to act on.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(crate) fn detach(id: WindowId) {
+    if let Some(map) = WINDOWS.lock().unwrap_or_else(|e| e.into_inner()).as_mut() {
+        map.remove(&id);
+    }
+}
 
 /// Set window `id`'s `maximized` from the window, when it has changed.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
