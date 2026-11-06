@@ -248,8 +248,9 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
    `locks/` is skipped (generated). Native: `rux check` owns the seam (the
    module a `use native::x` names exists; calls match the exported signatures'
    arity and types; `use type native::...` resolves) and leaves the Rust bodies to
-   `rustc`, with at most an opt-in `--native` that runs `cargo check` (slow, so
-   off by default). Confirm the seam is already checked before adding to it.
+   `rustc`, with an opt-in `--native` (owner approved) that runs `cargo check` on
+   `native/`. It is off by default and prints a warning first that it can take
+   several minutes, so the author runs it knowingly. Confirm the seam is already checked before adding to it.
 2. **`rux new` asks whether to include a router.** Both a prompt and a flag; the
    flag skips the prompt (prompt only when stdin is a terminal, as the name is).
    `pages/`, `stores/` and the rest are settled and independent of this. Opting
