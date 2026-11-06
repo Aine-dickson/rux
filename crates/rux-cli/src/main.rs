@@ -145,7 +145,11 @@ fn main() -> ExitCode {
             let rest = args[1..].to_vec();
             let code = std::thread::Builder::new()
                 .stack_size(256 * 1024 * 1024)
-                .spawn(move || check(&rest))
+                .spawn(move || {
+                    // The icon hook is per thread.
+                    iconset::install();
+                    check(&rest)
+                })
                 .ok()
                 .and_then(|t| t.join().ok());
             ExitCode::from(code.unwrap_or(1) as u8)
