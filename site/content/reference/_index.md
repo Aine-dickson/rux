@@ -21,10 +21,6 @@ This document says what each rule *does*. For how to build a particular piece of
 an app, with the consequences of those rules worked through on a real file, see
 the recipes at `/recipes/`: a message list, a tab bar and a modal.
 
-Last updated: 2026-08-19, for **v0.7**. The original M0–M9 milestones that built
-the runtime are all complete; everything since has shipped in the v0.2 through
-v0.6 releases, which the [Roadmap](/roadmap/) lists.
-
 ---
 
 ## The `rux` command
@@ -38,23 +34,34 @@ under [Tooling](/tooling/), along with how to set up the VS Code extension.
 |---|---|
 | `rux-parser` | SFC split + XML-ish template parser (ours) |
 | `rux-style` | lightningcss → our cascade → `Style`; directives; component expansion |
-| `rux-script` | Rux's checker and interpreter (state + handlers), and native modules in the language |
+| `rux-syntax` | Rux's own parser for the script language: tokens, AST |
+| `rux-script` | Rux's type checker and interpreter (state + handlers), and native modules in the language |
+| `rux-ir` | The typed IR between the checker and every backend: its verifier and printer |
+| `rux-codegen` | Rust generated from the typed IR, for release builds |
+| `rux-aot-tests` | Runs the corpus's scripts compiled by `rux-codegen` beside the interpreter, and compares |
 | `rux-native` | What an app's Rust depends on (as `rux`): `#[rux::export]`, the boundary value, the registry |
+| `rux-native-macros` | The attributes behind it: `#[rux::export]`, `#[rux::resource]`, `#[rux::init]` |
 | `rux-bindgen` | Reads an app's `native/` crate for its exports, for the macros and the CLI |
 | `rux-layout` | `Style` → taffy (flex/grid/block) → paint items, hit + focus regions |
 | `rux-text` | parley 0.11 shaping/measure/wrapping + vello 0.9 glyph drawing |
 | `rux-paint` | paint items → vello scene (fills, borders, clips, text) |
+| `rux-icons` | Tabler's icons as path data, for `<icon>` |
+| `rux-audio` | Decoding and a mixer for `<audio>` and `loadSound` (desktop and Android) |
+| `rux-video` | The platform's own video decoder, read into RGBA frames, for `<video>` |
 | `rux-runtime` | `Document`: load, resolve imports, build engine, rebuild tree |
 | `rux-shell` | winit window, wgpu/vello, input, focus, clipboard, file watcher |
-| `rux-cli` | `rux [file.rux]` |
+| `rux-web` | The runtime and shell compiled to WebAssembly, rendering to a canvas |
+| `rux-fmt` | The formatter behind `rux fmt` |
+| `rux-highlight` | A TextMate grammar interpreter, so `.rux` highlights from the editor's own grammar |
+| `rux-cli` | `rux`: new, run, check, fmt, build, vocab, doctor |
 | `rux-reactive` | just `Value`, the untyped value `rux-script` and `rux-style` pass around |
 
 ---
 
 ## What works
 
-- [Elements](/reference/elements/): The six elements the runtime renders, plus slot, router and route.
-- [Layout](/reference/layout/): Everything defaults to block; use display: flex. Hug, fill, and why inline flow is gone.
+- [Elements](/reference/elements/): The ten elements the runtime renders, plus slot, router, route and router-view.
+- [Layout](/reference/layout/): Everything defaults to block; use display: flex. Hug and fill, and how boxes size.
 - [Paths](/reference/paths/): SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.
 - [Audio](/reference/audio/): A sound as an element: drawn controls, autoplay as a browser allows it, and its events.
 - [Honored CSS](/reference/css/): The authoritative list of properties the runtime interprets, plus selectors, pseudo-classes and transitions.
@@ -62,7 +69,7 @@ under [Tooling](/tooling/), along with how to set up the VS Code extension.
 - [Reactivity](/reference/reactivity/): Signals, computed values, effects, and what re-runs when one changes.
 - [Inputs](/reference/inputs/): Text fields, textarea, select, checkbox and radio, and two-way binding with r-model.
 - [Text input](/reference/text-input/): The caret, the soft keyboard, and IME composition for text that is not typed one key at a time.
-- [Touch](/reference/touch/): What a finger does today, and why @tap is the whole vocabulary.
+- [Touch](/reference/touch/): What a finger does: taps, presses, drags and swipes, and what is not built.
 - [Selection](/reference/selection/): Drag-select, double-click, and the clipboard keys.
 - [Scrolling](/reference/scrolling/): Scrollers, scrollbars, and the ways a scroll can be driven.
 - [Components](/reference/components/): Importing a file as a tag, props, slots, events, and what a component cannot see.
@@ -84,8 +91,10 @@ project mentions.
 **`size` is an attribute rather than CSS**, and that is forced rather than
 preferred. The artwork is drawn on a 24-unit grid and has to be scaled to the
 size asked for, which the element can only do if it knows that size while it is
-building the node, before any stylesheet is resolved. `1em` is what puts an
-icon on the same footing as the text beside it.
+building the node, before any stylesheet is resolved. It defaults to `16px`,
+and `1em` is what puts an icon on the same footing as the text beside it.
+`alt` describes an icon to the accessibility tree; without it the icon is
+decoration and left out.
 
 **Paint is CSS and inherits**, so an icon takes its colour from the text around
 it with nothing written per icon. `fill`, `stroke` and `stroke-width` override
@@ -157,7 +166,7 @@ the button again, Escape, or Android's Back leave it, before any `@key` sees
 the key. On Android the box covers the activity, which is the whole screen
 already, and the system bars stay.
 
-**Windows, Android and the web for now.** On Windows the picture is decoded by Media
+**Windows, Android and the web.** On Windows the picture is decoded by Media
 Foundation, on the GPU where there is one: H.264 always, and VP9, HEVC and
 AV1 when their store extensions are installed. On Android by the phone's
 `MediaCodec`, in hardware where it has it, sound included. In a browser the browser
@@ -195,16 +204,6 @@ measured against its nearest ancestor that is *not* static, so a wrapper with no
 box you actually mean is what claims it. Its `inset` is ignored, which is the
 whole difference between `static` and `relative`.
 
-**This used to be wrong, and silently.** The default was `relative`, which made
-*every* box a containing block, which made "against the nearest positioned
-ancestor" and "against the parent" the same sentence. They are not, and an
-author writing `position: relative` on the right box as CSS requires was being
-ignored and getting the right answer anyway. Only an unpositioned wrapper in
-between told them apart. `fixed` was silently treated as `absolute`, so it
-scrolled away with its ancestor; `sticky` and `static` were silently treated as
-`relative`, so `static` even honored insets; and a misspelled value was
-`relative` too, so a typo and a rule that does nothing looked identical.
-
 **`fixed` is against the window**, whatever it is written inside, and it is
 outside every scroller, so it does not move when one scrolls. A fixed box with
 no inset named lands in the window's top-left corner and warns, since that is a
@@ -217,8 +216,8 @@ says, and for `fixed` descendants as well as absolute ones. This is CSS's rule
 and the reason `position: fixed` stops being fixed inside a transformed parent.
 It is not an oddity to work around: a transform moves the whole subtree, so
 there is no way to hold a descendant still against the window while its ancestor
-slides. (CSS gives `filter`, `perspective`, `will-change` and `contain` the same
-power; none of those is honored here, so `transform` is the only one that can.)
+slides. A `filter`, a `backdrop-filter` and a `content-visibility` other than
+`visible` do the same, as in CSS. `will-change` does not.
 
 **`sticky` is in flow, and its insets are thresholds rather than offsets.** The
 box sits where it was laid out until its scroller's edge reaches the threshold,
@@ -234,9 +233,9 @@ section" and "pushed by the next heading" describe the same pixel. The
 consequence is worth knowing before writing one: headings that are flat siblings
 of the rows, with no box around each group, are all clamped to the scroller
 instead, so they pin at the same edge and pile up on each other. The wrapper per
-section is not tidiness, it is what makes the hand-over happen. That last clamp is what makes a list of sections work: a heading rides the
-top until the next section arrives and pushes it off, rather than sitting over
-the wrong rows. With no scroller above it, the window is what it sticks to.
+section is what makes the hand-over happen: a heading rides the top until the
+next section arrives and pushes it off, rather than sitting over the wrong
+rows. With no scroller above it, the window is what it sticks to.
 
 Nothing else moves while it travels: a sticky box keeps its original space the
 whole time, so its siblings do not reflow. It is resolved at paint time, because
@@ -308,8 +307,7 @@ so they update in place rather than crossing over, the same way a router reuses
 a component. The outgoing page's `unmounted` runs when the transition
 **commits**, so a navigation that reverses mid-swap never fires one.
 
-A third tier, keyframes, is not built. Driven in `examples/enter-leave.rux` and
-`examples/router.rux`.
+Driven in `examples/enter-leave.rux` and `examples/router.rux`.
 
 **Computed values:** `computed name = expr;` in `<script>` declares derived
 state, written once and readable anywhere a signal is:
@@ -343,15 +341,14 @@ watches.
 (`pick = 0`) is not among what it listens to, so a handler changing `pick`
 does not wake it. A signal it reads and also writes stays: the effect is not
 woken by its own write, but is by anyone else's. One that drains a list it
-reads (`let batch = inbox; inbox = [];`) hears every push. Until Tracer's
-AW-027 an effect stopped listening to everything it wrote, and heard only the
-first push. Effects that feed *each other* still cycle; that is stopped after 8 rounds and
-reported in the overlay rather than hung on.
+reads (`let batch = inbox; inbox = [];`) hears every push. Effects that feed
+*each other* still cycle; that is stopped after 8 rounds and reported in the
+overlay rather than hung on.
 
-Both are document-level today: a component's own `computed`/`effect` lines are
-stripped, not run. Driven in `examples/computed.rux`.
+A component declares its own `computed` and `effect` lines too, one set per
+instance (see [Script](/reference/script/)). Driven in `examples/computed.rux`.
 
-**The index, and filtering rows** (2026-10-28): `r-for="(item, i) in items"`
+**The index, and filtering rows:** `r-for="(item, i) in items"`
 binds the row's index too, an `int` from 0, as a script's `for (item, i) in items`
 does. An `r-if` on the same element is read once a row, with both in scope,
 and leaves out the rows it is false for; the index still counts every row of
@@ -371,9 +368,9 @@ The key is evaluated once per row with that row's loop variable in scope.
 Duplicate keys warn (two rows claiming one identity is worse than none), and so
 does an `r-key` on an element with no `r-for`.
 
-**Without `r-key`, a row is identified by its position** (2026-10-29), as Vue
-patches an unkeyed list in place. An input in row two is not the input in row
-three, so focusing one no longer puts a caret in every row. Position is not
+**Without `r-key`, a row is identified by its position**, as Vue patches an
+unkeyed list in place. An input in row two is not the input in row three, so
+focusing one puts a caret in that row alone. Position is not
 identity, though: remove the first item and the second row's text field, with
 its caret and anything half typed, now belongs to what was the third item. So
 an unkeyed `r-for` whose rows hold state of their own warns, naming what it
@@ -386,8 +383,7 @@ reconciling and row reuse still treat the list as unkeyed.
 stored **as written**, so every row of a list carries the same one, and an
 identity taken from it alone cannot tell two rows apart. Everything that
 addresses an input is now `(model, row key)`: the caret and selection, `:focus`
-matching, and the value the shell reads and writes. Before this, focusing one
-row put a caret in **all** of them and lit every row's `:focus` rule at once.
+matching, and the value the shell reads and writes.
 
 The value is read and written **in the row's own scope**, using the loop
 variables captured where the input was built, so a model may mention the loop
@@ -397,16 +393,13 @@ variable:
        r-model="items[item.at.to_int()].note" />
 ```
 Writing goes through an assignment rather than setting a scope variable, so an
-`r-model` that is a path (`user.name`, `items[0].note`) now writes through to
-the real target. It previously created a variable *named* `user.name` and left
-`user` untouched, in or out of a list.
+`r-model` that is a path (`user.name`, `items[0].note`) writes through to the
+real target, in or out of a list.
 
 **The loop variable writes through, too.** `r-model="item.name"` inside
 `r-for="item in items"` writes `items[2].name`, the real row, and so does a
-checkbox's `item.done` and a slider's value. `item` is a copy of its row, and
-before this the write landed on the copy: every edit in a list row, typed,
-pasted or cut, was thrown away on the next build without a word. Found on the
-phone in inputs phase 5. Each row carries its place in its list as a hidden
+checkbox's `item.done` and a slider's value. `item` is a copy of its row, so
+the write is routed to the row's place. Each row carries its place in its list as a hidden
 local (`_rux_at_item = "items[2]"`, see `rux_style::model_target`), a list
 nested in a row is placed through that row, and a computed collection
 (`items.filter(…)`) has no place, so its rows still cannot be written to.
@@ -443,13 +436,10 @@ tie without needing a more specific selector, which is CSS's own order.
 - On a **component**: "I own my appearance." Nothing from outside styles it.
 - On a **document**: "my rules stay in my markup." They reach no component.
 
-> **This changed in v0.7.** A component used to see only its own `<style>`, so
-> sharing a palette meant repeating `<style src="theme.css">` in every single
-> component. If a component and its caller happen to use the same class name and
-> you want the old isolation, that is what `scoped` is for.
+If a component and its caller happen to use the same class name and isolation
+is wanted, that is what `scoped` is for.
 
-**Custom properties already cascaded**, before and after this change: a
-`--brand` defined on the document has always been readable as `var(--brand)`
+**Custom properties** defined on the document are readable as `var(--brand)`
 inside a component, because variables inherit down the tree rather than being
 matched by a selector.
 
@@ -480,8 +470,7 @@ nothing for a path to be relative to and nothing to read. An include there is
 ignored, with a warning saying exactly that. Driven in
 `examples/shared-style.rux`, which shares `examples/palette.css`.
 
-**Tailwind's directives in a `<style>` block** (2026-10-28, as Vite does it).
-A file's `<style>` that uses `@apply`, `@reference`, `@utility`, `@variant`,
+**Tailwind's directives in a `<style>` block**, as Vite does it. A file's `<style>` that uses `@apply`, `@reference`, `@utility`, `@variant`,
 `@custom-variant`, `@theme`, `@source`, `@plugin`, `@config` or `@tailwind` is
 handed to the `tailwindcss` CLI on PATH, run in the file's folder, and the CSS
 it writes back is used in the block's place, after the includes. A block with
@@ -565,7 +554,8 @@ To see a non-zero inset on a desktop, see `rux run --preview` below.
 @media (prefers-reduced-motion: reduce) { … }
 @media (min-resolution: 2dppx) { .logo { background-image: url(logo@2x.png); } }
 ```
-Supported features: `min-`/`max-width`, `min-`/`max-height`, `orientation`,
+Supported features: `min-`/`max-width`, `min-`/`max-height` (and the range
+spelling, `(width >= 600px)`, `(400px <= width < 600px)`), `orientation`,
 `resolution` (`dppx`, `x`, `dpi`, `dpcm`), `prefers-color-scheme`,
 `prefers-reduced-motion`, `hover`, `any-hover`, `pointer` and `any-pointer`
 (fine with hover on a desktop; coarse with none on Android, in a phone preview
@@ -573,19 +563,21 @@ and in a touch browser, so Tailwind's `hover:` utilities stay off a phone), the
 `screen`/`all` types, `and` chains and comma alternatives. A block adds **no
 specificity**: rules inside it cascade by ordinary source order, so a later
 `@media` rule beats an earlier plain one, and `#id` still beats a `.class` in a
-media block. Anything else (`not …`) warns once and never applies.
+media block. Anything else (`not …`, `aspect-ratio`, `prefers-contrast`)
+warns once and never applies.
 
-**Cascade layers, `!important`, `@supports` and `@property`** (2026-10-23), as
-in CSS. `@layer` blocks and `@layer a, b;` statements order the layers; a later
+**Cascade layers, `!important`, `@supports` and `@property`**, as in CSS. `@layer` blocks and `@layer a, b;` statements order the layers; a later
 layer beats an earlier one before specificity is asked, and a rule in no layer
 beats every layered one. `!important` beats every normal declaration and turns
 the layer order round, so an important rule in the first layer wins. `@supports`
 asks whether Rux honors the property, or with `selector()` the pseudo-class, and
 takes `not`, `and` and `or`. `@property --x { initial-value: 0; inherits: false; }`
 gives a custom property its starting value, and with `inherits: false` a child
-starts again from it instead of taking its parent's. Any other at-rule warns
-instead of vanishing. A rule nested inside a rule is read: see Nesting, under
-the selectors.
+starts again from it instead of taking its parent's. `@keyframes` and
+`@position-try` are read (see Keyframe animation, above, and Anchor
+positioning, below). Any other at-rule (`@container`, `@font-face`, `@import`,
+`@page`, `@scope`, `@starting-style`) warns and does nothing. A rule nested
+inside a rule is read: see Nesting, under the selectors.
 
 **`orientation` and `resolution` are answered by the device**, and both were
 driven on one: rotating a phone re-cascades live, and a Pixel 6 reports 2.625,
@@ -601,7 +593,7 @@ that has a notion of one answers, and a change made while the app is running
 arrives as an event, so flipping the system between light and dark repaints
 within a frame. `prefers-reduced-motion` is asked of Windows directly, since
 winit exposes nothing for it, and of the browser's own media query on the web
-(Android does not ask yet, and reads "no preference"). It is re-read when the environment is next
+(macOS, Linux and Android do not ask, and read "no preference"). It is re-read when the environment is next
 rebuilt, which is at startup and on a resize: turning that setting off
 mid-session is not noticed until then. A stylesheet that never mentions reduced
 motion is stilled anyway, because honoring only the written query would leave
@@ -652,13 +644,8 @@ itself it is relative to the inherited one, which is what it means in CSS. It is
 resolved in a pass before the properties are interpreted, the same way `var()`
 is, so it works anywhere a length does.
 
-> **`rem` and `em` did not reach the box model before v0.7.** `width` and
-> `height` understood `rem` from the start, while `padding`, `margin`, `gap`,
-> border widths, corner radii, `letter-spacing`, `box-shadow` and `translate()`
-> went through a px-only parser and **dropped the declaration silently**. So
-> `width: 2rem` worked, `padding: 2rem` did nothing, and nothing said why. `%`
-> is still only honored where the list below says so; it is not a box-model
-> unit.
+`%` is honored only where the list above says so; it is not a unit every
+box-model property takes.
 
 `font-family` takes a CSS list (`font-family: "Inter", sans-serif`), and parley
 parses it and does name-matching + fallback; the generic families (`serif`,
@@ -674,15 +661,13 @@ glyph instead of a box. It **inherits**, like `color` and
 on a card makes every text in it bold. A bare `line-height` (`1.5`) is
 inherited as the number and multiplied by each text's own size; a length is
 inherited as its pixels. A text field takes the weight, size and family around
-it and keeps its own alignment. Until v0.9 only `color`, `font-size` and
-`font-family` inherited, and the rest had to be written on every `<text>`.
+it and keeps its own alignment.
 
 A font is drawn from its **outlines**, as a browser draws it, even when it also
 carries black-and-white bitmaps for small sizes (`EBLC`/`EBDT`, in Windows' Calibri
 and Cambria). vello takes any font with a
-bitmap strike down its emoji path and dropped every glyph whose bitmap it could
-not read, so until 2026-10-22 Calibri drew three glyphs out of a sentence
-(watchlist #45). Such a font is handed to vello with those two tables hidden.
+bitmap strike down its emoji path and drops every glyph whose bitmap it cannot
+read. Such a font is handed to vello with those two tables hidden.
 Colour bitmaps (emoji) are drawn as they were.
 
 Anything else is **parsed but not honored**, and never *silently*: the runtime
@@ -691,21 +676,17 @@ happened, because they are not the same problem:
 
 | You wrote | It says |
 |---|---|
-| `filter: blur(2px)` | ``CSS property `filter` is real CSS that Rux does not honor yet, so it will have no effect`` |
+| `float: left` | ``CSS property `float` is real CSS that Rux does not honor yet, so it will have no effect`` |
 | `paddding: 8px` | ``` `paddding` is not a CSS property Rux knows, so it will have no effect. Did you mean `padding`? ``` |
 | `florble: 3` | ``` `florble` is not a CSS property Rux knows, so it will have no effect ``` |
 
-The middle case is the one worth having. Until v0.7.1 a typo got the same "not
-yet honored" line a real unbuilt property got, so it read as a feature on its
-way and an author could wait for a release that was never going to fix it.
+The middle case is the one worth having: a typo is told apart from a feature
+that is not built.
 
 **An invalid value is thrown away before the cascade, as a browser throws it
-away** (2026-10-29). Until then each property's reader guessed:
-`grid-template-rows: minmax 1fr` (the function without its brackets) became
-the tracks `auto 1fr`, and since it was the later rule it replaced Tailwind's
-`grid-rows-2`, where a browser ignores it and keeps the two equal rows. Now the
-declaration is dropped from its rule, or from `style` / `:style`, so whatever
-an earlier rule said still applies, and it warns:
+away.** The declaration is dropped from its rule, or from `style` / `:style`,
+so whatever an earlier rule said still applies (`grid-template-rows: minmax 1fr`
+does not replace an earlier `grid-template-rows: 1fr 1fr`), and it warns:
 
 | You wrote | It says |
 |---|---|
@@ -724,29 +705,28 @@ every sheet in the test suites through it. Open-ended properties (`content`,
 
 A value with `var()` or `env()` cannot be judged until it is substituted. If
 it is invalid then, the property is left at its initial value, which is what
-CSS does with a value invalid at computed-value time. The grid readers now
-answer that way too: a track list or placement is taken whole or not at all
+CSS does with a value invalid at computed-value time. The grid readers answer
+that way too: a track list or placement is taken whole or not at all
 (`minmax()` needs two arguments and a minimum that is not an `fr`), and one
 Rux cannot use says so and leaves the initial value instead of an `auto`
 standing in for the word it did not know.
 
-Real CSS Rux has not built includes `hyphens: auto`, `writing-mode`,
-`column-span` and `::first-letter` / `::first-line`. Scroll snapping,
-multi-column layout, `tab-size`, `resize` and `content` with `::before` and
-`::after` were on it until 2026-10-23.
+Real CSS Rux has not built: `float`, `clear`, `order`, `writing-mode`,
+`hyphens`, `hyphenate-character`, `perspective`, `perspective-origin` and
+`column-span` (each warns as pending), `:has()`, `:focus-within`,
+`::first-letter` and `::first-line`, `display: contents` and `table`, `contain`,
+container queries (`@container`, `container-type`), `@font-face`, `@import`,
+`position-area` and `anchor-center`, and the `aspect-ratio` and `prefers-contrast`
+media features.
 
-**CSS for things Rux has none of passes quietly** (2026-10-23): the table
+**CSS for things Rux has none of passes quietly:** the table
 properties (`border-collapse`, `border-spacing`, `table-layout`,
 `caption-side`, `empty-cells`), the list properties (`list-style` and its
-longhands), `::backdrop` (a modal dialog's or a fullscreen box's) and
-`::file-selector-button` (a file input's). They are real, and there is
-nothing in Rux for them to act on, as there is nothing on a page without a
-table for `border-collapse` to act on. Every reset sheet sets them,
-Tailwind's among them, and a warning each opened every Tailwind app under a
-panel of things its author never wrote. If Rux grows one of these things,
-its CSS is built and is no longer quiet. `line-height`, `box-shadow`, `outline`,
-gradients, `transform`, CSS variables, all five `position` values, `z-index`,
-`isolation`, `visibility` and `filter` used to be on that list and are honored now.
+longhands) and `::backdrop` (a modal dialog's or a fullscreen box's). They are
+real, and there is nothing in Rux for them to act on, as there is nothing on a
+page without a table for `border-collapse` to act on. Every reset sheet sets
+them, Tailwind's among them. If Rux grows one of these things, its CSS is built
+and is no longer quiet.
 
 Colours accept `#hex` (3/6/8-digit), the full CSS named-colour list (`red`,
 `rebeccapurple`, …), `transparent`, `currentColor`, and every CSS colour
@@ -772,15 +752,13 @@ again when it changes, `dark` is always dark, and with no `color-scheme` at
 all it is **light**, whatever the system says. That is CSS's rule: write
 `:root`'s equivalent, `screen { color-scheme: light dark; }`, to opt in.
 
-**The default colours are CSS's** (2026-10-23, the owner's call). The window
+**The default colours are CSS's.** The window
 is white and text is black, as a browser's page is. The root's `color-scheme`
 picks both, as CSS's `Canvas` and `CanvasText`: `:root { color-scheme: dark; }`
 is white text on `#121212`, Chrome's dark canvas, and `light dark` follows the
 system. A root `background` colour is what the window shows behind and around
 everything, as CSS propagates it to the canvas, and Rux's own dropdown and
-selection toolbar are drawn in the root's scheme. Until this date Rux's window
-was a fixed `#11111b` with `#cdd6f4` text, which nobody chose against CSS's,
-and text Tailwind leaves uncoloured came out faint. The examples are designed
+selection toolbar are drawn in the root's scheme. The examples are designed
 dark, so they say `:root { color-scheme: dark; }`.
 
 ### `z-index`, and what is drawn over what
@@ -801,7 +779,10 @@ below something outside it, however large its `z-index`. These make one:
 - `position: fixed` and `position: sticky`
 - `opacity` below 1
 - `transform`
+- `filter`, `backdrop-filter`, `mix-blend-mode`, `clip-path` and `mask`
+- `content-visibility` other than `visible`
 - `isolation: isolate`, which does nothing else
+- `will-change` naming a property that makes one of the above
 
 `z-index` on a `static` box that is not a flex or grid item does nothing, as in
 a browser.
@@ -813,8 +794,7 @@ Three consequences that surprise people, all of them CSS:
   is drawn over in-flow content that comes after the wrapper.
 - **`position: fixed` is not automatically on top.** A fixed header with no
   `z-index` is covered by a positioned box later in the document. Give it
-  `z-index: 1` (or more). Until v0.9 Rux drew every fixed box last, which was a
-  divergence.
+  `z-index: 1` (or more).
 - **`z-index: -1` inside a positioned box with no `z-index` goes under that box's
   own background**, because the box is not a stacking context and the layer
   belongs to the one outside it. Give the box `z-index: 0` or `isolation:
@@ -940,8 +920,7 @@ fits, rather than jumping back the moment there is room below again. Anchored
 to another box, it starts again from its own place.
 
 **A margin on an anchored side counts.** `top: anchor(bottom); margin-top: 4px`
-leaves 4px between the button and the menu. Until `position-try` was built the
-margin on an anchored side was dropped.
+leaves 4px between the button and the menu.
 
 A fallback moves the box and does not resize it: `width`, `height` and the
 other sizes in a `@position-try` rule warn and are not honored yet, and neither
@@ -1008,8 +987,8 @@ day as `YYYY-MM-DD`, the format HTML's date input holds, or an empty string.
 picker**, starting on the day the
 field holds (today when empty) and offering only the days between `min` and
 `max`. Choosing commits at once and fires `@change`, as a select does;
-dismissing leaves the day alone. A read-only date offers no picker. Elsewhere,
-until a drawn picker exists, the field is typed into with the rule a number
+dismissing leaves the day alone. A read-only date offers no picker. Elsewhere
+the field is typed into with the rule a number
 follows: only a real day inside the range reaches the signal (`2026-9-3` is
 written back as `2026-09-03`), and anything short of one stays in the field. A
 `min` or `max` that is not a date is an error.
@@ -1068,11 +1047,11 @@ kept with the rest of the saved state, and the photo is delivered to the app
 as it comes back. `capture="user"` asks for the front camera through the
 extras most camera apps read; the rest open on their own choice.
 
-Drag and drop onto the input is later. `pickFile` and `pickFiles` give the
+Dropping a file onto the input is not built. `pickFile` and `pickFiles` give the
 same `File` on every platform, through the same picker on the web and
 Android (see `docs/07-script.md`).
 
-Not yet: arrow keys on a focused slider, a thumb that slides rather than jumps
+Not built: arrow keys on a focused slider, a thumb that slides rather than jumps
 between the switch's two ends, and a drawn date picker on desktop or in a
 browser with a mouse.
 
@@ -1165,6 +1144,12 @@ worked out from the field's own value, as above, they follow every keystroke;
 marks that read something else and no longer fit the text are dropped until
 they are worked out again. A change to what `:marks` reads restyles the field
 as a `:class` does.
+
+**`@input` says what kind of edit it was.** Its event is an `InputEvent`:
+`event.value`, and `event.kind`, one of `"type"`, `"undo"`, `"redo"`, `"paste"`,
+`"cut"`, `"insert"`, `"drop"` or `"autofill"`. A text field has its own undo
+and redo (Ctrl+Z, and Ctrl+Y or Ctrl+Shift+Z), and `@key` on the field or
+around it sees a key first; both are described in [Script](/reference/script/#keys).
 
 Handlers run **after** the edit or the focus change that caused them is
 complete, never from inside it, so a handler that writes the field's own
@@ -1288,9 +1273,7 @@ and a tap on it goes on to its nearest ancestor with a `@tap`.
 topmost box under it, then runs that box's `@tap` or its nearest ancestor's,
 as a click bubbles. So a tap on the text inside a button is the button's, and
 a backdrop with no handler drawn over a button keeps the tap from it, as does
-a box drawn over a text field. Until 2026-10-22 only the boxes with a handler
-were hit-tested, and a tap went straight through a backdrop to whatever was
-under it (watchlist #46). `pointer-events: none` is how a box lets taps
+a box drawn over a text field. `pointer-events: none` is how a box lets taps
 through.
 
 Every handler, `@tap` included, is handed an `event`:
@@ -1303,8 +1286,7 @@ Every handler, `@tap` included, is handed an `event`:
 | `touches` | every finger down, each with `id`, `x`, `y` |
 
 `touches` is **a list even when there is one finger**, and a mouse counts as one
-finger with `id` 0. That shape is the point: a two-finger gesture can arrive
-later without changing what any handler already written reads.
+finger with `id` 0.
 
 `@swipe` adds `direction`, chosen by the dominant axis. `@drag` adds `phase`
 (`start`, `move`, `end`). Both add two distances, named so neither can be read
@@ -1315,17 +1297,12 @@ and flick detection want the second.
 **A drag that ends as a flick also fires `@swipe`.** They are not rivals: a page
 that follows the finger still has to be told, at the end, whether the hand meant
 to throw it, which is how a reversible transition decides whether to commit.
-They were exclusive at first, and that made `@swipe` unreachable on any element
-that also declared `@drag`, since movement starts the drag first. A long press
-stays exclusive, because a press that moved is not resting.
+A long press stays exclusive, because a press that moved is not resting.
 
-**The axis claim, settled on hardware 2026-09-21.** A `@drag` used to take every
-finger that landed on it, in any direction, and the page under it never scrolled.
-That is fine on a desktop and wrong on a phone: it made a draggable row inside a
-scrolling list a **dead zone**, where a thumb that happened to start on the wrong
-element could not scroll the page at all. Driven on a device before the change: a
-purely vertical drag beginning on a `@drag` box fired six drag events and moved
-the list by nothing.
+**The axis claim.** A `@drag` does not take every finger that lands on it, in any
+direction: that would make a draggable row inside a scrolling list a **dead
+zone**, where a thumb that happened to start on the wrong element could not
+scroll the page at all.
 
 **The winner is decided by direction, once.** At the moment the finger passes
 `TAP_SLOP`, the dominant axis is compared against what a scroller under the press
@@ -1336,9 +1313,8 @@ visibly wrong, and no platform does it. iOS arbitrates its pan recognizers on th
 initial translation, Android intercepts at the slop crossing, and the web decides
 ahead of time from `touch-action`.
 
-So the question this was filed under, "can a scroll take the finger back
-mid-gesture", turned out to be the wrong question. Nothing is taken back. The
-decision simply happens earlier, and on direction rather than on time.
+Nothing is taken back mid-gesture: the decision happens at the slop crossing, on
+direction rather than on time.
 
 **"Can travel" is stricter than "is a scroller".** A box whose content fits has
 no room on that axis, so it does not take the gesture: winning a finger and then
@@ -1359,10 +1335,9 @@ would stop drags working on the desktop for nothing gained.
 however many are on the pad. Only a touchscreen, or a browser's touch emulation
 against the wasm build, exercises the list.
 
-**Touch text has its own gestures**, added in v0.5.1 and confirmed on hardware.
-Until then a finger dragged across text *selected*, because touch was routed
-down the same press/drag/release path a mouse takes, which is the desktop model
-and not what a phone does:
+**Touch text has its own gestures.** A finger dragged across text does not
+select, as it would under a mouse, which is the desktop model and not what a
+phone does:
 
 - **drag** on text moves the caret along the path;
 - **long press** (500 ms) selects the word under the finger;
@@ -1382,12 +1357,14 @@ drag-selects.
    `&quot;`, as in HTML: `r-if="city != &quot;&quot;"`, or the attribute is
    single-quoted, `@tap='name = ""'`. Entities are decoded in attributes and
    in text alike, `{{ }}` included, so `Tom &amp; Jerry` shows `Tom & Jerry`.
-   `'x'` in a script is a *char*, not a string.
-2. **`use` must be alone on its own line** in `<script>`.
-3. **A `fn` called in method style cannot see the surrounding scope.**
-   `helper(thing)` reaches the state around it; `thing.helper()` does not. This
-   is all that is left of what used to be the single biggest trap here, "rhai
-   `fn`s can't touch globals", which v0.7 removed (see above).
+   `'x'` in a script is a string of one character, equal to `"x"`.
+2. **A component cannot see the document's signals.** It sees its props, its
+   own state, its imports and `route`, `params` and `query`. Pass a value in as
+   a prop, report out with `emit`, and share state through a store (see
+   Components).
+3. **A component tag takes only its declared props**, listeners and `r-`
+   directives. `class`, `style`, `id` and `to` on one are errors: put them on an
+   element inside the component, or wrap the tag in a `<view>`.
 4. **`text-align` needs a box wider than the text** (set a width, or the element
    must fill), or there's nothing to align within.
 5. **A scroll container needs a bounded height** (`height`, `max-height`, or a
@@ -1396,45 +1373,63 @@ drag-selects.
    column squeezes them all in to fit and, again, nothing scrolls. CSS does this
    too. It is the single most common "why won't it scroll" trap.
 7. **A word longer than its box overflows** unless you set `overflow-wrap:
-   break-word`, since nothing can shrink below min-content. The browser does this too.
+   break-word`, since nothing can shrink below min-content. CSS does this too.
 
 ---
 
 ## Known gaps / backlog
 
-- **The soft keyboard has not been tried on real phone hardware.** It is driven
-  and passing under browser touch emulation, tap through to committed CJK (see
-  "Text input and composition"), so the mechanism works: the hidden `<input>` is
-  created on demand, focused by the tap, and laid over the field. What emulation
-  cannot show is a keyboard physically rising, since that is the OS's decision.
-  Still worth thirty seconds on a real phone. Note it only reaches ruxlang.dev
-  once a tag carrying it has been deployed, because the playground is built from
-  the latest release rather than from `main`, and a tag push does not itself
-  trigger a deploy.
-- ~~Text editing: no word-wise movement (Ctrl+arrows), no triple-click line-select,
-  no drag-and-drop of selected text.~~ Built in v0.9.
-- ~~Scrolling: no track-click paging, no kinetic touch fling, no scrollbar
-  hover/fade, and `overflow-x` / `overflow-y` can't differ from each other.~~
-  Built: fling in v0.8, the rest in v0.9.
-- CSS: `box-shadow`, `position`/`top`/`left`, per-corner radius, per-side border
-  *colors*.
-- ~~True inline text-flow.~~ Built in v0.9: a `<text>` inside a `<text>`, and
-  `<image>`/`<path>` in a line.
-- `r-for` rebuilds more rows than a keyed diff would; effects and computed
-  values are still absent from the reactive tier.
+What is not built, or not yet verified. The roadmap ([06](/roadmap/)) has
+the order and the reasons.
 
-> Fine-grained reactivity **shipped in v0.3**: a signal change now patches only
-> the bindings that read it, and the wholesale rebuild no longer fires. This list
-> claimed otherwise until 2026-07-26. If a gap here reads as more pessimistic
-> than the [release blog](/blog/), trust the blog and fix this
-> file.
+- **Physics.** Kinetic scrolling is built; momentum beyond it, rubber-banding and
+  spring easing are not.
+- **Live regions.** Nothing announces a change to a screen reader. The same
+  section has two related gaps: accesskit action requests are dropped, and the
+  tree is flat with no landmarks.
+- **Accessibility off the desktop.** Android and the web publish no accessibility
+  tree.
+- **Pinch and rotate.** Touch reporting carries every finger, but nothing turns
+  two fingers into a pinch or a rotate.
+- **`hyphens: auto`.** It needs a hyphenation dictionary per language and a
+  `lang` attribute, and a soft hyphen draws no hyphen where a line breaks at it.
+- **Video on macOS and Linux.** `<video>` plays on Windows, Android and the web;
+  elsewhere `@error` fires with `kind` `"unsupported"`.
+- **iOS.** `rux build --target ios` is named and refused.
+- **Real-phone checks.** Cases in [User tests](./08-user-tests.md) marked
+  "unverified ... no phone" (selection handles, action keys, autofill, the soft
+  keyboard physically rising) were driven on the Android emulator or under
+  browser touch emulation, not on hardware. `rux doctor` reports the toolchain,
+  not the attached device.
+- **Error boundaries.** A failing expression is reported and the document
+  carries on; a subtree cannot catch one and show a fallback.
+- **A capability model for native code.** A native module has full trust.
+- **Drag and drop** of elements. `@tap` and the gesture events are the
+  vocabulary; dragging selected text inside a field is built.
+- **Multiple windows.**
+- **CSS left out:** table properties, `writing-mode`, `column-span`, and
+  `user-select` on static text outside a field.
 
 ---
 
 ## Where the design docs are still right
 
-The [rationale](/reference/rationale/)'s core laws still hold and still guide changes:
-**layout lives in CSS, not markup** (no `<Padding>`/`<Center>` widgets); **reuse
-mature crates**; **keep the element set tiny**. The [architecture](/contribute/)
-pipeline (parse → cascade → layout → paint → present, with a file watcher) is
-exactly what got built. Only the *reactive graph* stage is simpler than described.
+The [rationale](/reference/rationale/)'s laws still guide changes and the code
+follows them: **layout lives in CSS, not markup** (no `<Padding>` or `<Center>`
+widgets), **an element has a fixed set of events** the author binds to, **meaning
+beyond the element set is a `role`**, and **reuse mature crates** (lightningcss,
+taffy, parley, vello, winit, accesskit). Two details in it are out of date: the
+element count (there are fourteen, not six: `<screen>`, `<view>`, `<text>`,
+`<image>`, `<icon>`, `<path>`, `<button>`, `<input>`, `<audio>`, `<video>`,
+`<slot>`, `<router>`, `<route>` and `<router-view>`), and the script, which is
+Rux's own language and not rhai.
+
+The [architecture](/contribute/) is current: the pipeline (parse,
+cascade, reactive graph, layout, paint and present, with a file watcher), the
+crate layout and the reused-crates table describe what is built.
+
+The [spec](/reference/spec/) is the v0.1 design surface and the [guide](https://github.com/Aine-dickson/rux/blob/main/docs/03-guide.md)
+a tutorial written before the runtime existed. Both are history, and parts of
+each are false. The script references are [Script](/reference/script/) (the guide to
+using it), [The Rux language](./11-next.md) (the language itself) and
+[Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md) (the type checker).

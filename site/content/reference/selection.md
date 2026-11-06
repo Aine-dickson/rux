@@ -48,14 +48,8 @@ nothing is). Both are re-applied after every rebuild, like the caret.
   (via `arboard`, the real system clipboard). Pasting several lines into a
   single-line input keeps only the first.
 
-**A single-line input scrolls horizontally to keep its caret in view**, added in
-v0.5.1. Before that the caret walked out of the box and was clipped away, so a
-field could not be used at all once its value outgrew its width: not by typing,
-arrows, End, a tap or a drag, on any platform. The cause was that an input is
-given `overflow: clip` while a textarea is given `overflow: scroll`, and only
-the latter produces a scroll region for `scroll_caret_into_view` to move.
-
-The offset moves only when the caret would otherwise fall outside, so the text
+**A single-line input scrolls horizontally to keep its caret in view.** The
+offset moves only when the caret would otherwise fall outside, so the text
 does not slide under a caret that is already visible, and it is clamped so the
 field never scrolls past the start nor leaves a gap after the end. Hit testing
 applies the same offset, or a tap in a scrolled field would land a character out
@@ -79,7 +73,7 @@ highlight, so a glyph cut by the selection's edge is two colours as it is in a
 browser. `::selection` anywhere but the end of a selector matches nothing.
 Under test in `crates/rux-runtime/tests/selection_style.rs`.
 
-**`::before` and `::after`** (2026-10-23) generate a box inside the element,
+**`::before` and `::after`** generate a box inside the element,
 first and last, from the declarations of the rules that end in them (CSS 2's
 `:before` and `:after` too). Only with a `content` that is not `none`:
 strings, joined, CSS escapes read (`"\2022"` is a bullet), and `attr(name)` as
@@ -95,7 +89,7 @@ stacks as a block would rather than sharing its line. An empty one inside a
 `<text>` is not drawn. It is not an element: no `query()` finds it, no
 `:nth-child` counts it, and a tap on it is its element's.
 
-**`::placeholder`** (2026-10-23) colours an empty input's placeholder:
+**`::placeholder`** colours an empty input's placeholder:
 `color`, with `var()` and `currentcolor` read as the input reads them, and
 `opacity`, which fades it. Anything else written there warns. Only the input's
 own rules count, as in CSS: a placeholder is part of its input, so a rule on an
@@ -116,15 +110,13 @@ of a line, after the last word, or on the spaces between words. That press puts
 the caret where the finger is, with its handle and the menu of what a caret can
 do: Paste (only when the clipboard holds something, as in any Android field),
 Select text (the word at the caret, or the one before it when the caret is
-after it; the label is the phone's own) and Select all. Autofill, which
-WhatsApp's fields also offer there, waits for phase 6: it needs the input view
-to describe its fields to Android's autofill service, and an item that does
-nothing is worse than none. Both go after five seconds with nothing touching them;
+after it; the label is the phone's own) and Select all, and Autofill (see
+[Autofill](#field-attributes-and-events)). Both go after five seconds with
+nothing touching them;
 dragging the handle or tapping it resets the clock, and a tap on it toggles the
-menu. A plain tap places a caret and shows nothing, which is the user's call
-from the phone session. A selection has no clock. A long press *on* a word takes
-the word, and a finger that then moves keeps the whole word and extends from its
-far end; it used to cut the word back to wherever the finger sat inside it.
+menu. A plain tap places a caret and shows nothing. A selection has no clock. A
+long press *on* a word takes the word, and a finger that then moves keeps the
+whole word and extends from its far end.
 
 **Android uses the platform's text menu, not the drawn toolbar.** A floating
 `ActionMode` started on the input view: the same menu `TextView` shows, in its
@@ -150,18 +142,14 @@ selected something (below it when there is no room above), offering **Copy**,
 shortcuts do, not a second copy of them. It comes with the selection handles:
 a touch selection, a long press, a tapped caret handle. A selection made with
 the mouse, the keyboard or a script raises nothing over the page, as in a
-desktop program, and is copied with Ctrl+C (Tracer's AW-052, 2026-11-05;
-before that every selection raised it).
+desktop program, and is copied with Ctrl+C.
 
-It exists because on a phone there is no Ctrl+C, and in a browser there was no
-clipboard at all: `arboard` is a desktop-only dependency. The browser's *own*
+It exists because on a phone there is no Ctrl+C, and in a browser `arboard` (a
+desktop-only dependency) is not there. The browser's *own*
 copy bubble cannot be used either, whatever the selection says. The hidden
 `<input>` is `pointer-events: none`, `opacity: 0` and one pixel square, so the
 browser never sees a selection gesture on it, and setting the range from code
-does not raise native selection UI. That was verified on a phone rather than
-assumed. Before v0.5.1 the only thing that worked was paste, and only because
-the keyboard writes into the hidden input directly, arriving as an ordinary
-`input` event that never touched clipboard code.
+does not raise native selection UI.
 
 On the web the toolbar goes through `navigator.clipboard`. Writing is fired and
 forgotten. Reading cannot be: the API is a promise and may prompt for
@@ -170,12 +158,15 @@ resolves. A refused prompt is silent, since declining is a decision rather than
 a fault. A press on the toolbar is refused by the text press handler, or moving
 the caret would collapse the selection the button is about to act on.
 
-The selection is also kept in step with the hidden input in both directions as
-of v0.5.1: a drag on the canvas is written out, and a range set in the input is
-read back, including which end the caret is at (`selectionStart`/`End` are
-ordered, so `selectionDirection` carries it).
+The selection is also kept in step with the hidden input in both directions: a
+drag on the canvas is written out, and a range set in the input is read back,
+including which end the caret is at (`selectionStart`/`End` are ordered, so
+`selectionDirection` carries it).
 
-**Limits:** no word-wise movement (Ctrl+arrows moves by character), no
-triple-click line-select, no drag-and-drop of selected text, no middle-click
-paste on X11, and a `select` has no arrow-key list navigation or native mobile
-picker.
+A script reads a text field's selection as `el.selection` and sets it with
+`el.setSelectionRange(start, end)`; `@select` fires when it moves (see
+[Field attributes and events](#field-attributes-and-events) and
+[Script](/reference/script/#acting-on-an-element)). A text field's undo (Ctrl+Z,
+Ctrl+Y) is in [Script](/reference/script/#keys).
+
+Not built: middle-click paste on X11.

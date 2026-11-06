@@ -1,22 +1,19 @@
 +++
 title = "Layout"
-description = "Everything defaults to block; use display: flex. Hug, fill, and why inline flow is gone."
+description = "Everything defaults to block; use display: flex. Hug and fill, and how boxes size."
 weight = 3
 +++
 
 <!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
-> **DIVERGENCE from docs 01–04.** The inline/block-by-role model was **built and
-> then deliberately removed**. taffy has no inline text-flow, so inline elements
-> hugged inside flex parents but filled inside block ones (full-width buttons),
-> confusing. It's gone.
+> Docs 01–04 describe an inline/block-by-role model. Rux does not have one:
+> the rules below are what applies.
 
 - **Everything defaults to `display: block`.** Block containers make children fill.
 - **Use `display: flex` for layout.** Flex cross-axis defaults to **`stretch`**,
   as in CSS: a child of a flex column fills its width, and a child of a row its
   height. A button or a badge that should hug says `align-self: flex-start`, or
-  its parent says `align-items`. This was `flex-start` until v0.8, a preference
-  taken for ergonomics and reverted because Rux follows CSS's defaults.
+  its parent says `align-items`.
 - **Hug means `fit-content`**: a box with no `width` is clamped to its parent's
   inner width, so it can't burst out of a narrower parent. An explicit `width` (or
   `flex-shrink: 0`) is your call and *will* overflow, so clip it with `overflow: hidden`.
@@ -25,8 +22,7 @@ weight = 3
   `minmax()`, `repeat()` (a count, `auto-fill` or `auto-fit`) and `[line names]`;
   `grid-template-areas` names areas, and `grid-template` is the shorthand for
   all three. An item is placed by line, `span`, line name (`full-start`,
-  `col 2`, `span col`) or area (`grid-area: main`). Until v0.9 `repeat()` and
-  every name were silently not grids at all: the track list was misread.
+  `col 2`, `span col`) or area (`grid-area: main`).
 - Two `<text>` siblings **stack**, as two paragraphs do. A `<text>` *inside* a
   `<text>` shares its line: see [Elements](#elements).
 - **Lengths are logical pixels.** Layout and taps run in logical space and the

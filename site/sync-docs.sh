@@ -71,10 +71,10 @@ pages=(
 #
 #   <source>|<heading>|<output path>|<title>|<weight>|<description>
 splits=(
-  "05-as-built.md|### Elements|reference/elements.md|Elements|2|The six elements the runtime renders, plus slot, router and route."
+  "05-as-built.md|### Elements|reference/elements.md|Elements|2|The ten elements the runtime renders, plus slot, router, route and router-view."
   # Single-quoted: this heading contains backticks, which a double-quoted shell
   # string would run as a command.
-  '05-as-built.md|### Layout: **use `display: flex`**|reference/layout.md|Layout|3|Everything defaults to block; use display: flex. Hug, fill, and why inline flow is gone.'
+  '05-as-built.md|### Layout: **use `display: flex`**|reference/layout.md|Layout|3|Everything defaults to block; use display: flex. Hug and fill, and how boxes size.'
   # Single-quoted for the backticks, as above.
   '05-as-built.md|### `<path>`: vector geometry|reference/paths.md|Paths|16|SVG path data as an element: the d attribute, paint as CSS, and shapes that morph.'
   # Single-quoted for the backticks, as above.
@@ -86,7 +86,7 @@ splits=(
   "05-as-built.md|### Reactivity & script|reference/reactivity.md|Reactivity|5|Signals, computed values, effects, and what re-runs when one changes."
   "05-as-built.md|### Inputs|reference/inputs.md|Inputs|7|Text fields, textarea, select, checkbox and radio, and two-way binding with r-model."
   "05-as-built.md|### Text input and composition|reference/text-input.md|Text input|8|The caret, the soft keyboard, and IME composition for text that is not typed one key at a time."
-  "05-as-built.md|### Touch|reference/touch.md|Touch|9|What a finger does today, and why @tap is the whole vocabulary."
+  "05-as-built.md|### Touch|reference/touch.md|Touch|9|What a finger does: taps, presses, drags and swipes, and what is not built."
   "05-as-built.md|### Selection & clipboard|reference/selection.md|Selection|10|Drag-select, double-click, and the clipboard keys."
   "05-as-built.md|### Scrolling|reference/scrolling.md|Scrolling|11|Scrollers, scrollbars, and the ways a scroll can be driven."
   "05-as-built.md|### Components|reference/components.md|Components|12|Importing a file as a tag, props, slots, events, and what a component cannot see."

@@ -11,18 +11,17 @@ weight = 5
 > the tour; that is the whole surface in depth, including every way Rux's script
 > differs from stock rhai and from JavaScript.
 
-- `<script>` is **rhai**, forked as `rux-rhai`. `let x = signal(v)` declares state (numbers coerce to float).
+- `<script>` runs on Rux's own interpreter, with a syntax close to rhai's and to JavaScript's. `let x = signal(v)` declares state (numbers coerce to float).
 - `{{ expr }}` interpolation; `r-if` / `r-elif` / `r-else`, `r-for="x in list"` or `r-for="(x, i) in list"`, `r-show`.
 - `@tap="…"` handlers.
 - `use native::m;` then `m.fn()` calls the app's own compiled Rust, exported with `#[rux::export]` from its `native/` crate. See [Script, Native code](/reference/script/#native-code).
 - `{ key: value }` is a map, as in JavaScript, so `:class="{ active: on }"` and
-  `rows.map(r => { id: r.id })` mean what they say. **CHANGED in v0.8**: it used
-  to be written `#{ key: value }`, which still works and which `rux fmt` rewrites.
+  `rows.map(r => { id: r.id })` mean what they say. The older `#{ key: value }`
+  spelling still works, and `rux fmt` rewrites it.
   `{}` is an empty map as a value and an empty block at the start of a statement,
   so `() => {}` is still a no-op. No shorthand: `{ a: a }`, never `{ a }`.
 
-> **CHANGED in v0.7: a function can now read and write the state around it.**
-> This used to be the single biggest trap in the language, and it is gone.
+> **A function reads and writes the state around it.**
 >
 > ```
 > let level = signal(82);
@@ -31,8 +30,8 @@ weight = 5
 > ```
 >
 > `@tap="drain()"` is a handler like any other, and the write is tracked, so the
-> screen updates. Handlers no longer have to be written inline, which is why so
-> much of this document and of `/learn` still shows them that way.
+> screen updates. Many examples in this document write handlers inline, which is
+> shorter but not required.
 >
 > Two things to know:
 > - **A method call does not see the surrounding scope.** `thing.helper()`
@@ -50,9 +49,9 @@ the stylesheet's own matcher, so the two always agree about the same document.
 @tap="count = query('.card').length"
 ```
 
-Each result carries `tag`, `id` and `classes`. `id` is absent rather than empty
-when the element has none, so `el.id ?? "none"` reads the way it does anywhere
-else.
+Each result carries `tag`, `id` and `classes`, the geometry below, and, on a
+text field, `selection`. `id` is absent rather than empty when the element has
+none, so `el.id ?? "none"` reads the way it does anywhere else.
 
 Three rules, all of which are the design rather than temporary limits:
 
@@ -82,9 +81,11 @@ has been laid out yet, or the node is hidden by `r-show="false"` and so has no
 box. `card.width ?? "unknown"` is how to handle it. Under `rux check` it is
 always absent, since checking runs with no window and no GPU on purpose.
 
-**Three actions, which are not tree edits:** `el.focus()`, `blur()` and
-`el.scrollIntoView()`. They change host state (what holds the caret, where a
-scroller sits), so the next build produces the same tree it would have anyway.
+**Actions, which are not tree edits:** `el.focus()`, `blur()`,
+`el.scrollIntoView()`, and on a text field `el.setSelectionRange(start, end)`,
+`el.insertText(text)` and `el.clearHistory()` (with `el.selection` to read the
+selection; see [Script](/reference/script/#acting-on-an-element)). They change host
+state (what holds the caret, where a scroller sits, what is selected), so the next build produces the same tree it would have anyway.
 Each records an intent that is applied once the handler has finished, so a
 handler that focuses something and then writes a signal does not race the
 rebuild its own write causes. `blur()` is free-standing rather than a method,

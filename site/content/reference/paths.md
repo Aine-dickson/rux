@@ -7,8 +7,7 @@ weight = 16
 <!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
 A leaf that draws Bézier geometry, so a Rux app is not limited to boxes and
-images. The renderer was always past that ceiling; until v0.7 the language was
-not.
+images.
 ```rux
 <path class="wave" d="M 0 60 C 40 0, 80 120, 120 60" />
 ```

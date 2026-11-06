@@ -22,21 +22,16 @@ expands in its place. Routes are tried in the order written and the first match
 wins, so a `fallback` can sit anywhere among them. A path nothing matches and no
 fallback catches renders nothing, and warns.
 
-**Every route's `view` is checked at load, not on arrival.** A route is expanded
-when its path is the one you are on, so a `view` naming nothing used to be
-silent on every page but its own: the document loaded, `rux check` exited 0, and
-the mistake waited for the first navigation there. Whether a name is imported is
-a fact about the file rather than about where you are standing in it, and it is
-reported as an **error** — a page that can never render is wrong, not merely
-dead.
+**Every route's `view` is checked at load, not on arrival.** Whether a name is
+imported is a fact about the file rather than about which page is showing, so a
+`view` naming nothing is an **error** on every page, and `rux check` exits
+non-zero.
 
-**A `to=` that matches no route is reported too.** A dead link is silent by
-construction: tapping it navigates, the router matches nothing, and the screen
-goes blank with no more explanation than an empty screen. The address is written
-in the markup and so are the routes, so the two are compared before anyone taps.
-Only the written-out `to=` — `:to` is built from a row's own data, and a path
-that exists for row 3 and not for row 4 is a data problem rather than a markup
-one. The check runs through the router's own matcher, so `<route fallback>`
+**A `to=` that matches no route is reported too.** Tapping a dead link leaves the
+router with nothing to render, so the address written in the markup is compared
+with the routes written beside it before anyone taps. Only the written-out `to=`
+is checked: `:to` is built from a row's own data, and a path that exists for row
+3 and not for row 4 is a data problem rather than a markup one. The check runs through the router's own matcher, so `<route fallback>`
 answers for everything and a document with no `<router>` says nothing at all
 (which is what a component holding links needs).
 
@@ -107,7 +102,9 @@ keeping the last page's answer.
 are callable from any handler. History is one list with a cursor, so going back
 and then somewhere new drops what was ahead. Navigating to where you already are
 is not a visit, or tapping the current tab would fill the history with repeats.
-On the desktop, **Alt+Left / Alt+Right** and the mouse's side buttons walk it.
+On the desktop, **Alt+Left / Alt+Right** and the mouse's side buttons walk it,
+and on Android the Back button goes back, then asks the `<screen>`'s `@close`
+when there is no page left.
 
 `replace` goes somewhere *instead of* where you are, overwriting the current
 entry, and it is what a redirect needs rather than a nicety. Redirect with
@@ -157,8 +154,8 @@ overwritten.
 
 **A route's view starts fresh when you return to it.** Instance state is keyed by
 template position, so *keeping* it across a visit is what would happen by
-accident; anything meant to outlive a visit belongs in a document signal. Driven
-in `examples/router.rux`.
+accident; anything meant to outlive a visit belongs in a store. Driven in
+`examples/router.rux`.
 
 **An app can open on a page other than its first one**, which is what a link
 someone shared arrives as. On the desktop that is a flag:
@@ -167,8 +164,14 @@ rux run app.rux --route /crew/grace
 ```
 The arrival page is the *first* page, not the second: there is no `/` behind it,
 because no one visited one, so Back has nowhere to go. Saving the file while a
-page other than `/` is showing now reloads onto that page instead of jumping
-home, so an edit to a page three taps in can actually be seen.
+page other than `/` is showing reloads onto that page instead of jumping home,
+so an edit to a page three taps in can be seen.
+
+**A link from outside the app** arrives the same way. On Android, `[app] scheme`
+(`myapp://settings` opens the app on `/settings`) and `[app] link-hosts` (https
+links to those domains) in `rux.toml` make the app a target for such links, and
+`rux run --device --route` sends one for real. A running app navigates to the
+link's path, a closed one opens on it, and a route guard sees `linked` (below).
 
 **On the web the URL bar is the app's address bar**, if the page hands it over:
 ```js
@@ -188,14 +191,10 @@ the playground runs documents written by whoever is typing into them, and one of
 them containing a `<router>` must not be able to rewrite the address of the page
 hosting it.
 
-> **A `<router>` cannot render a route view on the web yet.** A route's view is
-> a component, a component is loaded from a file, and a browser has no
-> filesystem: the web entry point is handed no components at all, so every
-> `<route>` warns that its view is not imported and the router renders nothing.
-> The URL half above is built and works, and `route` is an ordinary signal, so
-> `r-if="route == &quot;/about&quot;"` does work on the web today. What is
-> missing is the bundling of components into a web build, which is what
-> `rux build` is for. Until then, treat the router as desktop-only.
+A web app built with `rux build --target web` passes the base `/` itself, so its
+routes are in the URL bar, and it carries its components, so a `<router>`
+renders its views. The playground has no files: a `<router>` there can only use
+`route` in `r-if` and `:class`, as in `r-if="route == &quot;/about&quot;"`.
 
 **Scroll restoration** is on, and `<router restore-scroll="false">` turns it off.
 The flag means **remember**, not *always restore*: a page you open starts at the
@@ -297,14 +296,12 @@ else the document carries on with a benign default: an `r-if` goes false, a
 `{{ }}` goes empty. A guard has no benign default, because its two answers are
 "let them in" and "do not", and the reason anyone writes one is the second.
 `guard="user.is_admin"` with `user` still loading is syntactically fine, so the
-load-time check passes; before this it admitted everybody, warned into the
-overlay, and looked exactly like a working app. The cost is that the route is
-unreachable until the guard is fixed, and the overlay names the expression and
-the reason.
+load-time check passes. The route is unreachable until the guard is fixed, and
+the overlay names the expression and the reason.
 
-**Guards are synchronous.** There are no promises in the script language, so a
-guard cannot await a network answer; it decides from state that is already there.
-Fetch first, then navigate.
+**Guards are synchronous.** A guard is an expression, and an expression cannot
+`await`, so a guard cannot wait for a network answer; it decides from state that
+is already there. Fetch first, then navigate.
 
 A guard is compiled at load, on the same terms as a `@tap` handler, so a syntax
 error in one is reported without anyone having to navigate. It hides longer than

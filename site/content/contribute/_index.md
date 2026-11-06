@@ -10,15 +10,13 @@ page_template = "docs.html"
 <!-- GENERATED FROM docs/04-architecture.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
 
-How the Rux runtime turns a `.rux` file into pixels and keeps them live. The [spec](/reference/spec/) defines *what the language is*; this defines *what we build*.
-Everything here is downstream of the [rationale](/reference/rationale/), especially [Law 4](/reference/rationale/#law-4-stay-close-to-rust-don-t-pop-the-balloon): **reuse mature Rust crates; write only the glue that is uniquely ours.**
-
-> **Status:** v0.1 architecture proposal. Concrete crate choices are recommendations, not commitments. The milestone plan is designed so each can be swapped without redesign.
+How the Rux runtime turns a `.rux` file into pixels and keeps them live. The [spec](/reference/spec/) defines *what the language is*; this defines how the runtime is built.
+Everything here is downstream of the [rationale](/reference/rationale/), especially [Law 4](/reference/rationale/#law-4-stay-close-to-rust-don-t-pop-the-balloon): **reuse mature Rust crates; write only the glue that is uniquely Rux's.**
 
 ## Contents
 
 - [The pipeline at a glance](#the-pipeline-at-a-glance)
-- [What we reuse vs. what we build](#what-we-reuse-vs-what-we-build)
+- [What Rux reuses and what it builds](#what-rux-reuses-and-what-it-builds)
 - [Stage 1: Parse](#stage-1-parse)
 - [Stage 2: Cascade](#stage-2-cascade)
 - [Stage 3: Reactive graph](#stage-3-reactive-graph)
@@ -28,8 +26,7 @@ Everything here is downstream of the [rationale](/reference/rationale/), especia
 - [The script tier & host bridge](#the-script-tier-host-bridge)
 - [Hot-reload](#hot-reload)
 - [Crate layout](#crate-layout)
-- [Milestone plan](#milestone-plan)
-- [Open questions](#open-questions)
+- [Plan and open work](#plan-and-open-work)
 
 ---
 
@@ -55,70 +52,73 @@ One frame's worth of data flow, source file to screen:
                                                                           → script handlers
 ```
 
-The important property: a signal change does **not** re-run parse or cascade. It marks the specific nodes that subscribed to it dirty, and only those nodes re-layout/repaint. Parse and cascade run at load and on hot-reload; the reactive loop runs every interaction.
+The important property: a state change does **not** re-run parse or cascade. The runtime records which signals each binding reads and which a handler writes, so a handler patches the nodes the written signals reach and reconciles the lists whose shape changed. A full rebuild of the tree is the fallback, not the path. Parse and cascade run at load and on hot-reload.
 
-## What we reuse vs. what we build
+## What Rux reuses and what it builds
 
-Law 4 in one table. The "build" column is the actual surface area of the project.
+Law 4 in one table. The "Rux builds" column is the actual surface area of the project.
 
-| Concern | Reuse (crate) | We build |
+| Concern | Reused (crate) | Rux builds |
 |---|---|---|
-| Windowing / input events | `winit` | thin adapter to our event model |
-| GPU surface | `wgpu` | n/a |
-| Vector painting | `vello` (or `tiny-skia` CPU fallback) | scene builder from our render tree |
-| Text shaping / layout | `parley` + `swash` (or `cosmic-text`) | glyph → paint integration |
-| CSS parsing | `lightningcss` | property → our style-struct mapping |
-| Flexbox/grid layout | `taffy` | style → taffy-node translation |
-| Script interpreter | Rux's own (`rux-syntax`, `rux-ir`, `rux-script`) | host bindings, signal integration |
-| File watching | `notify` | debounce + reload orchestration |
-| **Template parsing** | *(none, ours)* | XML+directive parser → node tree |
-| **Reactive graph** | *(ours; Leptos-inspired)* | signals, subscriptions, dirty tracking |
-| **The glue** | n/a | the document model tying all stages |
+| Windowing / input events | `winit` | adapter to Rux's event model (`rux-shell`) |
+| GPU rendering | `wgpu`, through `vello` | none |
+| Vector painting | `vello` (vendored, scratch buffers sized to the scene), `vello_svg` for SVG images | scene builder from resolved paint items (`rux-paint`) |
+| Text shaping and layout | `parley` | glyph drawing and caching (`rux-text`) |
+| CSS parsing | `lightningcss` | cascade, property to style-struct mapping (`rux-style`) |
+| Flexbox, grid and block layout | `taffy` 0.15, vendored with a `calc()` resolver (`vendor/`) | style to taffy-node translation, paint and hit regions (`rux-layout`) |
+| Images | `image` | decoding, caching, drawing |
+| SVG parsing | `usvg` | none |
+| Audio | `cpal` (output), `symphonia` (decoding) | mixer and element behaviour (`rux-audio`) |
+| Video | the platform's own decoder (Media Foundation, `MediaCodec`) | frame reader (`rux-video`) |
+| Accessibility | `accesskit`, `accesskit_winit` | accessibility tree from layout |
+| Clipboard, file dialogs | `arboard`, `rfd` | none |
+| File watching | `notify` | reload orchestration |
+| HTTP | `ureq` (remote sources, desktop) | none |
+| Script language | none | parser, checker, typed IR, interpreter, Rust codegen (`rux-syntax`, `rux-script`, `rux-ir`, `rux-codegen`) |
+| Template parsing | none | XML plus directive parser (`rux-parser`) |
+| Reactive graph | none | signals and dependency tracking (`rux-reactive`) |
+| Native Rust bridge | `syn` (reading exports) | `#[rux::export]`, resources, native modules (`rux-native`, `rux-bindgen`) |
 
-Roughly: **template parser + reactive graph + the document model** are the genuinely new code Everything else is integration.
+The genuinely new code is the script language, the template parser, the reactive graph and the document model. Everything else is integration.
 
 ---
 
 ## Stage 1: Parse
 
-Input: the raw `.rux` text. Output: three parsed artifacts bundled into a **Document**.
+Input: the raw `.rux` text. Output: three parsed artifacts bundled into a **Document** (`rux-runtime`).
 
-1. **Split the SFC.** Extract `<template>`, `<style>`, `<script>` regions. Cheap pre-pass; each section then goes to its own parser.
-2. **Template → node tree.** Our own parser (the one piece with no off-the-shelf answer). It' XML-shaped but must recognize our attributes specially:
+1. **Split the SFC.** Extract `<template>`, `<style>`, `<script>` regions (`rux-parser`). Cheap pre-pass; each section then goes to its own parser.
+2. **Template → node tree.** Rux's own XML-shaped parser, which recognizes the Rux attributes specially:
    - `{{ expr }}` interpolations in text and attribute values → **binding nodes**, not literal strings.
    - `r-for`, `r-if`/`r-elif`/`r-else`, `r-show` → **structural directives** attached to the node, not attributes.
    - `:attr`, `r-model`, `@event` → **binding metadata** on the node.
-   - Custom element tags (kebab-case, not one of the six) → **component instantiation** points Output is a tree of `TemplateNode`s where every dynamic piece is already distinguished from static text. Directive expressions are stored as *unparsed source strings* here; they compile against the script scope in Stage 3.
-3. **Style → stylesheet.** Hand the CSS to `lightningcss`; keep its parsed rule list. No evaluation yet.
-4. **Script → program.** Hand the script to `rhai`'s parser; keep the compiled AST. Top-level `let signal(...)` declarations and `fn`s are catalogued so the template compiler can resolve names.
-Parse errors do **not** panic. They produce a `DiagnosticSet` that the [hot-reload](#hot-reload) layer renders as a dev overlay, the accepted cost of [runtime documents](/reference/rationale/#runtime-documents-over-compile-time-components).
+   - Custom element tags (kebab-case, not a built-in element) → **component instantiation** points. Components come from `use` imports, each loaded as its own `.rux` file (`rux-runtime`).
+
+   Output is a tree where every dynamic piece is already distinguished from static text. Directive expressions are kept as source text here; they are checked and lowered against the script in Stage 3.
+3. **Style → stylesheet.** The CSS goes to `lightningcss` (`rux-style`); a `<style>` that uses Tailwind directives is compiled first by the `tailwindcss` CLI (`rux-runtime`'s `tailwind` module). No evaluation yet.
+4. **Script → program.** Rux's own parser (`rux-syntax`) reads the script into an AST. The checker (`rux-script`) resolves names and types, and lowering turns it into the typed IR (`rux-ir`) that the interpreter runs. Top-level `let`s and `fn`s are catalogued so bindings can resolve names.
+
+Parse errors do **not** panic. They become a `LoadError`, or `Diagnostics` (errors and warnings, collected rather than printed, since a CLI, a window and a browser all load the same document). The [hot-reload](#hot-reload) layer renders them as the dev overlay, the accepted cost of [runtime documents](/reference/rationale/#runtime-documents-over-compile-time-components).
 
 ## Stage 2: Cascade
 
-Input: the node tree + the parsed stylesheet. Output: a **resolved style struct** per node.
+Input: the node tree + the parsed stylesheet. Output: a **resolved style** per node (`rux-style`).
 
-- Match selectors against each node. Selector kinds we honor:
-  class (`.x`), id (`#x`), element (`view`, `text`, …), and attribute for roles
-  (`[role="list"]`), plus descendant/child combinators.
-- Apply the cascade: specificity + source order, exactly as CSS defines. We lean
-  on `lightningcss`'s parsed representation; the cascade *algorithm* is small and
-  ours.
-- Map matched declarations onto a fixed `ComputedStyle` struct holding only the
-  [honored subset](/reference/spec/#styling). Unhonored properties are dropped and
-  logged in dev mode.
-- Split `ComputedStyle` conceptually into **layout props** (feed Stage 4) and
-  **paint props** (feed Stage 5).
+- Match selectors against each node: class, id, element, attribute (`[role="list"]`), pseudo-classes, and the combinators.
+- Apply the cascade: specificity + source order, as CSS defines. `lightningcss` supplies the parsed representation; the cascade itself is Rux's.
+- Map matched declarations onto the `Style` struct in `rux-layout`, which holds only the honored subset of CSS (the list is in [as-built](/reference/css/)). Properties Rux does not honor are dropped and reported in the dev overlay and on stderr.
+- The struct's **layout props** feed Stage 4 and its **paint props** feed Stage 5.
 
 Cascade re-runs on style hot-reload or when a node's classes change reactively, never on a plain signal value change.
 
 ## Stage 3: Reactive graph
 
-This is the heart, and it's ours (modeled on Leptos/Solid, proven in Rust, per Law 4). Input: the node tree + compiled script. Output: a live graph where value changes propagate to exactly the affected nodes.
+This is the heart. Input: the node tree + the checked script. Output: a live document where value changes reach exactly the affected nodes. The value types live in `rux-reactive`; the state and dependency tracking live in `rux-script`'s `Engine`.
 
-- **Signals** are the leaves: `signal(v)` registers a reactive cell in the runtime. `rhai`'s host functions expose `signal`, `.get()`, `.set()`, `.update()` into script scope.
-- **Binding compilation.** Each `{{ expr }}`, `:attr`, `r-if`, `r-for`, etc. is compiled once into a *reactive computation*: a closure that reads signals and produces a value. The read establishes the subscription: reading a signal inside a binding records "this binding depends on that signal."
-- **Dirty propagation.** `signal.set()` marks its subscribers dirty and schedules a frame. On the frame, dirty computations re-run; a text binding updates its node's text, an `r-if` adds/removes a subtree, an `r-for` diffs its keyed list.
-- **No virtual DOM.** The binding *is* the subscription; there is no whole-tree diff. Only dirty computations do work.
+- **State** is the script's top-level `let n = signal(v)` declarations, plus `computed` values derived from them. Writing a signal from a handler or an effect is a change; the [script reference](/reference/script/) has the language.
+- **Dependency tracking.** Each `{{ expr }}`, `:attr`, `r-if`, `r-for`, etc. is evaluated by the interpreter, which records what it reads. A binding depends on the state it read, and a handler is known by the state it writes.
+- **Patching.** After a handler runs, the runtime patches the text and attribute bindings the written state reaches, mounts or unmounts `r-if` subtrees, and reconciles `r-for` lists by `r-key`. A change to structure the patch cannot express falls back to a full rebuild of the tree.
+- **No virtual DOM.** The binding is the subscription; there is no whole-tree diff.
 
 The structural directives are reactive computations with side effects on tree shape:
 
@@ -132,151 +132,87 @@ The structural directives are reactive computations with side effects on tree sh
 
 ## Stage 4: Layout
 
-Input: layout props + tree shape. Output: a box (x, y, w, h) per node.
+Input: the styled tree. Output: absolute paint items plus the regions the shell needs (`rux-layout`).
 
-- Translate each node's `ComputedStyle` layout props into a `taffy` style and
-  build a parallel `taffy` tree. `taffy` *is* a flexbox/grid engine, so
-  `display: flex`, `flex-direction`, `gap`, `justify-content`, `align-items`,
-  `padding`, `margin`, sizing, and `overflow` map almost 1:1.
-- Text nodes need intrinsic sizing: `parley` shapes the text to measure it, and
-  that measurement feeds `taffy` as a leaf's content size.
-- Run `taffy` to produce absolute rects. Cache them; only re-run for the dirty
-  subtree when a reactive change altered size-affecting props or tree shape.
-- `overflow: auto`/`scroll` produces a clipping+scrollable region and enables the
-  node's `scroll` [capability](/reference/spec/#events).
+- Each node's layout props become a `taffy` style in a parallel `taffy` tree. Taffy is the flexbox and grid engine, so `display: flex`, `display: grid`, `gap`, `justify-content`, `align-items`, `padding`, `margin`, sizing and `overflow` map almost 1:1. The workspace patches Taffy 0.15 with a resolver for `calc()` (see `vendor/README.md`).
+- Text leaves are sized through a `measure` callback: `rux-text` shapes the text with `parley`, and that measurement is the leaf's content size. `rux-layout` itself has no font dependency.
+- Taffy produces the boxes, and `rux-layout` flattens them to absolute rects in one coordinate space.
+- Alongside the paint items come hit regions, scroll regions, focus order, selectable text, hover and active state regions, and the accessibility nodes. `overflow: auto`/`scroll` produces a clipping, scrollable region.
 
 ## Stage 5: Paint & present
 
-Input: paint props + layout rects. Output: pixels on the window.
+Input: paint items. Output: pixels on the window.
 
-- Walk the laid-out tree building a **scene** for `vello`: rounded rects
-  (`background`, `border-radius`, `border`), text runs (from `parley`/`swash`
-  glyphs), images, shadows, opacity, clips for scroll regions.
-- `vello` renders the scene on `wgpu`; `winit` owns the window/surface.
-- A `tiny-skia` CPU backend is the fallback for platforms/targets without a
-  usable GPU (and the likely path for the embedded target later).
-- Only the dirty region repaints where the backend allows; otherwise repaint the
-  frame but skip re-layout of clean subtrees.
+- `rux-paint` turns the paint items into a `vello` scene: rounded rects with per-corner radii and per-side borders, gradients, box shadows, glyph runs (via `rux-text`), images, SVG, scrollbars, the selection highlight, and clips for scroll regions. It decides nothing about how a document should look; every judgement call is upstream.
+- `vello` renders the scene on `wgpu`; `winit` owns the window and surface (`rux-shell`).
+- There is one renderer. The browser build (`rux-web`) runs the same shell on a canvas.
 
 ## Input & event routing
 
-The reverse path: `winit` raw input → our event model → script handlers.
+The reverse path: `winit` raw input → Rux's event model → script handlers. All of it lives in `rux-shell`.
 
-1. `winit` delivers pointer/touch/keyboard events.
-2. **Gesture recognition** turns raw pointer streams into our gesture-honest
-   [capabilities](/reference/spec/#events): a press+release within slop/time = `tap`;
-   held = `longpress`; moved = `drag`/`swipe`; wheel/touch-move over an
-   `overflow` node = `scroll`. This is where "not a browser" is enforced:
-   `hover` only exists when a pointer device is present.
-3. **Hit-testing** uses the layout rects to find the target node; the event
-   bubbles up ancestors (like DOM bubbling) until a handler consumes it.
-4. If the node bound that capability with `@event`, the handler runs in the
-   [script tier](#the-script-tier-host-bridge). Handlers mutate signals; signal
-   changes re-enter Stage 3. The loop closes.
+1. `winit` delivers pointer, touch, keyboard and IME events. The web build feeds the same paths from the canvas.
+2. **Gesture recognition** turns raw pointer streams into Rux's gesture-honest events: a press and release within slop and time is `@tap`; held is `@longpress`; moved is `@drag` or `@swipe`; wheel or touch-move over an `overflow` node is a scroll. A finger is not routed down the mouse path: a drag moves the caret where a mouse drag selects. `hover` only exists when a pointer device is present.
+3. **Hit-testing** uses the layout's hit regions to find the target node; the event bubbles up ancestors until a handler consumes it. Keys go to the focused element, then outward through `@key` handlers.
+4. If the node bound that event with `@event`, the handler runs in the [script tier](#the-script-tier-host-bridge). Handlers write signals, and the change re-enters Stage 3. The loop closes.
+
+Accessibility runs the same loop in reverse: layout's accessibility nodes become an `accesskit` tree, published to the platform's screen reader.
 
 ## The script tier & host bridge
 
-Two tiers, one boundary. See the [decision](/reference/rationale/#two-tier-logic-rhai-script-over-a-compiled-rust-host).
+Two tiers, one boundary. See the [decision](/reference/rationale/#two-tier-logic-script-over-a-compiled-rust-host) (the interpreter in that decision is Rux's own now, not rhai).
 
-- **Script (rhai).** Runs the component's handlers and holds its signals. Each
-  component instance gets a `rhai` scope seeded with its top-level `let`s/`fn`s.
-  Interpreted, so it hot-reloads.
-- **Host (compiled Rust).** A `HostRegistry` maps names → Rust closures, injected
-  into the `rhai` engine as the `host` module. This is the registry contract:
-
-  ```rust
-  // illustrative; final shape decided during build
-  let mut host = HostRegistry::new();
-  host.function("load_devices", || db::all());
-  host.function("read_battery", || sensors::battery());
-  host.function("open", |id: i64| nav::open(id));
-  engine.register_static_module("host", host.into_module());
-  ```
-
-- **Boundary rules.** Script may only call registered `host::` names (unknown →
-  diagnostic). All native capability (fs, net, sensors, navigation, native
-  pickers) crosses here. Values marshal as `rhai` dynamics; the host validates.
-- **Threading.** Host functions that block (I/O) run off the UI thread and
-  resolve back onto it before touching signals, so the render loop never stalls.
-  (Async model is an [open question](#open-questions).)
+- **Script.** Rux's own typed language. `rux-syntax` parses it, `rux-script` checks it and lowers it to the IR in `rux-ir`, and the interpreter in `rux-script` runs the component's handlers and holds its state. Interpreted, so it hot-reloads. A release build (`rux build --release`) also writes Rust for a file's functions (`rux-codegen`); that code runs inside the interpreter, and only for text it was generated from, so a hot-reloaded file is interpreted as before.
+- **Native Rust.** An app's Rust lives in a `native/` crate that depends on `rux-native` as `rux`. `#[rux::export]` marks what script may call, and `pub mod`s become `native::name` modules. `rux-bindgen` reads the crate's source for the signatures, so `rux check` and the editor know them without a build. `rux-native-macros` provides the attributes.
+- **Boundary rules.** Script reaches native code only through the modules the app registers; an unknown name is a diagnostic. Values cross as `Any` and are converted by `FromRux` and `IntoRux`, which throw instead of wrapping on overflow. See [Native code](/reference/script/#native-code).
+- **Threading.** Script runs on one thread. An `async` export's future runs where `rux_native::spawn` runs it, its answer is queued, and the shell is woken to resume the script's `await` on the script thread, so the render loop never stalls and script never races.
 
 ## Hot-reload
 
 The feature that drove the whole [runtime-document decision](/reference/rationale/#runtime-documents-over-compile-time-components).
 
-- `notify` watches the `.rux` file(s); a short debounce coalesces editor saves.
-- On change, re-run **only the stages the edit affects**:
-
-  | Edited section | Re-run from |
-  |---|---|
-  | `<style>` | Cascade (Stage 2) → relayout/repaint |
-  | `<template>` | Parse template → Cascade → rebuild reactive graph |
-  | `<script>` | Reparse script → re-seed scopes → rebuild bindings |
-  | host (Rust) | **rebuild required**: not hot |
-
-- **State preservation** is best-effort: on a script/template reload we attempt
-  to carry signal values forward by name; when the shape changed too much we
-  reset to initial. (Exact policy is an [open question](#open-questions).)
-- Parse/eval failures show the `DiagnosticSet` as an **overlay** over the last
-  good frame, never a crash and never a blank window.
+- `notify` watches the `.rux` file's directory recursively, so edits to imported components count, and so do edits to `.css` files a `<style src>` includes.
+- On change the shell loads the whole document again (`Document::load`) and swaps it in. The window's own state survives: its size and pointer state, and the page the app was on. Script state starts afresh, because the reloaded document is a new one; the old one is shut down first, so its `unmounted` bodies run.
+- Editing the compiled Rust in `native/` is not hot: it needs a rebuild.
+- A load that fails keeps the last good frame on screen under an **overlay** naming the error; it is never a crash and never a blank window.
+- On a device, `rux run --device` pushes the changed documents to the installed dev build over a connection that both ends authenticate with a shared secret, and the app reloads from them the same way.
 
 ## Crate layout
 
-A workspace of focused crates so pieces stay swappable (and testable without a
-GPU):
+A workspace of focused crates so pieces stay swappable and testable without a GPU. Each crate is internal except the CLI and `rux-native`; the supported entry point is the `ruxlang` crate.
 
 ```
-rux/
-├─ rux-parser     # template XML+directive parser → TemplateNode tree   (ours)
-├─ rux-style      # lightningcss integration, cascade, ComputedStyle    (ours+reuse)
-├─ rux-reactive   # signals, subscriptions, dirty scheduling            (ours)
-├─ rux-script     # checker, lowering, interpreter, host registry        (ours)
-├─ rux-layout     # ComputedStyle → taffy, text measwith parley         (integration)
-├─ rux-paint      # render tree → vello scene; tiny-skia fallback       (integration)
-├─ rux-runtime    # the Document model; owns the pipeline + hot-reload  (ours)
-├─ rux-shell      # winit window, input→event, frame loop               (integration)
-└─ rux-cli        # `rux run app.rux`, dev overlay, watcher             (glue)
+crates/
+├─ rux-parser         # SFC split, template XML + directive parser
+├─ rux-style          # lightningcss integration, cascade onto the template tree
+├─ rux-reactive       # signal values (no dependencies)
+├─ rux-syntax         # the script language's lexer, parser and AST
+├─ rux-ir             # the typed IR and the type language
+├─ rux-script         # checker, lowering, interpreter, state, native modules
+├─ rux-codegen        # Rust generated from the IR, for release builds
+├─ rux-layout         # styled tree → taffy → absolute paint items and regions
+├─ rux-text           # parley shaping and layout, vello glyph drawing
+├─ rux-paint          # paint items → vello scene
+├─ rux-runtime        # the Document model: loading, components, bindings, patching
+├─ rux-shell          # winit window, GPU surface, input, focus, clipboard, a11y, frame loop
+├─ rux-audio          # symphonia decoding, cpal mixer
+├─ rux-video          # platform video decoders (Media Foundation, MediaCodec)
+├─ rux-icons          # bundled Tabler icon path data
+├─ rux-native         # #[rux::export], resources, native modules (an app's `rux`)
+├─ rux-native-macros  # the attribute macros behind rux-native
+├─ rux-bindgen        # reads an app's native/ crate for its exports and signatures
+├─ rux-fmt            # re-indentation for .rux files
+├─ rux-highlight      # TextMate grammar interpreter for syntax colouring
+├─ rux-web            # the shell compiled to WebAssembly, drawing to a canvas
+├─ rux-cli            # `rux run | check | fmt | build | new | vocab | doctor`
+└─ rux-aot-tests      # compiled functions run beside the interpreter (tests only)
 ```
 
-`rux-reactive` and `rux-parser` have zero GPU/OS deps and are unit-testable in
-isolation, deliberately, since they're the novel logic.
+`rux-reactive`, `rux-parser`, `rux-syntax`, `rux-ir` and `rux-layout` have no GPU or OS dependencies. `rux check` builds a `Document` and discards the tree, so checking a file needs no window and runs in CI.
 
-## Milestone plan
+## Plan and open work
 
-Each milestone is independently demoable and de-risks the next. The ordering
-front-loads the thesis (layout-is-CSS, hot-reload) before the elaborate parts.
-
-| # | Milestone | Proves | Rough surface |
-|---|---|---|---|
-| **M0** | Blank `winit`+`wgpu` window, clear color | GPU/window path works on Windows | `rux-shell` |
-| **M1** | Hardcoded node tree → `taffy` → `vello` paints rects | layout+paint pipeline | `rux-layout`, `rux-paint` |
-| **M2** | Parse a static `.rux` template+style → render it | our parser + cascade + literal CSS | `rux-parser`, `rux-style` |
-| **M3** | `notify` watcher → edit `.rux`, window repaints | **hot-reload thesis** | `rux-runtime`, `rux-cli` |
-| **M4** | Text via `parley`; real content sizing | text is a first-class citizen | `rux-layout` |
-| **M5** | Signals + `{{ }}` bindings update on change | reactive graph | `rux-reactive` |
-| **M6** | Input → gestures → `@tap` handler mutates a signal | full interaction loop | `rux-shell`, `rux-script` |
-| **M7** | `r-for`, `r-if`, `r-model`, `<input>` controls | directive set | across |
-| **M8** | Host registry; `host::` calls from script | native-capability boundary | `rux-script` |
-| **M9** | Component import + embed (`<device-tile>`) | reuse/module system | `rux-parser`, `rux-runtime` |
-
-The [guide's](https://github.com/Aine-dickson/rux/blob/main/docs/03-guide.md) finished dashboard is the acceptance test for M9:
-when that file renders and behaves, v0.1 is real.
-
-## Open questions
-
-Deferred to build-time decisions, flagged so we don't pretend they're solved:
-
-- **Async/host concurrency**: the exact model for non-blocking host calls and
-  how their results re-enter the signal graph.
-- **State preservation policy on hot-reload**: how aggressively to carry signal
-  values across a reload before resetting.
-- **Text/`parley` vs `cosmic-text`**: pick after M4 measures both for our needs.
-- **Vello maturity on the CPU/embedded path**: may push `tiny-skia` earlier for
-  the eventual `thumbv7em` target.
-- **Event object shape**: the concrete gesture payload passed to handlers
-  (`$event`), finalized alongside M6.
-- **Grid/table**: still [deferred](/reference/rationale/#the-element-audit); revisit
-  only after v0.1 ships.
+What is built is described in [as-built](/reference/); what is next and what is open is in the [roadmap](/roadmap/).
 
 ---
 

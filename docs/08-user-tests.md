@@ -721,9 +721,9 @@ of why `view="new_task"` was accepted when nothing imported it.
 
 **Three of the four were silent, and the fourth pointed at the wrong line.**
 That is the shape worth noticing: none of them was a missing feature. The
-information existed in every case — the void list was already in the formatter,
+information existed in every case (the void list was already in the formatter,
 the section boundaries were already in the editor's scanner, the imports were
-already in the script — and nothing was asking it at the moment it mattered.
+already in the script), and nothing was asking it at the moment it mattered.
 
 ### A component could not use a component (2026-09-15)
 

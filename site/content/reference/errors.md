@@ -19,76 +19,63 @@ app is watching.
   (*"showing the last version that loaded"*), so a typo mid-edit neither blanks
   the window nor passes unnoticed. Fixing the file clears the overlay; the window
   keeps its size and pointer state across the reload.
-- **A document that builds but has dead CSS** gets a quieter amber panel listing
-  what does nothing: unhonored properties, unknown pseudo-classes, undefined
-  `var()`s, unsupported `@media` conditions, and **expressions that failed**, `expression \`dubble(n)\` failed: Function not found: dubble`. Long lists are
-  capped at six with a count of the rest; everything still goes to stderr.
-  CSS warnings are prefixed with the line they are on (`line 11: …`).
-- **Template warnings carry their line too**, from v0.7.1. Every one of them
-  used to arrive unplaced, so the overlay, `rux check --format json` and the
-  editor gutter all fell back to the top of the file: the `<` of `<template>`,
-  which is the one place in a document where nothing is ever wrong. The
-  template parser now records a file line for each element, each attribute and
-  each text run, and a warning is attributed to the most specific one that
-  applies. A handler lands on its own attribute's line rather than on the tag's,
-  which matters because elements are routinely written across several lines; an
-  `r-if` or `r-for` lands on the directive rather than on the parent element
-  whose loop reads it; and a `{{ }}` lands on the text run rather than on the
-  element containing it.
-- **A warning raised inside an imported component names that component's file**,
-  not the document that imported it. Errors have done this since components
-  landed; warnings had nowhere to put it, so they carried the component's line
-  number and the importer's name. That pairing reads as a precise location and
-  is not one, which is worse than saying nothing at all.
+- **A document that builds but has dead CSS or a failing expression** gets a
+  quieter amber panel listing what does nothing: unhonored properties, unknown
+  pseudo-classes, undefined `var()`s, unsupported `@media` conditions, and
+  **expressions that failed**, such as ``expression `dubble(2)` failed: there is
+  no function `dubble` taking 1 argument``. Long lists are capped at six with a
+  count of the rest; everything still goes to stderr. The panel is red when
+  anything in it is an error.
+- **Every finding carries its line**, numbered against the whole `.rux` file:
+  a handler on its own attribute's line, an `r-if` or `r-for` on the directive,
+  a `{{ }}` on its text run, a CSS warning on its rule. `rux check --format json`
+  and the editor gutter place them the same way.
+- **A finding raised inside an imported component names that component's file**
+  and its own line, not the document that imported it.
 - **Some of these are errors, even though the document built.** A load either
   works or does not; that is separate from whether what loaded is *right*. An
-  expression that cannot resolve, an `@event` the runtime never dispatches and a
-  value on a valueless directive are all definitely wrong, so `rux check` exits
-  non-zero for them where it used to call the file clean. The window still runs
-  the app: blanking it over a typo mid-edit would be worse than useless.
+  expression that cannot resolve, a missing property (`{{ user.nmae }}`), a type
+  that does not fit, an `@event` the runtime never dispatches and a value on a
+  valueless directive are all definitely wrong, so `rux check` exits non-zero
+  for them. The window still runs the app: blanking it over a typo mid-edit
+  would be worse than useless. Type findings are described in [Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md);
+  every page and every component is checked in its own file and scope, and a
+  script that does not parse fails its load at its line.
 
-  **Reading an undefined name is an error in a page and a warning in a
-  fragment.** A page (`<screen>` root) has no caller, so a name it does not
-  declare can come from nowhere. A fragment is a component: a name it declares
-  with `prop` is owed by its caller and is not reported at all, and one it
-  neither declares nor defines may still be a document signal it reads by name,
-  so it stays a warning. Which of the two a file is comes from whoever opened
-  it, or from the file itself: declaring a `prop` makes it a component.
+  **Reading an undefined name is an error in the app's document and a warning
+  in a component opened on its own.** The document has no caller, so a name it
+  does not declare can come from nowhere, and neither can one in a component it
+  builds. A component opened by itself (`rux check components/stat.rux`) may be
+  handed names by a caller: one it declares with `prop` is owed and is not
+  reported at all, and any other stays a warning. Declaring a `prop` makes a file
+  a component whoever opens it.
 - **Load-time findings stay listed.** The import, prop and attribute checks read
-  the whole template once, at load, and a rebuild re-raises only what the build
-  finds. Every rebuild used to replace the list, so a document whose `mounted`,
-  `computed` or `effect` ran lost every one of those errors before the overlay
-  or `rux check` saw it: a bogus `@frob` on a page with a `mounted` block checked
-  clean. They are kept on the document and put back after each rebuild.
-- **Tapping the panel dismisses it**, and it says so. The panel covers the app it
-  is describing, which was a problem when the thing you needed to look at was
-  underneath. The dismissal is remembered against *those* diagnostics, so it
-  lasts exactly as long as the document's problems are the same ones: fix a
-  warning, or introduce an error, and the panel comes straight back. A press
-  landing on the panel does not reach the app under it either.
+  the whole template once, at load, and are kept on the document and put back
+  after each rebuild, so a bogus `@frob` on a page with a `mounted` block is
+  still reported.
+- **Tapping the panel dismisses it**, and it says so. The dismissal is remembered
+  against *those* diagnostics, so it lasts exactly as long as the document's
+  problems are the same ones: fix a warning, or introduce an error, and the
+  panel comes straight back. A press landing on the panel does not reach the app
+  under it either.
+- **`print(x)` output waits in a corner badge.** Prints show as one line in the
+  bottom right ("3 printed: …") that a tap opens into the panel, below the
+  findings; a print never brings back a panel dismissed for warnings.
 
 - **A handler or a `fn` that calls something which cannot exist** is reported
-  at load, before anything is tapped. rhai looks a function name up when the
-  call *runs*, so until v0.7.1 `@tap="alert(1)"` compiled clean and did nothing
-  when pressed, while the identical mistake inside `{{ }}` was reported during
-  the build. A dead handler looks exactly like a handler that never fired, so
-  this was the worst place in the language to be quiet. Every `@event`, every
-  route `guard` and every `fn` body in `<script>` is checked, including the ones
-  behind a false `r-if` and the ones nothing calls yet.
+  at load, before anything is tapped, with the line of the call. Every `@event`,
+  every route `guard` and every `fn` body in `<script>` is checked, including the
+  ones behind a false `r-if` and the ones nothing calls yet.
 
   **Names, not argument counts.** A name that is registered nowhere, defined by
   no `fn` and built into nothing can never resolve under any state, so saying so
-  cannot be a false alarm. Argument counts are a separate question with real
-  traps in them, and a check that flags working code is worse than the silence
-  it replaced.
+  cannot be a false alarm. A call with the wrong number of arguments to a `fn`
+  is reported too, naming how many it takes.
 
   One case is reported by shape rather than by name: **`signal.set(x)` and
-  `signal.get()`**, the signal API from before v0.3, which ordinary assignment
-  replaced. Those two escape a name check because `set` and `get` really are
-  registered, on arrays, maps, blobs and strings. What identifies them is the
-  arity: every registered `set` takes two arguments after its receiver, so
+  `signal.get()`**, the old signal API, which ordinary assignment replaced.
   `tasks.set(0, "x")` on an array signal is legitimate and stays silent, while
-  `searching.set(true)` is the superseded API and nothing else.
+  `searching.set(true)` is reported with the assignment to write instead.
 
 Every shipped example is checked to load **warning-free**, so a noisy overlay in
 `examples/` is a test failure.
@@ -99,21 +86,5 @@ the error (with line and column) and every warning (with its line) as JSON; the
 page lists them under the editor and each one that knows its line is a button
 that selects that line. It runs on load as well as on Run, since a shared link
 carries its source in the URL hash.
-
-> The deployed page is built from `main` while the runtime it loads is pinned to
-> the latest **tag**, so the page has to keep working against a build that
-> predates its own features. It feature-detects `diagnose` and falls back to the
-> older `setSource`, which reports an error and no warnings. The fallback is
-> only removable once a deployed build actually carries `diagnose`, which means
-> after the tag exists *and* the site has been rebuilt against it: pushing a tag
-> deploys nothing on its own, since the workflow fires on pushes to `main`.
-
-**Known limits:** rhai returns `()` for a missing *map property*, rather than
-erroring, so `{{ user.nmae }}` still renders empty with nothing reported (a
-missing *function* or variable does report). That one is rhai's semantics, not
-ours, it is tracked as a motivator for the planned rhai fork in
-[Roadmap](/roadmap/) (Further out → *Script documentation*). Expression
-failures and anything from a component's CSS are still reported without a line,
-for the reasons under "Checking a file without opening a window".
 
 ---

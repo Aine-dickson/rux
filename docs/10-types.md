@@ -3,23 +3,7 @@
 The type system for Rux script: what an annotation says, what the checker does
 with it, and what it costs at run time.
 
-**Superseded as a plan by [The Rux language](./11-next.md)** (2026-09-26), which keeps most of this and marks what changes (`int`/`float` for `number`, `none` for `null`, generics, checked types). This document still describes what runs today.
-
-**Status: designed, being built.** Every rule below was decided on 2026-09-24
-and none of it is open. The table says which parts run today; a part that does
-not run yet is a design, and [Script](./07-script.md) stays the reference for
-what the language does now. As each part lands, its rules move into Script and
-the row below says so.
-
-| Part | State |
-|---|---|
-| Annotations parsed and erased (`: T`, `type`, `prop x: T`, `use type types::X`) | **Built** 2026-09-24. Accepted and ignored at run time; a malformed one is a syntax error. See [Script](./07-script.md#type-annotations) |
-| The checker: primitives, arrays, records, dictionaries, `T?`, inference | **Built** 2026-09-24 for a file's `<script>`: its `let`s, functions (parameters, results, calls) and closures. Its template came with the templates row |
-| Unions, narrowing, `switch` exhaustiveness, forced `?.` | **Built** 2026-09-24 in a file's `<script>`, with `?[` for a dictionary. `r-if` narrowing came with templates; `await` waits for async |
-| Functions: typed and untyped, the caller-local rule | **Built** 2026-09-24. Parameters, results and calls came with the checker; the caller-local rule is on, and the sweep before it found no existing function it breaks |
-| Templates: `r-for`, `r-if`, bindings, `r-model`, events, props at the tag | **Built** 2026-09-24 for the file being checked: a document's own template, or a component's when it is the file. A form's `event.values` is a record of its fields, not a dictionary; see below |
-| Boundaries: prop checks at run time, `x is T` | **Built** 2026-09-24. A prop that does not fit is left out and reported; a route parameter becomes the type its prop takes. See [Script](./07-script.md#is-and-props-at-run-time) |
-| Editor: hover, completion, the parameter quick-fix | **Built** 2026-09-24 in the VS Code extension, from `rux check --format json --types`. Answers are as of the last save; see [Editor](#editor) |
+Everything below runs. The checker reads a file's `<script>` and its template, annotations are erased when the program runs, and the exceptions are the boundaries described below. [The Rux language](./11-next.md) is the full language reference; this document is the type system's part of it. [Script](./07-script.md#type-annotations) covers annotations and [`is` and props at run time](./07-script.md#is-and-props-at-run-time) from the script side.
 
 ## The shape of it
 
@@ -81,7 +65,7 @@ Signals read as plain values everywhere, so `filter` above is a `Filter`, and
 A `type` declaration belongs at the top level of `<script>`. It may appear
 anywhere there, before or after its first use, and it declares nothing at run
 time: `type` is a word only at the start of a statement followed by a name and
-`=`, so `let type = 1;` still means what it did.
+`=`, so `let type = 1;` is an ordinary `let`.
 
 **A declared type's name starts with a capital letter.** `Task`, `Filter`,
 `RowState`. The built-in types are all lower case, so the two can never
@@ -96,8 +80,8 @@ collide, and an import can tell a type from a component by its spelling (see
 | `float` | A 64-bit float. An `int` goes anywhere a `float` does, not the other way round |
 | `string` | Text |
 | `bool` | `true` or `false` |
-| `none` | The empty value. `null` and `()`, its older spellings, still read as it, and are errors that name it; `rux fmt` rewrites them |
-| `any` | Anything, unchecked. What a name becomes when nothing says otherwise |
+| `none` | The empty value. `null` and `()` read as it too, but are errors that name `none`; `rux fmt` rewrites them |
+| `any` | Anything, unchecked. What a name becomes when nothing says otherwise. A union with `any` in it is `any` |
 | `"all"` | Exactly that string. Useful in a union |
 | `T[]`, `Array<T>` | An array of `T`; two spellings of one type |
 | `{ id: int, title: string }` | A record: a map with exactly these fields |
@@ -112,8 +96,7 @@ collide, and an import can tell a type from a component by its spelling (see
 | `void` | What a function returns when it returns nothing |
 
 **A whole-number literal is an `int`, and one with a point or an exponent a
-`float`** (changed in step 3 of [The Rux language](./11-next.md#numbers); until
-then there was one `number` with `int` a kind of it). `.length`, a range
+`float`** (see [Numbers](./11-next.md#numbers)). `.length`, a range
 variable (`for i in 0..n`), `trunc()`, `round()`, `floor()`, `ceil()` and
 `intDiv(a, b)` are `int`s; `toFloat()` makes a `float`. `int + int`,
 `int - int`, `int * int` and `int % int` are `int`, `int ** 2` too, and with a
@@ -125,15 +108,14 @@ An `int` is a whole number when the script runs too, and a number field bound
 to one writes the number cut toward zero.
 
 **A record and a dictionary are both written with braces**, and so are map
-values since `{ a: 1 }` became a map. The difference is the square brackets:
+values (`{ a: 1 }`). The difference is the square brackets:
 `{ [string]: bool }` is a dictionary, and anything else in braces is a record.
 A record type is structural: any map with the right fields is one, whatever it
 was built as. An object **literal** with a field its target type does not have
 is an error, because that field is almost always a misspelling of one it does
 have.
 
-**A type or a function may take type parameters** (step 3.4 of [The Rux
-language](./11-next.md#declaring-kept-with-generics)): `type Page<T> = {
+**A type or a function may take type parameters** (see [Declaring](./11-next.md#declaring-kept-with-generics)): `type Page<T> = {
 items: T[], next: string? };`, used as `Page<Task>`, and
 `fn first<T>(items: T[]): T? { items?[0] }`. A call never names them: they are
 what the arguments make them, so `first(tasks)` is a `Task?`, and a closure
@@ -143,7 +125,7 @@ nothing is known about: its value can be passed on, stored and compared, and
 reading a field of it, adding to it or testing it with `is` is an error. A
 generic type named without its arguments, or with the wrong number, is an
 error, and so is one given arguments it does not take. A `Map`'s keys are
-`string` for now, and `Set` is not in yet; each is an error that says so.
+`string`, and `Set` is not a type; each is an error that says so.
 
 **`Result<T, E>`** is `{ ok: true, value: T } | { ok: false, error: E }`,
 declared in every file. `Ok(v)` and `Err(e)` build one, `if r.ok` narrows it
@@ -153,9 +135,24 @@ declared `: void` returns: its last statement is not a result, `return x;` in
 it is an error, and its call is nothing to use. A callback typed
 `(T) => void` takes a function that returns anything.
 
-Not in the first release, and so errors if written: number and boolean literal
+Not in the language, and so errors if written: number and boolean literal
 types, intersections (`A & B`), tuples, `extends` constraints, type arguments
 written at a call, and anything class-shaped.
+
+### Types every file can name
+
+These need no `use` and no declaration:
+
+| Type | Is |
+|---|---|
+| `File` | A file the person chose: `{ name: string, size: int, type: string, url: string, path: string? }`. What `<input type="file">` binds (`File?`, or `File[]` with `multiple`), and what `pickFile` (`File?`) and `pickFiles` (`File[]`) give. `path` is the desktop's alone. `file.text()` is an async method giving the contents as a `string` |
+| `Sound` | What `loadSound(src)` gives. Opaque: its methods and properties are used, its inside is not seen |
+| `TapEvent`, `DragEvent`, `SwipeEvent`, `KeyEvent`, `SelectEvent`, `InputEvent` | What `event` is in the handlers of that name; see [Templates](#templates). Annotate a function's parameter with one to call it from a handler |
+| `TextMark` | One range of a field's `:marks`: `{ start: int, end: int, class: string }` |
+
+[Script](./07-script.md#what-an-event-hands-you) lists the fields of each event. A file's own `type` of the same name takes the place of these.
+
+**A type from Rust is declared by the app's `native/` crate.** A struct marked `#[rux::export]` is a record type, and a `#[rux::resource]` is opaque: only a value of that same resource fits it. Both are read from the Rust source, so `rux check` and the editor know them without a build; `use type native::shop::Product;` brings one in. A native function's parameters and result are checked against its Rust signature (`Option<T>` is `T?`, `Vec<T>` is `T[]`, every integer an `int`). The `Clone` the signal and channel exports ask of `T` is Rust's, and is covered with them in [Script](./07-script.md#signals-from-rust). `settings.get(key)` gives `any?`.
 
 ## Inference
 
@@ -183,11 +180,11 @@ is a `Filter`.
 suggesting the annotation. The common cases:
 
 - `signal([])`, which says nothing about what the array will hold. This is
-  the one the whole design was started for: a `task` inside a later `filter`
-  had no completions, because nothing knew what `tasks` held.
+  the one that matters most: without an annotation, a `task` inside a later
+  `filter` has no completions, because nothing knows what `tasks` holds.
 - `signal(none)` or `signal({})`.
 - A parameter with no annotation.
-- A value from `host::` whose function was registered without a signature.
+- A value from `JSON.parse`, or from a component's `@name` event.
 
 `any` is never an error on its own. It turns checking off for that value and
 everything computed from it, which is exactly what an unannotated program had
@@ -213,7 +210,7 @@ with `?.`**. A plain `t.note` is an error:
 
 This is the reason Rux has `?.` at all. Strict property access is on for every
 document, so reading a field that is not there raises, and `?.` is how a
-program says "absent is a legitimate answer here". The checker now knows which
+program says "absent is a legitimate answer here". The checker knows which
 fields those are and holds every read to it. `t?.note` has the type
 `string?`.
 
@@ -238,8 +235,8 @@ reading it as `sel?.title`, which is a `string?`.
 **A dictionary is read the same way.** Any key of a `{ [string]: T }` may be
 missing, and a missing key raises exactly as a missing field does, so
 `m[k]` is an error unless `k in m` has been established. `m?[k]` reads it as a
-`T?`: the fork's `?[` guards a missing key, and an index past the end of a
-list, as its `?.` guards a missing property. `m.k` is held to the same rule,
+`T?`: `?[` guards a missing key, and an index past the end of a
+list, as `?.` guards a missing property. `m.k` is held to the same rule,
 and read as `m?.k`. The loop variable of `for k in keys(m)` is known to be in
 `m`.
 
@@ -322,7 +319,7 @@ signature.
 
 ```rux
 fn label(t: Task): string { t.title }       // typed
-fn refresh() { load = host::load(); }        // typed: no parameters
+fn refresh() { load = settings.get("load"); } // typed: no parameters
 fn old(x) { x + 1 }                          // untyped: `x` is any, and warned
 ```
 
@@ -345,8 +342,7 @@ worked out at a call, and only for that call.
 
 ### A typed function cannot read its caller's locals
 
-Under the fork, a plain call ran in its **caller's** scope (its divergence 4),
-so a function body could read a `let` of the function that called it. That cannot be typed: the same name would have a
+A name read from the caller cannot be typed: the same name would have a
 different type, or no type, depending on the caller, and nothing at the
 definition says which.
 
@@ -358,15 +354,10 @@ it always did.
 
 An untyped function can still read a name it does not declare from the handler
 or component that ran it (a row's `r-for` variable, the handler's own `let`, a
-component's state), which is looked up when it runs. Since Rux's interpreter
-replaced the fork (step 5 of [The Rux language](./11-next.md#build-order)), a
-`let` of a *function* in between is not reached; the fork reached that too, and
-the test suite and the repository's `.rux` files, run on both, showed nothing
-relying on it. Because a function with no
-parameters is typed, this rule reaches functions that were never touched by an
-annotation. Before it was switched on, every function in the repository's
-examples, recipes and `/learn` chapters, and in the apps built with Rux so far,
-was surveyed for a read of a caller's local. None did.
+component's state), which is looked up when it runs. A `let` of a *function*
+in between is not reached. Because a function with no parameters is typed,
+this rule reaches functions that were never touched by an annotation.
+See also [What a function can see](./11-next.md#what-a-function-can-see-changed).
 
 A caller's local is any name the function cannot see itself that something
 could have in scope when it calls: an `r-for`'s variable, a handler's own
@@ -382,14 +373,18 @@ app.rux:4: error: `pick` reads `item`, which only whoever calls it has. A functi
 A template is checked against the script it binds to.
 
 - **`r-for`** gives its loop variable the element type: in
-  `r-for="t in visible()"`, `t` is a `Task`. `r-for` binds one name and has
-  no index form.
+  `r-for="t in visible()"`, `t` is a `Task`. `r-for="(t, i) in visible()"`
+  also binds the index `i`, an `int`. An `r-if` on the same element is read
+  per row, with both names in scope.
 - **`r-if`, `r-elif` and `r-else`** narrow the subtree under them, as in
   [Unions and narrowing](#unions-and-narrowing).
 - **A binding** (`{{ }}`, `:class`, `:style`, any bound attribute) is checked as
   an expression. A bound attribute of a built-in element is checked against
-  what that attribute takes: `:disabled`, `:readonly` and `:required` a
-  `bool`, `:options` a `string[]`, `:src`, `:d` and `:to` a `string`,
+  what that attribute takes: `:disabled` (on `<input>` and `<button>`),
+  `:readonly` and `:required` (on `<input>`) a `bool`; `:controls`,
+  `:autoplay`, `:loop` and `:muted` on `<audio>` and `<video>` a `bool`;
+  `:options` a `string[]`, `:marks` a `TextMark[]`, `:src` (on `<image>`,
+  `<audio>` and `<video>`), `:poster`, `:d` and `:to` a `string`,
   `:style` a `string` or a `{ [string]: any }`, and `:r-transition` a
   `float?`, the progress of a swap or nothing.
 - **A `:class` map** is a `{ [string]: bool }`; a value that is not a `bool`
@@ -399,15 +394,27 @@ A template is checked against the script it binds to.
   text, password, textarea, search and date; `float` for number and slider,
   which may also write into an `int`; `bool` for checkbox and switch. A select shows its target as text and
   writes one of its options, so a `Filter` may be bound to one. A radio
-  writes its `value`, so its target must take that string.
-- **`event` in a handler has the type of that event.** Every gesture's has
+  writes its `value`, so its target must take that string. A file input
+  writes a `File?`, or a `File[]` with `multiple`.
+- **`event` in a handler has the type of that event.** Every gesture's
+  (`@tap`, `@press`, `@release`, `@longpress`, `@drag`, `@swipe`) has
   `x`, `y`, `pageX`, `pageY`, `width`, `height` and `touches`. `@drag` adds
   `phase`, `"start" | "move" | "end"`, and the four distances, `totalX`,
   `totalY`, `moveX` and `moveY`; `@swipe` adds those distances and
-  `direction`, `"left" | "right" | "up" | "down"`. A field's `@input`,
-  `@change`, `@focus` and `@blur` hand over `event.value`: a `float` from a
-  number field bound with `r-model`, and text from the others. A component's
-  `@name` hands over whatever it emits, which is `any`.
+  `direction`, `"left" | "right" | "up" | "down"`. `@key` hands over a
+  `KeyEvent`. A field's `@select` hands over a `SelectEvent` (`value`,
+  `start`, `end`, `caret`). A text field's `@input` hands over an
+  `InputEvent`: `value`, and `kind`, the sort of edit, one of `"type"`,
+  `"paste"`, `"cut"`, `"undo"`, `"redo"`, `"insert"`, `"drop"` or
+  `"autofill"`. A field's `@change`, `@focus` and `@blur` hand over
+  `event.value`: a `float` from a number field bound with `r-model`, `any`
+  from a checkbox, switch or slider, a `File` (or `File[]` with `multiple`)
+  from a file input, and text from the others. An `<audio>` or `<video>`
+  hears `@play`, `@pause`, `@ended` and `@timeupdate` with `currentTime` and
+  `duration`, `@loadedmetadata` with `duration`, `videoWidth` and
+  `videoHeight`, and `@error` with `kind` and `message`; an `<image>` hears
+  `@load` with `width` and `height`, and `@error` with `message`. A
+  component's `@name` hands over whatever it emits, which is `any`.
 - **A form's `event.values` is a record of its fields**, under each field's
   `name`, or the name of what it binds when it has none. The fields are in the
   markup, so `event.values.email` reads plainly and `event.values.emial` is an
@@ -417,8 +424,8 @@ A template is checked against the script it binds to.
   `event.errors` is a `{ [string]: string }`, because it holds only the fields
   that failed, and is read with `?.`.
 - **Props are checked at the tag**, against the component's declaration: a
-  missing required prop, an unknown attribute (both already errors) and now a
-  value of the wrong type. A plain attribute passes its text, so
+  missing required prop, an unknown attribute, and a value of the wrong type
+  are each an error. A plain attribute passes its text, so
   `kind="big"` is checked as the string `"big"`.
 
 A finding in a template is on the template's line and names where it is:
@@ -473,13 +480,14 @@ reads `task?.title` safely whether the tag passed nothing or passed `none`.
 ## Boundaries
 
 Types are erased, so a value from outside is whatever it turns out to be. A
-value from `host::` without a signature, parsed JSON, or the result of an
-`await` is `any` until something says otherwise.
+value from `JSON.parse`, from `settings.get` (`any?`), or from a component's
+`@name` event is `any` until something says otherwise. A native function and
+an `async fn` give the type their signature declares.
 
 **`x is T` checks it at run time, and narrows.**
 
 ```rux
-let raw = host::read_settings();
+let raw = settings.get("settings");
 if raw is Settings {
   settings = raw;           // a Settings from here on
 } else {
@@ -517,19 +525,21 @@ import type { Task, Filter } from "./types";
 
 `use type types::Task` names the `type Task` declared in `types.rux`, found
 the way a component import is: beside the file first, then at the project
-root. The word `type` is what makes it a type import (the project owner's
-rule, 2026-09-26): `use components::task` imports the component in
-`components/task.rux`, and `use type components::task::Row` imports the
-type `Row` declared in that file. Before `type` marked one, a type import was
-told by its capital letter (`use types::Task;`); that spelling still loads,
-with a warning, and `rux fmt` rewrites it.
+root. The word `type` is what makes it a type import: `use components::task`
+imports the component in `components/task.rux`, and
+`use type components::task::Row` imports the type `Row` declared in that file.
+Without `type`, a capitalised name (`use types::Task;`) still loads, with a
+warning, and `rux fmt` rewrites it.
 
-A file used only for its types holds a `<script>` and nothing else: no
-`<template>` and no `<style>`. Its script may declare types and nothing
-besides, since nothing would ever run a function or a statement in it, and
-`rux` refuses to run the file, since it has nothing to show. `rux check`
-checks it like any other. Only `type` declarations can be imported this way; a
-function or a signal cannot.
+**The declaration is marked `export`**: `export type Task = { … };`. A type
+the file does not export is a warning at the import (`rux fmt` adds the
+`export`).
+
+A file with a `<script>` and no `<template>` is a module, so a file used only
+for its types is an ordinary one: it holds `export type` declarations and
+nothing else. `rux check` checks it like any other. `use type` imports
+only types; a module's functions and signals are imported with `use`, as
+described in [Script](./07-script.md).
 
 `use Task;`, with no file in front of the type, is an error that says where
 the type has to come from.
@@ -539,11 +549,14 @@ the type has to come from.
 **Errors**, which make `rux check` exit 1: a value that does not fit where it
 goes, including a value that does not fit what a name started as, a missing or misspelled field, a plain read of an optional field outside
 a narrowed region, an impossible comparison, a `switch` that misses a case, a
-typed function reading a caller's local, an annotation naming no type, and a
-wrong prop at a tag.
+typed function reading a caller's local, an annotation naming no type, `null`
+or `()` written for `none`, `number` written for a type, and a wrong prop at
+a tag.
 
 **Warnings**, which do not: a name that became `any` because nothing could be
-inferred, including every unannotated parameter.
+inferred, including every unannotated parameter and a prop with neither a
+type nor a default; a type imported without `type` or not marked `export`.
+`rux check --deny-warnings` exits 1 on warnings as well.
 
 That line is deliberate. An untyped program is not wrong, and a warning is how
 it is told where checking stops; a typed program that contradicts itself is
@@ -551,8 +564,9 @@ wrong, and says so.
 
 ## Editor
 
-The types exist only in the checker, so the editor does not work them out. It
-asks for them: `rux check --format json --types` prints an object instead of
+The extension shows the checker's errors and warnings from this page as
+diagnostics on their lines, when a file is opened and saved. The types exist
+only in the checker, so the editor does not work them out. It asks for them: `rux check --format json --types` prints an object instead of
 the usual array, with the diagnostics beside two lists.
 
 - `types`: every name read, field read, `let`, parameter and function call the
@@ -586,17 +600,9 @@ again without it, keeps the diagnostics, and stops asking for the session.
 
 ## How it is built
 
-Rux's own parser (`crates/rux-syntax`) reads a script into an AST that keeps
-every annotation on the node it belongs to. The checker, in `rux-script`,
-reads that AST and keeps the type of every expression, and the script is
-lowered from it to a typed IR (`crates/rux-ir`), which Rux's interpreter runs.
-`x is T` carries its type into the IR, since it is checked at run time.
-
-Until 2026-09-26 the script ran on a fork of rhai, which was handed the same
-text with every annotation blanked, and before that the fork parsed
-annotations itself and kept them in a side table the checker read. Both went
-with the fork in step 5 of [The Rux language](./11-next.md#build-order).
-
-The checker runs where the other load-time checks run: `rux check`, the dev
-overlay, and the editor. The only parts that reach a running program are the
-prop checks and the `is` validators.
+The checker (`crates/rux-script`) reads Rux's own AST (`crates/rux-syntax`),
+which keeps every annotation on the node it belongs to, and the script is
+lowered from it to a typed IR (`crates/rux-ir`). It runs where the other
+load-time checks run: `rux check`, the dev overlay, and the editor. The only
+parts that reach a running program are the prop checks and the `is`
+validators.

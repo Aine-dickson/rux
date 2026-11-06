@@ -1,14 +1,15 @@
 +++
 title = "Elements"
-description = "The six elements the runtime renders, plus slot, router and route."
+description = "The ten elements the runtime renders, plus slot, router, route and router-view."
 weight = 2
 +++
 
 <!-- GENERATED FROM docs/05-as-built.md BY site/sync-docs.sh. DO NOT EDIT HERE. -->
 
-`<screen>` `<view>` `<text>` `<image>` `<icon>` `<path>` `<button>` `<input>` `<audio>` + imported
-components as custom tags, plus two that render no box of their own: `<slot>`
-(a component's hole for the caller's children) and `<router>`/`<route>` (see
+Ten elements draw something: `<screen>` `<view>` `<text>` `<image>` `<icon>`
+`<path>` `<button>` `<input>` `<audio>` `<video>`. Imported components are custom
+tags. Four more render no box of their own: `<slot>` (a component's hole for the
+caller's children) and `<router>`, `<route>` and `<router-view>` (see
 [Routing](/reference/routing/)). `role=` is honored for **selectors and semantics**
 (and matches **case-insensitively**: `role="Heading"` matches `[role="heading"]`).
 
@@ -24,10 +25,9 @@ lines and reads as one sentence. That applies to `{{ }}` values as well: a
 value with line breaks in it is drawn on one line unless the text says
 `white-space: pre-line` (keep the newlines, collapse the rest) or `pre-wrap`
 (keep everything). `&nbsp;` is never collapsed, which is how to ask for two
-spaces in a row. Until v0.9 a newline inside a `<text>` was a line break and
-the indentation after it was drawn; text from data that relied on that needs
-`white-space: pre-line` now. Text fields are not affected: what is typed is
-kept as typed.
+spaces in a row. Text from data whose newlines should break lines needs
+`white-space: pre-line`. Text fields are not affected: what is typed is kept as
+typed.
 
 **A `<text>` inside a `<text>` is part of the same sentence.** This is how a
 word is made bold, a link is put in a line, or a value is coloured on its own:
@@ -62,9 +62,8 @@ CSS's `inline-block`, which Rux does not have, so put the two side by side in a
 `<view>` instead. Two `<text>` *siblings* still stack: they are two paragraphs.
 
 **`<screen>` is the display, wherever it is written.** At the document root
-that is nothing new: the root has always been forced to the viewport, whatever
-its tag. Below the root it now means what the word says. A `<screen>` inside a
-240x120 box with `overflow: hidden` still covers the window, because it
+the root is forced to the viewport, whatever its tag. Below the root it means
+what the word says. A `<screen>` inside a 240x120 box with `overflow: hidden` still covers the window, because it
 defaults to `position: fixed` with all four insets at zero, and the four edges
 of the initial containing block are the display. Both are defaults: name a
 `position` or an inset of your own and it is yours.
@@ -75,30 +74,28 @@ nearest analogue and it is an ordinary box in a scrolling document, which is
 the one thing a screen on a phone is not.
 
 **An element that holds nothing closes itself.** `<image>`, `<input>`,
-`<path>` and `<router-view>` take no children, so `<input type="text">` is
+`<icon>`, `<path>` and `<router-view>` take no children, so `<input type="text">` is
 complete as written and there is no `</input>` for it to be missing. The slash
 is still legal and is what `examples/` uses. Writing a closing tag for one is an
 error that says so: *"`<input>` holds nothing, so it has no closing tag; delete
-`</input>`"*. Until v0.7.1 the parser demanded the closing tag and, not finding
-it, named whichever closing tag it found next — so `<view><input></view>` was
-reported as "expected `</input>`, found `</view>`", against a file whose only
-mistake was being written the way HTML is written.
+`</input>`"*.
 
 `<image src="assets/logo.png">`: `src` resolves **relative to the .rux file**
 (not the working directory), and `:src` binds an expression. With no CSS size it
-lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit.
-Formats: PNG, JPEG, GIF, WebP, and SVG. A missing file logs to stderr and paints nothing.
+lays out at the file's intrinsic pixel size; a `width`/`height` scales it to fit,
+and one side alone keeps the picture's proportions. `alt` describes it to the
+accessibility tree. Formats: PNG, JPEG, GIF, WebP, and SVG. A missing file logs to stderr and paints nothing.
 
-**SVG** (2026-10-28): told from its bytes, not its name, so a `data:` URL or a
+**SVG**: told from its bytes, not its name, so a `data:` URL or a
 server's answer works too. Its size is its `width` and `height`, or its
 `viewBox`; it is drawn as vectors (`vello_svg`), so it stays sharp at any
 size, in an `<image>` and in `background-image`, where Tailwind's form styles
 put their checkmarks. Like a browser's `<img>`, it is a picture: its
 `currentColor` is black, not the colour around it, and nothing in it can be
-styled from outside. **Not yet:** an SVG as `mask-image` (a mask needs
-pixels), and a bitmap embedded inside an SVG, which is not drawn.
+styled from outside. An SVG as `mask-image` is not supported (a mask needs
+pixels), and a bitmap embedded inside an SVG is not drawn.
 
-**From the network** (2026-10-28): `src="https://…"` (or `http:`), and the same
+**From the network**: `src="https://…"` (or `http:`), and the same
 in `background-image: url(…)`. The window does not wait: the box lays out with
 no size until the bytes come, as a browser's does, then takes the picture's
 size and paints it. Fetched on a thread with `ureq` (rustls, its own root
@@ -108,7 +105,7 @@ over the size limit below. Each URL is fetched once per run and kept, a
 failure too. An Android release asks for `INTERNET` when a document or
 stylesheet names an `http:` or `https:` address, and for nothing otherwise.
 
-**`srcset` and `sizes`** (2026-10-28), as in HTML: `srcset="logo.png 1x,
+**`srcset` and `sizes`**, as in HTML: `srcset="logo.png 1x,
 logo@2x.png 2x"` shows the candidate nearest above the screen's density (the
 window's scale factor), or the densest when none is enough; widths
 (`s.png 400w, l.png 1600w`) are read against the slot `sizes` gives
@@ -117,18 +114,18 @@ what shows when `srcset` is absent. Picked when the tree is built, so a
 resize that crosses no `@media` boundary, or a move to a screen of another
 density, keeps the first pick until the next rebuild.
 
-**`loading="lazy"`** (2026-10-28): a network picture is fetched once its box
+**`loading="lazy"`**: a network picture is fetched once its box
 comes within 1250 px of the window (Chromium's distance on a fast connection),
 asked for by the painter when it stops leaving that box out, so it costs no
 pass of its own. Until then the box has no size and `@load` waits. Give a lazy
 image a size, or the page moves when it arrives. A file on the disk is read
 at load either way; `eager`, the default, starts the fetch at load.
 
-**`data:` URLs** (2026-10-28): a picture written into the document,
+**`data:` URLs**: a picture written into the document,
 `src="data:image/png;base64,…"`, or percent-encoded without `;base64`, and the
 same in `url(…)`. Read as a file is, at load, with nothing fetched.
 
-**`@load` and `@error`** (2026-10-28): once per `src`, when the picture is
+**`@load` and `@error`**: once per `src`, when the picture is
 there (`event.width`, `event.height`: its own size in pixels) or cannot be
 (`event.message`). A file on the disk fires at the first frame, one from the
 network when it comes, and a new `:src` fires again.

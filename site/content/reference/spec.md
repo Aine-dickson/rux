@@ -283,7 +283,7 @@ Styles may be inline in `<style>` or imported (see [modules](#modules-reuse)).
 ## Scripting and the host
 
 Logic lives in two tiers (Law 4, and the
-[decision](/reference/rationale/#two-tier-logic-rhai-script-over-a-compiled-rust-host)):
+[decision](/reference/rationale/#two-tier-logic-script-over-a-compiled-rust-host)):
 
 ### Script tier: `<script>`, interpreted `rhai`
 

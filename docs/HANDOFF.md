@@ -24,8 +24,20 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   remote `origin/site/launch` was left alone. `spike/c0-frames` is kept on
   purpose: a measuring harness, results recorded in `docs/13`.
 - `build/v0.9-icons` and its worktree `../rux-icons` are fully merged and can go.
-- Docs brought up to date on 2026-11-06: the roadmap's v0.9 and Icons sections,
-  `docs/README.md`, `docs/11-next.md`'s status line and `docs/12`'s status.
+- Docs corrected to the code on 2026-11-06 (every doc was checked against the
+  crates and `rux check` probes, about 350 commits of changes since v0.7.1
+  considered). Rewritten: `05-as-built`, `07-script`, `10-types`, `11-next`
+  (2,900 to 1,000 lines), `04-architecture`, and `06-roadmap` (3,300 to 211
+  lines: open work and the decisions that still bind only). Removed text lives in
+  `docs/archive/` (one file per doc; `roadmap-history.md` holds the whole old
+  roadmap). Not reviewed in this pass: `02-spec`, `03-guide` (both known to be
+  history, still published to the site), `08-user-tests` (a log), `09-author-notes`
+  (19 open rows, statuses not re-checked), field reports.
+- The owner will decide the docs and site redesign. Open questions for it:
+  `07-script`, `10-types` and `11-next` overlap heavily and could become one
+  document; much of the CSS section of `05-as-built` is not CSS (r-transition,
+  computed/effect, keyed lists, Tailwind, `env()`); `03-guide` is false as
+  written; `02-spec` is design history.
 
 ## Decisions not to revisit
 
@@ -49,6 +61,24 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
 - Mava Studio reports to attend to are in `docs/field-reports/mava-studio-2.md`
   (it had uncommitted edits on 2026-11-06). Start a new session for them.
 - Android and web builds of a scaffold with `native/` have not been driven.
+- Code defects found by the docs pass (none fixed yet):
+  - `throw "x"` is caught as the string, not as an `Error`; `do`, `break value`
+    and the bitwise operators are silently inert in a `<script>` body; `trunc`
+    of NaN does not throw; an `any` is not checked where it enters a typed name.
+  - `[1,2].for_each(...)` passes `rux check` but the interpreter has no
+    `for_each`. Rhai-era names (`len`, `retain`, `drain`, `dedup`, `parse_int`,
+    snake_case string methods) still run and are undocumented: document or remove.
+  - Stale text in code: `vocab.rs` says a component declaring `mounted` is
+    warned (it runs per instance); the hover text for `border`, `outline` and
+    `position` is out of date (that text feeds the generated css-properties page);
+    the hover text for `trim` mentions rhai; `rux-ir/src/types.rs` says `Set` and
+    non-string `Map` keys "come with Rux's own interpreter"; `lexer.rs` and many
+    `crates/*/src/lib.rs` module docs still cite the fork or "milestones M2 to M9".
+  - `rux check` warns that `font-size: calc(100% + 2px)` is ignored while a unit
+    test says it resolves; `transition: opacity 1s linear(0,1)` is reported
+    badly (calls `opacity` a function); `rux new --help` is rejected.
+  - Two doc statements rest on one grep only: slider arrow keys, a drawn desktop
+    date picker and dropping a file on the input are listed as not built.
 
 ## Next action
 

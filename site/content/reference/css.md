@@ -15,9 +15,8 @@ not built yet. What follows is how each behaves, kept by hand.
 ```
 display (block|flex|grid|inline|none; inline-flex is flex, inline-grid grid,
                        inline-block, flow-root and -webkit-box block, as Rux has
-                       no inline level for a box; any other value warns and is
-                       block. Until 2026-10-23 every unknown value was block
-                       without a word, inline-flex included)
+                       no inline level for a box; any other value (contents,
+                       table) warns and is block)
 flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
 flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
@@ -33,8 +32,7 @@ translate, rotate, scale (the properties: applied in that order, then `transform
                       (a translation in % of the box's own size, Tailwind's
                        -translate-x-1/2, is read in the `translate` property and
                        in a translate() that leads a transform list; after a
-                       rotate or scale it warns. Until 2026-10-23 a % translation
-                       was dropped without a word)
+                       rotate or scale it warns)
 place-items, place-content, place-self (align then justify; one value is both)
 position (static|relative|sticky|absolute|fixed), top, right, bottom, left
 inset (1–4 values, as margin)
@@ -52,7 +50,10 @@ box-sizing (content-box, the default as in CSS, or border-box; <input> and
 width, height, min-width, max-width, min-height, max-height
 padding, padding-top, padding-right, padding-bottom, padding-left
 margin, margin-top, margin-right, margin-bottom, margin-left
-                       (each shorthand takes 1–4 values)
+                       (each shorthand takes 1–4 values; a side written `auto`
+                       takes the free space, as in CSS: `margin: 0 auto`
+                       centres a box, `margin-left: auto` pushes it to the end
+                       of a flex row)
 border, border-width, border-color, border-style (and each side's -width and
                        -style; none, hidden, solid, dashed, dotted, double,
                        groove, ridge, inset, outset; with no style a border is
@@ -69,8 +70,7 @@ background, background-color, background-image, opacity
    first on top, the colour under them all; clipped to the corners. A gradient
    mixes in the space it names, `in oklab` and srgb, srgb-linear, oklch, lab,
    lch, hsl and hwb, with `longer`/`increasing`/`decreasing hue`; sRGB when it
-   names none, as CSS does for ordinary colours. Until 2026-10-23 a gradient
-   naming one was not drawn at all, which was every gradient Tailwind v4 makes)
+   names none, as CSS does for ordinary colours)
 background-size, background-position, background-position-x,
 background-position-y, background-repeat,
 background-clip, background-origin, background-attachment
@@ -83,10 +83,9 @@ background-clip, background-origin, background-attachment
                        repeat, no-repeat, repeat-x/-y, space, round; border-,
                        padding- and content-box; scroll, fixed, local. A url()
                        image is its natural size, tiled from the padding box's
-                       top left, as in CSS: before v0.9 it was drawn cover-sized,
-                       which is now `background-size: cover`. Not yet:
-                       gradient stop positions in
-                       px, which are placed as if they had none)
+                       top left, as in CSS; cover-sized is `background-size:
+                       cover`. Not yet: gradient stop positions in px, which
+                       are placed as if they had none)
 box-shadow (a comma list, the first on top; `inset` drawn inside the border, over
                        the background; no colour is currentColor; one corner
                        radius, the largest, for an outer shadow's blur)
@@ -110,12 +109,12 @@ font (shorthand: `italic 600 1rem/1.5 Inter, sans-serif`; what is left out is
                        `normal`, as in CSS; system fonts are not read)
 letter-spacing, word-spacing, line-height
 white-space (normal|nowrap|pre|pre-wrap|pre-line)
-tab-size (2026-10-23: a number of spaces, 8 by default as in CSS, or a
+tab-size (a number of spaces, 8 by default as in CSS, or a
                        length; how wide a tab kept by pre or pre-wrap is.
                        Each tab is that wide, not to the next tab stop as in
                        CSS, so columns of tabs line up only in a monospace
                        font; inherited)
-resize (2026-10-23: none|both|horizontal|vertical, and block and inline as
+resize (none|both|horizontal|vertical, and block and inline as
                        vertical and horizontal; on a scroller, as CSS has it
                        on a box whose overflow is not visible, which in Rux is
                        auto or scroll, not hidden. A grip in the corner drags
@@ -201,14 +200,15 @@ overflow, overflow-x, overflow-y     (hidden|clip = clip; auto|scroll = scroll;
                                       title shrinks beside a fixed column.
                                       `clip` gets it too, where CSS keeps the
                                       content's width: Rux has one clip)
-overscroll-behavior, -x, -y   (auto | contain | none; contain and none alike)
+overscroll-behavior, overscroll-behavior-x, overscroll-behavior-y
+                       (auto | contain | none; contain and none alike)
 scroll-behavior (auto | smooth: a scroll a script's `scrollIntoView()` or Tab
                        moving focus asks for glides there over 300ms; a wheel,
                        a finger and a fling never do, and one of them stops a
                        glide on the same scroller, as in CSS)
 columns, column-count, column-width, column-fill, column-rule,
 column-rule-width, column-rule-style, column-rule-color
-                       (2026-10-23, as in CSS: the count, the width or both
+                       (as in CSS: the count, the width or both
                        decide how many columns the box's width holds,
                        column-gap goes between them (`normal` is 1em), and
                        the children are set one after another down them, a
@@ -224,7 +224,7 @@ scroll-snap-type, scroll-snap-align, scroll-snap-stop, scroll-padding,
 scroll-padding-top, scroll-padding-right, scroll-padding-bottom,
 scroll-padding-left, scroll-margin, scroll-margin-top, scroll-margin-right,
 scroll-margin-bottom, scroll-margin-left (and the -block and -inline forms)
-                       (2026-10-23, as in CSS: a scroller with `x`, `y` or
+                       (as in CSS: a scroller with `x`, `y` or
                        `both` comes to rest with a box's start, centre or end
                        at the same place in its view, inset by scroll-padding
                        and grown by the box's scroll-margin. A finger lifted,
@@ -246,8 +246,19 @@ object-fit, object-position (on `<image>`: fill, contain, cover, none,
                        scale-down; the picture is drawn in the content box,
                        inside the image's padding, and cut to it)
 scrollbar-width (auto | thin | none), scrollbar-color (thumb track | auto)
-content-visibility (visible | auto | hidden), contain-intrinsic-size (and -width,
-                       -height, -inline-size, -block-size; `auto <length>`)
+content-visibility (visible | auto | hidden: a box off screen skips its contents,
+                       clips them and is a stacking context and a containing
+                       block), contain-intrinsic-size, contain-intrinsic-width,
+                       contain-intrinsic-height, contain-intrinsic-inline-size,
+                       contain-intrinsic-block-size (the size a skipped box
+                       takes; `auto <length>` is that until it has been drawn,
+                       then the size it was drawn at)
+accent-color (a colour; a switch's track when on, a slider's fill and thumb,
+                       an <audio> control's bar; see Inputs)
+appearance (none | auto; `none` strips a checkbox, radio or switch down to a box
+                       that still matches `:checked`; see Inputs)
+content (on ::before and ::after only: strings, joined, and attr(name); `""` is an
+                       empty box, `none` makes nothing; see Selection & clipboard)
 overflow-wrap (break-word), word-wrap (the legacy alias for it), word-break (break-all)
 cursor (every CSS keyword, on any box, inherited; `url()` skipped for the
                        keyword after it; `auto` is the arrow, also over text)
@@ -259,22 +270,19 @@ fill, fill-rule, stroke, stroke-width, stroke-linecap, stroke-linejoin
 **Percentages need a box, and most of these are resolved before there is one.**
 `width`, `height`, `min`/`max-*` and the insets become a length that layout
 resolves, so `width: 50%` works. So do `padding`, `margin` and `gap`/
-`row-gap`/`column-gap` (since 2026-10-13): their percentage is carried to the
-layout, a side resolving against the containing block's **width** (the top and
-bottom too, as in CSS) and a gap against the box's own content size on its
-axis. The border widths, `font-size`, `letter-spacing` and `word-spacing` are
-still resolved to plain pixels during the cascade, where there is no box yet,
-so a percentage on one of those is **ignored and says so**. Until v0.7.1 it was
-ignored in silence, because the interpreter read them with a px-only parser
-while the length check validated with a percentage-capable one: the value was
-dropped and then pronounced fine. An animated `padding`, `margin` or `gap`
+`row-gap`/`column-gap`: their percentage is carried to the layout, a side
+resolving against the containing block's **width** (the top and bottom too, as
+in CSS) and a gap against the box's own content size on its axis. The border
+widths, `font-size`, `letter-spacing` and `word-spacing` are resolved to plain
+pixels during the cascade, where there is no box yet, so a percentage on one of
+those is **ignored and says so**. An animated `padding`, `margin` or `gap`
 walks the pixel value, so a side written as a percentage does not animate.
 
 **A border needs a style, as in CSS.** `border-style` is `none` until one is
 written, and a side whose style is `none` (or `hidden`) has no width, so
-`border: 2px red` draws nothing and takes no room. Rux drew it solid until
-v0.9, so a border given a width or a colour and no style anywhere is said,
-quoting the declaration. A style with no width is `medium`, 3px, and
+`border: 2px red` draws nothing and takes no room. A border given a width or a
+colour and no style anywhere is said, quoting the declaration. A style with no
+width is `medium`, 3px, and
 `thin`, `medium` and `thick` are 1, 3 and 5px.
 
 Every style is drawn. `dashed` is dashes three widths long with gaps as
@@ -287,10 +295,6 @@ corner the shade changes on the diagonal, as it does in browsers.
 
 **A border may differ per side.** `border-bottom: 2px solid #89b4fa` draws under
 the box and nowhere else, which is the underlined-field shape most forms want.
-Until v0.7.1 it drew *nothing*: the cascade computed all four sides, and paint
-carried one width taken from the top, so `border-bottom` was dropped and
-`border-top` was drawn on all four sides. Both silent, and `border-bottom` is
-offered by the editor's completion list, which is supposed to mean it works.
 
 Uniform borders are drawn as one stroke, which is what follows the corner
 radius. Uneven ones are drawn as four filled edges, so where two different
@@ -315,11 +319,16 @@ uses to draw a radio button.
 
 **Selectors:** tag, `.class`, `#id`, attribute selectors, compounds, and all four
 combinators: descendant (`.a .b`), child (`.a > .b`), next-sibling (`.a + .b`),
-subsequent-sibling (`.a ~ .b`).
+subsequent-sibling (`.a ~ .b`). The pseudo-elements are `::before`, `::after` and
+`::selection` (all under Selection & clipboard), `::placeholder` (an
+input's placeholder, which honours `color` and `opacity` only) and
+`::file-selector-button` (a file input's button, under Field attributes and
+events).
 
-**Attribute selectors** (2026-10-23) are CSS's: `[type]`, `[type=checkbox]`,
+**Attribute selectors** are CSS's: `[type]`, `[type=checkbox]`,
 `[class~=word]`, `[lang|=en]`, `[placeholder^=Sea]`, `[placeholder$=…]`,
-`[placeholder*=…]`, with `i` for a case-blind match (`[type=TEXT i]`). A bound
+`[placeholder*=…]`, with `i` for a case-blind match (`[type=TEXT i]`); `[role=…]`
+matches case-insensitively. A bound
 attribute is matched by its current value and restyles when it changes, so
 `button[disabled]` follows `:disabled="busy"`; `false` and `null` leave it off,
 as binding does in the DOM. A sibling seen through `+` or `~` is matched by what
@@ -328,11 +337,8 @@ attributes plus, as in HTML, any `data-*` and `aria-*`, written or bound
 (`:data-state="state"`), so Tailwind's `data-[state=open]:` variants work.
 Those names are the author's: nothing reads them but selectors, except
 `aria-label`, which names the element for assistive technology as `label`
-does. Until 2026-10-23 both were refused as unknown attributes. A selector for
-any other attribute an element cannot carry matches nothing. **Until this date only `[role=…]` was read, and any other
-attribute test was dropped from its compound without a word**, so
-`input[type=checkbox]` styled every input; `[role=…]` still matches
-case-insensitively, as it always has.
+does. A selector for any other attribute an element cannot carry matches
+nothing.
 
 **Pseudo-classes:** `:hover`, `:focus`, `:focus-visible`, `:active`, `:checked`, `:current` (a
 link whose `to` names the path you are on), `:disabled` / `:enabled` (an
@@ -349,7 +355,7 @@ ancestors; `:focus-visible` matches it when the focus should show, which is
 browsers' rule: a text field always, anything else only when the keyboard put
 focus there. Driven in `examples/pseudo.rux`.
 
-**Where an element sits, and what it is not** (2026-10-22): `:first-child`,
+**Where an element sits, and what it is not:** `:first-child`,
 `:last-child`, `:only-child`, `:nth-child(an+b)` and `:nth-last-child(an+b)`
 (`odd`, `even`, `3`, `2n+1`, `-n+3`), and `:not(a, b)`. The place is counted
 among the elements drawn there, from 1, so a row an `r-if` leaves out does not
@@ -366,28 +372,28 @@ never matches, with a warning. A rule that reads a place stops a list from
 reusing its built rows, as `+` and `~` already do. `query()` answers all of
 them from the tree as built.
 
-**Nesting** (2026-10-23), as CSS has it: a rule inside a rule is read against
+**Nesting**, as CSS has it: a rule inside a rule is read against
 its parent, `&` standing for the parent (`.card { &:hover { … } }`), a selector
 without one a descendant of it (`.card { .title { … } }`, `> .row` a child), and
 a `@media` or `@supports` inside a rule holds declarations that are the rule's
 own. A parent list of more than one selector stands in as `:is()`, which is
 what CSS defines `&` to mean.
 
-**`:is()`, `:where()` and `:root`** (2026-10-23). `:is(a, b)` matches any of its
+**`:is()`, `:where()` and `:root`.** `:is(a, b)` matches any of its
 selectors, combinators included, so `.x:is(.group:hover *)` styles `.x` while
 an ancestor `.group` is hovered, and counts as specific as its most specific
 argument. `:where()` matches the same and adds nothing. Both are forgiving, as
 in CSS: an argument that does not parse is dropped, not the rule. `:root` is the
 screen's own element, so a theme's variables set there reach everything. So is
 the type selector `html`, weighing as a type (so `:root` beats it), which is
-where Tailwind's preflight puts its font and `line-height`; until 2026-10-23 it
-matched nothing and said nothing. `body` still matches nothing. `:host`
+where Tailwind's preflight puts its font and `line-height`. `body` matches
+nothing. `:host`
 matches nothing and says nothing, as in a document's sheet. Class and id names
 read CSS escapes (`.md\:flex`, `.py-1\.5`, `.\31 0`), and a vendor's own
 pseudo-element (`::-webkit-scrollbar`) passes quietly, as it does in every
 other engine.
 
-**`:dir(rtl)` and `:dir(ltr)`** (2026-10-28). The direction the `dir` attribute
+**`:dir(rtl)` and `:dir(ltr)`.** The direction the `dir` attribute
 gives an element, its own or its nearest ancestor's, and `ltr` where none
 says, which is what Tailwind's `rtl:` and `ltr:` variants compile to
 (`:where(:dir(rtl), [dir="rtl"], [dir="rtl"] *)`). The attribute and not the
@@ -395,7 +401,7 @@ says, which is what Tailwind's `rtl:` and `ltr:` variants compile to
 saying nothing, where a browser reads the text inside for its first strong
 letter. `::rtl` and `:rtl` are not CSS, and their warning names `:dir()`.
 
-**CSS-wide keywords** (2026-10-23). `inherit`, `initial`, `unset`, `revert` and
+**CSS-wide keywords.** `inherit`, `initial`, `unset`, `revert` and
 `revert-layer` read as no declaration at all: a property that inherits takes
 its parent's value, one that does not takes Rux's default, which is what
 `initial` and `revert` come to with no user-agent sheet beyond the defaults.
@@ -426,10 +432,9 @@ scrolled list is clipped by the list, as in a browser. Its style is a border's:
 `dashed`, `dotted`, `double` and the 3D styles are drawn as they are for
 `border`.
 
-Any *other* pseudo-class (`:has()`, `::first-line`) **never
-matches**, and says so once on stderr. Before this existed the `:` was silently
-dropped, so `.box:hover` parsed as `.box` and applied *unconditionally*, failing
-closed is the safer half of that trade.
+Any *other* pseudo-class or pseudo-element (`:has()`, `:focus-within`,
+`::first-line`, `::first-letter`) **never matches**, and says so once on stderr:
+a rule that cannot be honored fails closed rather than applying unconditionally.
 
 **Transitions:** `transition` walks a property to its new value instead of
 jumping to it, whatever moved it: a signal, a `:class`, or a pseudo-class.
@@ -447,19 +452,20 @@ means `all 200ms`. Easings: `linear`, `ease` (the default), `ease-in`,
 `ease-out`, `ease-in-out`, `cubic-bezier(x1, y1, x2, y2)`, `steps(n)` with
 `jump-start` (or `start`), `jump-end` (or `end`, the default), `jump-both` or
 `jump-none`, and `step-start` and `step-end`. `linear()` with stops is not
-drawn yet: the transition eases with `ease` and says so.
+read: the declaration is skipped and says so.
 
 **Animatable:** `opacity`, `background-color`, `color`, `border-color`,
 `border-width`, `border-radius`, `width`, `height`, `padding`, `margin`, `gap`,
 `font-size`, `transform`, the insets (`top`/`right`/`bottom`/`left`, which
 animate together), `box-shadow`, `outline-color`, `text-decoration-color`,
-`filter` and `backdrop-filter`, and on a `<path>`: `fill`, `stroke`,
-`stroke-width` and `d`, the geometry itself. A shadow list is walked shadow by
+`filter`, `backdrop-filter` and `z-index`, and on a `<path>`: `fill`, `stroke`,
+`stroke-width` and `d`, the geometry itself. `translate`, `rotate` and `scale`
+animate with `transform`, and `outline` with `outline-color`. A shadow list is walked shadow by
 shadow, the shorter padded with clear ones, so a hover that adds a shadow
 fades it in; an inset shadow against an outer one jumps, as in CSS. A filter
 list is walked step by step, padded with steps that change nothing; a step of
 another kind in the same place jumps, and `hue-rotate()` passes through a
-little grey on its way round (since 2026-10-23). Naming anything else warns and lists what is animatable,
+little grey on its way round. Naming anything else warns and lists what is animatable,
 rather than leaving you with an element that silently never moves. A longhand of
 an animatable shorthand (`padding-left`) is pointed at the shorthand: the four
 sides animate as a unit.
@@ -480,7 +486,7 @@ waiting for real events and renders nothing. Frames are scheduled only while
 something is actually in flight, and stop the frame it lands. Driven in
 `examples/transition.rux`.
 
-**Keyframe animation** (2026-10-23): `@keyframes` and `animation`, as CSS has
+**Keyframe animation:** `@keyframes` and `animation`, as CSS has
 them, so Tailwind's `animate-spin`, `animate-ping` and `animate-pulse` run.
 ```css
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -498,7 +504,7 @@ against the box, so `var()`, `em` and `currentcolor` in it mean what they mean
 on the box. A transform is walked function by function, so `rotate(0)` to
 `rotate(360deg)` turns all the way round though the two are the same matrix;
 lists whose functions differ walk their matrices. The keyframes animate the
-properties `transition` can, below; any other in a keyframe warns and is left
+properties `transition` can, listed above; any other in a keyframe warns and is left
 as the box has it. An animation overrides a transition of the same property,
 as in CSS, and `prefers-reduced-motion` stills it the way it stills a
 transition: over before it starts. Not yet: `animation-composition`, scroll

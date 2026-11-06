@@ -49,7 +49,7 @@ The stress test that validated the element count: every "missing" tag someone as
 
 > **Reuse existing, Rust-shaped tools instead of inventing. Every invented > concept is a feature we now have to design, document, and maintain.**
 
-Concretely: CSS parsing is `lightningcss`, not our own. Layout is `taffy` (a flexbox engine), not our own. Script is `rhai` (Rust-shaped syntax), not a new language. Imports mirror Rust's `use`. Reactivity follows the proven
+Concretely: CSS parsing is `lightningcss`, not our own. Layout is `taffy` (a flexbox engine), not our own. Script started on `rhai` (Rust-shaped syntax) and is now Rux's own small, checked language, kept Rust-shaped so there is little new to learn. Imports mirror Rust's `use`. Reactivity follows the proven
 Leptos/Solid signal model. This law is what keeps Rux a buildable project instead of a research career.
 
 ## Key decisions and the tradeoffs we accepted
@@ -72,13 +72,13 @@ Every decision below cost us something. Recording the cost so we don't relitigat
 
 **Cost:** we inherit some of CSS's verbosity and quirks, and we must clearly document *which subset* we honor (see [the CSS subset](./02-spec.md#styling)) so authors aren't surprised when an obscure property is ignored.
 
-### Two-tier logic: `rhai` script over a compiled Rust host
+### Two-tier logic: script over a compiled Rust host
 
-**Decision:** app glue lives in an interpreted, Rust-shaped script section that hot-reloads; native/heavy/fast work lives in compiled Rust exposed as `host::…`.
+**Decision:** app glue lives in an interpreted, Rust-shaped script section that hot-reloads; native/heavy/fast work lives in compiled Rust exposed to the script as native modules.
 
 **Won:** logic hot-reloads along with markup and CSS, so all three sections are live. And the script stays close to Rust (Law 4), so there's little new to learn.
 
-**Cost:** `rhai` is Rust-*like*, not Rust: no borrow checker, dynamic types, interpreter overhead. The escape hatch: promote hot or heavy logic down into the compiled host when it stabilizes. See [the host contract](./02-spec.md#scripting-and-the-host).
+**Cost:** the script is Rust-*like*, not Rust: no borrow checker, and interpreter overhead (release builds compile script functions to Rust to cut it). The escape hatch: promote hot or heavy logic down into the compiled host when it stabilizes. See [the host contract](./02-spec.md#scripting-and-the-host).
 
 ### Reactivity is a core primitive; state management is ecosystem
 
@@ -198,7 +198,7 @@ example needs it.
 ## What would make us revisit a law
 
 - If runtime parse errors prove too costly in practice, we add an *optional* compile/validation step, without removing hot-reload.
-- If `rhai`'s dynamism causes real bugs, we grow the compiled-host surface and shrink the script's responsibilities.
+- If the script's dynamism causes real bugs, we grow the compiled-host surface and shrink the script's responsibilities.
 - If `role` proliferation starts encoding behavior by the back door, that's a Law-1 breach and the feature belongs in CSS or as a capability instead.
 
 Next: the [formal spec](./02-spec.md).

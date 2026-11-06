@@ -11,12 +11,9 @@ What goes inside `<script>`, and what a `{{ }}` binding or an `@tap` attribute
 may contain.
 
 Rux's script runs on **Rux's own interpreter**: a script is read by Rux's
-parser, checked, lowered to a typed IR and run (step 5 of [The Rux
-language](./11-next.md#build-order), 2026-09-26). Until then it ran on
-`rux-rhai`, a fork of [rhai](https://rhai.rs) 1.25.1, and the language still
-carries what the fork changed and what it kept from rhai; the section [If you
-know rhai](#if-you-know-rhai) lists both. This document is the reference for the
-language as it runs today; [The Rux language](./11-next.md) is where it is going.
+parser, checked, lowered to a typed IR and run. A release build compiles the
+entry document's functions to Rust. This document is the reference for the
+language; [The Rux language](./11-next.md) is its design.
 
 Where this document and [As Built](/reference/) overlap, they agree; As
 Built is the wider tour of the whole language, this is the script half in depth.
@@ -155,8 +152,7 @@ out of its way to get right:
   so the leaver has saved before the arriver reads.
 
 When the app closes, every component still on screen runs its `unmounted`,
-deepest first, and then the document runs its own. Until 2026-10-13 neither
-ran on a close or a hot reload, whatever this page said.
+deepest first, and then the document runs its own.
 
 ## Closing the app
 
@@ -443,15 +439,11 @@ fn drain() { level-- }          // writes the signal, the screen follows
 fn is_low() { level < 20 }      // reads it
 ```
 
-`@tap="drain()"` is a handler like any other and the write is tracked. **This
-changed in v0.7**: before it, a `fn` could not touch state at all and every
-handler had to be written inline, which is why older examples and `/learn` still
-show them that way.
+`@tap="drain()"` is a handler like any other and the write is tracked.
 
-**A method call does not capture the surrounding scope.** `thing.helper()`
-cannot reach `level`; `helper(thing)` can. Method dispatch passes its receiver by
-reference, and the scope cannot be borrowed at the same time. This is upstream's
-limitation and it stands.
+**A method call on a function of the file is that function called with the
+receiver first**: `thing.helper(a)` is `helper(thing, a)`. It is tried after
+the language's own methods (`items.push(x)`) and a native value's.
 
 **A function sees its own file's names**: the file's signals, functions and
 props, what the file imports, and, in a component, the instance's state. Not
@@ -677,8 +669,7 @@ async fn saveAs() {
   **`pickSaveFile(options): string?`**. Cancelling gives `none`, or `[]`.
   A `File` is what an `<input type="file">` binds: `name`, `size`, `type`,
   `url`, `path`, and `await file.text()`. A save dialog names a file that is
-  not there yet, so it gives a path. **Changed 2026-10-23**: `pickFile` and
-  `pickFiles` gave paths before; write `file.path` where the path was.
+  not there yet, so it gives a path.
 - **The options** are all optional: `title`, `filters` (each a `name` and its
   `extensions`, with or without the dot), `folder` to open in, and `name`, the
   file name a save dialog suggests. A field the dialogs do not have is an
@@ -900,8 +891,8 @@ pub fn open_till() -> Till { … }
 - **A debug build runs Rux optimised.** Everything the app depends on is
   compiled at `opt-level = 2`, and only the `native/` crate as written, for a
   debugger. A debug window scrolls as fast as a release one (a list of 1,000
-  rows: 40 wheel notches took 2.5 s of CPU before, 0.33 s now); the price is
-  the first build, which takes several minutes once.
+  rows scrolls about 7.5 times faster than unoptimised); the price is the first
+  build, which takes several minutes once.
 
 ### Signals from Rust
 
@@ -992,10 +983,8 @@ fn on_message(event: Event) {
 - A check does not run the app's Rust, so a channel read while a document is
   checked is the empty list.
 
-`host::name()`, which reached a function a Rust program registered by hand, is
-retired and is an error that points here. A program that runs the shell itself
-registers a module with `rux_runtime::native::Module`, which is what the
-attribute generates.
+A program that runs the shell itself registers a module with
+`rux_runtime::native::Module`, which is what the attribute generates.
 
 ## Type annotations
 
@@ -1109,8 +1098,7 @@ without it: the prop's default stands in, or it is left out. A route
 parameter is text and becomes what its prop takes, so `prop id: int` on
 `/task/:id` gets the number `42` from `/task/42`, and `/task/abc` is reported.
 
-[Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md) is the whole design, with a table saying which parts
-run.
+[Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md) is the full reference for the type system.
 
 ## Values
 
@@ -1123,8 +1111,8 @@ An `int` goes wherever a `float` is wanted, and `1 + 0.5` is a `float`; a
 `float`**, so `10 / 3` is `3.333…`; `intDiv(10, 3)` is `3`, cutting toward
 zero. A list is indexed by an `int`. So `let n = signal(0)` holds an `int`, and
 `n = n / 2` is an error whose fix is to say which: `let n: float = signal(0)`,
-or `intDiv(n, 2)`. `number`, the one type both used to be, is gone; `rux fmt`
-rewrites it to `float`, which holds everything it held.
+or `intDiv(n, 2)`. There is no `number` type; `rux fmt` rewrites it to
+`float`.
 
 The checker keeps the two apart, and so does the interpreter: an `int` is a
 whole 64-bit number and `int` arithmetic that goes past its limits is an error,
@@ -1135,11 +1123,10 @@ zero of `float`s gives `Infinity` or `NaN` as in JavaScript, and those display
 under those names.
 
 Strings are double-quoted. **Single quotes hold one character**, which is a
-string of one character (`'x' == "x"`), so `'#note'` is a syntax error. That
-rule is inherited from rhai and is the single most common thing to trip over. A
-selector or any other text needs `"…"`. Inside a `@tap="…"` attribute there is no
-room for double quotes, which is the practical reason to name a handler and call
-it:
+string of one character (`'x' == "x"`), so `'#note'` is a syntax error. This is
+the most common thing to trip over. A selector or any other text needs `"…"`.
+Inside a `@tap="…"` attribute there is no room for double quotes, which is the
+practical reason to name a handler and call it:
 
 ```rux
 <!-- wrong: '#note' is more than one character in single quotes -->
@@ -1161,13 +1148,13 @@ let noop = () => {};                   // an empty body, not a map
 ```
 
 Two things JavaScript has that this does not: shorthand (`{ a, b }` for
-`{ a: a, b: b }`) and spread. `#{ key: value }`, rhai's own spelling, also works,
-and `rux fmt` rewrites it to `{`.
+`{ a: a, b: b }`) and spread in a map (`{ ...o, a: 1 }`). `#{ key: value }` is
+read as a map too, and `rux fmt` rewrites it to `{`.
 
 `none` is the empty value. It is a literal rather than a variable, so it cannot
-be shadowed and nothing can subscribe to it. `null` and `()`, its spellings
-until 2026-09-26, still read as `none`, with a warning, and `rux fmt` rewrites
-both. `none` is a keyword, so it cannot name anything.
+be shadowed and nothing can subscribe to it. `none` is a keyword, so it cannot
+name anything. `null` and `()` are errors that say to write `none`, and `rux
+fmt` rewrites both.
 
 ### Truthiness
 
@@ -1178,9 +1165,6 @@ else is truthy, **including an empty array and an empty map**.
 r-if="items"           <!-- "items exists", NOT "there are items" -->
 r-if="items.length"    <!-- what you meant -->
 ```
-
-This is a behaviour change from v0.6, and the only one v0.7 made to existing
-documents.
 
 ## Operators
 
@@ -1214,7 +1198,8 @@ JavaScript's names, with JavaScript's answers:
   `findLast`, `findLastIndex`, `some`, `every`, `includes`, `indexOf`,
   `lastIndexOf`, `at`, `slice`, `concat`, `flat`, `flatMap`, `join`,
   `toReversed`, `toSorted`, and the ones that change the array: `push`, `pop`,
-  `shift`, `unshift`, `splice`, `sort`, `reverse`, `fill`.
+  `shift`, `unshift`, `splice`, `sort`, `reverse`, `fill`. Also
+  `insert(i, x)`, `remove(i)`, `truncate(n)` and `clear()`.
 - **Strings:** `split`, `charAt`, `at`, `repeat`, `startsWith`, `endsWith`,
   `includes`, `indexOf`, `lastIndexOf`, `slice`, `substring`, `trim`,
   `trimStart`, `trimEnd`, `padStart`, `padEnd`, `replace`, `replaceAll`,
@@ -1239,33 +1224,23 @@ JavaScript's names, with JavaScript's answers:
 
 A string's methods **return** a new string and leave their receiver alone, as
 JavaScript's do: `name.replace("-", " ")` replaces the first `-` and gives the
-result back. That is worth saying because rhai's own string methods were
-in-place mutators: its `trim` emptied the string it was given and returned
-nothing, so `{{ name.trim() }}` rendered blank, and its `replace` changed the
-receiver, every match, and gave `none` back. Rux's shadow both, and `rux
-check` says so where a statement throws the new value away: `s.replace("a",
-"b");` is answered with "write `s = s.replace("a", "b")`". An array's
-`sort`, `reverse` and `fill` change the array, as JavaScript's do, and also
-give it back; `toSorted` and `toReversed` leave it alone.
+result back. `rux check` says so where a statement throws the new value away:
+`s.replace("a", "b");` is answered with "write `s = s.replace("a", "b")`". An
+array's `sort`, `reverse` and `fill` change the array, as JavaScript's do, and
+also give it back; `toSorted` and `toReversed` leave it alone.
 
 **Spread in an array**, as JavaScript's: `[...a, x]` is `a`'s items and
 then `x`, `[...a, ...b]` both in order, and `[..."hi"]` the characters. It
 makes a new array and leaves `a` alone. Spreading anything but an array or a
 string is an error.
 
-Not there yet: spread in a map or record, `{ ...o, a: 1 }`, and in a call's
-arguments, `f(...xs)`; `Math.random`; and a `Date` value with methods (`Date.now()` and the functions above take
-its place). `now()` below times things: it only goes forward, so it cannot
-say when something happened.
+Not there: spread in a map or record, `{ ...o, a: 1 }`, and in a call's
+arguments, `f(...xs)`; `Math.random`; and a `Date` value with methods (`Date.now()`
+and the functions above take its place).
 
-`forEach` is called with `(item, index)` and falls back to `(item)`. `every`
-and `findIndex` take a callback as JavaScript's do (`some` and `find` are
-rhai's own and already match), and `sort((a, b) => a - b)` sorts by the
-comparison and **returns** the sorted array, which rhai's in-place `sort` did
-not. rhai's own
-`for_each` is still there and is **not** the same thing: it hands the item over
-as `this` and the *index* as the argument, so `items.for_each(|x| total += x)`
-adds up the indexes. Write `forEach`.
+`forEach` is called with `(item, index)` and falls back to `(item)`, and
+`sort((a, b) => a - b)` sorts by the comparison and **returns** the sorted
+array.
 
 **Text to a number**, under JavaScript's names and with its answers:
 `Number("2")` is 2, `Number("")` is 0, `Number("12px")` is `NaN`;
@@ -1278,7 +1253,7 @@ ids are numbers: `tasks.find(t => t.id == parseInt(params.id))`.
 
 **`now()` is a clock**: milliseconds, as a `float`, on a clock that only goes
 forward. Only the difference between two reads means anything, so it times
-things rather than telling the time:
+things rather than telling the time (`Date.now()` does that):
 
 ```rux
 fn send() {
@@ -1316,7 +1291,8 @@ records are equal when their fields are, whatever order they were written in.
 | `back()`, `forward()` | Walk the history |
 | `path_for("route")`, `path_for("route", { id: x })` | Build a path from a named route |
 
-**`log` is rhai's logarithm**, not a logging function. `log(2)` returns `0.301`.
+**`log` is a logarithm**, not a logging function: `log(2)` returns `0.301`
+(base 10), `log(x, base)` takes the base, and `Math.log` is the natural one.
 Use `print`.
 
 `emit`, `navigate` and the history verbs record an intent rather than acting
@@ -1379,6 +1355,7 @@ state, and the next build produces the tree it would have produced anyway.
 | `el.setSelectionRange(start, end)` | Selects characters `start` to `end` of a text field, the caret at `end`, and gives it focus |
 | `el.insertText(text)` | Replaces a text field's selection with `text` as typing would: one undo step, `@input` after it, the caret after the text |
 | `el.clearHistory()` | Forgets a text field's undo and redo; its text and focus stay as they are |
+| `el.play()`, `el.pause()` | Starts or pauses an `<audio>` or `<video>` |
 
 **A text field's selection** is `el.selection`, `{ start, end, caret }` in
 characters, as strings index, the caret at one end of it. It is where the
@@ -1435,8 +1412,9 @@ from something else.
 Every event handler is **compiled when the document loads**, so a syntax error in
 a `@tap` is reported rather than waiting to be discovered by whoever taps it.
 Handlers in branches that are not currently rendered are checked too, since a
-false `r-if` is where a broken handler hides longest. It is syntax only: naming
-an `r-for` local or a component's own state is a runtime lookup, not an error.
+false `r-if` is where a broken handler hides longest. `rux check` goes on to
+check a handler's names and types against the script (see [Type
+annotations](#type-annotations)).
 
 **A syntax error is Rux's own.** Every script, binding and handler is read by
 Rux's parser, so what is wrong is said in this language's words, at the line and
@@ -1461,9 +1439,9 @@ import in let loop none private return switch throw true try until while _
 
 These are not keywords, and are still not names. `use` and `is` are a
 statement and an operator that already work; `match` and `yield` are held for
-the language. `this` is the value a method-style function is called on.
-`null` still reads as `none`, which `rux fmt` writes; `nil`, `var` and `new`
-are other languages' spellings, and their error says what Rux writes instead.
+the language. `this` is reserved. `null`, `nil`, `var` and `new` are other
+languages' spellings, and their error says what Rux writes instead (`none`
+for `null`, which `rux fmt` writes).
 `void` is a type. `print`, `debug`, `type_of`, `eval`, `call`, `curry`,
 `is_def_var` and `Fn` are built-in functions: they can be called, not declared.
 
@@ -1494,33 +1472,6 @@ Everything else is a name, including words other languages reserve:
   instance that started it and stopped when that instance goes.
 - **Bare `{ }` object literals.** See above.
 
-## If you know rhai
-
-Rux ran on a fork of rhai until 2026-09-26, and its script still reads like
-rhai in most places. Nine things the fork changed carry over as the language's
-own rules (the fork's record of them, `DIVERGENCE.md`, went with it and is in
-the repository's history):
-
-1. `?.` guards a missing **property**, not only an absent base.
-2. `x++` and `x--` exist, in statement position.
-3. Arrow functions.
-4. **A component's function reads its instance's state where it runs**: the
-   instance hands its state in with every call. This is what is left of the
-   fork's rule that every plain call captured its caller's scope; `f!(…)` is
-   gone, and a caller's other names are not reachable (see
-   [Modules](#modules)).
-5. **JavaScript truthiness**, including empty array and empty map being truthy.
-6. A whole `f64` can index an array.
-7. `{ a: 1 }` is a map, as `#{ a: 1 }` is.
-8. **Type annotations**: `let n: int`, `fn f(x: T): R`, `(a: T) => …` and
-   `type Name = …;` parse, and are checked.
-9. `?[` guards a missing key and an index past the end, not only an absent
-   base.
-
-Outside the engine, and so not divergences: strict map properties, JS method
-names, `.length`, `none`, `print`/`debug`, `===`/`!==`, and float division for
-two integers.
-
 ## If you know JavaScript
 
 The things most likely to surprise, in the order they usually do:
@@ -1529,8 +1480,8 @@ The things most likely to surprise, in the order they usually do:
 2. **Object literals have no shorthand**: `{ a: a }`, never `{ a }`.
 3. **`.length` on arrays and strings only**, not on objects.
 4. `let` declares state only at the top level of `<script>`; `signal()` marks it.
-5. **A method call cannot see the surrounding scope.** Write `helper(thing)`
-   rather than `thing.helper()` when it needs to.
+5. **`/` always makes a `float`**: `10 / 3` is `3.333…`, and `intDiv(10, 3)`
+   is `3`.
 6. `x++` is a statement, so `let a = x++` is not a thing.
 7. There is no `undefined` distinct from `none`.
 8. **A handler cannot `await`.** It calls an `async fn`, which does, and

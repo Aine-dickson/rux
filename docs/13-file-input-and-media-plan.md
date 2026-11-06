@@ -1,8 +1,15 @@
 # Plan: the file input, then audio, then video
 
-Status: **planned 2026-10-23, from [the file input proposal](12-file-input-proposal.md);
+Status: **built, 2026-10-23 to 2026-10-28.** Part A (the file input) runs on the
+desktop, the web and Android; part B (audio) on all three; part C (video) on
+Windows, Android and the web. What each platform was driven on, and what was
+not, is in C.4 and in [User tests](08-user-tests.md). What shipped is described
+in [As Built](05-as-built.md). The plan below stays as the record of how it was
+built.
+
+It was planned 2026-10-23, from [the file input proposal](12-file-input-proposal.md);
 approved by the owner the same day, with every assumption and question below
-answered as written.**
+answered as written.
 The owner asked for audio and video elements in the same plan, which answers
 the proposal's decision 8 (an audio proposal now) and widens it to video.
 

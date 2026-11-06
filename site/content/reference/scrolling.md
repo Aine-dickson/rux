@@ -29,7 +29,7 @@ Offsets live in the shell keyed by the scroller's index in tree order, so they
 survive the whole-tree rebuild, so tapping a row doesn't scroll the list to the top.
 A press on a thumb never becomes a tap on the content beneath it.
 
-**Each axis on its own** (v0.9). `overflow-x` and `overflow-y` may differ,
+**Each axis on its own.** `overflow-x` and `overflow-y` may differ,
 and `overflow` takes one value for both or two, `x y`. `overflow-x: hidden;
 overflow-y: auto` scrolls up and down and clips what is wider. As CSS computes
 it, `visible` beside an axis that is `hidden`, `auto` or `scroll` acts as
@@ -39,7 +39,7 @@ cascade has lost the order by then; the longhand is the one written to narrow
 the other). **One divergence, written down:** `clip` on one axis beside
 `visible` on the other clips both in Rux, since a clip here is the whole box.
 
-**Scroll chaining** (v0.9). What a scroller cannot take passes to the scroller
+**Scroll chaining.** What a scroller cannot take passes to the scroller
 it sits in, as in a browser: a list at its end lets the page go on scrolling,
 by the wheel or a finger. `overscroll-behavior: contain` (or `none`, which is
 the same here: Rux draws no end-of-scroll effect for them to differ on) keeps
@@ -49,7 +49,7 @@ so does a run of wheel notches: until the wheel rests for 300ms or the pointer
 moves, the notches go to the scroller the run began on, so a list that slides
 under the pointer as the page scrolls does not take over half way.
 
-**Scrollbars come and go** (v0.9), as Windows 11, macOS and Android draw them.
+**Scrollbars come and go**, as Windows 11, macOS and Android draw them.
 A scroller's bars show while it scrolls or the pointer moves over it, stay for
 a second after, and fade. A bar is thin at rest and wide, with its track
 showing, under the pointer, in a 10px lane along the box's edge. **A press on
@@ -59,11 +59,17 @@ until the thumb reaches the pointer. `scrollbar-width: thin` draws it thinner,
 press). `scrollbar-color: <thumb> <track>` colours it; the default is a grey
 that shows on a light page and a dark one.
 
-**Kinetic fling after a touch drag landed 2026-09-21**, described under touch
-above. No bounce at the ends yet: that is the physics item's.
+**A touch drag ends in a fling**, described under [Touch](#touch). There is no
+bounce at the ends.
 
-**Long lists: `content-visibility`** (v0.9). A list of two thousand rows is
-built whole, and was laid out and drawn whole every frame. CSS's answer is
+**Snapping and smooth scrolling.** `scroll-snap-type`, `scroll-snap-align`,
+`scroll-snap-stop`, `scroll-padding` and `scroll-margin` bring a scroller to rest
+on a box (a lifted finger, a fling, the wheel once it rests and
+`scrollIntoView()` all snap), and `scroll-behavior: smooth` animates a Tab or
+`scrollIntoView()` scroll. Both are described under [Honored CSS](/reference/css/).
+
+**Long lists: `content-visibility`.** A list of two thousand rows is
+built whole. CSS's answer to laying all of it out every frame is
 to let a row that is far from the screen skip its contents:
 
 ```css
@@ -95,22 +101,11 @@ to let a row that is far from the screen skip its contents:
   other than `visible` clips what is inside it, is a stacking context, and is
   the containing block for its `absolute` and `fixed` descendants.
 
-Measured on the long-list benchmark (2,000 rows of three texts in a scroller,
-scrolled a little each frame, release, desktop):
-
-| | every row laid out | `content-visibility: auto` |
-|---|---|---|
-| layout, a scrolled frame | 23.8 ms | 7.7 ms, 3.1x faster |
-| scene, a scrolled frame | 0.75 ms | 0.33 ms, 2.3x faster |
-| the first frame's layout | 127 ms | 18.8 ms, 6.7x faster |
-| building the document | 104 ms | 109 ms, the same |
-
-Those were measured when it landed. Since then a frame that only scrolls
-lays nothing out again, and rows scrolled out of view are passed over (see
-"A frame that only scrolls"): a scrolled frame is now 0.9 ms without
-`content-visibility` and 1.0 ms with it, so on a desktop it no longer makes
-scrolling faster. What it still saves is the first frame, and the work of
-laying out rows whose contents change while they are far away.
+A frame that only scrolls lays nothing out again (see "A frame that only
+scrolls"), so on a desktop `content-visibility` does not make scrolling faster.
+What it saves is the first frame (2,000 rows of three texts: 127 ms of layout
+down to 18.8 ms, 6.7x faster), and the work of laying out rows whose contents
+change while they are far away.
 
 Building the rows is the same either way: every row is still styled and
 stays in the document, so `query()`, `r-model` and a handler reach it.
