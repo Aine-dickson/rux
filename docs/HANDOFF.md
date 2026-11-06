@@ -61,8 +61,23 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   commits, which `build/v0.9` does not descend from. A release-process question.
 - `cargo clippy -D warnings` fails in `rux-syntax` (four needless borrows); not
   touched yet.
-- Mava Studio reports to attend to are in `docs/field-reports/mava-studio-2.md`
-  (it had uncommitted edits on 2026-11-06). Start a new session for them.
+- Mava Studio 2 (`docs/field-reports/mava-studio-2.md`): MS-009, MS-011 and
+  MS-012 are fixed on this branch (2026-11-06, commits `66b4536` and
+  `ee2eeec`). **MS-010 (drag and drop between containers) is the one open
+  entry**: it needs an Opus plan first, since its design sets how drag works
+  in general. Mava's pin must move to a commit at or after `20939f2` for
+  `<icon>`.
+- 2026-11-06 additions: `@contextmenu`, `@doubletap` and `event.button`
+  (MS-011); `[window] decorations = false`, `app-region`, and the `window`
+  module (MS-012). Driven on Windows only: touch long press, the web, macOS,
+  Linux, Android and Windows snap are not (rows in `docs/08-user-tests.md`).
+  Probes and drivers: `C:\Users\USER\Mobile\rux-harness\ms011` and `ms012`.
+- **Asked for, not designed**: child windows an app can spawn (roadmap item 9),
+  and a title row beside the system's own buttons (item 8). Both need an Opus
+  plan and the owner's say on the syntax before code.
+- `Style` has a size budget (744 bytes, watchlist #41): a new rarely used
+  style property goes in `Rare`, as `app_region` does. One byte over it
+  overflowed `rux check` on the tasks scaffold in a debug build.
 - Android and web builds of a scaffold with `native/` have not been driven.
 - Code defects found by the docs pass (none fixed yet):
   - `throw "x"` is caught as the string, not as an `Error`; `do`, `break value`
