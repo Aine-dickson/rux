@@ -146,11 +146,19 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next action
 
-MS-010 step 2 (above), then child windows. After that, decide
-with the owner when to push `build/v0.9` and cut v0.9. The Mava field report
-(`docs/field-reports/mava-studio-2.md`) was being edited by another session
-(MS-013 added) and is not part of the title-row commit; its MS-012 status line
-still says the overlay is not built.
+Two items, each in its own session on Opus plan mode (they set design):
+
+1. **Child windows** an app can spawn (roadmap item 8): needs the owner's say
+   on the syntax before code.
+2. **MS-013, elliptical `border-radius`** (`docs/field-reports/mava-studio-2.md`,
+   open): CSS draws `50%` on a 200 by 100 box as an ellipse, Rux draws a pill.
+   `Corners` is `[f32; 4]` and reaches layout, paint, shadows, clips, outlines
+   and the animator, and kurbo's `RoundedRect` is circular only, so it needs a
+   plan. Option A (recommended, CSS-correct): an x and a y radius per corner.
+   Option B: an `<ellipse>` primitive (new syntax, owner first).
+
+After those, decide with the owner when to push `build/v0.9` and cut v0.9.
+MS-012's status line in the Mava report still says the overlay is not built.
 
 ## Verified on 2026-11-06
 
