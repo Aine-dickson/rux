@@ -7,88 +7,64 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
-/// Whether a walked file that is a component should be left out. Formatting a
-/// component is fine; *checking* one on its own is not, because its props come
-/// from whoever uses it. See [`used_by_something`].
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Components {
-    Include,
-    SkipWhenWalking,
-}
-
 /// Expand the requested paths into `.rux` files: a file is itself, a directory
-/// is everything under it. No paths at all means the current directory, so a
-/// bare `rux check` or `rux fmt` does the obvious thing in CI.
-///
-/// A file named explicitly is always included, even when walking would have
-/// skipped it: naming it was deliberate.
-pub fn collect(paths: &[PathBuf], components: Components) -> Result<Vec<PathBuf>, String> {
-    collect_reporting_skips(paths, components).map(|c| c.files)
+/// is everything under it. No paths at all means the project the current
+/// directory is in (see [`project_dir`]), so a bare `rux check` or `rux fmt`
+/// does the obvious thing in CI, from any folder of the project.
+pub fn collect(paths: &[PathBuf]) -> Result<Vec<PathBuf>, String> {
+    collect_with_callers(paths).map(|c| c.files)
 }
 
 /// What one `rux check` or `rux fmt` invocation is working on.
 pub struct Collected {
     /// The files to work on, in path order.
     pub files: Vec<PathBuf>,
-    /// The ones walking deliberately left out.
-    ///
-    /// Carried rather than swallowed because the count is the difference
-    /// between "your project is clean" and "two of your four files were never
-    /// looked at", and those read identically when only the first number is
-    /// printed. Someone read `checked 2 files, no problems found` over a
-    /// four-file project and reasonably took it for a clean bill of health.
-    pub skipped: Vec<PathBuf>,
     /// Every file in the project that another one writes as a tag, keyed by
-    /// [`rux_runtime::same_file_key`]. A caller checking one of these on its
-    /// own has to say so, or the props it is handed read as mistakes.
+    /// [`rux_runtime::same_file_key`]. Such a file is checked on its own as a
+    /// component: its props come from a caller, so it owes them rather than
+    /// reporting them as undefined.
     pub used: HashSet<PathBuf>,
 }
 
-/// The same as [`collect`], and also what was left out and what has a caller.
-pub fn collect_reporting_skips(
-    paths: &[PathBuf],
-    components: Components,
-) -> Result<Collected, String> {
-    let (mut explicit, mut walked) = (Vec::new(), Vec::new());
+/// The same as [`collect`], and also which of the files have a caller.
+pub fn collect_with_callers(paths: &[PathBuf]) -> Result<Collected, String> {
+    let (mut files, mut walked) = (Vec::new(), Vec::new());
     if paths.is_empty() {
-        walk(Path::new("."), &mut walked)?;
+        walk(&project_dir(), &mut walked)?;
     }
     for root in paths {
         if root.is_file() {
-            explicit.push(root.clone());
+            files.push(root.clone());
         } else if root.is_dir() {
             walk(root, &mut walked)?;
         } else {
             return Err(format!("no such file or directory: {}", root.display()));
         }
     }
-
-    let used = match components {
-        Components::Include => HashSet::new(),
-        Components::SkipWhenWalking => used_by_something(paths, &walked),
-    };
-
-    let mut files = explicit;
-    let mut skipped = Vec::new();
-    for f in walked {
-        let keep = match components {
-            Components::Include => true,
-            Components::SkipWhenWalking => !used.contains(&rux_runtime::same_file_key(&f)),
-        };
-        if keep {
-            files.push(f);
-        } else {
-            skipped.push(f);
-        }
-    }
+    let used = used_by_something(paths, &walked);
+    files.extend(walked);
     files.sort();
     files.dedup();
-    // A file named explicitly is checked even if it is a component, so it must
-    // not also be reported as skipped.
-    skipped.retain(|s| !files.contains(s));
-    skipped.sort();
-    skipped.dedup();
-    Ok(Collected { files, skipped, used })
+    Ok(Collected { files, used })
+}
+
+/// The folder a bare `rux check` or `rux fmt` works on: the nearest one above
+/// the current directory holding `rux.toml`, else the entry document's folder,
+/// else the current directory itself (a folder of standalone documents).
+fn project_dir() -> PathBuf {
+    let here = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    for dir in here.ancestors() {
+        if dir.join(crate::manifest::MANIFEST).is_file() {
+            // Spelled `.` from the root itself, so the paths in a report stay short.
+            return if dir == here { PathBuf::from(".") } else { dir.to_path_buf() };
+        }
+    }
+    match rux_runtime::project_root(&here) {
+        Some(root) if !root.as_os_str().is_empty() => {
+            if root == here { PathBuf::from(".") } else { root }
+        }
+        _ => PathBuf::from("."),
+    }
 }
 
 /// Every file in the project that some other file writes as a tag.
@@ -163,7 +139,10 @@ fn walk(dir: &Path, out: &mut Vec<PathBuf>) -> Result<(), String> {
         let name = name.to_string_lossy();
         // Build output and version control hold no source worth looking at, and
         // `target/` in particular is large enough to make this feel broken.
-        if name.starts_with('.') || name == "target" || name == "node_modules" {
+        // `locks/`, `dist/` and `native/` hold generated output and Rust.
+        if name.starts_with('.')
+            || matches!(&*name, "target" | "node_modules" | "locks" | "dist" | "native")
+        {
             continue;
         }
         if path.is_dir() {

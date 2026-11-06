@@ -1127,9 +1127,10 @@ fn readme(name: &str, template: Template, native: bool) -> String {
          rux fmt            re-indent, and format the CSS\n\
          ```\n\
          \n\
-         `rux check` on its own walks the project and skips components, because a\n\
-         component read alone is missing the props its caller passes. Name one to check\n\
-         it in full: `rux check {}`.\n"
+         `rux check` on its own walks the whole project, from any folder in it. A\n\
+         component is read on its own, owing the props it declares to whoever uses it,\n\
+         and a page is read through the app, with the app's state in scope. To check\n\
+         just one file: `rux check {}`.\n"
             .replace("{}", template.component()),
     );
     out

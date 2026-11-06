@@ -10964,7 +10964,9 @@ fn build_children(
                     // Nothing supplied: the slot's own children are the default,
                     // and they belong to the component, so they build in its
                     // rules and its scope.
-                    if slot.is_none() {
+                    // A file with a caller is read on its own by `rux check`, and
+                    // its slot is filled by whoever uses it.
+                    if slot.is_none() && !rux_script::is_fragment() {
                         warn(
                             "`<slot>` outside a component renders its own children and nothing \
                              else; only a component has a caller to take content from"
@@ -11014,6 +11016,9 @@ fn build_children(
                     // path names none of them. An index route (`path=""`) is how
                     // an author fills that.
                 }
+                // In a file with a caller (a layout component) the route is the
+                // app's, which this file read alone cannot see.
+                None if rux_script::is_fragment() => {}
                 None => warn(
                     "`<router-view />` renders the route matched below this one, and this is not \
                      a route's view, so there is nothing for it to show"

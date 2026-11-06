@@ -63,7 +63,7 @@ pub fn run(options: Options) -> i32 {
         return format_stdin(&options);
     }
 
-    let files = match crate::files::collect(&options.paths, crate::files::Components::Include) {
+    let files = match crate::files::collect(&options.paths) {
         Ok(files) => files,
         Err(err) => {
             eprintln!("rux: {err}");

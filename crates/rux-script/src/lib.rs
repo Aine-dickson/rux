@@ -1049,16 +1049,13 @@ fn is_owed_prop(rhai_message: &str) -> bool {
 
 /// Whether a failed expression is definitely wrong or only probably.
 ///
-/// Only the undefined-name case is softened, and only for a fragment. Anything
-/// else that fails (a call to nothing, a syntax error, a bad index) is wrong
-/// wherever it is written, because no caller can supply a missing function.
-fn level_for(rhai_message: &str) -> rux_reactive::Level {
-    let undefined_name = rhai_message.starts_with("Variable not found:");
-    if undefined_name && is_fragment() {
-        rux_reactive::Level::Warning
-    } else {
-        rux_reactive::Level::Error
-    }
+/// Always an error. A component read on its own owes its *declared* props to
+/// its caller ([`is_owed_prop`] filters those out before this is asked), and a
+/// caller can pass nothing else, so any other undefined name is a mistake in a
+/// component as much as in a page. A call to nothing, a syntax error and a bad
+/// index are wrong wherever they are written too.
+fn level_for(_rhai_message: &str) -> rux_reactive::Level {
+    rux_reactive::Level::Error
 }
 
 fn warn(message: String) {

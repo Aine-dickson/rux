@@ -238,20 +238,15 @@ fn what_the_scaffold_writes_checks_clean() {
         let (code, stdout, stderr) = run(&root, &["check"]);
         assert_eq!(code, 0, "a fresh {dir} project does not check clean\n{stdout}\n{stderr}");
 
-        // The component is skipped by the walk, because a file read alone is
-        // missing the props its caller passes, so it is named explicitly. A
-        // broken component would otherwise go unnoticed until it is run.
+        // The bare check above already read the component on its own, and said
+        // so: a broken one is found without naming it.
+        assert!(stderr.contains("1 component"), "the walk covers the component {component}
+{stderr}");
         let (code, stdout, stderr) = run(&root, &["check", component]);
-        assert_eq!(code, 0, "the {dir} component does not check clean\n{stdout}\n{stderr}");
+        assert_eq!(code, 0, "the {dir} component does not check clean
+{stdout}
+{stderr}");
     }
-
-    // The **pages** are deliberately not checked alone here, and that is a
-    // finding rather than an omission: a page calls functions declared in
-    // `app.rux`, and functions are only shared into the engine when the
-    // document that declares them is the one being loaded. Read on its own a
-    // page is an incomplete program, so `rux check pages/detail.rux` reports
-    // `task_by_id` as missing against code that works. Checking a page in the
-    // context of its project is what would make that answerable.
 }
 
 /// The detail page reads its task through a `computed`, which has to follow

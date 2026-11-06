@@ -2044,6 +2044,11 @@ pub fn take_type_table() -> rux_script::check::Table {
 }
 
 thread_local! {
+    /// Where `use a::b;` resolves from for a file in a folder with no `app.rux`
+    /// to mark a project, when the file is not the document being run. See
+    /// [`set_loose_root`].
+    static LOOSE_ROOT: std::cell::RefCell<Option<PathBuf>> = const { std::cell::RefCell::new(None) };
+
     /// Whether the file about to be loaded might have a caller: a component
     /// somebody else writes as a tag, whose `{{ prop }}` values arrive from
     /// outside it.
@@ -2062,6 +2067,23 @@ thread_local! {
     /// Not knowing is spelled as the document case rather than guessed, so a
     /// caller that says nothing gets errors for names that are wrong.
     static MAY_HAVE_CALLER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Name the folder a file's `use` paths resolve from when nothing above it
+/// marks a project: a folder of standalone documents, where `use stores::shop;`
+/// in `components/cart_row.rux` means the `stores/` beside the page that was
+/// run. `rux check` reads components and stores on their own, with no page run
+/// above them, so it says which folder it was walking. `None` clears it; a file
+/// inside a project never consults it.
+pub fn set_loose_root(root: Option<PathBuf>) {
+    LOOSE_ROOT.with(|r| *r.borrow_mut() = root);
+}
+
+/// The folder `use` paths resolve from for the file in `base`.
+fn import_root(base: &Path) -> PathBuf {
+    workspace_root(base)
+        .or_else(|| LOOSE_ROOT.with(|r| r.borrow().clone()))
+        .unwrap_or_else(|| base.to_path_buf())
 }
 
 /// Say whether the next load's file might be used by another one.
@@ -2581,7 +2603,7 @@ impl Document {
         // A module opened on its own (by `rux check`) is checked as the
         // script it is, held to what a module may say.
         if sfc.module {
-            let root = workspace_root(base).unwrap_or_else(|| base.to_path_buf());
+            let root = import_root(base);
             modules::load(modules::name_of(path, &root), path.to_path_buf(), main_script.clone(), sfc.script_line)?;
         }
         let main_script = match window_props {
@@ -2636,7 +2658,7 @@ impl Document {
         // Each component's `<script>` as written, before its props, computeds
         // and hooks are taken out: what its types are checked over.
         let mut component_whole: HashMap<String, String> = HashMap::new();
-        let project_root = workspace_root(base).unwrap_or_else(|| base.to_path_buf());
+        let project_root = import_root(base);
         let mut queue: Vec<ImportJob> = vec![ImportJob {
             owner: DOCUMENT_NAMESPACE.to_string(),
             owner_path: path.to_path_buf(),
@@ -7935,21 +7957,13 @@ mod tests {
         );
     }
 
-    /// Reading a name that does not exist is an error in a document, where
-    /// nothing can supply it, and a warning in something with a caller, where
-    /// a caller can: props are not declared, so a component's `{{ label }}` is
-    /// indistinguishable from a typo when the file is read on its own.
-    ///
-    /// Which of the two a file is comes from whoever opened it, not from its
-    /// root tag: a page under a router has a `<view>` root and no caller at
-    /// all, so the tag had the common case backwards.
-    ///
-    /// This is not hypothetical tidiness. The component `rux new` scaffolds
-    /// reads two props and nothing else, so escalating everywhere made the tool
-    /// ship a project that failed its own `rux check`, which is how this rule
-    /// was found.
+    /// Reading a name that does not exist is an error in a document and in a
+    /// component alike. A caller can pass only what a component declares with
+    /// `prop`, and those are owed rather than reported, so any other name is a
+    /// mistake wherever the file is read from. (It used to be a warning in a
+    /// component, back when props were not declared.)
     #[test]
-    fn an_undefined_name_is_an_error_in_a_page_and_a_warning_in_a_fragment() {
+    fn an_undefined_name_is_an_error_in_a_page_and_in_a_fragment() {
         let _ = take_warnings();
         set_may_have_caller(false);
         let page = Document::from_source(
@@ -7976,8 +7990,8 @@ mod tests {
             .find(|w| w.message.contains("absent"))
             .expect("still reported");
         assert!(
-            !in_fragment.is_error(),
-            "a fragment's caller may be passing it as a prop: {in_fragment:?}"
+            in_fragment.is_error(),
+            "a caller can pass only what is declared with `prop`: {in_fragment:?}"
         );
         set_may_have_caller(false);
     }

@@ -93,14 +93,15 @@ fn warnings_alone_do_not_fail_unless_asked() {
     assert_eq!(denied.status.code(), Some(1), "--deny-warnings should fail");
 }
 
-/// A component's props come from its parent, so checking one standalone would
-/// report every prop as undefined. Walking a directory must skip them.
+/// A component is checked on its own when walking, as it is when named: what
+/// its `prop`s declare is what its template may use. A declared prop is owed by
+/// the caller and says nothing; a name nobody declared is an error.
 ///
 /// What makes it a component is that something **uses** it. It used to be that
 /// its template root was not `<screen>`, which let a layout choice decide
 /// whether a file was ever opened.
 #[test]
-fn components_are_skipped_when_walking_but_not_when_named() {
+fn a_component_is_checked_on_its_own_when_walking() {
     let dir = fixture(
         "components",
         &[
@@ -124,13 +125,75 @@ fn components_are_skipped_when_walking_but_not_when_named() {
 
     let walked = check(&[path]);
     assert!(walked.status.success(), "{}", stdout(&walked));
-    assert_eq!(stdout(&walked), "", "walking must not report the component");
+    assert_eq!(stdout(&walked), "", "a declared prop is owed, not a finding");
+    let said = String::from_utf8_lossy(&walked.stderr);
+    assert!(said.contains("1 component"), "the summary counts it: {said}");
 
-    // Named, it is checked: the declared prop is owed by a caller and says
-    // nothing.
+    // Named, it is checked the same way.
     let named = check(&[dir.join("components/row.rux").to_str().unwrap()]);
     let said = stdout(&named);
     assert!(!said.contains("`label` is not defined"), "a declared prop is not a finding: {said}");
+
+    // A name it never declared is wrong, and found by walking, once.
+    std::fs::write(
+        dir.join("components/row.rux"),
+        "<template><view><text>{{ label }}{{ lable }}</text></view></template>
+         <script>
+  prop label: string;
+</script>",
+    )
+    .unwrap();
+    let broken = check(&[path]);
+    assert_eq!(broken.status.code(), Some(1), "{}", stdout(&broken));
+    let said = stdout(&broken);
+    assert!(said.contains("row.rux:1: error: ") && said.contains("`lable`"), "{said}");
+    assert_eq!(said.lines().filter(|l| l.contains("`lable`")).count(), 1, "reported once, not once per way of reading it: {said}");
+}
+
+/// A required prop has its declared type inside the component, without any
+/// caller to hand it a value.
+#[test]
+fn a_components_prop_is_held_to_its_declared_type() {
+    let dir = fixture(
+        "component-prop-type",
+        &[
+            (
+                "app.rux",
+                r#"<template><screen class="a"><row :n="3" /></screen></template>
+<style>.a { display: flex; }</style>
+<script>
+  use components::row;
+</script>"#,
+            ),
+            (
+                "components/row.rux",
+                "<template><view><text>{{ n * \"a\" }}</text></view></template>
+                 <script>
+  prop n: int;
+</script>",
+            ),
+        ],
+    );
+    let out = check(&[dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(stdout(&out).contains("row.rux"), "{}", stdout(&out));
+}
+
+/// A store nothing imports is still a script with a scope, and is checked.
+#[test]
+fn a_store_nothing_imports_is_checked() {
+    let dir = fixture(
+        "lonely-store",
+        &[
+            ("app.rux", GOOD),
+            ("stores/lonely.rux", "<script>
+  export let n: int = signal(\"text\");
+</script>"),
+        ],
+    );
+    let out = check(&[dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(stdout(&out).contains("lonely.rux"), "{}", stdout(&out));
 }
 
 /// A file nothing uses is a document, and it is checked like one.
@@ -523,4 +586,97 @@ fn a_bound_name_is_not_reported_because_it_is_not_known_yet() {
     let out = check(&[dir.join("app.rux").to_str().unwrap()]);
     let text = stdout(&out);
     assert_eq!(out.status.code(), Some(0), "{text}");
+}
+
+/// The seam between a `.rux` file and the app's Rust is `rux check`'s to own: the
+/// module a `use native::x` names must exist, a call must match the exported
+/// signature, and `use type native::...` must resolve. The bodies are `rustc`'s.
+mod the_native_seam {
+    use super::*;
+
+    const SHOP: &str = r#"
+#[rux::export]
+pub fn greet(name: String) -> String { name }
+
+#[rux::export]
+pub fn add(a: i64, b: i64) -> i64 { a + b }
+
+#[rux::export]
+pub async fn fetch(id: i64) -> String { id.to_string() }
+"#;
+
+    /// A project whose `native/` crate exports [`SHOP`] and whose `app.rux` runs
+    /// `script`. Returns what `rux check` printed and its exit code.
+    fn checked(name: &str, script: &str) -> (i32, String) {
+        let app = format!(
+            "<template><screen><text>x</text></screen></template>\n<script>\n{script}\n</script>"
+        );
+        let dir = fixture(
+            name,
+            &[
+                ("rux.toml", "[app]\nname = \"seam\"\n"),
+                ("app.rux", &app),
+                ("native/Cargo.toml", "[package]\nname = \"seam-native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+                ("native/src/lib.rs", "pub mod shop;\n"),
+                ("native/src/shop.rs", SHOP),
+            ],
+        );
+        let out = check(&[dir.to_str().unwrap()]);
+        (out.status.code().unwrap_or(-1), stdout(&out))
+    }
+
+    #[test]
+    fn a_right_use_is_silent() {
+        let (code, said) = checked(
+            "seam-clean",
+            "use native::shop;\nlet s: string = shop.greet(\"a\");\nlet n: int = shop.add(1, 2);\nasync fn f(): string { await shop.fetch(1) }",
+        );
+        assert_eq!((code, said.as_str()), (0, ""), "{said}");
+    }
+
+    #[test]
+    fn a_wrong_use_is_an_error_where_it_is_written() {
+        for (case, script, needle) in [
+            ("module", "use native::nope;", "no native module"),
+            ("export", "use native::shop;\nlet a = shop.missing(1);", "missing"),
+            ("arity", "use native::shop;\nlet a = shop.add(1);", "takes 2 arguments"),
+            ("type", "use native::shop;\nlet a = shop.add(\"a\", 2);", "expected"),
+            ("async", "use native::shop;\nfn f() { shop.fetch(1); }", "`async` in Rust"),
+            ("type-import", "use type native::shop::Nope;", "Nope"),
+        ] {
+            let (code, said) = checked(&format!("seam-{case}"), script);
+            assert_eq!(code, 1, "{case}: {said}");
+            assert!(said.contains("app.rux:") && said.contains(needle), "{case}: {said}");
+        }
+    }
+}
+
+/// `--native` hands the Rust to `cargo check`. Ignored by default because it
+/// runs cargo and compiles a crate; run it with `-- --ignored`.
+#[test]
+#[ignore = "runs cargo check on a fixture crate"]
+fn native_runs_cargo_check_and_reports_the_rust() {
+    let cargo = format!(
+        "[package]\nname = \"seam-native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n\n[workspace]\n\n\
+         [dependencies]\nrux = {{ package = \"rux-native\", version = \"{}\" }}\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    let lib = |body: &str| format!("#[rux::export]\npub fn five() -> i64 {{ {body} }}\n");
+    let dir = fixture(
+        "native-cargo",
+        &[
+            ("rux.toml", "[app]\nname = \"seam\"\n"),
+            ("app.rux", GOOD),
+            ("native/Cargo.toml", &cargo),
+            ("native/src/lib.rs", &lib("5")),
+        ],
+    );
+    let clean = check(&["--native", dir.to_str().unwrap()]);
+    assert!(clean.status.success(), "{}\n{}", stdout(&clean), String::from_utf8_lossy(&clean.stderr));
+
+    std::fs::write(dir.join("native/src/lib.rs"), lib("\"five\"")).unwrap();
+    let broken = check(&["--native", dir.to_str().unwrap()]);
+    assert_eq!(broken.status.code(), Some(1), "{}", stdout(&broken));
+    assert!(stdout(&broken).contains("native/src/lib.rs:2:"), "{}", stdout(&broken));
+    assert!(String::from_utf8_lossy(&broken.stderr).contains("can take several minutes"));
 }

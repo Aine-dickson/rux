@@ -58,6 +58,10 @@ pub struct Options {
     /// Treat warnings as failures, which is what CI wants and what keeps
     /// `examples/` clean.
     pub deny_warnings: bool,
+    /// Also run `cargo check` on the app's `native/` crate. `rux check` itself
+    /// reads the Rust only for its exported signatures; the bodies are
+    /// `rustc`'s, and asking it takes a while, so this is opt-in.
+    pub native: bool,
 }
 
 /// Check every requested file. Returns the process exit code.
@@ -66,6 +70,9 @@ pub fn run(options: Options) -> i32 {
     // each warning to stderr as prose.
     rux_runtime::set_stderr_echo(false);
     rux_runtime::record_types(options.types);
+    if options.native {
+        eprintln!("rux: --native runs cargo check on native/, which can take several minutes");
+    }
 
     let collected = match collect_files(&options.paths) {
         Ok(it) => it,
@@ -74,7 +81,7 @@ pub fn run(options: Options) -> i32 {
             return 2;
         }
     };
-    let (mut files, skipped) = (collected.files, collected.skipped);
+    let mut files = collected.files;
 
     // A page cannot be read on its own, so being asked about one is answered by
     // checking the document it belongs to. That covers both ways of asking:
@@ -84,11 +91,15 @@ pub fn run(options: Options) -> i32 {
     //
     // Only when the document is not already being checked. Over a whole project
     // it always is, and saying so there would be noise about the ordinary case.
-    let asked_about: Vec<PathBuf> = files.iter().chain(skipped.iter()).cloned().collect();
+    let asked_about: Vec<PathBuf> = files.clone();
     let mut borrowed: Vec<(PathBuf, Vec<PathBuf>)> = Vec::new();
     for file in &asked_about {
         let Some(context) = context_for(file) else { continue };
         if files.iter().any(|f| same_file(f, &context)) {
+            // The project's own document is being checked, and it builds every
+            // page it routes to with the app's state in scope. The page is not
+            // also read alone: that is the misreport this exists to stop.
+            files.retain(|f| !same_file(f, file));
             continue;
         }
         match borrowed.iter_mut().find(|(c, _)| same_file(c, &context)) {
@@ -137,8 +148,19 @@ pub fn run(options: Options) -> i32 {
         // line: walking drops the ones with callers.
         let has_caller = collected.used.contains(&rux_runtime::same_file_key(file));
         rux_runtime::set_may_have_caller(has_caller);
+        // A file read on its own, in a folder that is no project, resolves its
+        // `use` paths from the folder the walk started in.
+        rux_runtime::set_loose_root(
+            options.paths.iter().filter(|p| p.is_dir() && file.starts_with(p)).max_by_key(|p| p.components().count()).cloned(),
+        );
         let checked = check_file(file);
-        found.extend(checked.diagnostics);
+        // What a document says about a file that is read on its own anyway is
+        // left to that read: through its caller the same mistake is worded for
+        // a page, without the hint that a prop may be what is missing.
+        found.extend(checked.diagnostics.into_iter().filter(|d| {
+            same_file(&d.file, file)
+                || !files.iter().any(|f| same_file(f, &d.file) && collected.used.contains(&rux_runtime::same_file_key(f)))
+        }));
         if options.types {
             // Only the document's own script is checked for types, so what was
             // kept is all this file's.
@@ -151,18 +173,23 @@ pub fn run(options: Options) -> i32 {
         }
     }
     rux_runtime::set_may_have_caller(false);
+    rux_runtime::set_loose_root(None);
+    // The ones read on their own as a component: something uses them, and they
+    // are not a script module (that has no template to be a component of).
+    let components = files
+        .iter()
+        .filter(|f| collected.used.contains(&rux_runtime::same_file_key(f)))
+        .filter(|f| !rux_runtime::is_module_file(f))
+        .count();
 
-    // A page checked through the document that routes to it was looked at, and
-    // calling it skipped is the exact misreport this release set out to end.
-    // A module a document imports was checked through it too, on its own
-    // lines: it is not a component and was not skipped.
-    let skipped: Vec<PathBuf> = skipped
-        .into_iter()
-        .filter(|p| !reached.iter().any(|r| same_file(r, p)))
-        // A component whose error stopped the load was looked at too.
-        .filter(|p| !found.iter().any(|d| same_file(&d.file, p)))
-        .filter(|p| !rux_runtime::is_module_file(p))
-        .collect();
+    if options.native {
+        found.extend(crate::native::cargo_check(&files));
+    }
+
+    // A component is read on its own and through whatever uses it, so the same
+    // finding can come twice; once is enough.
+    let mut seen = std::collections::HashSet::new();
+    found.retain(|d| seen.insert((d.file.clone(), d.line, d.column, d.severity.label(), d.message.clone())));
 
     if !only_about.is_empty() {
         found.retain(|d| only_about.iter().any(|p| same_file(p, &d.file)));
@@ -181,7 +208,7 @@ pub fn run(options: Options) -> i32 {
     let errors = found.iter().filter(|d| d.severity == Severity::Error).count();
     let warnings = found.len() - errors;
     if !options.json {
-        report_summary(files.len(), reached.len(), errors, warnings, &skipped);
+        report_summary(files.len(), components, reached.len(), errors, warnings);
     }
 
     if errors > 0 || (options.deny_warnings && warnings > 0) {
@@ -317,18 +344,17 @@ fn render(d: &Diagnostic) -> String {
     }
 }
 
-fn report_summary(
-    files: usize,
-    reached: usize,
-    errors: usize,
-    warnings: usize,
-    skipped: &[PathBuf],
-) {
+fn report_summary(files: usize, components: usize, reached: usize, errors: usize, warnings: usize) {
     let file_word = if files == 1 { "file" } else { "files" };
-    // Pages are counted apart from documents rather than folded in, because
-    // "checked 5 files" over a project of five would hide the one thing worth
-    // knowing: four of them were checked *through* the app, with its signals
-    // and functions in scope, and cannot be checked any other way.
+    // Components and pages are counted apart from documents rather than folded
+    // in, because "checked 5 files" over a project of five would hide what was
+    // looked at and how: a component alone, owing the props its caller passes,
+    // and a page through the app, with its signals and functions in scope.
+    let alone = match components {
+        0 => String::new(),
+        1 => " (1 component, read on its own)".to_string(),
+        n => format!(" ({n} of them components, read on their own)"),
+    };
     let through = if reached == 0 {
         String::new()
     } else {
@@ -338,36 +364,11 @@ fn report_summary(
             if files == 1 { "it routes to" } else { "they route to" }
         )
     };
-    // Said out loud, because "checked 2 files, no problems found" over a project
-    // of four reads as a clean bill of health for all four. A component is
-    // skipped on purpose (its props come from whoever uses it, so reading it
-    // alone invents warnings), but skipping in silence is how somebody comes to
-    // believe a file was looked at when it never was.
-    if !skipped.is_empty() {
-        // Named, but not all of them: a project can hold dozens of components
-        // and a line listing every one is scrolled past rather than read, which
-        // would put this straight back where it started.
-        const SHOWN: usize = 3;
-        let mut names: Vec<String> =
-            skipped.iter().take(SHOWN).map(|p| p.display().to_string()).collect();
-        if skipped.len() > SHOWN {
-            names.push(format!("and {} more", skipped.len() - SHOWN));
-        }
-        eprintln!(
-            "rux: skipped {} component{} ({})",
-            skipped.len(),
-            if skipped.len() == 1 { "" } else { "s" },
-            names.join(", ")
-        );
-        eprintln!(
-            "rux: a component's props come from its caller, so name one to check it on its own"
-        );
-    }
     if errors == 0 && warnings == 0 {
-        eprintln!("rux: checked {files} {file_word}{through}, no problems found");
+        eprintln!("rux: checked {files} {file_word}{alone}{through}, no problems found");
     } else {
         eprintln!(
-            "rux: checked {files} {file_word}{through}, {errors} error{}, {warnings} warning{}",
+            "rux: checked {files} {file_word}{alone}{through}, {errors} error{}, {warnings} warning{}",
             if errors == 1 { "" } else { "s" },
             if warnings == 1 { "" } else { "s" },
         );
@@ -475,12 +476,11 @@ fn to_json_with_types(found: &[Diagnostic], tables: &[(PathBuf, rux_runtime::Typ
 /// is everything under it. No paths at all means the current directory, so
 /// `rux check` on its own does the obvious thing in CI.
 ///
-/// Components found by walking are dropped: their props come from the parent
-/// that passes them, so checking one on its own reports every prop as an
-/// undefined variable, and a checker whose default output is four false
-/// failures is one nobody will keep in CI.
+/// Every file is kept, components too: each is read on its own, owing the props
+/// it declares to a caller, so what is wrong in one is found without opening a
+/// window.
 fn collect_files(paths: &[PathBuf]) -> Result<crate::files::Collected, String> {
-    crate::files::collect_reporting_skips(paths, crate::files::Components::SkipWhenWalking)
+    crate::files::collect_with_callers(paths)
 }
 
 #[cfg(test)]
