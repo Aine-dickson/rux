@@ -500,7 +500,26 @@ fn embed_icons(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
     if wanted.is_empty() {
         return;
     }
+    emit_icons(&wanted, out);
+}
 
+/// Every icon, for a dev build.
+///
+/// A dev build reads the project from disk and hot reloads it, so a document can
+/// name an icon the moment after the build was generated. Embedding only what the
+/// files name now would leave that icon blank until a rebuild (MS-014). The cost
+/// is said, because it lands in the binary and the compile.
+fn embed_all_icons(out: &mut String) {
+    println!(
+        "rux: a dev build embeds all {} icons, since a hot reload can name any of them. \
+         `--release` embeds only the ones used.",
+        rux_icons::count()
+    );
+    let all: std::collections::BTreeSet<String> = rux_icons::names().map(str::to_string).collect();
+    emit_icons(&all, out);
+}
+
+fn emit_icons(wanted: &std::collections::BTreeSet<String>, out: &mut String) {
     // **A blob and an index, not thousands of literals in a function body.**
     // The first version emitted one `MemoryIcons::insert` with two inline
     // `vec![]` per icon. That is fine for the nine a normal app names and fatal
@@ -512,7 +531,7 @@ fn embed_icons(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
     let mut blob = String::new();
     let mut index = String::new();
     let mut embedded = 0usize;
-    for name in &wanted {
+    for name in wanted {
         // A name that is not in the set is skipped rather than failing here.
         // `verify_icons` has already refused the build if one was misspelled,
         // so reaching this with an unknown name means the set changed under us.
@@ -844,8 +863,9 @@ fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> St
         );
         let root = std::fs::canonicalize(&manifest.root).unwrap_or_else(|_| manifest.root.clone());
         out.push_str("fn main() {\n");
+        embed_all_icons(&mut out);
         out.push_str(&format!(
-            "    let root = std::path::PathBuf::from({});\n",
+            "    let root =std::path::PathBuf::from({});\n",
             literal(&root.display().to_string())
         ));
         // What `rux run --route` and `--preview` asked for, handed over by
@@ -1338,6 +1358,16 @@ mod tests {
         assert!(main.contains(&format!("std::env::var({ROUTE_VAR:?})")), "{main}");
         assert!(main.contains(&format!("std::env::var({PREVIEW_VAR:?})")), "{main}");
         assert!(main.contains("route, preview,"), "{main}");
+    }
+
+    #[test]
+    fn a_dev_wrapper_installs_the_whole_icon_set() {
+        // MS-014: a dev build never called `set_icons`, so every `<icon>` was
+        // blank. It embeds all of them, since a hot reload can name any.
+        let options = Options { release: false, target: Target::Desktop, rux_source: None, abis: None, before: true, locked: false };
+        let main = wrapper_main(&manifest(), &[PathBuf::from("app.rux")], &options);
+        assert!(main.contains("rux_runtime::set_icons"), "{main}");
+        assert!(main.contains(&format!("[[usize; 6]; {}]", rux_icons::count())), "{}", &main[..400.min(main.len())]);
     }
 
     #[test]

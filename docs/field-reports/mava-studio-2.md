@@ -134,3 +134,13 @@ Each entry says what Mava needed, what happened, how to reproduce it, what Mava 
 - **Mava workaround:** none; the pill is accepted until Rux changes.
 - **Suggested fix:** elliptical corner radii (`border-radius: 50% / 50%` resolving each axis against its own side), or a shape primitive (`<ellipse>`) that takes the box.
 - **Status:** fixed on `build/v0.9` (2026-11-06). A percent radius is now per axis, and `border-radius: a / b` and two-value longhands work. `50%` on a 200 by 100 box is an ellipse. Boxes that relied on the pill must use `9999px`.
+
+## MS-014 `<icon>` draws nothing in a desktop dev build
+
+- **Found:** 2026-11-06, Mava, `build/v0.9` at `8c5480d`.
+- **Mava record:** L-018.
+- **Limit:** in a project with a native crate, `rux build` and `rux run` make a dev build that reads the project from disk. Its generated `main.rs` calls `run_windowed` and never `rux_runtime::set_icons`, because `embed_icons` runs only from `embed`, which a desktop dev build skips (`crates/rux-cli/src/build.rs`, the desktop branch near line 836). Every `<icon>` is blank, and nothing says why. The same document draws its icons under `rux run app.rux` (no project) and in a `--release` build.
+- **Reproduction:** a project with `rux.toml` and a `native/` crate and `<icon name="plus" size="16px" />`; `rux build`, run the exe: blank. `rux build --release`: drawn.
+- **Mava workaround:** none; icons are checked in a `--release` build, which takes minutes.
+- **Suggested fix:** a dev build installs the icon set too: embed the names the project names at generation time (as `embed_files` already does for Android dev builds) or, since a dev build hot reloads, the full set, with the cost said in the build output.
+- **Status:** fixed on `build/v0.9` (2026-11-06). A dev build embeds the full icon set and says so in the build output, since a hot reload can name any icon; `--release` still embeds only the ones used. Covered by a wrapper test; not yet driven in a real native-crate window.
