@@ -251,8 +251,9 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
    runs `cargo check` on `native/` (`native::cargo_check`; the patch list for a `-dev` CLI
    is `native::checkout_crates`, shared with `build.rs`); its e2e test is `#[ignore]`
    (`cargo test -p ruxlang --test check -- --ignored`) and was driven by hand too.
-   Found, not fixed: a method call on an `int` (`n.trim()`) in a template is not
-   type-checked.
+   A method a number does not have (`n.trim()` on an `int` or `float`) is now an error in
+   a template (`method` in `rux-script/src/check.rs`); other receivers' unknown methods are
+   still unchecked.
 2. **`rux new` asks whether to include a router.** Both a prompt and a flag; the
    flag skips the prompt (prompt only when stdin is a terminal, as the name is).
    `pages/`, `stores/` and the rest are settled and independent of this. Opting

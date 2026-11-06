@@ -177,6 +177,21 @@ fn a_components_prop_is_held_to_its_declared_type() {
     let out = check(&[dir.to_str().unwrap()]);
     assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
     assert!(stdout(&out).contains("row.rux"), "{}", stdout(&out));
+
+    // A method a number does not have is said in the template too, where the
+    // call was once left unchecked; the ones it has are silent.
+    for (call, ok) in [("n.trim()", false), ("n.toFixed(1)", true), ("n.abs()", true)] {
+        std::fs::write(
+            dir.join("components/row.rux"),
+            format!("<template><view><text>{{{{ {call} }}}}</text></view></template>\n<script>\n  prop n: int;\n</script>"),
+        )
+        .unwrap();
+        let out = check(&[dir.to_str().unwrap()]);
+        assert_eq!(out.status.success(), ok, "{call}: {}", stdout(&out));
+        if !ok {
+            assert!(stdout(&out).contains("an `int` has no method `trim`"), "{}", stdout(&out));
+        }
+    }
 }
 
 /// A store nothing imports is still a script with a scope, and is checked.

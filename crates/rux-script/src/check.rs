@@ -2612,7 +2612,7 @@ impl<'a> Checker<'a> {
             // A `Result`'s value, or the error thrown.
             ExprKind::Method { name, args, .. } if name.name == "unwrap" && args.is_empty() => match &shown {
                 Type::Generic(n, a) if n == "Result" && a.len() == 2 => a[0].clone(),
-                _ => self.method(&base, &name.name, args),
+                _ => self.method(&base, &name.name, args, name.span),
             },
             ExprKind::Method { name, args, .. } => match crate::native::type_name(&shown) {
                 Some(t) => match crate::native::method(t, &name.name) {
@@ -2628,9 +2628,9 @@ impl<'a> Checker<'a> {
                         self.infer_all(args);
                         Type::Any
                     }
-                    None => self.method(&base, &name.name, args),
+                    None => self.method(&base, &name.name, args, name.span),
                 },
-                None => self.method(&base, &name.name, args),
+                None => self.method(&base, &name.name, args, name.span),
             },
             _ => Type::Any,
         };
@@ -3677,7 +3677,7 @@ impl<'a> Checker<'a> {
         m.result
     }
 
-    fn method(&mut self, base: &Type, name: &str, args: &[Expr]) -> Type {
+    fn method(&mut self, base: &Type, name: &str, args: &[Expr], at: Span) -> Type {
         match base {
             Type::Array(item) => {
                 let item = (**item).clone();
@@ -3810,7 +3810,27 @@ impl<'a> Checker<'a> {
                 "to_float" | "toFloat" | "sqrt" => return Type::Float,
                 "abs" => return base.clone(),
                 "to_string" => return Type::String,
-                _ => {}
+                "ceiling" => return Type::Int,
+                "is_nan" => return Type::Bool,
+                "min" | "max" => {
+                    self.infer_all(args);
+                    return base.clone();
+                }
+                // Every method a number answers is above: anything else is a
+                // call that fails when it runs, and is said where it is written.
+                _ => {
+                    self.infer_all(args);
+                    let kind = if matches!(base, Type::Int) { "an `int`" } else { "a `float`" };
+                    self.error(
+                        at,
+                        format!(
+                            "{kind} has no method `{name}`; its methods are `abs`, `ceil`, `floor`, \
+                             `round`, `trunc`, `sqrt`, `min`, `max`, `toFixed`, `to_string`, `to_int`, \
+                             `to_float` and `is_nan`"
+                        ),
+                    );
+                    return Type::Any;
+                }
             },
             Type::Record(_) | Type::Dict(_) => match name {
                 "keys" => return Type::Array(Box::new(Type::String)),
