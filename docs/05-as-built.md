@@ -43,6 +43,8 @@ my-app/
   pages/
     home.rux             the home page, which calls the app's Rust
     missing.rux          the fallback, for a path nothing matches
+  stores/
+    greeter.rux          the app's rules: writes the greeting (calls Rust with native/)
   components/
     message-card.rux     a card that takes props
   native/                the app's Rust, beside rux.toml

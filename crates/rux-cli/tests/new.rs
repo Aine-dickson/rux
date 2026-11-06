@@ -63,6 +63,7 @@ fn the_scaffold_writes_the_layout_it_documents() {
         "app.rux",
         "pages/home.rux",
         "pages/missing.rux",
+        "stores/greeter.rux",
         "components/message-card.rux",
         "native/Cargo.toml",
         "native/src/lib.rs",
@@ -80,7 +81,7 @@ fn the_scaffold_writes_the_layout_it_documents() {
     // not create, it is wrong on the reader's first look at it.
     let readme = std::fs::read_to_string(root.join("README.md")).unwrap();
     assert!(readme.contains("my-app"), "the project name did not reach the README");
-    for dir in ["components/", "pages/", "assets/", "native/", "locks/"] {
+    for dir in ["components/", "pages/", "stores/", "assets/", "native/", "locks/"] {
         assert!(readme.contains(dir), "the README does not mention {dir}");
     }
     assert!(readme.contains("cargo add"), "the README does not say how a crate is added");

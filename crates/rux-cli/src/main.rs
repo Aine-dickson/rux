@@ -137,7 +137,19 @@ fn main() -> ExitCode {
             println!("rux {}", env!("CARGO_PKG_VERSION"));
             ExitCode::SUCCESS
         }
-        Some("check") => ExitCode::from(check(&args[1..]) as u8),
+        // On a thread with room to spare: the style builders recurse once per
+        // level of a page, and a debug build gives every match arm its own
+        // locals, so the main thread's stack was one frame from the end on
+        // the larger scaffolds (watchlist #41).
+        Some("check") => {
+            let rest = args[1..].to_vec();
+            let code = std::thread::Builder::new()
+                .stack_size(256 * 1024 * 1024)
+                .spawn(move || check(&rest))
+                .ok()
+                .and_then(|t| t.join().ok());
+            ExitCode::from(code.unwrap_or(1) as u8)
+        }
         Some("fmt") => ExitCode::from(format(&args[1..]) as u8),
         Some("new") => ExitCode::from(new::create(&args[1..]) as u8),
         Some("vocab") if args.get(1).is_some_and(|a| a == "--css-reference") => {

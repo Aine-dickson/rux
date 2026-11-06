@@ -246,9 +246,11 @@ One item left, in its own session on Opus plan mode (it sets design):
    `transition: border-radius` animates horizontal radii only. Boxes that
    relied on the old pill must use `9999px`.
 
-After child windows: **`rux new` scaffolds get `pages/`** (major screens that are
-not components) **and `stores/`** (Rux stores), owner note 2026-11-06. The `tasks`
-template has both; check what the other templates write.
+~~`rux new` scaffolds get `pages/` and `stores/`~~ done 2026-11-06: `minimal` gains
+`stores/greeter.rux` (the home page's greeting goes through it; with `native/` it
+calls `hello.greet`). The native variant checks clean but was not built and run
+(the Rust build takes minutes). `rux check` now runs on a 256 MB thread, which
+ends the scaffold stack overflow (watchlist #41; 7 of 7 runs pass).
 
 After those, decide with the owner when to push `build/v0.9` and cut v0.9.
 MS-012's status line in the Mava report still says the overlay is not built.

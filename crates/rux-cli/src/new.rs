@@ -716,15 +716,15 @@ const MIN_HOME: &str = r#"<!-- The home page. A page is an ordinary component th
 /// The script when the project has a `native/` crate: Rust writes the greeting.
 const MIN_HOME_NATIVE_SCRIPT: &str = r#"<script>
   use components::message_card;
-  use native::hello;
+  use stores::greeter;
 
   /* Every `<input>` needs an `r-model`: it is the binding that makes the field
      editable at all. */
   let who = signal("");
 
-  /* A `computed` runs again whenever a signal it reads changes, and a call into
-     Rust is no different from any other expression. */
-  computed greeting = hello.greet(who);
+  /* A `computed` runs again whenever a signal it reads changes. The store
+     calls into Rust; to this page that is an ordinary function. */
+  computed greeting = greeter.greet(who);
 </script>
 "#;
 
@@ -732,13 +732,14 @@ const MIN_HOME_NATIVE_SCRIPT: &str = r#"<script>
 /// the project still runs with no Rust in it.
 const MIN_HOME_PLAIN_SCRIPT: &str = r#"<script>
   use components::message_card;
+  use stores::greeter;
 
   /* Every `<input>` needs an `r-model`: it is the binding that makes the field
      editable at all. */
   let who = signal("");
 
   /* A `computed` runs again whenever a signal it reads changes. */
-  computed greeting = if who.trim() == "" { "Hello, World!" } else { "Hello, " + who.trim() + "!" };
+  computed greeting = greeter.greet(who);
 </script>
 "#;
 
@@ -746,14 +747,14 @@ const MIN_HOME_PLAIN_SCRIPT: &str = r#"<script>
 fn min_home(native: bool) -> String {
     let (origin, lead, note, script) = if native {
         (
-            "The greeting is computed by Rust, in `native/src/hello.rs`.",
+            "The greeting is computed by Rust, in `native/src/hello.rs`, through `stores/greeter.rux`.",
             "The greeting is written by Rust.",
             "From native/src/hello.rs",
             MIN_HOME_NATIVE_SCRIPT,
         )
     } else {
         (
-            "The greeting is computed here, in the script below.",
+            "The greeting is computed in `stores/greeter.rux`.",
             "The greeting is written in Rux.",
             "Computed in the script",
             MIN_HOME_PLAIN_SCRIPT,
@@ -763,6 +764,34 @@ fn min_home(native: bool) -> String {
     format!("{top}
 {script}")
 }
+
+/// The `minimal` template's store: where the app's rules live.
+const MIN_STORE_PLAIN: &str = r#"<!-- The app's state and rules. A file with no <template> is a module: it is
+     loaded once, so every file that imports it with `use stores::greeter;`
+     shares it. Only what it exports is visible, and as the app grows, state
+     that more than one page reads (a list, a signed-in user) belongs here and
+     not in a page. -->
+<script>
+  export fn greet(who: string): string {
+    if who.trim() == "" { "Hello, World!" } else { "Hello, " + who.trim() + "!" }
+  }
+</script>
+"#;
+
+/// The same store for a project with a `native/` crate: Rust writes the greeting.
+const MIN_STORE_NATIVE: &str = r#"<!-- The app's state and rules. A file with no <template> is a module: it is
+     loaded once, so every file that imports it with `use stores::greeter;`
+     shares it. Only what it exports is visible, and as the app grows, state
+     that more than one page reads (a list, a signed-in user) belongs here and
+     not in a page. Here the rule is Rust's, in `native/src/hello.rs`. -->
+<script>
+  use native::hello;
+
+  export fn greet(who: string): string {
+    hello.greet(who)
+  }
+</script>
+"#;
 
 /// The `minimal` template's component: the file that shows how a prop arrives.
 const MIN_CARD: &str = r#"<!-- A card with a message.
@@ -954,8 +983,10 @@ impl Template {
                  pages/               one file per route\n\
                  \x20 home.rux           the home page\n\
                  \x20 missing.rux        the fallback, for a path nothing matches\n\
+                 stores/              the app's state and rules\n\
+                 \x20 greeter.rux        writes the greeting\n\
                  components/          one file per component\n\
-                 \x20 message-card.rux   a card that takes props\n"
+                 \x20 message-card.rux  a card that takes props\n"
             }
             Template::Tasks => {
                 "app.rux              the frame and the routes\n\
@@ -1247,6 +1278,7 @@ fn files_for(template: Template, native: bool) -> Vec<(&'static str, String)> {
         files.iter().map(|f| (f.path, f.body.to_string())).collect();
     if template == Template::Minimal {
         out.push(("pages/home.rux", min_home(native)));
+        out.push(("stores/greeter.rux", if native { MIN_STORE_NATIVE } else { MIN_STORE_PLAIN }.to_string()));
     }
     out
 }
