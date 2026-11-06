@@ -106,6 +106,10 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
     the handle, per-window `window` module (`window_module.rs` has a global
     `WINDOW` static and `MAXIMIZED` signal to make per window), and the
     `rux check` of literal `window.open` paths/props. (5) closing. (6) docs.
+  - **Decided (owner, 2026-11-06)**: when the main window closes, every child
+    closes with it and its context is destroyed as the main's is: components'
+    `unmounted` deepest first, then the document's; children are not asked
+    their own `@close`.
   - **Check first in 4**: a script `fn` value must be passable to a native call
     and run later in the opener's scope (`onClose`); if not, stop and ask.
   - **Known**: `what_the_scaffold_writes_checks_clean` overflows the stack in
