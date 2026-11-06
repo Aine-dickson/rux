@@ -10080,8 +10080,10 @@ impl Shell {
         let (context, text, images) = (main.context.clone(), main.text.clone(), main.images.clone());
         let proxy = main.proxy.clone();
         let owner = main.state.as_ref().map(|s| s.window.clone());
-        // The file is named from the app's own folder, as its `use` lines are.
-        let path = main.path.parent().map(|d| d.join(&open.path)).unwrap_or_else(|| PathBuf::from(&open.path));
+        // The file is named from the app's folder (where `rux.toml` is), as
+        // `rux check` reads it.
+        let dir = main.path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
+        let path = rux_runtime::project_root(dir).unwrap_or_else(|| dir.to_path_buf()).join(&open.path);
         // Loaded as no window's document: it has none yet.
         let loaded = window_module::as_window(None, || Document::load_window(&path, &open.props));
         let document = match loaded {

@@ -186,11 +186,6 @@ pub(crate) fn take_requests() -> Vec<Request> {
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 static NEXT_WINDOW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// The options `window.open` takes, as the message for a wrong one lists them.
-#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
-const OPTIONS: &str = "title, width, height, minWidth, minHeight, maximized, decorations, titleBar, \
-                       resizable, owned, props, onClose";
-
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn option_error(message: String) -> Error {
     Error::new("option", message)
@@ -252,7 +247,7 @@ fn open(args: Vec<Any>) -> Result<Any, Error> {
             ("onClose", Any::Resource(h)) if h.type_name() == "Callback" => on_close = Some(h.clone()),
             ("onClose", _) => return Err(option_error("`onClose` takes a function".into())),
             (other, _) => {
-                return Err(option_error(format!("window.open has no option `{other}`: it takes {OPTIONS}")));
+                return Err(option_error(format!("window.open has no option `{other}`: it takes {}", rux_runtime::window_open::OPTIONS.join(", "))));
             }
         }
     }

@@ -86,7 +86,7 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   nodes; `min-width`/`min-height` count the caption's height on Windows.
   Probe and driver: `C:\Users\USER\Mobile\rux-harness\titlebar-overlay`.
 - **Child windows (roadmap item 8): designed and approved 2026-11-06, steps 1
-  to 3 built (`db718e2`, then the Shell refactor).** Plan: `C:\Users\USER\.claude\plans\optimized-shimmying-aho.md`
+  to 4 built (`db718e2`, `2965f9f`, `c596d7f`, `ba53f85`, `0097020`, and 4d).** Plan: `C:\Users\USER\.claude\plans\optimized-shimmying-aho.md`
   (copy to `docs/archive/child-windows-plan.md` when done). Owner's choices:
   `window.open(path, options)` opens a `.rux` file as its own document; stores
   are process-wide; the opener passes `props`; `close()` in a child closes that
@@ -111,24 +111,69 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
     events go to main. `Shell::after_event` (end of every handler) runs
     `refresh_native_signals` on every window and redraws the ones that moved.
     Only the main window exists yet, so nothing observable changed.
-  - **Next**: (4) `window.open`, the handle, per-window `window` module
-    (`window_module.rs` has a global `WINDOW` static and `MAXIMIZED` signal;
-    `caption.rs` also keeps a thread-local `WINDOW`, and `window_event` calls
-    `caption::set_active` / `set_metrics` and `window_module::follow`, all
-    process-wide: make them per window), and the `rux check` of literal
-    `window.open` paths/props. To add a child: build its `App`, assign it the
-    main's `context`/`text`/`images` Rc clones, insert it in `Shell::windows`
-    under its window id (no helper exists yet). Check in 4: `settle_tasks` per
-    document under a broadcast `Answered` (each engine collects answers from
-    the host queue; make sure a task answer reaches only its owner). (5)
-    closing: `close_now` still calls `event_loop.exit()`, right only for main.
-    (6) docs.
+  - **Done (4)**, in four commits. **4a** `window_module.rs` and `caption.rs` are
+    per window: the shell names the window a document runs in around every
+    entry (`window_module::as_window`, `Shell::each`), `window.minimize()` etc.
+    act on it and `window.maximized` is that window's (`MAXIMIZED` is only the
+    change trigger); caption state is keyed by `HWND` (`caption::detach` on
+    close). **4b** a script `fn` given to a native call becomes an opaque
+    `Callback` resource (`rux-script/src/native.rs`: `to_any` parks the closure;
+    the engine claims it in `Document::apply_timer_requests` via
+    `Engine::claim_callbacks`; `Document::run_callback(&Handle)` runs it as a
+    handler; a dropped handle releases it). **4c** `window.open(path, options)`
+    returns a `Window` resource (`close()`, `focus()`, `isOpen`; `window.canOpen`).
+    `open` queues a `Request` (`window_module::take_requests`); `Shell::serve`
+    drains it after every handler: `open_child` loads `Document::load_window`
+    from the app's folder (`rux_runtime::project_root`), builds the child `App`
+    (`App::with_document`, shares the main's `context`/`text`/`images`) and
+    its window with `App::open_window` (the body `resumed` used to have;
+    `owner` = main, `owned_by`), files it in `Shell::children`/`windows`.
+    `close_child` (title-bar X, `w.close()`, or `close()` in the child) drops
+    the `App`, `detach`es it, marks the handle closed (`isOpen` follows through
+    `notify()`) and runs `onClose` in the opener. A `Reload` resets the stores
+    once and reloads each window (a child with its props). **4d** `rux check`
+    reads literal `window.open(...)` calls (`rux-runtime/src/window_open.rs`,
+    run from `load_with`, also reported by `rux run`'s overlay): file exists,
+    root is `<screen>`, props named and typed against its `prop`s, options
+    named; a path not written out is a warning. Options: `title`, `width`,
+    `height`, `minWidth`, `minHeight`, `maximized`, `decorations`, `titleBar`,
+    `resizable`, `owned`, `props`, `onClose` (a wrong one throws kind `option`).
+  - **The owner's example was not valid Rux**: closures are arrows, so it is
+    `onClose: () => { inspector = none; }`, not `fn() { ... }`. Tell the owner;
+    use the arrow in the docs. The typed form checks clean:
+    `use type native::rux::window::Window; let w: Window? = signal(none);`.
+  - **Driven on Windows 11** with `C:\Users\USER\Mobile\rux-harness\child-windows`
+    (`start.ps1` then `act*.ps1`; coordinates in the scripts): a store counter
+    is the same in both windows and either increments it; props arrive (`id:
+    7`); the child's `window.toggleMaximize()` and `window.maximized` are the
+    child's; `w.close()` from the opener, the child's X and `close()` in the
+    child each close only the child and run `onClose` (`closed: 1`); the owned
+    child has the main as its owner and is hidden when the main minimizes;
+    `owned: false` has no owner. Not driven: the taskbar button itself, macOS
+    and Linux (`with_parent_window`, written not compiled), a child's hot
+    reload, a load failure through the overlay (tests cover `rux check` only),
+    `onClose` when the opener is itself a child, a child with `titleBar:
+    "overlay"` or `decorations: false`, Android and web (`canOpen` is `false`,
+    `open` throws `unsupported`; not compiled here).
+  - **Next**: (5) closing: the child's `@close` (a `false` keeps it) and
+    `unmounted` on `close_child` (it drops the `App` without `shut_down`);
+    the main window closing (button, Alt+F4, `close()`): `@close` of the main
+    decides, then every child's `unmounted`, then the main's, then exit
+    (`close_now` still `event_loop.exit()`s with the children simply dying).
+    Children are not asked their own `@close`. A child opens at the OS's
+    default place (the first at 0,0), not over its opener. Check the
+    broadcast `Answered`: `settle_tasks` per document should take only its own
+    task answers (`collect_answers` is per engine, but two documents with
+    pending tasks were not driven). (6) docs (`docs/05-as-built.md`,
+    `07-script.md`, roadmap item 8, user-tests and author-note rows: the two
+    traps are init side effects running per window and opening twice giving
+    two windows), then `./site/sync-docs.sh`.
   - **Decided (owner, 2026-11-06)**: when the main window closes, every child
     closes with it and its context is destroyed as the main's is: components'
     `unmounted` deepest first, then the document's; children are not asked
     their own `@close`.
-  - **Check first in 4**: a script `fn` value must be passable to a native call
-    and run later in the opener's scope (`onClose`); if not, stop and ask.
+  - **Checked in 4**: a script `fn` could not cross into a native call; the
+    owner chose the callback handle (4b), which keeps the approved API.
   - **Known**: `what_the_scaffold_writes_checks_clean` overflows the stack on
     unmodified `HEAD` too (watchlist #41): 6 of 8 runs alone on 2026-11-06,
     against 5 of 6 with step 3; not new. A whole-workspace run with
@@ -198,7 +243,7 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 One item left, in its own session on Opus plan mode (it sets design):
 
-1. **Child windows**, step 4 (`window.open`) onward; see the
+1. **Child windows**, step 5 (closing) onward; see the
    child windows entry above. The syntax is settled.
 2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,
    two-value longhands; drawn by an elliptical path in `rux-paint`
@@ -206,6 +251,10 @@ One item left, in its own session on Opus plan mode (it sets design):
    Gaps: outer `box-shadow` on an elliptical corner uses the shorter radius;
    `transition: border-radius` animates horizontal radii only. Boxes that
    relied on the old pill must use `9999px`.
+
+After child windows: **`rux new` scaffolds get `pages/`** (major screens that are
+not components) **and `stores/`** (Rux stores), owner note 2026-11-06. The `tasks`
+template has both; check what the other templates write.
 
 After those, decide with the owner when to push `build/v0.9` and cut v0.9.
 MS-012's status line in the Mava report still says the overlay is not built.

@@ -29,6 +29,7 @@ mod data_url;
 pub mod remote;
 mod source;
 pub mod tailwind;
+pub mod window_open;
 pub use source::{reset_source, set_source, FsSource, MemorySource, Source};
 
 use std::collections::{HashMap, HashSet};
@@ -3136,6 +3137,11 @@ impl Document {
             &callers,
             &tags_in(DOCUMENT_NAMESPACE),
         );
+        // `window.open("…", { props })` written out is looked up and held to
+        // the file it names.
+        if let Ok(script) = rux_syntax::parse(&sfc.script, rux_syntax::Options { declarations: true }) {
+            window_open::check(&script, &sfc.script, sfc.script_line, &project_root);
+        }
         // Each component's and page's script gets the same pass, in its own
         // file and scope. The document's check stops at its own lines, so
         // without this a routed page's type errors were reported only when the
@@ -3154,6 +3160,9 @@ impl Document {
                 engine.in_scope(Some(key), || {
                     check_script_types(&engine, &sfc, usize::MAX, imported, Vec::new(), computeds, &callers, &tags_in(key))
                 });
+                if let Ok(script) = rux_syntax::parse(&sfc.script, rux_syntax::Options { declarations: true }) {
+                    window_open::check(&script, &sfc.script, sfc.script_line, &project_root);
+                }
             });
         }
         TYPE_TABLE.with(|t| *t.borrow_mut() = recorded);
