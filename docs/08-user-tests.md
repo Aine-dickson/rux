@@ -3452,6 +3452,27 @@ desktop at 150% scale with the project
 | Linux, Android, the web | | the ordinary title bar, and the fallbacks | **not driven** |
 | A screen reader | | the three buttons are announced | **not built**: the buttons are drawn by the shell and have no accessibility nodes |
 
+## Keyed rows that slide, 2026-11-06
+
+MS-010, step 1: a row of a keyed `r-for` whose `transition` names `transform`
+slides from where it was to where the list has put it. Driven on the Windows 11
+desktop at 150% with `C:\Users\USER\Mobile\rux-harness\ms010` (four keyed rows
+with `transition: transform 1500ms linear`, four plain keyed rows beside them,
+and a button that moves the first item to the end) and `drive.ps1`, with a real
+click and screenshots through the slide.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| A moved row slides | click the button | the first row travels down past the others, the other three move up one place | desktop: pass |
+| It arrives | wait past the 1500 ms | every row at its place, in the new order | desktop: pass |
+| A row with no `transform` transition | the plain rows beside | they jump | desktop: pass |
+| Reversing a list | reverse four rows | they cross at the middle of the slide, the last in the tree painting on top | desktop: pass (not a bug: it is what linear crossing looks like) |
+| Moved again mid-slide | | carries on from where it is drawn | pass, in the shell's tests; **not driven** |
+| A hit on a sliding row | click a row mid-slide | the row under the pointer takes it | pass, in the layout's tests (the region moves with the box); **not driven** |
+| A resize under a list | resize the window | rows reflow and do not slide | pass, in the shell's tests; **not driven** |
+| A list inside a scroller that scrolls | | scrolling is not a move | **not driven** |
+| Touch, the web, Android, macOS, Linux | | the same | **not driven** |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

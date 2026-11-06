@@ -1637,6 +1637,20 @@ And the caret follows its row across a reorder with nothing to remap, because
 the identity *is* the row; tapping a button to reorder still moves keyboard
 focus to that button, as any tap on a button does.
 
+**A keyed row slides when it moves.** A row of a keyed `r-for` whose
+`transition` names `transform` is drawn travelling from where it was to where
+the list has put it, whenever the tree changes and it lands somewhere else: a
+button that moves it, a sort, a filter, a drag. Nothing is declared but the
+key and the transition, so `transition: transform 150ms ease` on the row is the
+whole feature. The row opts in itself: `transition: all` does not (it would
+make every row beside an animating box slide). A row is matched by its key
+across the whole document, so one moved to another list slides too; a key that
+appears twice is left out, since there is no telling which moved. A window
+resized under the list is not the list moving, and neither is a scroll. The row
+is laid out in its new place and drawn away from it
+(`LayoutState::set_nudges`), so its hit region follows it and nothing around it
+reflows. Rows entering and leaving are `r-transition`'s, not this.
+
 **Still keyed by model alone:** `type="select"`. A `<select>` inside an `r-for`
 has the same ambiguity inputs had. Driven in `examples/keyed-list.rux`.
 
