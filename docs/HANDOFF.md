@@ -10,7 +10,7 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
 
 ## State
 
-- Branch `build/v0.9`, **local only, not pushed** (the owner pushes; a push runs CI).
+- Branch `build/v0.9`, pushed 2026-11-06 at `d56e2c3` (CI runs on push). `main` and `build/v0.9-icons` are merged in (the icons one with `-s ours`: its content was hand-merged in `20939f2`). CLI reinstalled from it.
 - 2026-11-06: `build/v0.9-icons` was found never to have been merged, and is now
   in the tip (merge commit `20939f2`). `<icon>`, `rux-icons` and the build's
   icon tree-shaking are in. Two fixes were needed to merge it: `<icon>` had no
