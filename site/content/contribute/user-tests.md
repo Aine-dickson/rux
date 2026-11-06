@@ -3534,6 +3534,7 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | At a real terminal: Enter, `n`, a stray answer then `y`, Ctrl+Z, no name then a name | `rux new` in its own console, keys written with `WriteConsoleInput` (`rux-harness/rux-new-router`) | routed; plain; one `answer y or n`; `needs an answer` and no directory; both questions asked | pass |
 | The routed project in a window | `rux run`, real click on About then Home | the tab highlights and the page changes | pass (Windows) |
 | The router-less project in a window | `rux run` | the greeting, no tab bar | pass (Windows) |
+| `color` written on an `<icon>` | `.pink { color: #f38ba8 }` on `<icon class="pink">` in a routed page, `rux run`, tap About | a pink heart, not the text colour | pass (Windows; it drew white before the fix) |
 | MS-014: `<icon>` in a dev build with a native crate | `rux build`, run `dist/ico.exe`, click About | the heart is drawn; the build says it embeds all 5148 icons | pass (Windows; the build took 10 minutes cold) |
 
 ## Standing gaps

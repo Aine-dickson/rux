@@ -266,7 +266,7 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next action
 
-Next: the owner decides (see the list below), including whether to cut v0.9. The older list follows:
+Next: the owner decides (see the list below). `main` takes a version only when it is published, and v0.8 is queued ahead of v0.9, so no merge to `main` yet. 2026-11-07: an `<icon>` now draws in its own `color`, and an author `fill`/`stroke` beats it (`icon_box` in `rux-style`; tests in `rux-runtime/tests/icon_color.rs`, driven). Not checked: `transition: color` on an icon. The older list follows:
 
 1. ~~Child windows~~ done (steps 1 to 6).
 2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,

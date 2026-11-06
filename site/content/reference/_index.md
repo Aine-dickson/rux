@@ -97,9 +97,12 @@ and `1em` is what puts an icon on the same footing as the text beside it.
 decoration and left out.
 
 **Paint is CSS and inherits**, so an icon takes its colour from the text around
-it with nothing written per icon. `fill`, `stroke` and `stroke-width` override
-that, and the stroke scales with the drawing, so one weight stays right at
-every size.
+it with nothing written per icon. `color` written on the icon itself (a class,
+a `style=`) recolours it, and `fill`, `stroke` and `stroke-width` override
+both, so `stroke: #f38ba8` recolours the lines and `fill` paints inside an
+outline icon. The stroke scales with the drawing, so one weight stays right at
+every size. (Until 2026-11-07 the icon read its parent's `color`, and a `color`
+or `stroke` written on the icon did nothing.)
 
 **Solid and outline are different artwork, not a render mode**, and cannot be
 derived from one another. Roughly four icons in five are outline only, which is

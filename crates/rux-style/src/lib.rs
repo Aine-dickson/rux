@@ -8172,6 +8172,8 @@ fn build_icon(
     el: &Element,
     style: Style,
     inherited: &Inherited,
+    color: Rgba,
+    written: (bool, bool),
     engine: &mut Engine,
     locals: &Locals,
     reg: &mut BindingRegistry,
@@ -8180,7 +8182,7 @@ fn build_icon(
     hidden: bool,
     instance: Option<&str>,
 ) -> LayoutNode {
-    let mut node = icon_box(el, style, inherited, engine, locals, reg);
+    let mut node = icon_box(el, style, inherited, color, written, engine, locals, reg);
     node.on_tap = on_tap;
     node.gestures = gestures;
     node.hidden = hidden;
@@ -8231,6 +8233,8 @@ fn icon_box(
     el: &Element,
     style: Style,
     inherited: &Inherited,
+    color: Rgba,
+    written: (bool, bool),
     engine: &mut Engine,
     locals: &Locals,
     reg: &mut BindingRegistry,
@@ -8322,13 +8326,31 @@ fn icon_box(
     // than subtly: an outline icon that is filled reads as a solid blob, and a
     // filled icon that is stroked reads as an outline of an outline. Taken from
     // `color`, which is what `currentColor` means in every set of this kind and
-    // what lets an icon match the text beside it with no plumbing.
+    // what lets an icon match the text beside it with no plumbing. **The icon's
+    // own `color`, resolved by the cascade** (its rule, its `style=`, else what it
+    // inherits). It was the parent's, so `color` written on the icon itself, the
+    // first thing anyone tries, did nothing.
+    //
+    // **`fill` and `stroke` the author wrote win**, as the docs say: they are
+    // the defaults here and nothing more, so `stroke: #0f0` recolours the lines
+    // of an outline icon and `fill` paints inside one.
+    // (`Style::fill` starts out black, as an SVG path's does, so "the author
+    // wrote one" cannot be read from the value: `written` says it.)
+    let (fill_written, stroke_written) = written;
     if filled {
-        style.fill = Some(inherited.color);
-        style.stroke = None;
+        if !fill_written {
+            style.fill = Some(color);
+        }
+        if !stroke_written {
+            style.stroke = None;
+        }
     } else {
-        style.fill = None;
-        style.stroke = Some(inherited.color);
+        if !fill_written {
+            style.fill = None;
+        }
+        if !stroke_written {
+            style.stroke = Some(color);
+        }
         // Tabler is drawn at stroke 2 on its 24 grid, and the grid transform
         // scales the stroke with everything else, so this stays right at every
         // size. An author wanting a lighter icon says so in CSS.
@@ -8362,7 +8384,7 @@ fn icon_box(
         // this is visibly wrong: the dot on the head in `accessible` becomes a
         // ring, the slice in `percentage-25` becomes an outline.
         if path.fill_current {
-            child.fill = Some(inherited.color);
+            child.fill = Some(color);
         }
         if path.no_stroke {
             child.stroke = None;
@@ -9062,7 +9084,7 @@ fn build_node_inner(
     // set draws it with. See `icon_box` for the geometry, which is the part
     // that is not obvious.
     if el.tag == "icon" {
-        return build_icon(el, style, inherited, engine, locals, reg, on_tap, gestures, hidden, instance);
+        return build_icon(el, style, inherited, color, (props.contains_key("fill"), props.contains_key("stroke")), engine, locals, reg, on_tap, gestures, hidden, instance);
     }
 
     if el.tag == "path" {
