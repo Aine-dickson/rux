@@ -61,9 +61,7 @@ use std::sync::Arc;
 // covers both; there is no cfg and no behavioural difference off the web.
 use web_time::{Duration, Instant};
 
-#[cfg(target_arch = "wasm32")]
 use std::cell::RefCell;
-#[cfg(target_arch = "wasm32")]
 use std::rc::Rc;
 
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -1975,6 +1973,11 @@ fn load_document(path: &PathBuf) -> Document {
     }
 }
 
+/// What every window of the app shares, behind one handle each. The event
+/// loop is one thread and no borrow is held across an event, so a `RefCell`
+/// is all the sharing needs.
+type Shared<T> = Rc<RefCell<T>>;
+
 /// Per-window render state.
 struct RenderState {
     window: Arc<Window>,
@@ -2023,7 +2026,8 @@ struct Preedit {
 type Pending = Rc<RefCell<Option<(RenderContext, RenderState)>>>;
 
 struct App {
-    context: RenderContext,
+    /// Shared by every window: one wgpu device, however many surfaces.
+    context: Shared<RenderContext>,
     state: Option<RenderState>,
     /// A renderer set aside while the app is suspended, with the device id it
     /// was built for.
@@ -2062,8 +2066,10 @@ struct App {
     #[cfg(not(target_arch = "wasm32"))]
     window_settings: WindowSettings,
     document: Document,
-    text: rux_text::TextEngine,
-    images: rux_paint::ImageCache,
+    /// Shared by every window: fonts are loaded once.
+    text: Shared<rux_text::TextEngine>,
+    /// Shared by every window: a picture is decoded once.
+    images: Shared<rux_paint::ImageCache>,
     /// Hit regions from the most recent layout, for tap dispatch.
     hits: Vec<HitRegion>,
     /// Focusable input regions from the most recent layout.
@@ -2428,7 +2434,7 @@ impl App {
         #[cfg(not(target_arch = "wasm32"))]
         let document = load_document(&path);
         Self {
-            context: RenderContext::new(),
+            context: Rc::new(RefCell::new(RenderContext::new())),
             state: None,
             spare_renderer: None,
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -2443,8 +2449,8 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             window_settings: WindowSettings::default(),
             document,
-            text: rux_text::TextEngine::new(),
-            images: rux_paint::ImageCache::new(),
+            text: Rc::new(RefCell::new(rux_text::TextEngine::new())),
+            images: Rc::new(RefCell::new(rux_paint::ImageCache::new())),
             hits: Vec::new(),
             focuses: Vec::new(),
             selects: Vec::new(),
@@ -3268,7 +3274,7 @@ impl App {
                 // against the painted string and converted back. See
                 // `shown_text`.
                 let (shown, _) = self.shown_text(&value, 0);
-                let hit = self.text.index_at_point(
+                let hit = self.text.borrow_mut().index_at_point(
                     &shown,
                     &rux_paint::text_style(&t.content),
                     Some(t.width),
@@ -3598,13 +3604,13 @@ impl App {
         let style = rux_paint::text_style(&t.content);
         let (start, end) = match unit {
             _ if region.kind.secret() => (0, value.len()),
-            TextUnit::Word => self.text.word_at_point(&value, &style, Some(t.width), tx, ty),
+            TextUnit::Word => self.text.borrow_mut().word_at_point(&value, &style, Some(t.width), tx, ty),
             // A one-line field is one line. In a field of several, a third
             // click takes the paragraph, up to the line break, as a
             // browser's does.
             TextUnit::Line if !region.kind.multiline() => (0, value.len()),
             TextUnit::Line => {
-                let (s, e) = self.text.line_at_point(&value, &style, Some(t.width), tx, ty, true);
+                let (s, e) = self.text.borrow_mut().line_at_point(&value, &style, Some(t.width), tx, ty, true);
                 // Not the line break itself: what is selected is the words.
                 (s, if value[..e].ends_with('\n') { e - 1 } else { e })
             }
@@ -3845,16 +3851,16 @@ impl App {
         // it is empty space, exactly as in any other field.
         if region.kind.secret() {
             let shown = rux_layout::mask(&value);
-            let (sx, sy, sh) = self.text.caret_geometry(&shown, &style, Some(t.width), 0);
-            let (ex, _, _) = self.text.caret_geometry(&shown, &style, Some(t.width), shown.len());
+            let (sx, sy, sh) = self.text.borrow_mut().caret_geometry(&shown, &style, Some(t.width), 0);
+            let (ex, _, _) = self.text.borrow_mut().caret_geometry(&shown, &style, Some(t.width), shown.len());
             return tx >= sx && tx <= ex && ty >= sy && ty <= sy + sh;
         }
-        let (start, end) = self.text.word_at_point(&value, &style, Some(t.width), tx, ty);
+        let (start, end) = self.text.borrow_mut().word_at_point(&value, &style, Some(t.width), tx, ty);
         if value.get(start..end).is_none_or(|w| w.trim().is_empty()) {
             return false;
         }
-        let (sx, sy, sh) = self.text.caret_geometry(&value, &style, Some(t.width), start);
-        let (ex, ey, _) = self.text.caret_geometry(&value, &style, Some(t.width), end);
+        let (sx, sy, sh) = self.text.borrow_mut().caret_geometry(&value, &style, Some(t.width), start);
+        let (ex, ey, _) = self.text.borrow_mut().caret_geometry(&value, &style, Some(t.width), end);
         // A word that wraps is taken anywhere on its lines.
         if (ey - sy).abs() > 0.5 {
             return true;
@@ -4068,7 +4074,7 @@ impl App {
             return Some((region.x + 2.0, region.y + 2.0, (region.height - 4.0).max(0.0)));
         };
         let style = rux_paint::text_style(&t.content);
-        let (cx, cy, ch) = self.text.caret_geometry(&value, &style, Some(t.width), at.min(value.len()));
+        let (cx, cy, ch) = self.text.borrow_mut().caret_geometry(&value, &style, Some(t.width), at.min(value.len()));
         let own = self.own_scroll(&region);
         Some((t.x + cx - self.text_scroll_for(&region) - own.x, t.y + cy - own.y, ch))
     }
@@ -5386,10 +5392,10 @@ impl App {
                     let style = rux_paint::text_style(&t.content);
                     let (shown, shown_caret) = self.shown_text(&value, caret);
                     let (cx, cy, ch) =
-                        self.text.caret_geometry(&shown, &style, Some(t.width), shown_caret);
+                        self.text.borrow_mut().caret_geometry(&shown, &style, Some(t.width), shown_caret);
                     let dir = if matches!(key, Key::Named(NamedKey::ArrowUp)) { -1.0 } else { 1.0 };
                     let target_y = cy + ch / 2.0 + dir * ch;
-                    let hit = self.text.index_at_point(&shown, &style, Some(t.width), cx, target_y);
+                    let hit = self.text.borrow_mut().index_at_point(&shown, &style, Some(t.width), cx, target_y);
                     new_caret = self.real_caret(&value, hit);
                     moved = new_caret != caret;
                 }
@@ -5650,7 +5656,7 @@ impl App {
         let t = self.focused_region().and_then(|f| f.text.clone())?;
         let style = rux_paint::text_style(&t.content);
         let (shown, shown_caret) = self.shown_text(value, caret);
-        let to = find(&mut self.text, &shown, &style, Some(t.width), shown_caret);
+        let to = find(&mut *self.text.borrow_mut(), &shown, &style, Some(t.width), shown_caret);
         Some(self.real_caret(value, to))
     }
 
@@ -5706,7 +5712,7 @@ impl App {
         let t = self.focused_region().and_then(|f| f.text.clone())?;
         let style = rux_paint::text_style(&t.content);
         let (shown, shown_caret) = self.shown_text(value, caret);
-        let to = self.text.visual_step(&shown, &style, Some(t.width), shown_caret, rightward);
+        let to = self.text.borrow_mut().visual_step(&shown, &style, Some(t.width), shown_caret, rightward);
         Some(self.real_caret(value, to))
     }
 
@@ -5853,7 +5859,7 @@ impl App {
         let style = rux_paint::text_style(&t.content);
         // Measured against what is painted; see `shown_text`.
         let (shown, shown_caret) = self.shown_text(value, caret);
-        let (_, cy, ch) = self.text.caret_geometry(&shown, &style, Some(t.width), shown_caret);
+        let (_, cy, ch) = self.text.borrow_mut().caret_geometry(&shown, &style, Some(t.width), shown_caret);
         // **The text sits inside the padding, and so does the space it may be
         // seen in.** `cy` is measured from the top of the text, which is
         // `inset` below the box's edge; scrolling only until the line's bottom
@@ -7570,7 +7576,7 @@ impl App {
         let style = rux_paint::text_style(&t.content);
         let caret = self.caret.min(value.len());
         let (shown, shown_caret) = self.shown_text(&value, caret);
-        let (cx, cy, ch) = self.text.caret_geometry(&shown, &style, Some(t.width), shown_caret);
+        let (cx, cy, ch) = self.text.borrow_mut().caret_geometry(&shown, &style, Some(t.width), shown_caret);
         window.set_ime_cursor_area(
             winit::dpi::LogicalPosition::new((t.x + cx) as f64, (t.y + cy) as f64)
                 .to_physical::<f64>(scale),
@@ -7936,6 +7942,13 @@ impl App {
         let Some(state) = state.as_mut() else {
             return;
         };
+        // The three shared with the other windows, held for this frame only.
+        let mut text_guard = text.borrow_mut();
+        let text = &mut *text_guard;
+        let mut images_guard = images.borrow_mut();
+        let images = &mut *images_guard;
+        let context_guard = context.borrow();
+        let context = &*context_guard;
         let width = state.surface.config.width;
         let height = state.surface.config.height;
 
@@ -8676,7 +8689,7 @@ impl ApplicationHandler<RuxEvent> for App {
         }
 
         let size = window.inner_size();
-        let surface = pollster::block_on(self.context.create_surface(
+        let surface = pollster::block_on(self.context.borrow_mut().create_surface(
             window.clone(),
             size.width.max(1),
             size.height.max(1),
@@ -8691,7 +8704,7 @@ impl ApplicationHandler<RuxEvent> for App {
         // Only for the same device, since that is the one thing it is tied to.
         let renderer = match self.spare_renderer.take() {
             Some((dev, renderer)) if dev == surface.dev_id => renderer,
-            _ => make_renderer(&self.context, &surface),
+            _ => make_renderer(&self.context.borrow(), &surface),
         };
         self.state = Some(RenderState {
             window,
@@ -8837,7 +8850,7 @@ impl ApplicationHandler<RuxEvent> for App {
             #[cfg(target_arch = "wasm32")]
             RuxEvent::SurfaceReady => {
                 if let Some((context, state)) = self.pending.borrow_mut().take() {
-                    self.context = context;
+                    *self.context.borrow_mut() = context;
                     self.state = Some(state);
                     self.starting = false;
                 }
@@ -9158,7 +9171,7 @@ impl ApplicationHandler<RuxEvent> for App {
                     caption::set_metrics(0.0, state.window.scale_factor());
                 }
                 if let Some(state) = self.state.as_mut() {
-                    self.context.resize_surface(
+                    self.context.borrow().resize_surface(
                         &mut state.surface,
                         size.width.max(1),
                         size.height.max(1),
@@ -9645,10 +9658,17 @@ impl ApplicationHandler<RuxEvent> for App {
         }
     }
 
-    /// The only clock in an otherwise event-driven loop: while an input is
-    /// focused, wake every `BLINK` to toggle the caret. With no focus the
-    /// deadline is `None`, so we wait indefinitely for the next real event.
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+}
+
+impl App {
+    /// What a window does when the loop has run out of events: the work of its
+    /// clocks. Returns the earliest instant it wants to be woken, or `None` to
+    /// wait indefinitely for the next real event; the [`Shell`] takes the
+    /// earliest over every window.
+    ///
+    /// The only clock in an otherwise event-driven loop used to be the caret:
+    /// while an input is focused, wake every `BLINK` to toggle it.
+    fn tick(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
         // Whatever `@input`, `@change`, `@focus` and `@blur` the events since
         // the last wake-up queued, now that the shell is done with them.
         // Twice round with the `<audio>` elements: what their sounds did is
@@ -9665,7 +9685,7 @@ impl ApplicationHandler<RuxEvent> for App {
             #[cfg(not(target_arch = "wasm32"))]
             {
                 self.close_now(event_loop);
-                return;
+                return None;
             }
             // A page cannot close the tab it is in unless a script opened it,
             // and a Rux app's page never is one.
@@ -9825,7 +9845,7 @@ impl ApplicationHandler<RuxEvent> for App {
             .fling
             .is_some()
             .then(|| Instant::now() + Duration::from_secs_f64(rux_runtime::FRAME_MS / 1000.0));
-        match [
+        [
             self.blink_deadline,
             self.caret_handle_until,
             long_press,
@@ -9839,7 +9859,175 @@ impl ApplicationHandler<RuxEvent> for App {
         .into_iter()
         .flatten()
         .min()
-        {
+    }
+}
+
+// ── The shell: every window of the app ───────────────────────────────────────
+
+/// Every window of the app, and the one thing the event loop talks to.
+///
+/// An [`App`] is **one window's** state: its document, its input state, its
+/// surface. The shell owns them by [`WindowId`] and does three jobs. It routes
+/// each window event to the window it is for. It sends an event that belongs to
+/// no window in particular to all of them. And it asks every window what it
+/// wants next, waking at the earliest of them. The GPU device, the fonts and
+/// the decoded pictures are shared between windows (see [`Shared`]), so a
+/// second window costs a surface, not a second copy of each.
+///
+/// After every event each window looks at the stores and the native signals
+/// again, so a store written in one window repaints the others.
+struct Shell {
+    windows: HashMap<WindowId, App>,
+    /// The id the main window is filed under in `windows`; `None` while it has
+    /// no window (before the first `resumed`, or suspended on Android).
+    main: Option<WindowId>,
+    /// The main window's state while it has no window to be filed under.
+    parked: Option<App>,
+}
+
+impl Shell {
+    fn new(app: App) -> Self {
+        Self { windows: HashMap::new(), main: None, parked: Some(app) }
+    }
+
+    /// Every window's state, the parked one included.
+    fn apps(&mut self) -> impl Iterator<Item = &mut App> {
+        self.parked.iter_mut().chain(self.windows.values_mut())
+    }
+
+    fn main_app(&mut self) -> Option<&mut App> {
+        match self.main {
+            Some(id) => self.windows.get_mut(&id),
+            None => self.parked.as_mut(),
+        }
+    }
+
+    /// File the main window's state under the id its window has now. Its
+    /// window comes and goes with `resumed` and `suspended` (Android) and with
+    /// the surface setup (the web), and a new window is a new id.
+    fn seat(&mut self) {
+        let now = self.main_app().map(|a| a.state.as_ref().map(|s| s.window.id()));
+        if now.is_none_or(|id| id == self.main) {
+            return;
+        }
+        let Some(app) = self.parked.take().or_else(|| self.main.take().and_then(|id| self.windows.remove(&id))) else {
+            return;
+        };
+        match app.state.as_ref().map(|s| s.window.id()) {
+            Some(id) => {
+                self.main = Some(id);
+                self.windows.insert(id, app);
+            }
+            None => {
+                self.main = None;
+                self.parked = Some(app);
+            }
+        }
+    }
+
+    /// What every handler ends with: each window reads the native signals and
+    /// the shared stores again, and redraws if either moved. A store written
+    /// in one window is how another one finds out.
+    fn after_event(&mut self) {
+        for app in self.apps() {
+            if app.document.refresh_native_signals() {
+                app.request_redraw();
+            }
+        }
+    }
+}
+
+impl ApplicationHandler<RuxEvent> for Shell {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = self.main_app() {
+            app.resumed(event_loop);
+        }
+        self.seat();
+        self.after_event();
+    }
+
+    #[cfg(target_os = "android")]
+    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(app) = self.main_app() {
+            app.suspended(event_loop);
+        }
+        self.seat();
+    }
+
+    fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RuxEvent) {
+        match event {
+            // Wake-ups that are not about any one window: all of them look.
+            RuxEvent::Answered => {
+                for app in self.apps() {
+                    app.user_event(event_loop, RuxEvent::Answered);
+                }
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            RuxEvent::VideoFrame => {
+                for app in self.apps() {
+                    app.user_event(event_loop, RuxEvent::VideoFrame);
+                }
+            }
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            RuxEvent::Reload => {
+                for app in self.apps() {
+                    app.user_event(event_loop, RuxEvent::Reload);
+                }
+            }
+            // The picker does not say who opened it: the window that is
+            // waiting on one, else the main window.
+            RuxEvent::PickedFiles { files } => {
+                let asked = self.apps().find(|a| a.pending_file.is_some());
+                match asked {
+                    Some(app) => app.user_event(event_loop, RuxEvent::PickedFiles { files }),
+                    None => {
+                        if let Some(app) = self.main_app() {
+                            app.user_event(event_loop, RuxEvent::PickedFiles { files });
+                        }
+                    }
+                }
+            }
+            // Assistive technology names its window.
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            RuxEvent::Access(access) => {
+                if let Some(app) = self.windows.get_mut(&access.window_id) {
+                    app.user_event(event_loop, RuxEvent::Access(access));
+                }
+            }
+            // The phone's and the page's own events (the keyboard, a picker, a
+            // route) are for the one window there is.
+            #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+            other => {
+                if let Some(app) = self.main_app() {
+                    app.user_event(event_loop, other);
+                }
+            }
+        }
+        self.seat();
+        self.after_event();
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
+        // A window with no surface yet (the web's, while its setup runs) is
+        // the parked one and gets what arrives.
+        let app = match self.windows.contains_key(&id) {
+            true => self.windows.get_mut(&id),
+            false => self.parked.as_mut(),
+        };
+        if let Some(app) = app {
+            app.window_event(event_loop, id, event);
+        }
+        self.after_event();
+    }
+
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let mut next: Option<Instant> = None;
+        for app in self.apps() {
+            next = [next, app.tick(event_loop)].into_iter().flatten().min();
+        }
+        // What a window's clocks did may have written a store.
+        self.after_event();
+        match next {
             Some(next) => event_loop.set_control_flow(ControlFlow::WaitUntil(next)),
             None => event_loop.set_control_flow(ControlFlow::Wait),
         }
@@ -11681,13 +11869,13 @@ pub fn start_web(
         app.restored_focus = Some(state.focus);
         app.restored_fields = state.fields;
     }
-    if !app.text.register_font(font) {
+    if !app.text.borrow_mut().register_font(font) {
         web_sys::console::error_1(&"rux: the supplied font had no usable faces, so text will not render".into());
     }
     // Taffy's cache would hold sizes measured in the fonts there were.
     app.layout_state.forget();
     web_say_close_is_not_asked(&app.document);
-    event_loop.spawn_app(app);
+    event_loop.spawn_app(Shell::new(app));
 }
 
 /// A font to render with when the platform supplies none.
@@ -11787,7 +11975,7 @@ pub fn start_web_app(
         app.restored_focus = Some(state.focus);
         app.restored_fields = state.fields;
     }
-    if !app.text.register_font(font) {
+    if !app.text.borrow_mut().register_font(font) {
         web_sys::console::error_1(
             &"rux: the supplied font had no usable faces, so text will not render".into(),
         );
@@ -11795,7 +11983,7 @@ pub fn start_web_app(
     // Taffy's cache would hold sizes measured in the fonts there were.
     app.layout_state.forget();
     web_say_close_is_not_asked(&app.document);
-    event_loop.spawn_app(app);
+    event_loop.spawn_app(Shell::new(app));
 }
 
 /// Resize the canvas to `w` x `h` logical pixels. No-op before `start_web`.
@@ -12174,7 +12362,7 @@ pub fn run_windowed(
     if let Some(route) = route {
         app.document.open_link(&route, false);
     }
-    event_loop.run_app(&mut app).expect("run app");
+    event_loop.run_app(&mut Shell::new(app)).expect("run app");
 
     drop(watcher); // keep the watcher alive for the loop's lifetime
 }
@@ -13989,7 +14177,7 @@ fn run_android_with(
         android_log(&format!("link: {route}, before the first frame"));
         app.document.open_link(&route, was_restored);
     }
-    event_loop.run_app(&mut app).expect("run app");
+    event_loop.run_app(&mut Shell::new(app)).expect("run app");
 
     // **Returning from here is not enough: the process has to end with it.**
     // The loop is only left when the app has asked to close, and Android does

@@ -86,7 +86,7 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   nodes; `min-width`/`min-height` count the caption's height on Windows.
   Probe and driver: `C:\Users\USER\Mobile\rux-harness\titlebar-overlay`.
 - **Child windows (roadmap item 8): designed and approved 2026-11-06, steps 1
-  and 2 built (`db718e2`).** Plan: `C:\Users\USER\.claude\plans\optimized-shimmying-aho.md`
+  to 3 built (`db718e2`, then the Shell refactor).** Plan: `C:\Users\USER\.claude\plans\optimized-shimmying-aho.md`
   (copy to `docs/archive/child-windows-plan.md` when done). Owner's choices:
   `window.open(path, options)` opens a `.rux` file as its own document; stores
   are process-wide; the opener passes `props`; `close()` in a child closes that
@@ -98,22 +98,44 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
     `adopt_stores`, pulled by `Document::refresh_native_signals`; a hot reload
     calls `reset_shared_stores()`. (2) `Document::load_window(path, props)`;
     props become `let`s on the script's first line.
-  - **Next**: (3) the shell holds several windows: `Shell` owning
-    `HashMap<WindowId, App>`, shared wgpu context/text engine/images, events
-    routed by `WindowId`, earliest deadline over all windows, and after every
-    event each window calls `refresh_native_signals` and redraws if it moved
-    (a store written in one window must repaint the others). (4) `window.open`,
-    the handle, per-window `window` module (`window_module.rs` has a global
-    `WINDOW` static and `MAXIMIZED` signal to make per window), and the
-    `rux check` of literal `window.open` paths/props. (5) closing. (6) docs.
+  - **Done (3)**: `Shell` in `rux-shell/src/lib.rs` owns `HashMap<WindowId, App>`,
+    `main: Option<WindowId>` and `parked: Option<App>` (the main window's state
+    while it has no window: before `resumed`, Android suspended, the web before
+    `SurfaceReady`; `Shell::seat` re-files it under its window's id). `App` is
+    one window's state; `context`, `text` and `images` are `Shared<T>` =
+    `Rc<RefCell<T>>` (render holds the guards for the frame). `App::tick`
+    replaces `App::about_to_wait` and returns its deadline; the Shell takes the
+    earliest. Routing: `window_event` by id; `Answered`, `VideoFrame` and
+    `Reload` go to every window; `PickedFiles` goes to the window with a
+    `pending_file`, else main; `Access` by its `window_id`; the Android and web
+    events go to main. `Shell::after_event` (end of every handler) runs
+    `refresh_native_signals` on every window and redraws the ones that moved.
+    Only the main window exists yet, so nothing observable changed.
+  - **Next**: (4) `window.open`, the handle, per-window `window` module
+    (`window_module.rs` has a global `WINDOW` static and `MAXIMIZED` signal;
+    `caption.rs` also keeps a thread-local `WINDOW`, and `window_event` calls
+    `caption::set_active` / `set_metrics` and `window_module::follow`, all
+    process-wide: make them per window), and the `rux check` of literal
+    `window.open` paths/props. To add a child: build its `App`, assign it the
+    main's `context`/`text`/`images` Rc clones, insert it in `Shell::windows`
+    under its window id (no helper exists yet). Check in 4: `settle_tasks` per
+    document under a broadcast `Answered` (each engine collects answers from
+    the host queue; make sure a task answer reaches only its owner). (5)
+    closing: `close_now` still calls `event_loop.exit()`, right only for main.
+    (6) docs.
   - **Decided (owner, 2026-11-06)**: when the main window closes, every child
     closes with it and its context is destroyed as the main's is: components'
     `unmounted` deepest first, then the document's; children are not asked
     their own `@close`.
   - **Check first in 4**: a script `fn` value must be passable to a native call
     and run later in the opener's scope (`onClose`); if not, stop and ask.
-  - **Known**: `what_the_scaffold_writes_checks_clean` overflows the stack in
-    about 4 of 10 runs on unmodified `HEAD` too (watchlist #41); it is not new.
+  - **Known**: `what_the_scaffold_writes_checks_clean` overflows the stack on
+    unmodified `HEAD` too (watchlist #41): 6 of 8 runs alone on 2026-11-06,
+    against 5 of 6 with step 3; not new. A whole-workspace run with
+    `--no-fail-fast` passed all 138 suites. The wasm32 build already fails at
+    this commit in code step 3 did not touch (`window_settings` in
+    `overlay_active`, and `slides` taking `std::time::Instant`); the Shell's
+    wasm and Android paths are written but not compiled (no NDK clang here).
     Init side effects in a store file still run once per window.
 - `Style` has a size budget (744 bytes, watchlist #41): a new rarely used
   style property goes in `Rare`, as `app_region` does. One byte over it
@@ -176,7 +198,7 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 One item left, in its own session on Opus plan mode (it sets design):
 
-1. **Child windows**, step 3 (the shell holds several windows) onward; see the
+1. **Child windows**, step 4 (`window.open`) onward; see the
    child windows entry above. The syntax is settled.
 2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,
    two-value longhands; drawn by an elliptical path in `rux-paint`
@@ -189,6 +211,12 @@ After those, decide with the owner when to push `build/v0.9` and cut v0.9.
 MS-012's status line in the Mava report still says the overlay is not built.
 
 ## Verified on 2026-11-06
+
+Step 3: `cargo test --workspace -j 2 --no-fail-fast` 138 suites, 0 failed (the
+scaffold flake hit once in a run without `--no-fail-fast`). Probes driven on
+Windows with the new build, same rects and screenshots as before:
+`ms012`, `titlebar-overlay`, `ms010-dnd` (shots in the scratchpad, not the
+harness folders).
 
 Trial merge built and tested in a scratch worktree; `rux new` + `rux check` on
 the `tasks` template passes after the stack fix; the roadmap was checked against
