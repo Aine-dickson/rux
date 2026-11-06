@@ -446,7 +446,9 @@ fn embed_files(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
             literal(&absolute.display().to_string()),
         ));
     }
+    embed_icons(manifest, files, out);
 }
+
 
 /// The port a dev build and `rux run --device` meet on, one per app.
 ///
@@ -460,6 +462,284 @@ pub fn dev_port(manifest: &Manifest) -> u16 {
         hash = (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193);
     }
     40_000 + (hash % 20_000) as u16
+}
+
+/// The icons this project names, and only those.
+///
+/// **This is tree-shaking, and it is why the icon data lives in the tool rather
+/// than in the runtime.** The generated crate depends on `rux-runtime`, and a
+/// cargo dependency is resolved long before anyone knows which icons a document
+/// mentions, so a full table behind that edge would be compiled into every app
+/// with no way to remove it. Here, the side that has already read the documents
+/// looks each name up while it still has all six thousand, and writes out the
+/// handful that were used.
+fn embed_icons(manifest: &Manifest, files: &[PathBuf], out: &mut String) {
+    let mut wanted: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut dynamic = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(manifest.root.join(file)) else { continue };
+        for used in scan_icons(&text) {
+            if used.bound {
+                dynamic.push(format!("{}:{}", file.display(), used.line));
+            } else if let Some(name) = used.name {
+                wanted.insert(name);
+            }
+        }
+    }
+
+    // **A bound name cannot be resolved without running the app**, so the
+    // honest answer is all of them rather than a guess that leaves an icon
+    // blank on a screen nobody tested. Said out loud, because the cost lands in
+    // the artifact and an author should learn why from the build rather than
+    // from a file listing.
+    if !dynamic.is_empty() {
+        println!(
+            "rux: an icon name is bound ({}), so all {} icons are embedded. \
+             A literal `name=` embeds only what it uses.",
+            dynamic[0],
+            rux_icons::count()
+        );
+        wanted = rux_icons::names().map(str::to_string).collect();
+    }
+
+    if wanted.is_empty() {
+        return;
+    }
+
+    // **A blob and an index, not thousands of literals in a function body.**
+    // The first version emitted one `MemoryIcons::insert` with two inline
+    // `vec![]` per icon. That is fine for the nine a normal app names and fatal
+    // for the whole set: an app with a bound name embeds all of them, and five
+    // thousand inline vector constructions in one function overflowed the stack
+    // of Android's `android_main` thread. The app died with `SIGSEGV` before it
+    // drew anything, and only building one found it. Statics take no stack, and
+    // this is the same shape `rux-icons` itself is generated in.
+    let mut blob = String::new();
+    let mut index = String::new();
+    let mut embedded = 0usize;
+    for name in &wanted {
+        // A name that is not in the set is skipped rather than failing here.
+        // `verify_icons` has already refused the build if one was misspelled,
+        // so reaching this with an unknown name means the set changed under us.
+        if !rux_icons::exists(name) {
+            continue;
+        }
+        let name_at = blob.len();
+        blob.push_str(name);
+        let outline_at = blob.len();
+        pack_into(&mut blob, name, rux_icons::Variant::Outline);
+        let filled_at = blob.len();
+        pack_into(&mut blob, name, rux_icons::Variant::Filled);
+        index.push_str(&format!(
+            "[{},{},{},{},{},{}],",
+            name_at,
+            outline_at - name_at,
+            outline_at,
+            filled_at - outline_at,
+            filled_at,
+            blob.len() - filled_at
+        ));
+        embedded += 1;
+    }
+
+    out.push_str(&format!("    static ICON_BLOB: &str = {};\n", literal(&blob)));
+    out.push_str(&format!("    static ICON_INDEX: [[usize; 6]; {embedded}] = [{index}];\n"));
+    out.push_str(&format!(
+        "    let mut icons = rux_runtime::MemoryIcons::new({:?});\n",
+        rux_icons::GRID
+    ));
+    out.push_str(
+        "    for r in ICON_INDEX.iter() {\n\
+         \x20       icons.insert_packed(\n\
+         \x20           &ICON_BLOB[r[0]..r[0] + r[1]],\n\
+         \x20           &ICON_BLOB[r[2]..r[2] + r[3]],\n\
+         \x20           &ICON_BLOB[r[4]..r[4] + r[5]],\n\
+         \x20       );\n\
+         \x20   }\n",
+    );
+    out.push_str("    rux_runtime::set_icons(std::rc::Rc::new(icons));\n");
+    println!("rux: {embedded} icons embedded");
+}
+
+/// One variant's paths, in the packed form the generated crate unpacks.
+///
+/// Paths joined by `\n`, each prefixed by a hex digit of paint flags. Nothing
+/// at all when the variant does not exist, which is what `insert_packed` reads
+/// as absent rather than empty.
+fn pack_into(blob: &mut String, name: &str, variant: rux_icons::Variant) {
+    let Some(paths) = rux_icons::find(name, variant) else { return };
+    for (i, p) in paths.iter().enumerate() {
+        if i > 0 {
+            blob.push('\n');
+        }
+        let flags = u32::from(p.fill_current)
+            | (u32::from(p.no_stroke) << 1)
+            | (u32::from(p.half_opacity) << 2);
+        blob.push(char::from_digit(flags, 16).expect("flags fit a hex digit"));
+        blob.push_str(p.d);
+    }
+}
+
+/// Replace everything that is not markup with spaces, keeping every newline.
+///
+/// Comments and `<script>` bodies both contain text that looks like a tag and
+/// is not one. Spaces rather than deletion, and newlines kept, because the line
+/// numbers this feeds are the ones an author reads in the error.
+fn blank_non_markup(text: &str) -> String {
+    let bytes: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0usize;
+    let blank = |out: &mut String, slice: &[char]| {
+        for c in slice {
+            out.push(if *c == '\n' || *c == '\r' { *c } else { ' ' });
+        }
+    };
+    while i < bytes.len() {
+        let rest: String = bytes[i..].iter().take(9).collect();
+        if rest.starts_with("<!--") {
+            let end = find_from(&bytes, i, "-->").map(|e| e + 3).unwrap_or(bytes.len());
+            blank(&mut out, &bytes[i..end]);
+            i = end;
+        } else if rest.to_ascii_lowercase().starts_with("<script") {
+            let end = find_from(&bytes, i, "</script>").map(|e| e + 9).unwrap_or(bytes.len());
+            blank(&mut out, &bytes[i..end]);
+            i = end;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Where `needle` next starts at or after `from`, in chars.
+fn find_from(chars: &[char], from: usize, needle: &str) -> Option<usize> {
+    let needle: Vec<char> = needle.chars().collect();
+    (from..chars.len().saturating_sub(needle.len() - 1))
+        .find(|&i| {
+            chars[i..i + needle.len()]
+                .iter()
+                .zip(&needle)
+                .all(|(a, b)| a.eq_ignore_ascii_case(b))
+        })
+}
+
+/// One `<icon>` as written in a document.
+#[derive(Debug, PartialEq, Eq)]
+pub struct IconUse {
+    /// The literal `name`, or `None` for a bound or missing one.
+    pub name: Option<String>,
+    /// Whether the name is bound, which makes it unknowable until the app runs.
+    pub bound: bool,
+    /// Whether `variant="filled"` was asked for.
+    pub filled: bool,
+    /// 1-based, so a message can be read against the file.
+    pub line: usize,
+}
+
+/// Every `<icon>` a document writes, with where it was written.
+///
+/// Text rather than a parse, deliberately: this runs over the same files the
+/// build is about to embed, and a second full parse to answer one question
+/// would double the work for no more certainty than the attribute already
+/// gives.
+fn scan_icons(text: &str) -> Vec<IconUse> {
+    // **Comments and scripts are not markup**, and a scan that forgets it reads
+    // the word `<icon>` in a sentence about icons as an icon with no name.
+    // Found by building a probe whose opening comment described what it drew:
+    // the build refused, naming line 1. Blanked rather than removed, so every
+    // line number afterwards is still the line the author sees.
+    let text = &blank_non_markup(text);
+    let mut out = Vec::new();
+    let mut rest = text.as_str();
+    let mut consumed = 0usize;
+    while let Some(at) = rest.find("<icon") {
+        let after = &rest[at + "<icon".len()..];
+        // A tag name ends at whitespace or at the end of the tag. Without this,
+        // `<iconography>` would be read as an icon.
+        if !after.starts_with(|c: char| c.is_whitespace() || c == '>' || c == '/') {
+            consumed += at + "<icon".len();
+            rest = after;
+            continue;
+        }
+        let end = after.find('>').unwrap_or(after.len());
+        let attrs = &after[..end];
+        // Counted from the start of the file rather than tracked as we go, so
+        // the number is right whatever the line endings are.
+        let line = text[..consumed + at].matches('\n').count() + 1;
+        let bound = attr_value(attrs, ":name").is_some();
+        out.push(IconUse {
+            name: attr_value(attrs, "name").filter(|_| !bound),
+            bound,
+            filled: attr_value(attrs, "variant").as_deref() == Some("filled"),
+            line,
+        });
+        consumed += at + "<icon".len() + end;
+        rest = &after[end..];
+    }
+    out
+}
+
+/// Refuse to build a project whose icons cannot be drawn.
+///
+/// **`rux build` does not otherwise check a document**, so without this a
+/// misspelled name is skipped at embedding time and the app ships with a hole
+/// where an icon should be. `rux check` says the same things, and an author who
+/// runs it first sees them first, but a build must not be the step that stays
+/// quiet about something it is in the act of getting wrong.
+///
+/// Checked before anything compiles, for the reason the keystore is: this is
+/// knowable in the time it takes to read the files, and finding out afterwards
+/// means finding out sixteen minutes later.
+fn verify_icons(manifest: &Manifest, files: &[PathBuf]) -> Result<(), String> {
+    let mut problems = Vec::new();
+    for file in files {
+        let Ok(text) = std::fs::read_to_string(manifest.root.join(file)) else { continue };
+        for used in scan_icons(&text) {
+            let at = format!("{}:{}", file.display(), used.line);
+            match (&used.name, used.bound) {
+                // Unknowable until the app runs, so there is nothing to check.
+                (_, true) => {}
+                (None, false) => {
+                    problems.push(format!("{at}: <icon> needs a `name`"));
+                }
+                (Some(name), false) if !rux_icons::exists(name) => {
+                    problems.push(format!("{at}: there is no icon called `{name}`"));
+                }
+                (Some(name), false) if used.filled && !rux_icons::has_filled(name) => {
+                    problems.push(format!(
+                        "{at}: `{name}` has no filled artwork, and `variant=\"filled\"` \
+                         does not fall back to the outline"
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+    if problems.is_empty() {
+        return Ok(());
+    }
+    Err(format!(
+        "{}\n\nRoughly four icons in five are outline only, and a name has to be one \
+         Tabler draws. `rux check` reports these with the rest of a document's problems.",
+        problems.join("\n")
+    ))
+}
+
+/// One attribute's value out of an element's attribute text.
+fn attr_value(attrs: &str, name: &str) -> Option<String> {
+    let mut rest = attrs;
+    loop {
+        let at = rest.find(name)?;
+        let before_ok = at == 0 || rest[..at].ends_with(char::is_whitespace);
+        let after = rest[at + name.len()..].trim_start();
+        if before_ok && after.starts_with('=') {
+            let q = after[1..].trim_start().strip_prefix('"')?;
+            let close = q.find('"')?;
+            return Some(q[..close].to_string());
+        }
+        rest = &rest[at + name.len()..];
+    }
 }
 
 fn wrapper_main(manifest: &Manifest, files: &[PathBuf], options: &Options) -> String {
@@ -656,7 +936,7 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
     // Checked here, before anything compiles. A keystore that is not where the
     // manifest says, or a password that was never exported, is knowable in the
     // moment it takes to look, and finding out afterwards means finding out
-    // sixteen minutes later.
+    // sixteen minutes later. An icon nobody can draw is the same kind of thing.
     if options.target == Target::Android {
         manifest.signing_key()?;
         if options.release && manifest.signing.is_none() {
@@ -705,6 +985,11 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
     // sit in `.rux-build`, which the walk above skips, and are found by the
     // app under the same path. See `rux_runtime::tailwind`.
     files.extend(rux_runtime::tailwind::precompile(&manifest.root, &files)?);
+
+    // Before the wrapper is written and long before anything compiles. An icon
+    // that cannot be drawn would otherwise be skipped silently at embedding
+    // time and ship as a hole in the app.
+    verify_icons(&manifest, &files)?;
 
     // Inside the project, and hidden, so the directory walk above skips it and
     // a `.gitignore` does not have to learn a new name.
@@ -910,6 +1195,109 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What `scan_icons` finds in one document, as the older tests read it.
+    fn scan(text: &str) -> (Vec<String>, bool) {
+        let uses = scan_icons(text);
+        let mut names: Vec<String> =
+            uses.iter().filter_map(|u| u.name.clone()).collect();
+        names.sort();
+        names.dedup();
+        (names, uses.iter().any(|u| u.bound))
+    }
+
+    #[test]
+    fn only_the_icons_a_document_names_are_collected() {
+        let (names, dynamic) = scan(
+            r#"<icon name="heart" /><icon name="star" size="2em"/><icon name="heart"/>"#,
+        );
+        assert_eq!(names, vec!["heart", "star"], "duplicates should collapse");
+        assert!(!dynamic);
+    }
+
+    #[test]
+    fn a_tag_that_merely_starts_with_icon_is_not_one() {
+        // `<iconography>` is somebody's component. Without the boundary check
+        // this would scan its attributes as an icon's and embed nothing useful
+        // while looking like it worked.
+        let (names, _) = scan(r#"<iconography name="heart" />"#);
+        assert!(names.is_empty(), "{names:?}");
+    }
+
+    #[test]
+    fn a_bound_name_is_reported_because_it_cannot_be_shaken() {
+        // The whole point of the scan is knowing what to embed. A bound name
+        // cannot be known without running the app, so the build has to say so
+        // rather than quietly ship an app with a blank space in it.
+        let (names, dynamic) = scan(r#"<icon :name="chosen" />"#);
+        assert!(names.is_empty());
+        assert!(dynamic, "a bound name was not noticed");
+    }
+
+    #[test]
+    fn the_embedded_icons_are_the_ones_named_and_no_others() {
+        let mut blob = String::new();
+        pack_into(&mut blob, "heart", rux_icons::Variant::Outline);
+        assert!(!blob.is_empty(), "heart packed to nothing");
+        // The flag digit, then a command letter. If the digit were lost the
+        // data would still look plausible and every override would be gone.
+        assert!(blob.starts_with(|c: char| c.is_ascii_hexdigit()), "{blob}");
+        assert!(blob[1..].starts_with(|c: char| c.is_ascii_alphabetic()), "{blob}");
+
+        // A name nobody asked for must not be in there. `star` is a real icon,
+        // which is what makes it a fair check that only `heart` was taken.
+        let mut other = String::new();
+        pack_into(&mut other, "star", rux_icons::Variant::Outline);
+        assert!(!blob.contains(&other));
+    }
+
+    #[test]
+    fn a_comment_that_talks_about_icons_is_not_an_icon() {
+        // Found by building a probe whose opening comment described what it
+        // drew. The build refused, naming line 1, and the document was fine.
+        // Now that a bad icon fails a build, a false positive is not a nuisance
+        // but a valid project that cannot be built.
+        let uses = scan_icons("<!-- the <icon> element, driven -->\n<icon name=\"heart\" />");
+        assert_eq!(uses.len(), 1, "the comment was read as markup: {uses:?}");
+        assert_eq!(uses[0].name.as_deref(), Some("heart"));
+        assert_eq!(uses[0].line, 2, "blanking a comment moved the line numbers");
+    }
+
+    #[test]
+    fn a_script_that_mentions_an_icon_tag_is_not_one() {
+        // A string in a script is not markup either, and the same false
+        // positive would be harder to see coming.
+        let uses = scan_icons("<script>\n  let s = \"<icon name=\\\"x\\\" />\";\n</script>");
+        assert!(uses.is_empty(), "a script body was read as markup: {uses:?}");
+    }
+
+    /// The three lines both line-ending tests scan, joined per test.
+    const DOC: [&str; 3] = ["<template>", "  <screen>", "    <icon name=\"heart\" />"];
+
+    #[test]
+    fn an_icon_carries_the_line_it_was_written_on() {
+        // Without a position these messages are a list of names and a hunt.
+        let uses = scan_icons(&DOC.join("\n"));
+        assert_eq!(uses.len(), 1);
+        assert_eq!(uses[0].line, 3, "{:?}", uses[0]);
+    }
+
+    #[test]
+    fn line_numbers_survive_windows_line_endings() {
+        // This tree mixes CRLF and LF file by file, so a count that only works
+        // for one of them is a number that is wrong on half the repository.
+        let uses = scan_icons(&DOC.join("\r\n"));
+        assert_eq!(uses[0].line, 3, "{:?}", uses[0]);
+    }
+
+    #[test]
+    fn a_variant_is_read_and_a_bound_name_is_not_a_name() {
+        let uses = scan_icons(r#"<icon name="a" variant="filled" /><icon :name="x" />"#);
+        assert!(uses[0].filled);
+        assert_eq!(uses[0].name.as_deref(), Some("a"));
+        assert!(uses[1].bound);
+        assert!(uses[1].name.is_none(), "a bound name is not a literal one");
+    }
 
     fn manifest() -> Manifest {
         Manifest {

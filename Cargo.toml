@@ -13,6 +13,7 @@ members = [
     "crates/rux-video",
     "crates/rux-web",
     "crates/rux-highlight",
+    "crates/rux-icons",
     "crates/rux-fmt",
     "crates/rux-reactive",
     "crates/rux-script",
@@ -95,6 +96,7 @@ rux-paint = { version = "0.9.0-dev", path = "crates/rux-paint" }
 rux-style = { version = "0.9.0-dev", path = "crates/rux-style" }
 rux-runtime = { version = "0.9.0-dev", path = "crates/rux-runtime" }
 rux-shell = { version = "0.9.0-dev", path = "crates/rux-shell" }
+rux-icons = { version = "0.9.0-dev", path = "crates/rux-icons" }
 # Not published (see its own `publish = false`), so it needs no version: nothing
 # on crates.io will ever have to resolve it.
 rux-highlight = { path = "crates/rux-highlight" }

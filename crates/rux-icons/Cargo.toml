@@ -1,0 +1,14 @@
+[package]
+name = "rux-icons"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tabler icon path data, bundled for Rux. Internal to Rux; the supported entry point is the ruxlang crate."
+readme = "README.md"
+keywords = ["ui", "icons", "rux"]
+categories = ["gui"]
+
+# No dependencies, and that is deliberate: this crate is a string and an integer
+# table. The generator that writes them takes a directory and uses `std`.
+[dependencies]

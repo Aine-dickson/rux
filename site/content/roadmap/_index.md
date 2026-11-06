@@ -2709,6 +2709,46 @@ Steps 1 and 2 are independent of `rux build` and can happen whenever. Step 3
 wants step 1 answered. Step 4 is the scheduling constraint, and step 5 should
 not be promised publicly until it has been measured.
 
+#### Step 5, measured 2026-09-20: a fifth of it is already free
+
+Twenty pairs, chosen from what an interface actually toggles rather than from
+what happened to look similar, then compared against Tabler 3.47.0. The engine
+interpolates two paths when they share a command sequence and jumps otherwise,
+so the question is how far apart the drawings already are.
+
+| | pairs |
+|---|---|
+| already share a command sequence | **4** |
+| same number of paths, commands differ | 2 |
+| different number of paths | 14 |
+
+**The four already morph, today, with nothing built.** `chevron-down` to
+`chevron-up`, `chevron-right` to `chevron-left`, `arrow-right` to `arrow-left`
+and `maximize` to `minimize` all interpolate under `transition: d`. Driven and
+caught mid-flight: the chevron flattens through a horizontal line, the arrow's
+head collapses through the middle, and maximize's four corner brackets converge
+into a small rounded square. That is a fifth of the list for the price of
+documenting it, and it should be documented before anything is built.
+
+**The fourteen are redrawing, not adjusting.** `player-play` is one path of
+`MVLL` and `player-pause` is two of `MAHAVAHAL`; `menu-2` is three strokes and
+`x` is two. Nothing mechanical turns one into the other, which is the same
+answer the earlier survey gave from the other direction.
+
+**What a normalizer would actually be**, if the curated list is built: convert
+every command to cubics, so `L`, `H`, `V`, `Q` and `A` all become `C`; equalize
+segment counts by subdividing the shorter path; add degenerate zero-length
+paths so both sides have the same number, which is how `minus` grows into
+`plus` rather than jumping. The first two steps are mechanical and
+well-understood. **The third is not**: which point on one shape corresponds to
+which on the other, and which way each is wound, is what decides whether the
+result reads as a transformation or as a shape turning inside out. That is the
+work, it is per pair, and it is the reason this is a curated list of twenty
+rather than a feature that works on five thousand.
+
+So the honest position is unchanged and now has numbers behind it: **do not
+promise that icons morph.** Document the four that do.
+
 #### Reviewed 2026-09-20: still yes, and the constraint has cleared
 
 **Step 4 was what parked this, and `rux build` now exists.** Three things the
@@ -2728,11 +2768,17 @@ in the loop, and needs its own answer.
 
 **The author never compiles the whole set, and Rux does.** Once the above is
 right, an app carries what it uses and nothing more. What remains is Rux's own
-build, and it is worth designing for: emit one embedded blob and a sorted index
-to binary-search, rather than six thousand string literals, which is the shape
-compilers are slow at. It also makes a subset a slice rather than a filter.
-This is the generator's output format, so it is decided before the generator is
-written rather than after.
+build: one embedded blob and a sorted index to binary-search, rather than six
+thousand string literals.
+
+**Measured once both existed, because the first reason given for this was
+wrong.** The claim was that thousands of string literals are the shape
+compilers are slow at. Timed: the literal form takes 1.6 seconds and the blob
+takes 0.6. Two and a half times, and both are fast enough that nobody would
+have noticed. **The real reason to prefer the blob is structural**, and it is
+the one that survives: a subset of it is a slice, where a subset of a literal
+table is a filter that has to be rebuilt. That is exactly what tree-shaking
+wants. The compile time is a bonus worth a second.
 
 **`transform-origin` looks like a blocker and probably is not.** It is
 unimplemented, and the transform origin is fixed at the box centre, so the
@@ -2743,13 +2789,23 @@ translate of `N/2 - 12px` maps the grid onto the box at any size. Path
 coordinates are already measured from the content corner, which is what makes
 it land.
 
-That has been derived and not yet seen, so it is the first thing to drive,
-exactly as the `1em` question was. It carries a consequence either way: the
-transform depends on the resolved pixel size, so it cannot be written in a
-stylesheet and must be emitted by the element from its own size. That turns the
-`size` attribute from a convenience into a requirement. It also means an icon's
-stroke scales with it, so a set drawn at one stroke weight stays right at every
-size for nothing.
+**Driven and confirmed on a device, 2026-09-20.** A 24-unit square drawn into
+boxes of 16, 32 and 64 pixels lands exactly on a reference box of each size,
+with none of the reference showing at any edge, and a stroked drawing scales
+with its stroke weight intact. Two tests hold the halves of it so it cannot
+quietly stop being true: `rux-layout/tests/icon_grid.rs` asserts the engine's
+own transform maps the grid's corners onto the box at seven sizes, and a case
+in `rux-style` asserts the CSS text composes into the matrix that does it.
+
+It carries a consequence: the transform depends on the resolved pixel size, so
+it cannot be written in a stylesheet and must be emitted by the element from
+its own size. **That turns the `size` attribute from a convenience into a
+requirement.** It also means an icon's stroke scales with it, so a set drawn at
+one stroke weight stays right at every size for nothing.
+
+**The translate is scaled by the scale**, because it composes inside it: at
+16px a `-4px` translate arrives as `-2.667`. An element emitting the two
+numbers separately has to know that, or it is out by a third at every size.
 
 #### Why this is unusually cheap for Rux
 
