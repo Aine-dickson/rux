@@ -8652,6 +8652,8 @@ fn build_node_inner(
         ("longpress", rux_layout::Gesture::LongPress),
         ("swipe", rux_layout::Gesture::Swipe),
         ("drag", rux_layout::Gesture::Drag),
+        ("contextmenu", rux_layout::Gesture::ContextMenu),
+        ("doubletap", rux_layout::Gesture::DoubleTap),
     ]
     .into_iter()
     .filter_map(|(name, kind)| {

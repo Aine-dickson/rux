@@ -3387,6 +3387,26 @@ with the dev `rux` building against the checkout and one shared
 | `cargo test` inside `native/` | not driven | needs `rux-native` on crates.io | **not driven**: `rux-native`, `rux-native-macros` and `rux-bindgen` are not published yet |
 | Android and web builds of a scaffold with native | not driven | | **not driven** |
 
+## Right-click, double-tap and `event.button`, 2026-11-06
+
+Mava Studio's MS-011. Driven on the Windows desktop with the probe
+`C:\Users\USER\Mobile\rux-harness\ms011\app.rux` and `drive.ps1` beside it
+(real `mouse_event` and `keybd_event` input, captured with `PrintWindow`). One
+row inside a `@drag` list, the row declaring `@contextmenu`, `@doubletap`,
+`@press`, `@release` and `@tap`.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| Right-click | right-click the row | `@press` and `@release` with `event.button` 2, `@contextmenu` once, no `@tap` | desktop: pass (Windows fires it on the release) |
+| Middle click | middle-click the row | `@press` with `event.button` 1, `@release`, nothing else | desktop: pass |
+| Left click | click the row | `@press` with `event.button` 0, `@tap`, no `@contextmenu` | desktop: pass |
+| Double-click | click the row twice quickly | two `@tap`s, then one `@doubletap` | desktop: pass |
+| A drag on the list still drags | drag on the list's blank part | the list's `@drag` runs, the row's handlers do not | desktop: pass |
+| Menu key | focus the row (Tab), Shift+F10 | `@contextmenu` at the middle of the row (150, 30 in a 300 by 60 row) | desktop: pass |
+| Touch long press opens the menu | hold a finger on the row | `@longpress`, then `@contextmenu` | **not driven**: no phone, and the emulator has not been tried |
+| Right-click on the web | right-click in a browser | `@contextmenu` fires and the browser's own menu does not show | **not driven** |
+| Right-click on macOS and Linux | | `@contextmenu` fires on the press | **not driven** |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

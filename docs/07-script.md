@@ -269,7 +269,7 @@ On a component's tag, `@key` is a listener for an `emit("key")`, as every
 
 ## The pointer vocabulary
 
-Beyond `@tap`, five events report what a finger or a button is doing:
+Beyond `@tap`, five events report what a finger or a button is doing (and two more, `@contextmenu` and `@doubletap`, are below):
 
 | Attribute | Fires |
 |---|---|
@@ -325,6 +325,38 @@ not decided, and waits for real touch hardware to argue with.
 **A long press is exclusive with the other two.** A press that moved is not
 resting, so once the pointer wanders past the tap slop the long press is off.
 
+### Buttons, menus and double taps
+
+`event.button` says which button went down, numbered as a browser numbers
+them: `0` the primary, `1` the middle, `2` the secondary. A finger is always
+`0`. The middle and secondary buttons fire `@press` and `@release` and nothing
+else from the table above: `@tap`, `@drag`, `@swipe` and `@longpress` are the
+primary button's, as a browser's `click` is.
+
+Two more events are finished gestures, like `@tap`, and each goes to the
+nearest element that wrote it. Writing one never takes a `@press` or a `@drag`
+away from an element around it.
+
+| Attribute | Fires |
+|---|---|
+| `@contextmenu` | on a secondary click, on a touch press held still for half a second, and on the Menu key or Shift+F10 with focus on the element |
+| `@doubletap` | after the second of two taps close together in time and place, a double-click or a double-tap |
+
+```rux
+<view class="row"
+      @contextmenu="menu = { row: id, x: event.pageX, y: event.pageY }"
+      @doubletap="rename(id)">
+```
+
+`@contextmenu` hands over `event.x` and `event.y` in the element, and
+`event.pageX` and `event.pageY` in the window, which is where an anchored menu
+wants to open. On a keyboard it reports the middle of the focused element.
+Where the platform opens its menus (Windows on the release, everywhere else on
+the press) the event follows suit. On a touchscreen `@longpress` fires first.
+
+`@doubletap` runs after both taps' `@tap`, in the order a browser's `dblclick`
+comes, and a third tap starts counting again.
+
 ## What an event hands you
 
 Every handler above, and `@tap` too, has an `event` in scope:
@@ -359,9 +391,9 @@ coordinates rather than being left out.
 **A function that takes the event annotates it by name**, and every script
 can name these without a `use`:
 
-| Type | Handed over by | Adds to `x`, `y`, `pageX`, `pageY`, `width`, `height`, `touches` |
+| Type | Handed over by | Adds to `x`, `y`, `pageX`, `pageY`, `width`, `height`, `button`, `touches` |
 |---|---|---|
-| `TapEvent` | `@tap`, `@press`, `@release`, `@longpress` | nothing |
+| `TapEvent` | `@tap`, `@press`, `@release`, `@longpress`, `@contextmenu`, `@doubletap` | `button` |
 | `DragEvent` | `@drag` | `totalX`, `totalY`, `moveX`, `moveY`, `phase` |
 | `SwipeEvent` | `@swipe` | `totalX`, `totalY`, `moveX`, `moveY`, `direction` |
 | `KeyEvent` | `@key` | none of those, only `key`, `ctrl`, `shift`, `alt`, `meta`, `primary`, `repeat` |

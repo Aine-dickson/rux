@@ -3592,9 +3592,20 @@ pub enum Gesture {
     /// It is moving with the button or finger down. Reports at the start, on
     /// every move, and at the end.
     Drag,
+    /// The secondary button went down and came up, or a long press on touch,
+    /// or the Menu key. A finished event like `@tap`, not raw pointer traffic.
+    ContextMenu,
+    /// Two taps close in time and place. Reports after the second `@tap`.
+    DoubleTap,
 }
 
 impl Gesture {
+    /// Whether this is part of a press (`@press` to `@drag`). The two finished
+    /// events are routed by their own owners and never start a press.
+    pub fn starts_press(self) -> bool {
+        !matches!(self, Gesture::ContextMenu | Gesture::DoubleTap)
+    }
+
     /// The attribute that declares it, without the `@`.
     pub fn from_attr(name: &str) -> Option<Self> {
         match name {
@@ -3603,6 +3614,8 @@ impl Gesture {
             "longpress" => Some(Gesture::LongPress),
             "swipe" => Some(Gesture::Swipe),
             "drag" => Some(Gesture::Drag),
+            "contextmenu" => Some(Gesture::ContextMenu),
+            "doubletap" => Some(Gesture::DoubleTap),
             _ => None,
         }
     }
@@ -3661,6 +3674,9 @@ pub struct HitRegion {
 pub struct Owners {
     pub tap: Option<u32>,
     pub gesture: Option<u32>,
+    /// The nearest element above with `@contextmenu`, and with `@doubletap`.
+    pub context: Option<u32>,
+    pub double: Option<u32>,
     /// A text field, a select or a field's label, or something inside one.
     pub field: bool,
 }
@@ -3674,7 +3690,21 @@ impl Owners {
             && !node.style.no_pointer;
         Owners {
             tap: if node.on_tap.is_some() { Some(seq) } else { above.tap },
-            gesture: if node.gestures.is_empty() { above.gesture } else { Some(seq) },
+            gesture: if node.gestures.iter().any(|(g, _)| g.starts_press()) {
+                Some(seq)
+            } else {
+                above.gesture
+            },
+            context: if node.gestures.iter().any(|(g, _)| *g == Gesture::ContextMenu) {
+                Some(seq)
+            } else {
+                above.context
+            },
+            double: if node.gestures.iter().any(|(g, _)| *g == Gesture::DoubleTap) {
+                Some(seq)
+            } else {
+                above.double
+            },
             field: above.field || field,
         }
     }
@@ -3719,11 +3749,38 @@ pub fn tap_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
 /// finds a tap's.
 pub fn gesture_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
     let top = hit_at(hits, x, y)?;
-    if !top.gestures.is_empty() {
+    if top.gestures.iter().any(|(g, _)| g.starts_press()) {
         return Some(top);
     }
     let owner = top.owners.gesture?;
-    hits.iter().rev().find(|h| h.seq == owner && !h.gestures.is_empty())
+    hits.iter().rev().find(|h| h.seq == owner && h.gestures.iter().any(|(g, _)| g.starts_press()))
+}
+
+/// The region whose `@contextmenu` a right-click, long press or Menu key at a
+/// point reaches: the topmost box's own, else the nearest ancestor's.
+pub fn context_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
+    finished_at(hits, x, y, Gesture::ContextMenu, |o| o.context)
+}
+
+/// The region whose `@doubletap` a second tap at a point reaches.
+pub fn double_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
+    finished_at(hits, x, y, Gesture::DoubleTap, |o| o.double)
+}
+
+fn finished_at(
+    hits: &[HitRegion],
+    x: f32,
+    y: f32,
+    kind: Gesture,
+    owner: impl Fn(&Owners) -> Option<u32>,
+) -> Option<&HitRegion> {
+    let top = hit_at(hits, x, y)?;
+    let has = |h: &HitRegion| h.gestures.iter().any(|(g, _)| *g == kind);
+    if has(top) {
+        return Some(top);
+    }
+    let seq = owner(&top.owners)?;
+    hits.iter().rev().find(|h| h.seq == seq && has(h))
 }
 
 /// The cursor over a point: the topmost box's. `cursor` is inherited, so a

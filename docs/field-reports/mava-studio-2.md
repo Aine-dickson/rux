@@ -84,3 +84,43 @@ Each entry says what Mava needed, what happened, how to reproduce it, what Mava 
 - **Mava workaround:** the script functions are named `saveProject` and `saveProjectAs`.
 - **Suggested fix:** resolve `value.name(...)` on a native value to the value's method before any script function, in the checker and the runtime alike; if a script function of that name is meant, it is called as `name(value, ...)`.
 - **Status:** fixed 2026-10-14 on `build/v0.9`, as suggested. The type checker and the runtime already took the native method; the refusal came from `rux check`'s name-only arity check, which took `studio.save()` for a call to the script's `fn save()` (and counted the receiver as an argument). That check now leaves a method call alone when its receiver is a native value: a global by what it holds, anything else when some native type has a method of that name, which the type checker then holds to its Rust signature. Driven in a window: the native-shop example with a script `fn total()` beside `till.total()`, both answering their own. A second case was found at run time and fixed the same day: where the receiver's type is only known when it runs (a handler's own expressions), a script `fn` whose parameters fit the receiver plus the arguments was tried before the native method, so `studio.save(path)` beside `fn save(s, p)` called the script. The native method is now tried first there too. `saveProject` can go back to `save`. Documented in `docs/07-script.md` beside `#[rux::resource]`.
+
+## MS-009 `<icon>` exists only on an unmerged branch
+
+- **Found:** 2026-11-06, Mava F06 (learning navigator), `build/v0.9` at `f2bde76`.
+- **Mava record:** L-013.
+- **Limit:** `<icon name="..." size="1em" />` (Tabler, outline and filled, only the icons an app names are built in) is on `origin/build/v0.9-icons` (`8826335`, `395fe70`, `5585800`, `e524d8b`, `78431e1`, 2026-09-20), which is 7 commits ahead of and 365 behind `origin/build/v0.9`. `build/v0.9` has no `<icon>` and `docs/06-roadmap.md` still lists icons as decided and unscheduled. An application cannot use icons on the line Mava Studio 2 is pinned to.
+- **Reproduction:** `git grep 'name: "icon"' origin/build/v0.9 -- crates/rux-cli/src/vocab.rs` gives no match; the same on `origin/build/v0.9-icons` gives one.
+- **Mava workaround:** none. Text labels stand in until the pin carries `<icon>`; icons are not drawn by hand from `<path>`.
+- **Suggested fix:** merge or rebase `build/v0.9-icons` into `build/v0.9` and move the roadmap entry from unscheduled to done.
+- **Status:** fixed 2026-11-06, as suggested. `build/v0.9-icons` is merged into `build/v0.9` (`20939f2`); `<icon>`, `rux-icons` and the build's icon tree-shaking are in, and the roadmap lists icons as built. Mava's pin needs to move to a commit at or after `20939f2`.
+
+## MS-010 No drag and drop between containers
+
+- **Found:** 2026-11-06, Mava F06 (learning navigator), `build/v0.9` at `f2bde76`.
+- **Mava record:** L-014.
+- **Limit:** reordering and re-parenting rows of a tree by dragging needs: a drag started from a handle on a row; a copy of the row that follows the pointer; a drop target that knows which container and slot the pointer is over; the other rows moving apart as it travels; one end event with the source container, target container, old index and new index. Rux has `@drag` (phase, totals, deltas) and layout rectangles readable from script, but no drop target, no cross-container drag and no drag copy. The behaviour wanted is SortableJS as used in the ilovestem outline (`ils/src/components/lesson/SidebarOutline.vue`): handle-only drag, a ghost left in the slot, a floating copy with a shadow, 150 ms sibling animation, a shared group so items pull from one list and put into another, an empty list accepting a drop.
+- **Reproduction:** none; there is no API.
+- **Mava workaround:** none. Move up, move down, indent and outdent commands until Rux has it; no drag built from `@drag` and hit-testing.
+- **Suggested fix:** a drag-source and drop-container pair of attributes with a shared group name, an event at the end carrying source, target, old index and new index, a drag copy owned by the shell, and sibling reflow through the existing `transition` on `transform`. The shape of SortableJS's `onEnd` is a good model.
+- **Status:** open.
+
+## MS-011 No right-click and no double-click event
+
+- **Found:** 2026-11-06, Mava F06 (learning navigator), `build/v0.9` at `0e43a16`.
+- **Mava record:** L-015.
+- **Limit:** a desktop app cannot tell which pointer button went down, and cannot hear a double-click or double-tap. `@press` carries `x`, `y`, `pageX`, `pageY`, `width`, `height` and `touches`; `@tap` and `@longpress` carry no button either. A context menu on a row (right-click) and "double-click to open or rename" cannot be written. Anchored popups exist (`position: fixed`, `anchor-name`, `position-anchor`), so only the trigger is missing.
+- **Reproduction:** none; there is no API.
+- **Mava workaround:** none for the trigger. The menu opens from a button and every operation has a key.
+- **Suggested fix:** `event.button` on `@press` and `@release` (0 primary, 1 middle, 2 secondary), an `@contextmenu` that also fires on a long press on touch, and `@dbltap` (or `event.count` on `@tap`) with the platform's double-click interval. `@contextmenu` should be able to take the event (`false`) so the platform's own menu does not show.
+- **Status:** fixed 2026-11-06 on `build/v0.9`, with two changes from the suggestion. The double-tap is `@doubletap` (named like `@longpress`), and there is no `false` answer on `@contextmenu`: a desktop window has no platform menu to hide, and declaring the event is enough (the web has not been driven yet, and is the one place it could matter). `event.button` (0 primary, 1 middle, 2 secondary) is on every pointer event, and the middle and secondary buttons fire `@press` and `@release` only, so `@tap`, `@drag`, `@swipe` and `@longpress` stay the primary button's. `@contextmenu` fires on a secondary click (on the release on Windows, the press elsewhere), on a touch press held for half a second after `@longpress`, and on the Menu key or Shift+F10 with focus on the element, where it reports the middle of that element. Each of `@contextmenu` and `@doubletap` goes to the nearest element that wrote it, and takes nothing from a `@press` or `@drag` around it. Documented under "Buttons, menus and double taps" in `docs/07-script.md`. Driven on Windows; the touch long press, the web and macOS and Linux are not (see `docs/08-user-tests.md`).
+
+## MS-012 No custom title bar
+
+- **Found:** 2026-11-06, Mava F06 (chrome), `build/v0.9` at `0e43a16`.
+- **Mava record:** L-016.
+- **Limit:** an editor-style window (menus, a search field and the window buttons in one title row, an activity rail below) cannot be written. `[window]` has no option to drop the native decorations; script cannot minimize, maximize, restore or toggle the window; there is no drag region and a borderless window has no resize edges or snap behaviour; `env(titlebar-area-*)` is not supported.
+- **Reproduction:** none; there is no API.
+- **Mava workaround:** none for the title bar. The menu bar sits under the native one.
+- **Suggested fix:** `[window] decorations = false` (or `titlebar = "custom"`), `window.minimize()`, `window.toggleMaximize()` and `window.close()` from script, an `app-region: drag` style (or `@windowdrag`) for the title row, system resize edges and snap kept for the borderless window, and `env(titlebar-area-*)` for the space the platform buttons would take. The window buttons themselves can stay the app's own boxes.
+- **Status:** open.

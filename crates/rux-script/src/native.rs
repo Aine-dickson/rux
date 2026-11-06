@@ -194,14 +194,14 @@ pub fn prelude_types() -> Vec<(String, String)> {
 
 /// Where a pointer is, as every gesture's `event` has it.
 const POINTER_FIELDS: &str = "x: float, y: float, pageX: float, pageY: float, \
-    width: float, height: float, touches: { id: int, x: float, y: float }[]";
+    width: float, height: float, button: int, touches: { id: int, x: float, y: float }[]";
 /// How far a drag or a swipe has gone, from where it landed and from the last move.
 const TRAVEL_FIELDS: &str = "totalX: float, totalY: float, moveX: float, moveY: float";
 
 /// What `event` is in the handlers that hand the same one everywhere, by the
 /// name a parameter is annotated with: `fn onKey(e: KeyEvent)` (Tracer's
-/// AW-007). `TapEvent` is `@tap`'s, `@press`'s, `@release`'s and
-/// `@longpress`'s.
+/// AW-007). `TapEvent` is `@tap`'s, `@press`'s, `@release`'s,
+/// `@longpress`'s, `@contextmenu`'s and `@doubletap`'s.
 pub fn event_types() -> Vec<(&'static str, String)> {
     vec![
         ("TapEvent", format!("{{ {POINTER_FIELDS} }}")),

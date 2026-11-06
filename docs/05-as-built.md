@@ -2807,7 +2807,13 @@ Every handler, `@tap` included, is handed an `event`:
 | `x`, `y` | the pointer, relative to the element the handler is on |
 | `pageX`, `pageY` | the same point, relative to the window |
 | `width`, `height` | the element's own size, so `event.x / event.width` is how far across it the pointer is |
+| `button` | which button: 0 primary, 1 middle, 2 secondary; a finger is 0 |
 | `touches` | every finger down, each with `id`, `x`, `y` |
+
+`@contextmenu` (a secondary click, a held touch, the Menu key or Shift+F10)
+and `@doubletap` are finished events like `@tap`: each goes to the nearest
+element that wrote it and takes nothing from a `@press` or `@drag` around it.
+The middle and secondary buttons fire `@press` and `@release` only.
 
 `touches` is **a list even when there is one finger**, and a mouse counts as one
 finger with `id` 0.

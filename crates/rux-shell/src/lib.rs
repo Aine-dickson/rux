@@ -755,6 +755,16 @@ const BAR_MIN_THUMB: f32 = 24.0;
 /// One line of scroll travel, the wheel's unit, and the arrow keys'.
 const LINE: f32 = 24.0;
 
+/// The middle or right button held down on an element with pointer handlers.
+#[derive(Clone, Debug)]
+struct SecondaryPress {
+    button: u8,
+    origin: (f32, f32),
+    size: (f32, f32),
+    handlers: Vec<(rux_layout::Gesture, String)>,
+    instance: Option<String>,
+}
+
 /// A press in progress on an element that declared pointer handlers.
 ///
 /// Held from the press to the release, because every gesture except `@press` is
@@ -2144,6 +2154,12 @@ struct App {
     gesture: Option<GesturePress>,
     /// When the held press becomes a long one, if anything is listening.
     gesture_deadline: Option<Instant>,
+    /// A middle or right button held down: it fires `@press` and `@release`
+    /// with `event.button`, and never starts a drag or a long press.
+    secondary: Option<SecondaryPress>,
+    /// The last tap that reached the page, for `@doubletap`: when, and where
+    /// in logical px.
+    last_tap: Option<(Instant, f32, f32)>,
     /// Every finger currently down, in logical px, in the order they landed.
     ///
     /// A list rather than one position, because a hand has more than one finger
@@ -2434,6 +2450,8 @@ impl App {
             wheel_snap: None,
             gesture: None,
             gesture_deadline: None,
+            secondary: None,
+            last_tap: None,
             points: Vec::new(),
             touch: None,
             touch_track: Vec::new(),
@@ -4528,11 +4546,23 @@ impl App {
             // The instance travels with the handler because two instances of one
             // component carry identical handler text: the string alone cannot
             // say whose state to run it against.
-            let event = self.pointer_event(fx, fy, origin, size);
+            let event = self.pointer_event(fx, fy, origin, size, 0);
             if self.document.apply_handler_with_event(&src, instance.as_deref(), &event) {
                 self.request_redraw();
             }
             self.adopt_element_requests();
+        }
+
+        // A second tap close to the first, in time and place, is a double-tap,
+        // and runs after both `@tap`s as a browser's `dblclick` does. A third
+        // tap starts again.
+        let twice = self.last_tap.take().is_some_and(|(at, x, y)| {
+            at.elapsed() < DOUBLE_CLICK && (fx - x).hypot(fy - y) <= TAP_SLOP as f32
+        });
+        if twice {
+            self.fire_finished(rux_layout::Gesture::DoubleTap, fx, fy, 0);
+        } else {
+            self.last_tap = Some((Instant::now(), fx, fy));
         }
     }
 
@@ -4546,12 +4576,23 @@ impl App {
                 let rect = ((h.x, h.y), (h.width, h.height));
                 (h.gestures.clone(), h.instance.clone(), rect, h.touch_action)
             });
+        // A finger resting on an element with `@contextmenu` opens it, even
+        // when the element has no pointer handlers of its own.
+        let menu = from_touch && rux_layout::context_at(&self.hits, fx, fy).is_some();
+        let found = found.or_else(|| {
+            if !menu {
+                return None;
+            }
+            let h = rux_layout::context_at(&self.hits, fx, fy)?;
+            Some((Vec::new(), h.instance.clone(), ((h.x, h.y), (h.width, h.height)), h.touch_action))
+        });
         let Some((handlers, instance, (origin, size), touch_action)) = found else {
             self.gesture = None;
             self.gesture_deadline = None;
             return;
         };
-        let listening_long = handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::LongPress);
+        let listening_long =
+            menu || handlers.iter().any(|(g, _)| *g == rux_layout::Gesture::LongPress);
         self.gesture = Some(GesturePress {
             origin,
             size,
@@ -4692,10 +4733,76 @@ impl App {
     ) {
         let Some(press) = self.gesture.clone() else { return };
         let Some((_, body)) = press.handlers.iter().find(|(g, _)| *g == kind) else { return };
-        let mut event = self.pointer_event(fx, fy, press.origin, press.size);
+        let mut event = self.pointer_event(fx, fy, press.origin, press.size, 0);
         if let rux_reactive::Value::Map(fields) = &mut event {
             fields.extend(extra);
         }
+        if self.document.apply_handler_with_event(body, press.instance.as_deref(), &event) {
+            self.request_redraw();
+        }
+        self.adopt_element_requests();
+    }
+
+    /// Run `@contextmenu` or `@doubletap` at a point: the nearest element above
+    /// it that declared that event, with the point relative to that element.
+    /// Whether one ran.
+    fn fire_finished(&mut self, kind: rux_layout::Gesture, fx: f32, fy: f32, button: u8) -> bool {
+        let region = match kind {
+            rux_layout::Gesture::ContextMenu => rux_layout::context_at(&self.hits, fx, fy),
+            rux_layout::Gesture::DoubleTap => rux_layout::double_at(&self.hits, fx, fy),
+            _ => None,
+        };
+        let Some(region) = region else { return false };
+        let Some((_, body)) = region.gestures.iter().find(|(g, _)| *g == kind).cloned() else {
+            return false;
+        };
+        let (origin, size, instance) = ((region.x, region.y), (region.width, region.height), region.instance.clone());
+        let event = self.pointer_event(fx, fy, origin, size, button);
+        if self.document.apply_handler_with_event(&body, instance.as_deref(), &event) {
+            self.request_redraw();
+        }
+        self.adopt_element_requests();
+        true
+    }
+
+    /// A middle or right button went down: `@press` with `event.button`, and
+    /// for the right button `@contextmenu` where the platform opens its menus
+    /// on the press (everywhere but Windows, which waits for the release).
+    fn press_secondary(&mut self, button: u8) {
+        let scale = self.scale();
+        let (fx, fy) = ((self.pointer.0 / scale) as f32, (self.pointer.1 / scale) as f32);
+        self.keyboard_modality = false;
+        self.secondary = rux_layout::gesture_at(&self.hits, fx, fy).map(|h| SecondaryPress {
+            button,
+            origin: (h.x, h.y),
+            size: (h.width, h.height),
+            handlers: h.gestures.clone(),
+            instance: h.instance.clone(),
+        });
+        self.fire_secondary(rux_layout::Gesture::Press, fx, fy);
+        if button == 2 && !cfg!(windows) {
+            self.fire_finished(rux_layout::Gesture::ContextMenu, fx, fy, button);
+        }
+    }
+
+    /// The middle or right button came up: `@release`, and on Windows the
+    /// right button's `@contextmenu`.
+    fn release_secondary(&mut self, button: u8) {
+        let scale = self.scale();
+        let (fx, fy) = ((self.pointer.0 / scale) as f32, (self.pointer.1 / scale) as f32);
+        if self.secondary.as_ref().is_some_and(|p| p.button == button) {
+            self.fire_secondary(rux_layout::Gesture::Release, fx, fy);
+            self.secondary = None;
+        }
+        if button == 2 && cfg!(windows) {
+            self.fire_finished(rux_layout::Gesture::ContextMenu, fx, fy, button);
+        }
+    }
+
+    fn fire_secondary(&mut self, kind: rux_layout::Gesture, fx: f32, fy: f32) {
+        let Some(press) = self.secondary.clone() else { return };
+        let Some((_, body)) = press.handlers.iter().find(|(g, _)| *g == kind) else { return };
+        let event = self.pointer_event(fx, fy, press.origin, press.size, press.button);
         if self.document.apply_handler_with_event(body, press.instance.as_deref(), &event) {
             self.request_redraw();
         }
@@ -4725,6 +4832,7 @@ impl App {
         fy: f32,
         origin: (f32, f32),
         size: (f32, f32),
+        button: u8,
     ) -> rux_reactive::Value {
         use rux_reactive::Value;
         let touches: Vec<Value> = self
@@ -4748,6 +4856,8 @@ impl App {
             ("pageY".to_string(), Value::Number(fy as f64)),
             ("width".to_string(), Value::Number(size.0 as f64)),
             ("height".to_string(), Value::Number(size.1 as f64)),
+            // 0 primary, 1 middle, 2 secondary, as a browser numbers them.
+            ("button".to_string(), Value::Number(button as f64)),
             ("touches".to_string(), Value::list(touches)),
         ])
     }
@@ -5620,6 +5730,18 @@ impl App {
         // A key reaching a control inside a `<video>` brings its controls up.
         if let Some(path) = self.focus_index.and_then(|i| self.focusables.get(i)).and_then(|f| f.path.as_deref()) {
             media::stir_focused(path);
+        }
+        // The Menu key, and Shift+F10, open the context menu of what has focus,
+        // at its centre. An element with none lets the key go on.
+        let menu_key = matches!(key, Key::Named(NamedKey::ContextMenu))
+            || (self.shift_held && matches!(key, Key::Named(NamedKey::F10)));
+        if menu_key && !repeat {
+            if let Some(item) = self.focus_index.and_then(|i| self.focusables.get(i)) {
+                let (cx, cy) = (item.x + item.width / 2.0, item.y + item.height / 2.0);
+                if self.fire_finished(rux_layout::Gesture::ContextMenu, cx, cy, 0) {
+                    return;
+                }
+            }
         }
         let chain = self.key_chain();
         let event = self.key_event(key, repeat);
@@ -9107,6 +9229,18 @@ impl ApplicationHandler<RuxEvent> for App {
                 }
             }
             WindowEvent::MouseInput {
+                state,
+                button: button @ (MouseButton::Middle | MouseButton::Right),
+                ..
+            } => {
+                let n = if button == MouseButton::Middle { 1 } else { 2 };
+                if state == ElementState::Pressed {
+                    self.press_secondary(n);
+                } else {
+                    self.release_secondary(n);
+                }
+            }
+            WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
@@ -9322,6 +9456,11 @@ impl ApplicationHandler<RuxEvent> for App {
                         g.long_fired = true;
                     }
                     self.fire_gesture(rux_layout::Gesture::LongPress, start.0, start.1, Vec::new());
+                    // On touch the long press is also the context menu, if the
+                    // finger is still down after the handler above ran.
+                    if self.gesture.as_ref().is_some_and(|g| g.from_touch) {
+                        self.fire_finished(rux_layout::Gesture::ContextMenu, start.0, start.1, 0);
+                    }
                 }
             }
         }

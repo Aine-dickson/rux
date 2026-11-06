@@ -673,6 +673,35 @@ fn a_tap_inside_a_box_goes_to_its_nearest_handler() {
     assert!(tap_at(&out.hits, 10.0, 10.0).is_none(), "the backdrop's child is the backdrop's");
 }
 
+/// `@contextmenu` and `@doubletap` are finished events, routed to their own
+/// nearest owner. A row with a menu inside a list that drags leaves the drag
+/// with the list, and the innermost menu wins.
+#[test]
+fn contextmenu_and_doubletap_have_their_own_owners() {
+    let mut measure = |_: &TextContent, _: Option<f32>| (20.0, 10.0);
+    let sq = |n: f32| Node::new(Style { width: Some(Len::Px(n)), height: Some(Len::Px(n)), ..Default::default() });
+    let mut list = sq(100.0);
+    list.gestures = vec![(Gesture::Drag, "move()".into())];
+    let mut row = sq(40.0);
+    row.gestures = vec![(Gesture::ContextMenu, "outer()".into()), (Gesture::DoubleTap, "open()".into())];
+    let mut inner = sq(20.0);
+    inner.gestures = vec![(Gesture::ContextMenu, "inner()".into())];
+    row.children.push(inner);
+    list.children.push(row);
+    let out = layout(&on_screen(list), 200.0, 100.0, &mut measure);
+    let body = |h: Option<&HitRegion>, g: Gesture| {
+        h.and_then(|h| h.gestures.iter().find(|(k, _)| *k == g).map(|(_, b)| b.clone()))
+    };
+    assert_eq!(body(context_at(&out.hits, 5.0, 5.0), Gesture::ContextMenu).as_deref(), Some("inner()"));
+    assert_eq!(body(context_at(&out.hits, 30.0, 30.0), Gesture::ContextMenu).as_deref(), Some("outer()"));
+    assert_eq!(body(double_at(&out.hits, 5.0, 5.0), Gesture::DoubleTap).as_deref(), Some("open()"));
+    assert!(context_at(&out.hits, 80.0, 80.0).is_none(), "the list has no menu");
+    // The press family belongs to the list, whatever the row declared.
+    let press = gesture_at(&out.hits, 5.0, 5.0).expect("the list drags");
+    assert!(press.gestures.iter().any(|(g, _)| *g == Gesture::Drag));
+    assert!(gesture_at(&out.hits, 150.0, 5.0).is_none());
+}
+
 /// A box over a text field keeps the press from it, and so does
 /// `pointer-events: none` on the field (watchlist #47). A label reaches.
 #[test]

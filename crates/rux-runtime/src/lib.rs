@@ -406,11 +406,12 @@ fn check_handlers(
 
 /// The events the runtime actually dispatches, without the `@`.
 ///
-/// `tap` plus the five in [`rux_layout::Gesture`]. Kept beside the check rather
+/// `tap` plus the seven in [`rux_layout::Gesture`]. Kept beside the check rather
 /// than derived, because `tap` is not a `Gesture` (it is the finished gesture,
 /// and is also what a keyboard activation produces) and a list of five that
 /// silently means six is worse than a list of six.
-const EVENT_NAMES: &[&str] = &["tap", "press", "release", "longpress", "swipe", "drag"];
+const EVENT_NAMES: &[&str] =
+    &["tap", "press", "release", "longpress", "swipe", "drag", "contextmenu", "doubletap"];
 
 /// The events only an `<input>` has, on top of [`EVENT_NAMES`]: what happens to
 /// its value and its focus, which no other element has.
@@ -1073,7 +1074,7 @@ const INPUT_KINDS: &str =
 fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_script::types::Type {
     use rux_script::types::Type;
     let text = match name {
-        "tap" | "press" | "release" | "longpress" => "TapEvent".to_string(),
+        "tap" | "press" | "release" | "longpress" | "contextmenu" | "doubletap" => "TapEvent".to_string(),
         "key" => "KeyEvent".to_string(),
         "drag" => "DragEvent".to_string(),
         "swipe" => "SwipeEvent".to_string(),
@@ -7575,6 +7576,23 @@ mod tests {
             found.message.contains("@tap") && found.message.contains("@drag"),
             "the message lists what does exist: {found:?}"
         );
+    }
+
+    /// `@contextmenu` and `@doubletap` are events (Mava Studio's MS-011), and a
+    /// misspelling of one is still refused.
+    #[test]
+    fn contextmenu_and_doubletap_are_events() {
+        let _ = take_warnings();
+        let doc = Document::from_source(
+            "<template><screen><view @contextmenu=\"n = event.button\" @doubletap=\"n = 2\">x</view>\
+             <view @contextmenus=\"n = 3\">y</view></screen></template>\n\
+             <script>let n = signal(0);</script>",
+        )
+        .expect("renders anyway");
+        let named: Vec<_> = doc.diagnostics.warnings.iter().map(|w| w.message.clone()).collect();
+        assert!(named.iter().any(|m| m.contains("@contextmenus")), "{named:?}");
+        assert!(!named.iter().any(|m| m.contains("`@contextmenu` on") || m.contains("`@doubletap` on")), "{named:?}");
+        assert!(!named.iter().any(|m| m.contains("button")), "event.button is typed: {named:?}");
     }
 
     /// A valueless directive given a value says something with nowhere to go.
