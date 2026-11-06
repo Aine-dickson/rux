@@ -3400,6 +3400,26 @@ row inside a `@drag` list, the row declaring `@contextmenu`, `@doubletap`,
 | Right-click on the web | right-click in a browser | `@contextmenu` fires and the browser's own menu does not show | **not driven** |
 | Right-click on macOS and Linux | | `@contextmenu` fires on the press | **not driven** |
 
+## A frameless window, 2026-11-06
+
+Mava Studio's MS-012. Driven on the Windows desktop with the project
+`C:\Users\USER\Mobile\rux-harness\ms012` (`rux.toml` with
+`decorations = false`, a title row with `app-region: drag`, and its own three
+buttons) and `drive.ps1` beside it, with real mouse input.
+
+| Case | Steps | Expected | Result |
+|---|---|---|---|
+| No frame | open it | no title bar or border, the app's own row at the top | desktop: pass |
+| Drag the row | press on the row's blank part and drag | the window moves with the pointer | desktop: pass (120,80 further on) |
+| Double-click the row | double-click it, twice | maximizes, then restores | desktop: pass |
+| The app's own buttons | click `max` twice, `_` once | each acts; the buttons do not start a drag | desktop: pass; minimize left the window iconic |
+| `window.maximized` | maximize by the row, by the button | the glyph and `maximized: true` follow | desktop: pass |
+| Resize from a corner and an edge | drag the bottom right corner, then the left edge | the window grows, and the left edge moves it | desktop: **fail, then pass.** winit's undecorated window has no resize border on Windows; the shell now has its own six pixel band |
+| Rounded corners | look at a corner against a busy background | the system's corner, not a square one | desktop: pass, set by the system (`set_corner_preference`); the drop shadow is requested too and was not looked at |
+| Snap to an edge or a corner | drag the row to the screen's edge | Windows snaps it | **not driven** |
+| macOS and Linux | | drag, maximize, resize band | **not driven** |
+| The web and Android | call `window.minimize()` | throws `unsupported`; `maximized` reads false | **not driven** |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

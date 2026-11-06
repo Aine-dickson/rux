@@ -36,6 +36,7 @@ pub(crate) struct InlinePart {
     pub on_tap: Option<String>,
     pub gestures: Vec<(Gesture, String)>,
     pub cursor: Cursor,
+    pub app_region: crate::AppRegion,
     pub touch_action: TouchAction,
     pub instance: Option<String>,
     pub focus_path: Option<Vec<usize>>,
@@ -205,6 +206,7 @@ fn gather<'a>(
             on_tap: c.on_tap.clone(),
             gestures: c.gestures.clone(),
             cursor: c.style.cursor,
+            app_region: c.style.app_region(),
             touch_action: c.style.touch_action,
             instance: c.instance.clone(),
             focus_path: c.focus_path.clone(),
@@ -384,6 +386,7 @@ pub(crate) fn part_regions(
                 on_tap: part.on_tap.clone(),
                 gestures: part.gestures.clone(),
                 cursor: part.cursor,
+                app_region: part.app_region,
                 touch_action: part.touch_action,
                 instance: part.instance.clone(),
                 // A part answers what it has a handler for itself, and hands

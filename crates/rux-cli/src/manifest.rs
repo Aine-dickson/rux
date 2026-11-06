@@ -113,6 +113,8 @@ pub struct Window {
     pub min_width: Option<f64>,
     pub min_height: Option<f64>,
     pub maximized: bool,
+    /// `decorations = false`: no title bar and no border, the app draws its own.
+    pub frameless: bool,
 }
 
 /// The launcher icon, as two layers.
@@ -413,6 +415,7 @@ impl Manifest {
             min_width: self.window.min_width,
             min_height: self.window.min_height,
             maximized: self.window.maximized,
+            frameless: self.window.frameless,
         }
     }
 
@@ -513,7 +516,7 @@ const TAKEN_SCHEMES: [&str; 10] =
 /// match nothing a browser sent it, so the one spelling that works is the only
 /// one written into the filter.
 fn read_window(table: &toml::Table) -> Result<Window, String> {
-    const KEYS: [&str; 5] = ["width", "height", "min-width", "min-height", "maximized"];
+    const KEYS: [&str; 6] = ["width", "height", "min-width", "min-height", "maximized", "decorations"];
     for key in table.keys() {
         if KEYS.contains(&key.as_str()) {
             continue;
@@ -553,6 +556,11 @@ fn read_window(table: &toml::Table) -> Result<Window, String> {
             None => false,
             Some(toml::Value::Boolean(b)) => *b,
             Some(_) => return Err("[window] `maximized` must be true or false".into()),
+        },
+        frameless: match table.get("decorations") {
+            None => false,
+            Some(toml::Value::Boolean(b)) => !*b,
+            Some(_) => return Err("[window] `decorations` must be true or false".into()),
         },
     };
     // A window asked to open smaller than it may ever be is two numbers that
@@ -745,8 +753,21 @@ entry = "Cargo.toml"
         assert_eq!(window.min_width, Some(960.0));
         assert_eq!(window.min_height, None);
         assert!(window.maximized);
+        assert!(!window.frameless, "a window has its frame unless told otherwise");
         let settings = parse(&text).unwrap().window_settings();
         assert_eq!(settings.title.as_deref(), Some("Task List"));
+        assert!(!settings.frameless);
+    }
+
+    /// `decorations = false` is a window with no frame (Mava Studio's MS-012).
+    #[test]
+    fn decorations_false_is_a_frameless_window() {
+        let text = format!("{MINIMAL}\n[window]\ndecorations = false\n");
+        let manifest = parse(&text).unwrap();
+        assert!(manifest.window.frameless);
+        assert!(manifest.window_settings().frameless);
+        let text = format!("{MINIMAL}\n[window]\ndecorations = true\n");
+        assert!(!parse(&text).unwrap().window.frameless);
     }
 
     #[test]
@@ -758,6 +779,7 @@ entry = "Cargo.toml"
             ("width = 0", "more than 0"),
             ("width = \"wide\"", "number"),
             ("maximized = 1", "true or false"),
+            ("decorations = \"no\"", "true or false"),
             ("width = 800\nmin-width = 900", "smaller than"),
         ] {
             let text = format!("{MINIMAL}\n[window]\n{key}\n");

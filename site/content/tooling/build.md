@@ -247,6 +247,7 @@ height = 800
 min-width = 960     # the smallest it can be dragged to
 min-height = 600
 maximized = true    # open maximized; false without it
+decorations = false # no title bar or border: the app draws its own
 ```
 
 Every key is optional. `rux run` reads the same table, so the window you work
@@ -254,6 +255,18 @@ in is the one a build opens; `--preview` still sizes it as the device it
 names. A key that is not one of these, or `min_width` spelled with an
 underscore, is refused rather than ignored. Android and the web ignore the
 table: an app there gets the screen or the element it is given.
+
+`decorations = false` opens the window with no title bar and no border, for an
+app that draws its own: an editor with its menus and search in the title row,
+say. The app marks the part that moves the window with `app-region: drag`
+(`app-region: no-drag` for anything inside it that must stay a control; a box
+with a `@tap`, a gesture or a field already is), and draws its own minimize,
+maximize and close buttons with `window.minimize()`, `window.toggleMaximize()`
+and `close()`. The window keeps what a frame gave it: dragging the title row
+moves it (and snaps it on Windows), double-clicking the row maximizes and
+restores it, and a six pixel band round the edge resizes it. On Windows the
+window also gets the system's own drop shadow and rounded corners. See "The
+desktop window" in the script reference.
 
 ## Other tools: `[dev]` and `[build]`
 

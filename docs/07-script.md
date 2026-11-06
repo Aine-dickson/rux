@@ -202,6 +202,53 @@ Together they make a "save changes?" out of the app's own markup:
   `@close`. `close()` does nothing on the web, since a page cannot close its own
   tab.
 
+## The desktop window
+
+An app that sets `[window] decorations = false` in `rux.toml` has no title bar
+and no border: it draws its own, from three pieces.
+
+**`app-region: drag`** on a box makes it a handle for moving the window, and
+`app-region: no-drag` takes a part of one back. It is inherited, as `cursor`
+is. A box with a `@tap`, a gesture or a field is a control and never a handle,
+so the buttons in a title row need no `no-drag`. Pressing a drag region moves
+the window (on Windows it snaps to an edge as a native title bar does), and a
+second press close to the first maximizes it, or restores it.
+
+**`window`** needs no `use`, and has four calls and a value:
+
+| | |
+|---|---|
+| `window.minimize()` | minimizes the window |
+| `window.maximize()` | maximizes it |
+| `window.restore()` | brings it back from minimized or maximized |
+| `window.toggleMaximize()` | maximizes, or restores a maximized window |
+| `window.maximized` | `true` while maximized, `false` otherwise, `none` before the window opens; it follows the window however that changed, so a button can show the right glyph |
+
+Closing is `close()`, from "Closing the app" above. The calls act at once.
+Android and the web have no such window: the calls throw `unsupported`.
+
+```rux
+<view class="bar">
+  <text class="title">Studio</text>
+  <button @tap="window.minimize()">_</button>
+  <button r-if="window.maximized == true" @tap="window.toggleMaximize()">restore</button>
+  <button r-else @tap="window.toggleMaximize()">max</button>
+  <button @tap="close()">x</button>
+</view>
+<style>.bar { app-region: drag; display: flex; }</style>
+```
+
+A frameless window keeps what a frame gave it: a six pixel band round the edge
+resizes it from that side or corner, with the matching cursor. A window that
+is maximized has none. On Windows the shell also asks the system for the
+window's drop shadow and rounded corners, so a frameless window has the
+host's own, not a copy of them.
+
+**Frameless is one way to put content in the title row, not the only one.** It
+means the app owns the whole row, window buttons included. The other way, which
+keeps the system's own buttons, snap layouts, border and corners and lets the
+app's content sit beside them, is not built; see the roadmap.
+
 ## Keys
 
 **`@key`** runs when a key is pressed while focus is on the element or inside

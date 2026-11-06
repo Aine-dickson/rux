@@ -1469,6 +1469,8 @@ struct TextInherit {
     no_pointer: bool,
     /// `cursor`, so the text inside a `cursor: pointer` card shows the hand.
     cursor: Cursor,
+    /// `app-region`, inherited like `cursor`.
+    app_region: rux_layout::AppRegion,
     /// The decoration lines a box above draws through the text inside it.
     /// See [`Lines`].
     lines: Lines,
@@ -1521,6 +1523,7 @@ impl Default for TextInherit {
             invisible: false,
             no_pointer: false,
             cursor: Cursor::Auto,
+            app_region: rux_layout::AppRegion::None,
             lines: Lines::default(),
         }
     }
@@ -5330,7 +5333,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "border-top-color", "border-right-color", "border-bottom-color", "border-left-color",
     "border-top-width", "border-right-width", "border-bottom-width", "border-left-width",
     "border-style", "border-top-style", "border-right-style", "border-bottom-style", "border-left-style",
-    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "filter", "backdrop-filter", "text-shadow", "cursor", "touch-action", "box-shadow", "transform",
+    "overflow", "overflow-x", "overflow-y", "opacity", "mix-blend-mode", "clip-path", "mask", "mask-image", "mask-mode", "filter", "backdrop-filter", "text-shadow", "cursor", "app-region", "touch-action", "box-shadow", "transform",
     "translate", "rotate", "scale",
     "transition", "transition-property", "transition-duration", "transition-timing-function",
     "transition-delay", "transition-behavior",
@@ -6626,7 +6629,7 @@ const INHERITED_PROPERTIES: &[&str] = &[
     "font-variant-east-asian", "font-feature-settings", "font-variation-settings", "font-stretch", "tab-size",
     "font-width", "letter-spacing", "word-spacing", "line-height", "text-align", "text-indent",
     "text-transform", "text-shadow", "white-space", "text-wrap", "text-wrap-mode", "text-wrap-style", "word-break", "overflow-wrap", "word-wrap",
-    "direction", "visibility", "cursor", "caret-color", "accent-color", "color-scheme",
+    "direction", "visibility", "cursor", "app-region", "caret-color", "accent-color", "color-scheme",
     "pointer-events", "fill", "fill-rule", "stroke", "stroke-width", "stroke-linecap",
     "stroke-linejoin", "scrollbar-color",
 ];
@@ -7999,6 +8002,14 @@ fn build_text(
     return node;
 }
 
+/// `app-region`, inherited. Out of line, and kept out of the build's one very
+/// large function, whose stack frame in a debug build is already close to the
+/// main thread's limit (`rux check` on a big document overflowed it).
+#[inline(never)]
+fn app_region_of(props: &HashMap<String, String>, up: rux_layout::AppRegion) -> rux_layout::AppRegion {
+    props.get("app-region").and_then(|v| rux_layout::AppRegion::parse(v)).unwrap_or(up)
+}
+
 /// A whole `<icon>` element: its box, and what every element carries.
 ///
 /// **Not written inline in `build_node_inner`, on purpose.** That function
@@ -8747,6 +8758,7 @@ fn build_node_inner(
             None => up.no_pointer,
         },
         cursor: props.get("cursor").and_then(|v| Cursor::parse(v)).unwrap_or(up.cursor),
+        app_region: app_region_of(&props, up.app_region),
         lines: if matches!(style.position, Position::Absolute | Position::Fixed) {
             Lines::of(&props)
         } else {
@@ -8756,6 +8768,9 @@ fn build_node_inner(
     style.invisible = own_text.invisible;
     style.no_pointer = own_text.no_pointer;
     style.cursor = own_text.cursor;
+    if own_text.app_region != rux_layout::AppRegion::None {
+        style.rare_mut().app_region = own_text.app_region;
+    }
     style.scroll_smooth = match props.get("scroll-behavior").map(|v| v.trim()) {
         Some("smooth") => true,
         Some("auto") | None => false,
@@ -12956,6 +12971,9 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     // answer for a style read without a parent.
     if let Some(c) = p.get("cursor").and_then(|v| Cursor::parse(v)) {
         st.cursor = c;
+    }
+    if let Some(r) = p.get("app-region").and_then(|v| rux_layout::AppRegion::parse(v)) {
+        st.rare_mut().app_region = r;
     }
     st
 }

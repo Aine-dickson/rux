@@ -528,6 +528,30 @@ pub enum Cursor {
     ZoomOut,
 }
 
+/// `app-region`: whether pressing on a box drags the desktop window, as in
+/// Chromium and Electron. Inherited. `drag` makes a custom title bar, and
+/// `no-drag` carves out of it what must stay clickable. A box with a handler
+/// of its own (a `@tap`, a gesture, a field) is never a drag handle.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AppRegion {
+    #[default]
+    None,
+    Drag,
+    NoDrag,
+}
+
+impl AppRegion {
+    /// An `app-region` value; `None` for a word it does not have.
+    pub fn parse(v: &str) -> Option<AppRegion> {
+        Some(match v.trim() {
+            "none" => AppRegion::None,
+            "drag" => AppRegion::Drag,
+            "no-drag" => AppRegion::NoDrag,
+            _ => return None,
+        })
+    }
+}
+
 impl Cursor {
     /// A `cursor` value. Images are not drawn, so `url(...) [x y],` entries
     /// are skipped for the keyword CSS requires at the end of the list.
@@ -1242,6 +1266,9 @@ impl Outline {
 /// [`Style`] so each costs a box nothing until it is written (watchlist #41).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rare {
+    /// `app-region`: whether a press here drags the desktop window. Only an
+    /// app with its own title bar sets it.
+    pub app_region: AppRegion,
     /// `border-top-color` and the other sides, top, right, bottom, left,
     /// over `border_color`. `None` for a side takes `border_color`.
     pub border_colors: [Option<Rgba>; 4],
@@ -1485,6 +1512,11 @@ impl Style {
     /// The translation in a percentage of the box's size, `None` for none.
     pub fn translate_pct(&self) -> Option<[Len; 2]> {
         self.rare.as_ref().and_then(|r| r.translate)
+    }
+
+    /// `app-region`, `None` for almost every box.
+    pub fn app_region(&self) -> AppRegion {
+        self.rare.as_ref().map_or(AppRegion::None, |r| r.app_region)
     }
 
     /// The margin sides written `auto` (top, right, bottom, left).
@@ -3645,6 +3677,8 @@ pub struct HitRegion {
     /// it hovers here. Carried on the hit region because that is the geometry the
     /// shell already hit-tests. Every box has one, tappable or not.
     pub cursor: Cursor,
+    /// The `app-region` for this region, for the same reason as `cursor`.
+    pub app_region: AppRegion,
     /// The `touch-action` for this region, carried for the same reason as
     /// `cursor`: the shell arbitrates the gesture against the geometry it
     /// already hit-tests, and the answer has to travel with it.
@@ -3798,6 +3832,17 @@ pub fn cursor_at(hits: &[HitRegion], x: f32, y: f32) -> Cursor {
         .map(|h| h.cursor)
         .find(|c| *c != Cursor::Auto)
         .unwrap_or(Cursor::Auto)
+}
+
+/// The `app-region` under a point, if the box there answers nothing of its
+/// own: a box with a `@tap`, a gesture or a field is a control, not a handle,
+/// whatever its parent says. `None` when the point is not in a drag region.
+pub fn window_drag_at(hits: &[HitRegion], x: f32, y: f32) -> bool {
+    let Some(top) = hit_at(hits, x, y) else { return false };
+    top.app_region == AppRegion::Drag
+        && tap_at(hits, x, y).is_none()
+        && gesture_at(hits, x, y).is_none()
+        && !top.owners.field
 }
 
 /// Whether a press at a point reaches a text field, a select or a field's
@@ -5648,6 +5693,7 @@ fn build(
             isolate: node.style.isolate || node.style.content_visibility != ContentVisibility::Visible,
             reach: (!node.style.no_pointer).then_some(owners),
             cursor: node.style.cursor,
+            app_region: node.style.app_region(),
         },
     );
     if node.access.role.is_meaningful() {
@@ -5727,6 +5773,8 @@ struct Stack {
     /// `cursor`, for the box's hit region, which every box has: the handler
     /// record that used to carry it exists only for `@tap` and gestures.
     cursor: Cursor,
+    /// `app-region`, for the same hit region.
+    app_region: AppRegion,
 }
 
 /// How a child is painted relative to its stacking context: `None` in flow,
@@ -6866,6 +6914,7 @@ fn collect(
                 on_tap: own.and_then(|h| h.1.clone()),
                 gestures: own.map(|h| h.2.clone()).unwrap_or_default(),
                 cursor: at.stack.cursor,
+                app_region: at.stack.app_region,
                 touch_action: own.map(|h| h.4).unwrap_or_default(),
                 instance: own.and_then(|h| h.5.clone()),
                 seq: at.stack.seq,
@@ -8411,6 +8460,7 @@ mod hit_transform_tests {
             on_tap: None,
             gestures: Vec::new(),
             cursor: Cursor::default(),
+            app_region: AppRegion::None,
             touch_action: TouchAction::default(),
             instance: None,
             seq: 0,

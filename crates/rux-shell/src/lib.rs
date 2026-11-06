@@ -42,6 +42,7 @@ mod files;
 mod filter;
 mod clipboard;
 mod settings;
+mod window_module;
 
 pub use settings::set_app_id;
 use std::collections::HashMap;
@@ -489,6 +490,10 @@ const BLINK: Duration = Duration::from_millis(530);
 /// Two clicks closer together than this (and within `TAP_SLOP`) are a
 /// double-click, which selects a word.
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
+
+/// How thick, in logical px, the resize band round a frameless window is.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+const FRAME_EDGE: f32 = 6.0;
 
 /// A selection being dragged to somewhere else, from the press inside it to
 /// the release. See `App::drag_selection`.
@@ -2160,6 +2165,9 @@ struct App {
     /// The last tap that reached the page, for `@doubletap`: when, and where
     /// in logical px.
     last_tap: Option<(Instant, f32, f32)>,
+    /// The last press on an `app-region: drag` box, so a second one close to
+    /// it maximizes the window as a native title bar does.
+    last_drag_press: Option<(Instant, f32, f32)>,
     /// Every finger currently down, in logical px, in the order they landed.
     ///
     /// A list rather than one position, because a hand has more than one finger
@@ -2452,6 +2460,7 @@ impl App {
             gesture_deadline: None,
             secondary: None,
             last_tap: None,
+            last_drag_press: None,
             points: Vec::new(),
             touch: None,
             touch_track: Vec::new(),
@@ -4049,7 +4058,24 @@ impl App {
         let grip = self.resize_drag.as_ref().map(|d| d.axes).or_else(|| {
             self.resizes.iter().rev().find(|r| on_grip(r, px, py)).map(|r| r.axes)
         });
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        let edge = self.frame_edge((px, py)).map(|d| {
+            use winit::window::ResizeDirection as D;
+            match d {
+                D::North => CursorIcon::NResize,
+                D::South => CursorIcon::SResize,
+                D::East => CursorIcon::EResize,
+                D::West => CursorIcon::WResize,
+                D::NorthEast => CursorIcon::NeResize,
+                D::NorthWest => CursorIcon::NwResize,
+                D::SouthEast => CursorIcon::SeResize,
+                D::SouthWest => CursorIcon::SwResize,
+            }
+        });
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        let edge: Option<CursorIcon> = None;
         let want = match (grip, rux_layout::cursor_at(&self.hits, px, py)) {
+            _ if edge.is_some() => edge,
             (Some((true, true)), _) if !cfg!(target_os = "android") => Some(CursorIcon::SeResize),
             (Some((true, false)), _) if !cfg!(target_os = "android") => Some(CursorIcon::EwResize),
             (Some((false, true)), _) if !cfg!(target_os = "android") => Some(CursorIcon::NsResize),
@@ -4741,6 +4767,75 @@ impl App {
             self.request_redraw();
         }
         self.adopt_element_requests();
+    }
+
+    /// A press in a frameless window that belongs to the window rather than
+    /// the app: a drag region moves it (a second press close to the first
+    /// maximizes or restores it), whatever the app drew as a title bar. Whether
+    /// the press was taken.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn press_window_frame(&mut self, here: (f32, f32)) -> bool {
+        if !self.window_settings.frameless || self.preview.is_some() {
+            return false;
+        }
+        // The border a native frame would have had: a thin band round the
+        // edge, which resizes the window from that side or corner. winit's
+        // undecorated window has none of its own on Windows.
+        if let Some(direction) = self.frame_edge(here) {
+            if let Some(state) = &self.state {
+                let _ = state.window.drag_resize_window(direction);
+            }
+            return true;
+        }
+        if !rux_layout::window_drag_at(&self.hits, here.0, here.1) {
+            return false;
+        }
+        let Some(state) = &self.state else { return false };
+        let window = state.window.clone();
+        let twice = self.last_drag_press.take().is_some_and(|(at, x, y)| {
+            at.elapsed() < DOUBLE_CLICK && (here.0 - x).hypot(here.1 - y) <= TAP_SLOP as f32
+        });
+        if twice {
+            window.set_maximized(!window.is_maximized());
+        } else {
+            self.last_drag_press = Some((Instant::now(), here.0, here.1));
+            let _ = window.drag_window();
+        }
+        true
+    }
+
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    fn press_window_frame(&mut self, _here: (f32, f32)) -> bool {
+        false
+    }
+
+    /// Which edge or corner of a frameless window the point is within the
+    /// resize band of: none when the window has a frame, is maximized, or is
+    /// a preview.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn frame_edge(&self, at: (f32, f32)) -> Option<winit::window::ResizeDirection> {
+        use winit::window::ResizeDirection as D;
+        if !self.window_settings.frameless || self.preview.is_some() {
+            return None;
+        }
+        if self.state.as_ref().is_none_or(|s| s.window.is_maximized()) {
+            return None;
+        }
+        let (w, h) = self.logical_size();
+        let (w, h) = (w as f32, h as f32);
+        let (left, right) = (at.0 < FRAME_EDGE, at.0 >= w - FRAME_EDGE);
+        let (top, bottom) = (at.1 < FRAME_EDGE, at.1 >= h - FRAME_EDGE);
+        Some(match (left, right, top, bottom) {
+            (true, _, true, _) => D::NorthWest,
+            (_, true, true, _) => D::NorthEast,
+            (true, _, _, true) => D::SouthWest,
+            (_, true, _, true) => D::SouthEast,
+            (true, ..) => D::West,
+            (_, true, ..) => D::East,
+            (_, _, true, _) => D::North,
+            (_, _, _, true) => D::South,
+            _ => return None,
+        })
     }
 
     /// Run `@contextmenu` or `@doubletap` at a point: the nearest element above
@@ -8389,7 +8484,7 @@ impl ApplicationHandler<RuxEvent> for App {
                     settings.min_height.unwrap_or(0.0),
                 ));
             }
-            attributes = attributes.with_maximized(settings.maximized);
+            attributes = attributes.with_maximized(settings.maximized).with_decorations(!settings.frameless);
         }
         // Android ignores the title, the size and the visibility above: an
         // activity gets the display it is given. They are set anyway rather than
@@ -8404,6 +8499,16 @@ impl ApplicationHandler<RuxEvent> for App {
             self.proxy.clone(),
         );
         window.set_visible(true);
+        window_module::attach(&window);
+        // A window with no frame still gets what the OS gives a frame: its drop
+        // shadow and, on Windows 11, its rounded corners. Asked of the
+        // system, not drawn by the app, so they are the host's own.
+        #[cfg(windows)]
+        if self.window_settings.frameless && self.preview.is_none() {
+            use winit::platform::windows::{CornerPreference, WindowExtWindows};
+            window.set_undecorated_shadow(true);
+            window.set_corner_preference(CornerPreference::Round);
+        }
 
         let size = window.inner_size();
         let surface = pollster::block_on(self.context.create_surface(
@@ -8883,6 +8988,7 @@ impl ApplicationHandler<RuxEvent> for App {
         match event {
             WindowEvent::CloseRequested => self.close_requested(event_loop),
             WindowEvent::Resized(size) => {
+                window_module::follow();
                 if let Some(state) = self.state.as_mut() {
                     self.context.resize_surface(
                         &mut state.surface,
@@ -9254,6 +9360,9 @@ impl ApplicationHandler<RuxEvent> for App {
                     (self.pointer.0 / scale) as f32,
                     (self.pointer.1 / scale) as f32,
                 );
+                if self.press_window_frame(here) {
+                    return;
+                }
                 self.keyboard_modality = false;
                 media::stir_at(&self.metrics, here.0, here.1);
                 // A mouse is one finger with id 0 for as long as its button is
@@ -11625,6 +11734,9 @@ pub struct WindowSettings {
     pub min_width: Option<f64>,
     pub min_height: Option<f64>,
     pub maximized: bool,
+    /// No native title bar or border: the app draws its own, with
+    /// `app-region: drag` for the part that moves the window.
+    pub frameless: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -11725,6 +11837,7 @@ fn install_rux_modules() {
     dialogs::install_builtins();
     settings::install_settings();
     clipboard::install_clipboard();
+    window_module::install_window();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading

@@ -83,7 +83,7 @@ than an update).
 | `[app] scheme` | a custom URL scheme: `myapp://settings` opens the app on `/settings` |
 | `[app] link-hosts` | https domains whose links open the app on their path (Android; a build writes an `assetlinks.json` beside the APK) |
 | `[signing] keystore`, `alias` | the key a release is signed with; the passwords come from `RUX_KEYSTORE_PASSWORD` and `RUX_KEY_PASSWORD` (which falls back to the first), never from the file |
-| `[window] width`, `height`, `min-width`, `min-height`, `maximized` | the desktop window, in logical pixels, every key optional; the title is `name` |
+| `[window] width`, `height`, `min-width`, `min-height`, `maximized`, `decorations` | the desktop window, in logical pixels, every key optional; the title is `name`; `decorations = false` drops the frame (see `app-region` and the `window` module in `07-script`) |
 | `[dev] watch` | commands kept running beside `rux run` (a Tailwind watcher, say) |
 | `[build] before` | commands run to completion before a build and before `rux run` opens the window |
 | `[fmt] imports` | `"use"` or `"import"`: the spelling `rux fmt` writes imports in |

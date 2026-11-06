@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places Rux behaves differently and what to write there.
 
-249 properties and 26 pseudo-classes, as of `rux 0.9.0-dev`.
+250 properties and 26 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -239,6 +239,7 @@ Every property below is one the runtime interprets, and the list is written by t
 | `caret-color` | **the colour of a field's caret.** `auto` is the text's colour. Inherited.For example `.field { caret-color: #f38ba8; }` | `auto` |  |
 | `object-fit` | **how an image fills its box.** `fill` (stretched, the default), `contain`, `cover`, `none` or `scale-down`.For example `.avatar { object-fit: cover; }` | `fill` `contain` `cover` `none` `scale-down` |  |
 | `object-position` | **where an image sits in its box.** One to four values, as `background-position`: `left`, `right 8px bottom 8px`.For example `.avatar { object-position: top; }` | `center` `top` `right` `bottom` `left` |  |
+| `app-region` | **whether a press drags the window.** `drag` makes a box a handle for moving the desktop window, so a custom title bar (`[window] decorations = false`) can be drawn; double-clicking it maximizes. A box with a handler of its own, a `@tap`, a gesture or a field, stays a control, and `no-drag` says the same for one without. Inherited.For example `.titlebar { app-region: drag; } .titlebar button { app-region: no-drag; }` | `none` `drag` `no-drag` |  |
 | `pointer-events` | **whether a pointer can reach the box.** `none` lets a tap through to what is under it; the keyboard still reaches it. Inherited.For example `.glass { pointer-events: none; }` | `auto` `none` |  |
 | `scroll-behavior` | **whether a scroll asked for glides.** `smooth` on a scroller: `scrollIntoView()` and Tab glide there. A wheel or a finger never does.For example `.list { scroll-behavior: smooth; }` | `auto` `smooth` |  |
 | `scroll-snap-type` | **where a scroller comes to rest.** On a scroller: `x`, `y` or `both`, then `mandatory` (always rests on a snap point) or `proximity` (only when one is near, the default). A wheel, a finger, a fling and `scrollIntoView()` all come to rest on one.For example `.pages { scroll-snap-type: x mandatory; }` | `none` `x mandatory` `y mandatory` `both mandatory` `x proximity` `y proximity` |  |

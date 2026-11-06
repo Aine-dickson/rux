@@ -70,8 +70,8 @@ pub use rux_native as native;
 /// interface, which a shell installs with code behind it.
 pub mod builtins {
     pub use rux_script::native::{
-        builtin_interface, clipboard_interface, set_media, settings_interface, BUILTIN_FNS, BUILTIN_MODULE,
-        CLIPBOARD_MODULE, SETTINGS_MODULE,
+        builtin_interface, clipboard_interface, set_media, settings_interface, window_interface, BUILTIN_FNS,
+        BUILTIN_MODULE, CLIPBOARD_MODULE, SETTINGS_MODULE, WINDOW_MODULE,
     };
 }
 /// What is asked of an `<audio>`'s sound. See [`Document::take_media_requests`].
@@ -7030,6 +7030,7 @@ fn native_module_of(file: &str) -> Option<String> {
     if module == rux_script::native::BUILTIN_MODULE
         || module == rux_script::native::SETTINGS_MODULE
         || module == rux_script::native::CLIPBOARD_MODULE
+        || module == rux_script::native::WINDOW_MODULE
     {
         rux_script::native::ensure_builtins();
     }

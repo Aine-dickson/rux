@@ -875,13 +875,14 @@ fn window_settings(manifest: &Manifest) -> String {
     let w = manifest.window_settings();
     format!(
         "rux_shell::WindowSettings {{ title: Some({}.into()), width: {:?}, height: {:?}, \
-         min_width: {:?}, min_height: {:?}, maximized: {} }}",
+         min_width: {:?}, min_height: {:?}, maximized: {}, frameless: {} }}",
         literal(&manifest.name),
         w.width,
         w.height,
         w.min_width,
         w.min_height,
         w.maximized,
+        w.frameless,
     )
 }
 

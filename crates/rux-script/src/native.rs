@@ -284,6 +284,35 @@ pub fn clipboard_interface() -> rux_native::Interface {
     }
 }
 
+/// The module behind `window.minimize()`, `window.maximize()`,
+/// `window.restore()`, `window.toggleMaximize()` and `window.maximized`: the
+/// desktop window an app with its own title bar draws the buttons of (Mava
+/// Studio's MS-012).
+pub const WINDOW_MODULE: &str = "native/rux/window";
+
+/// The name a script reaches [`WINDOW_MODULE`] by without importing it.
+pub const WINDOW_NAME: &str = "window";
+
+/// The window module's interface. `maximized` is a signal: `none` until the
+/// window exists, then a `bool` that follows the window.
+pub fn window_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig { params: Vec::new(), result: "void".into(), is_async: false }),
+    };
+    rux_native::Interface {
+        path: "rux::window".into(),
+        items: vec![
+            f("minimize"),
+            f("maximize"),
+            f("restore"),
+            f("toggleMaximize"),
+            Item { name: "maximized".into(), kind: ItemKind::Signal("bool?".into()) },
+        ],
+    }
+}
+
 /// Declare the built-in modules if no shell has installed them, so a
 /// document checked or run without one still knows the names.
 pub fn ensure_builtins() {
@@ -296,6 +325,9 @@ pub fn ensure_builtins() {
     if registry::interface(CLIPBOARD_MODULE).is_none() {
         let _ = registry::declare(clipboard_interface());
     }
+    if registry::interface(WINDOW_MODULE).is_none() {
+        let _ = registry::declare(window_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -306,14 +338,18 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
     // `settings.get(…)`, `clipboard.writeText(…)`: each a whole module,
     // unless the file has one of that name of its own (a `use
     // native::settings;`, a `let settings`).
-    for (name, module) in [(SETTINGS_NAME, SETTINGS_MODULE), (CLIPBOARD_NAME, CLIPBOARD_MODULE)] {
+    for (name, module) in
+        [(SETTINGS_NAME, SETTINGS_MODULE), (CLIPBOARD_NAME, CLIPBOARD_MODULE), (WINDOW_NAME, WINDOW_MODULE)]
+    {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
         });
         let own = ["let ", "fn ", "const "].iter().any(|d| code.contains(&format!("{d}{name}")))
             || code.contains(&format!("{name} ="))
             || aliases.iter().any(|a| a.local == name);
-        if uses && !own {
+        // `window` is read in markup (`{{ window.maximized }}`), which this
+        // scan of the script cannot see, so it is always there to be read.
+        if (uses || name == WINDOW_NAME) && !own {
             out.push(crate::link::Alias {
                 local: name.to_string(),
                 target: crate::link::Target::Module(module.to_string()),
