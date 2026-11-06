@@ -3,11 +3,12 @@
 The reference for the script language Rux owns: what goes inside `<script>`,
 in a script-only module, and in a `{{ }}` binding or an `@tap` attribute.
 
-**Status: the reference for the language being built.** Steps 1 to 8 of the
-[build order](#build-order) are done (2026-09-27): Rux's own parser, checker,
-typed IR and interpreter run every script, rhai is gone, and `async fn`,
-modules and stores, and native modules run. Rust generation (step 9) does not
-run yet, and neither do some of the Changed rules below; the build order says
+**Status: the reference for the language being built.** Steps 1 to 9 of the
+[build order](#build-order) are done (2026-09-27, and checked against the code
+on 2026-11-06): Rux's own parser, checker, typed IR and interpreter run every
+script, rhai is gone, `async fn`, modules and stores, and native modules run,
+and a release build compiles functions to Rust (the web half of step 9
+compiles). Some of the Changed rules below do not run yet; the build order says
 which. [Script](./07-script.md) and [Types](./10-types.md) describe what
 runs today. This document describes the language that replaces them: it keeps
 what those two built where it still holds, and marks every place that moves.

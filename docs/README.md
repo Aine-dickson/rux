@@ -39,7 +39,7 @@ Rux exists because of one frustration: in widget-tree toolkits like Flutter, spa
 </script>
 ```
 
-Three sections, six element types, real CSS, gesture events, signals. No layout wrappers. Edit the file and it repaints live.
+Three sections, ten element types, real CSS, gesture events, signals. No layout wrappers. Edit the file and it repaints live.
 
 ## The docs
 
@@ -50,10 +50,12 @@ Three sections, six element types, real CSS, gesture events, signals. No layout 
 | [Guide](./03-guide.md) | *How* to build with Rux: a tutorial that assembles a small app screen by screen and validates the developer experience. |
 | [Architecture](./04-architecture.md) | *How the runtime works*: the parse→cascade→reactive→layout→paint pipeline, crate layout, the milestone plan, and open questions. The plan for building it. |
 | **[As Built](./05-as-built.md)** | **The reference.** What actually works today: running it, honored CSS, gotchas, and gaps. Authoritative wherever anything else disagrees. Start here if you're writing `.rux` code. |
-| **[Script](./07-script.md)** | **The script language in depth**: state, functions, values, the element API, and every way it differs from rhai and from JavaScript. Rux forks rhai, so rhai's own docs are no longer correct on their own. |
+| **[Script](./07-script.md)** | **The script language in depth**: state, functions, values, the element API, and every way it differs from rhai and from JavaScript. Rux runs its own interpreter now (it ran on a fork of rhai until 2026-09-26), so rhai's docs describe only what the language kept. |
 | [Types](./10-types.md) | *The type system, being built*: annotations, inference, unions and narrowing, and what is checked at run time. Decided in full; a status table at the top says which parts run yet. Until a part runs, [Script](./07-script.md) is the reference. |
 | [The Rux language](./11-next.md) | *The reference for the language being built* (from 2026-09-26): Rux's own checked language with `int`/`float`, `none`, generics, `try`/`catch`, `async fn`, script modules and `native` Rust exports, and the move off rhai. Every rule is marked Kept, Changed or New against what runs today. Until the build lands, [Script](./07-script.md) and [Types](./10-types.md) describe what runs. |
-| [Roadmap](./06-roadmap.md) | *What's next*: the v0.1 shake-down, v0.2 (inputs and polish), v0.3 (fine-grained reactivity). Start here if you're picking the work up. |
+| [Roadmap](./06-roadmap.md) | *What's next*: the version plan from v0.1 to v1.0, what each release took, and what is still open (v0.9 is nearly built). Start here if you're picking the work up. |
+| [File input proposal](./12-file-input-proposal.md) | *Why `<input type="file">` and the pickers look as they do*: the proposal behind the file input, kept as the reasoning. |
+| [File input and media plan](./13-file-input-and-media-plan.md) | *How the file input, audio and video were built*, step by step, with the owner's decisions and what was driven on each platform. |
 | [User test cases](./08-user-tests.md) | *What a person actually drove*, per feature and per release, on what hardware, and what those runs found. Every feature records its cases here; almost every expensive bug in Rux was found this way rather than by CI. |
 | [Author notes](./09-author-notes.md) | *What is not a bug and has to be taught*: behaviour that is correct and still catches authors out, each tracked with the page it has to be explained on. Every entry is a v1.0 blocker. |
 
@@ -75,13 +77,13 @@ rather than two that agree for a while.
 > input caret, checkbox/radio, opacity, and the full flex model. For **what's
 > next**, read **[Roadmap](./06-roadmap.md)**.
 >
-> Renderer: **vello 0.9** / **parley 0.11** / **taffy 0.15** / **rhai** /
+> Renderer: **vello 0.9** / **parley 0.11** / **taffy 0.15** / Rux's own script interpreter /
 > **lightningcss**.
 
 The intended pipeline (this is what got built):
 
 ```
-.rux file ──► parse template (XML) + style (lightningcss) + script (rhai)
+.rux file ──► parse template (XML) + style (lightningcss) + script (Rux)
                        │
    file watcher ──►  cascade ──► taffy (layout) ──► painter (vello/wgpu)
         ▲                                                    │

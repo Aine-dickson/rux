@@ -3,8 +3,9 @@
 Status: **proposed 2026-10-23; every decision below DECIDED as proposed by the
 owner on 2026-10-23, and decision 8 answered as "now, and video too".** The
 build plan is [13-file-input-and-media-plan.md](13-file-input-and-media-plan.md).
-The next session builds it, in the order of the phases below, once the
-decisions at the end have answers.
+**Built 2026-10-23 to 2026-10-26** (parts A.1 to A.11 of the plan, on the
+desktop, the web and Android); what shipped is in [As Built](./05-as-built.md).
+The proposal stays as the reasoning.
 
 ## Why
 

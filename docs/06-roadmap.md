@@ -1,7 +1,7 @@
 # 06. Roadmap
 
-Where Rux goes next. Last updated 2026-10-13, with **where v0.8 stands at the
-freeze** under v0.8.
+Where Rux goes next. Last updated 2026-11-06, with **where v0.9 stands** under
+v0.9 and the icons section brought up to what was built.
 
 For *what works today*, read [As Built](./05-as-built.md). This document is
 only about what is **not done yet**, and in what order.
@@ -43,7 +43,8 @@ its whole scope is done, however many Fridays that took.
 
 The runtime works end to end and has now been **driven, not just tested**:
 windows open, text lays out, inputs edit, lists scroll, images draw, files
-hot-reload. 56 tests pass.
+hot-reload. (That was the count in July; on 2026-11-06 `cargo test --workspace`
+runs 138 suites and all pass.)
 
 That last sentence matters more than the number. **Every real bug found in the
 last few sessions was invisible to the test suite and obvious within seconds of
@@ -2333,12 +2334,27 @@ here.
 
 ### v0.9: text, depth, and the CSS pass
 
-1. **True inline text flow**, the standing known ceiling. Two `<text>` siblings
+**Where v0.9 stands, 2026-11-06: nearly all of it is built.** Items 1 to 6, 8
+(audio, and video on Windows, Android and the web) and 10 are done and marked
+below. Built beside them, not on the original list: the file input and
+`pickFile`, Tailwind directives in `<style>`, network, `data:` and SVG images,
+`@key`, settings, native signals and channels, `now()`, `async fn` handles, and
+`<icon>` (see Icons, below). **Still open:** item 7 (physics), item 9 (live
+regions), item 11 (pinch and rotate, and the `rux doctor` device survey, both
+waiting on a phone), `hyphens: auto`, video on macOS and Linux, and the 0.9
+publish itself, which has to include `rux-native`, `rux-native-macros` and
+`rux-bindgen` before a scaffolded `native/` crate can build outside a checkout.
+[As Built](./05-as-built.md) is the record of what each of these does.
+
+1. ~~**True inline text flow**~~ **Done 2026-10-14**: a `<text>` inside a
+   `<text>`, and icons in a line. The standing known ceiling: Two `<text>` siblings
    cannot share a line, so bold inside a sentence is impossible. taffy has no
    inline formatting context, so this is our own line-breaker over parley: a
    real project, and the reason it has never fitted in a weekly slot.
 
-2. **Bidirectional text and `direction`, designed into item 1 rather than after
+2. ~~**Bidirectional text and `direction`**~~ **Done 2026-10-14** (`dir`,
+   `direction`, the logical sides, fields and scrollers, a word with a direction
+   of its own; locale itself was not part of it). It was designed into item 1 rather than after
    it.** Added 2026-08-19, and the coupling is the whole point: Rux has no RTL,
    no bidi, no `direction` and no locale at all today. A line-breaker written
    without bidi in mind is a line-breaker that gets written twice, and the
@@ -2351,16 +2367,21 @@ here.
    scroll direction *mean*. Retrofitting that across an API which has promised
    not to break is the kind of job that never gets done, and the result is a
    toolkit that quietly only serves left-to-right languages.
-3. **Text editing gaps**: word-wise movement, triple-click line select,
-   drag-and-drop of a selection.
-4. **Scrolling gaps**: click-on-track paging, scrollbar hover and fade,
-   independent `overflow-x` / `overflow-y`, `overscroll-behavior`.
+3. ~~**Text editing gaps**~~ **Done 2026-10-14**: word-wise movement, triple-click
+   line select, drag-and-drop of a selection.
+4. ~~**Scrolling gaps**~~ **Done by 2026-10-14**: click-on-track paging, scrollbars
+   that fade, independent `overflow-x` / `overflow-y`, `overscroll-behavior`.
 
-   **And list virtualization**, added 2026-08-19. Every row of a list is built
+   **And list virtualization**, added 2026-08-19, **done as `content-visibility`
+   and `contain-intrinsic-size` (2026-10-15)**, with rows the clips cut away passed
+   over (2026-10-30). Every row of a list is built
    today, which is fine at twenty rows on a desktop and is what v0.8 will
    discover on a phone with two thousand. It belongs beside the scrolling work
    because it is the same subsystem answering the same question.
-5. **The CSS pass**, widened from "long tail" on 2026-08-19. Per-side border
+5. ~~**The CSS pass**~~ **Done, 2026-10-13 to 2026-10-23** (`z-index`, `calc()`,
+   `filter`, `::before`/`::after`, the structural pseudo-classes, per-side border
+   colours, ellipsis, gradients, masks, blend modes, animations and more; the
+   generated list at `/reference/css-properties/` is the count). Widened from "long tail" on 2026-08-19. Per-side border
    colours are the smallest of it. The audit below lists what a component set
    actually needs and Rux does not honor: **`z-index`** (nothing at all, and
    there are now five position values), `calc()`, `filter` / `backdrop-filter`,
@@ -2397,7 +2418,10 @@ here.
    redesign. Momentum, rubber-banding and spring easing all fall out of one
    driver.
 
-8. **Audio.** Deliberately split from video, which is not in this milestone.
+8. ~~**Audio**~~ and ~~**video**~~ **Done 2026-10-23 to 2026-10-28**: `<audio>` and
+   `loadSound`, and `<video>` with sound and controls on Windows, Android and the
+   web (C.0 cleared the frame path on Windows; the owner paused further video
+   work after it). **Audio.** Deliberately split from video, which is not in this milestone.
    Audio is an output stream and probably a script call rather than an element,
    since a sound effect is an action and not a box. Video is decode plus frames
    into wgpu textures, is platform-specific per OS, and doing it before mobile
@@ -2526,11 +2550,10 @@ UI in Rux.
    **Moved to v0.9 on 2026-10-23**, gated on a measured spike: see the
    audio item there and the plan (`docs/13-file-input-and-media-plan.md`), part C.
 
-**Icons are the unscheduled prerequisite here.** A component set needs them
-and will otherwise grow its own, so the design note below argues them out
-in one place: which set, what the element looks like, and what fill and
-colour have to mean. It is deliberately not numbered into this milestone
-until the two open questions in it are checked.
+**Icons were the prerequisite here, and they are built** (v0.9, merged
+2026-11-06). A component set needed them or would have grown its own, so the
+design note below argues them out in one place: which set, what the element
+looks like, and what fill and colour have to mean.
 
 **Why a component set belongs before 1.0 rather than after it**, which is the
 user's argument and the strongest reason this milestone exists: building one
@@ -2585,7 +2608,22 @@ already carries safe areas, density and orientation for whoever fills them in.
 
 ---
 
-### Icons: Tabler, bundled (decided 2026-08-21, unscheduled)
+### Icons: Tabler, bundled (decided 2026-08-21, built 2026-09-20, in v0.9)
+
+**Status 2026-11-06: built, and unreleased.** Steps 1 to 4 below are done.
+`<icon name="heart" size="1em" />` draws one of Tabler's icons, with
+`variant="filled"` where the filled artwork exists. The `rux-icons` crate holds
+the data, generated from Tabler by its own `generate` binary, with the MIT
+notice beside it. `rux build` embeds only the names a project writes (a bound
+`:name` embeds all of them, and says so). A name that does not exist, a filled
+variant that was never drawn, and an icon the build cannot draw are each an
+error that says which, and none of them ships as a hole. Step 5 stopped where
+its own measurement said to: the four pairs that share a command sequence morph
+under `transition: d` and are documented; the other sixteen are redrawings, and
+nothing promises that they animate. The work sat on `build/v0.9-icons` from
+2026-09-20 and was merged into `build/v0.9` on 2026-11-06, after the branch
+was found never to have been merged. [As Built](./05-as-built.md) has the
+element. What follows is the case as it was argued, kept for the reasoning.
 
 **The user's framing, 2026-08-21:** a simple and fast way to integrate icons is
 something that sells a UI language, and path and SVG shaping is already a Rux
