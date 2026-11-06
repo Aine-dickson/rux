@@ -25,7 +25,7 @@ use rux_layout::{
 use rux_layout::{AnimProp, BlendMode, BorderStyle, Easing, GradientKind, GridFlow, StepPosition, Transform, Transition};
 use rux_layout::{FillRule, InputKind, LineCap, LineJoin, Outline, PathContent};
 use rux_layout::{AnchorRef, AnchorSide, AnchorSize, PositionTry, ScrollbarWidth, TryInset, TryOrder};
-use rux_layout::{ContentVisibility, IntrinsicSize};
+use rux_layout::{ContentVisibility, IntrinsicSize, Rad};
 use rux_layout::{AnimationDirection, AnimationFill, KeyframeAnimation, KeyframeStep, TransformFn};
 use rux_layout::{DecorationStyle, ObjectFit, TextLook, TextTransform};
 use rux_layout::{BgAttachment, BgBox, BgLayer, BgLayers, BgLen, BgPos, BgRepeat, BgSize};
@@ -2481,6 +2481,9 @@ fn video_picture(
         s.border = Sides::default();
         s.radius = Default::default();
         s.radius_pct = [None; 4];
+        if let Some(r) = s.rare.as_mut() {
+            r.radius_y = None;
+        }
         s.transform = None;
         s.opacity = 1.0;
         s.z_index = Some(i32::MAX);
@@ -13075,6 +13078,9 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     if let Some(v) = p.get("border-radius") {
         st.radius = parse_border_radius(v);
         st.radius_pct = parse_border_radius_pct(v);
+        if let Some(down) = parse_border_radius_y(v) {
+            st.rare_mut().radius_y = Some(down);
+        }
     }
     for (i, corner) in [
         "border-top-left-radius",
@@ -13085,7 +13091,17 @@ fn interpret(p: &HashMap<String, String>) -> Style {
     .iter()
     .enumerate()
     {
-        let Some(written) = p.get(*corner).map(|v| first(v)) else { continue };
+        let Some(whole) = p.get(*corner) else { continue };
+        let written = first(whole);
+        // `border-top-left-radius: 50% 20%`: across, then down.
+        if let Some(down) = whole.split_whitespace().nth(1).and_then(radius_length) {
+            let mut v = st.radius_y().unwrap_or([None; 4]);
+            v[i] = Some(down);
+            st.rare_mut().radius_y = Some(v);
+        } else if let Some(mut v) = st.radius_y() {
+            v[i] = None;
+            st.rare_mut().radius_y = Some(v);
+        }
         // A longhand replaces whatever the shorthand said for that corner, in
         // both units: writing one in px after a shorthand in % has to clear the
         // percentage, or the corner would keep resolving against the box and
@@ -15216,10 +15232,33 @@ fn parse_border_radius_pct(value: &str) -> [Option<f32>; 4] {
     }
 }
 
+/// One written radius, a length or a percentage.
+fn radius_length(token: &str) -> Option<Rad> {
+    match token.strip_suffix('%') {
+        Some(n) => n.trim().parse::<f32>().ok().map(Rad::Pct),
+        None => parse_px(token).map(Rad::Px),
+    }
+}
+
+/// The vertical radii of `border-radius`: what follows the `/`, in the same
+/// diagonal grouping. `None` when there is no `/`, which leaves every corner
+/// circular (px) or a percentage of each side (`%`).
+fn parse_border_radius_y(value: &str) -> Option<[Option<Rad>; 4]> {
+    let (_, down) = value.split_once('/')?;
+    let v: Vec<Option<Rad>> = down.split_whitespace().map(radius_length).collect();
+    Some(match v.len() {
+        1 => [v[0]; 4],
+        2 => [v[0], v[1], v[0], v[1]],
+        3 => [v[0], v[1], v[2], v[1]],
+        n if n >= 4 => [v[0], v[1], v[2], v[3]],
+        _ => return None,
+    })
+}
+
 /// Parse the `border-radius` shorthand into `[TL, TR, BR, BL]`. Unlike the box
 /// shorthands, border-radius groups by diagonal: 1 value = all; 2 = TL/BR, TR/BL;
-/// 3 = TL, TR/BL, BR; 4 = TL, TR, BR, BL. An elliptical `h / v` form is reduced
-/// to its horizontal radii (we only draw circular corners).
+/// 3 = TL, TR/BL, BR; 4 = TL, TR, BR, BL. In the elliptical `h / v` form this
+/// reads the horizontal radii; [`parse_border_radius_y`] reads the vertical.
 fn parse_border_radius(value: &str) -> [f32; 4] {
     let horizontal = value.split('/').next().unwrap_or(value);
     let v: Vec<f32> = horizontal.split_whitespace().filter_map(parse_px).collect();

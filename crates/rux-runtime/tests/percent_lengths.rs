@@ -44,16 +44,51 @@ fn a_percentage_radius_resolves_against_the_box() {
     assert!(d.diagnostics().warnings.is_empty(), "and says nothing: {:?}", d.diagnostics());
 }
 
-/// On an oblong it resolves against the **shorter** side, which is a pill.
-///
-/// CSS would draw an ellipse here. Rux has one scalar per corner and cannot
-/// represent that, and half the shorter side is the pill somebody writing `50%`
-/// on a button is after. The divergence is deliberate and documented.
+/// Both radii of every rounded rectangle painted: across, then down.
+fn ellipses(doc: &Document) -> Vec<([f32; 4], Option<[f32; 4]>)> {
+    let mut measure = |_: &rux_layout::TextContent, _: Option<f32>| (0.0, 0.0);
+    let out = layout(&doc.root, 400.0, 400.0, &mut measure);
+    out.paints
+        .iter()
+        .filter_map(|p| match p {
+            Paint::Rect(r) => Some((r.radius, r.radius_y)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// On an oblong a percentage is of the width across and of the height down,
+/// which is an ellipse, as in CSS (MS-013).
 #[test]
-fn a_percentage_radius_on_an_oblong_is_a_pill() {
+fn a_percentage_radius_on_an_oblong_is_an_ellipse() {
     let d = doc("width: 160px; height: 60px; background: #fff; border-radius: 50%;");
-    let found = radii(&d, 400.0, 400.0);
-    assert!(found.contains(&[30.0; 4]), "half of the shorter side, 60: {found:?}");
+    let found = ellipses(&d);
+    assert!(found.contains(&([80.0; 4], Some([30.0; 4]))), "80 across, 30 down: {found:?}");
+}
+
+/// The part after the `/` is the vertical radius, in px or in a percentage.
+#[test]
+fn a_slash_gives_the_vertical_radius() {
+    let d = doc("width: 100px; height: 80px; background: #fff; border-radius: 10px / 20px;");
+    assert!(ellipses(&d).contains(&([10.0; 4], Some([20.0; 4]))));
+    let d = doc("width: 100px; height: 80px; background: #fff; border-radius: 10px 20px / 25% 50%;");
+    let want = ([10.0, 20.0, 10.0, 20.0], Some([20.0, 40.0, 20.0, 40.0]));
+    assert!(ellipses(&d).contains(&want), "{:?}", ellipses(&d));
+}
+
+/// A longhand can take two values, across then down.
+#[test]
+fn a_longhand_takes_two_values() {
+    let d = doc("width: 100px; height: 80px; background: #fff; border-top-left-radius: 30px 10px;");
+    let found = ellipses(&d);
+    assert!(found.contains(&([30.0, 0.0, 0.0, 0.0], Some([10.0, 0.0, 0.0, 0.0]))), "{found:?}");
+}
+
+/// A circle written both ways stays a circle: no vertical radius to carry.
+#[test]
+fn equal_radii_carry_no_vertical() {
+    let d = doc("width: 100px; height: 80px; background: #fff; border-radius: 12px / 12px;");
+    assert!(ellipses(&d).contains(&([12.0; 4], None)));
 }
 
 /// The diagonal grouping survives, so a percentage can round two corners only.

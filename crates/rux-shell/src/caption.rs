@@ -131,6 +131,7 @@ pub(crate) fn paints(width: f32, state: State, dark: bool) -> Vec<Paint> {
                 height: h,
                 background: Some(Background::Color(color)),
                 radius: Corners::default(),
+                radius_y: None,
                 border: Sides::ZERO,
                 border_color: None,
             }));
@@ -568,6 +569,7 @@ mod tests {
                 height: 40.0,
                 background: Some(Background::Color(c)),
                 radius: Corners::default(),
+                radius_y: None,
                 border: Sides::ZERO,
                 border_color: None,
             })]

@@ -19,6 +19,7 @@ fn rect(x: f32, y: f32, w: f32, h: f32) -> Paint {
         height: h,
         background: Some(Background::Color(Rgba::new(1.0, 0.0, 0.0, 1.0))),
         radius: [0.0; 4],
+        radius_y: None,
         border: Sides::ZERO,
         border_color: None,
     })
@@ -109,7 +110,7 @@ fn centred_overflow_reaching_back_into_the_window_is_kept() {
 #[test]
 fn a_box_flush_with_a_clip_edge_is_kept() {
     let items = [
-        Paint::PushClip { x: 0.0, y: 100.0, width: 200.0, height: 100.0, radius: [0.0; 4] },
+        Paint::PushClip { x: 0.0, y: 100.0, width: 200.0, height: 100.0, radius: [0.0; 4], radius_y: None },
         rect(10.0, 50.0, 50.0, 50.0),
         rect(10.0, 40.0, 50.0, 50.0),
         Paint::PopClip,
@@ -121,7 +122,7 @@ fn a_box_flush_with_a_clip_edge_is_kept() {
 #[test]
 fn a_clip_hides_what_it_cuts_away_until_popped() {
     let items = [
-        Paint::PushClip { x: 0.0, y: 0.0, width: 100.0, height: 100.0, radius: [8.0; 4] },
+        Paint::PushClip { x: 0.0, y: 0.0, width: 100.0, height: 100.0, radius: [8.0; 4], radius_y: None },
         rect(10.0, 10.0, 20.0, 20.0),
         rect(150.0, 10.0, 20.0, 20.0),
         Paint::PopClip,
@@ -143,7 +144,7 @@ fn a_transform_moves_what_is_visible() {
     // Inside a clip, inside a transform: the clip is in the transform's terms.
     let both = [
         Paint::PushTransform([2.0, 0.0, 0.0, 2.0, 0.0, 0.0]),
-        Paint::PushClip { x: 0.0, y: 0.0, width: 50.0, height: 50.0, radius: [0.0; 4] },
+        Paint::PushClip { x: 0.0, y: 0.0, width: 50.0, height: 50.0, radius: [0.0; 4], radius_y: None },
         rect(40.0, 40.0, 5.0, 5.0),
         rect(60.0, 10.0, 5.0, 5.0),
         Paint::PopClip,

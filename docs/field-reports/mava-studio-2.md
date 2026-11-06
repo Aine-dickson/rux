@@ -133,4 +133,4 @@ Each entry says what Mava needed, what happened, how to reproduce it, what Mava 
 - **Reproduction:** `<view style="width: 200px; height: 100px; border-radius: 50%; background: #ccc"></view>`
 - **Mava workaround:** none; the pill is accepted until Rux changes.
 - **Suggested fix:** elliptical corner radii (`border-radius: 50% / 50%` resolving each axis against its own side), or a shape primitive (`<ellipse>`) that takes the box.
-- **Status:** open.
+- **Status:** fixed on `build/v0.9` (2026-11-06). A percent radius is now per axis, and `border-radius: a / b` and two-value longhands work. `50%` on a 200 by 100 box is an ellipse. Boxes that relied on the pill must use `9999px`.

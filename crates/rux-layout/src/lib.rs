@@ -1173,6 +1173,7 @@ pub(crate) fn shadow_paints(
     shadows: &[BoxShadow],
     (x, y, w, h): (f32, f32, f32, f32),
     radius: &Corners,
+    radius_y: Option<Corners>,
     border: &Sides,
     inset: bool,
     out: &mut Vec<Paint>,
@@ -1188,7 +1189,13 @@ pub(crate) fn shadow_paints(
                 // corner as a stand-in (per-corner blur isn't supported).
                 // The spread grows a round corner by as much, as CSS has it;
                 // a square one stays square.
-                radius: match radius.iter().copied().fold(0.0, f32::max) {
+                // An elliptical corner is stood in for by its shorter radius.
+                radius: match radius
+                    .iter()
+                    .zip(radius_y.unwrap_or(*radius))
+                    .map(|(x, y)| x.min(y))
+                    .fold(0.0, f32::max)
+                {
                     r if r > 0.0 => (r + sh.spread).max(0.0),
                     _ => 0.0,
                 },
@@ -1218,12 +1225,21 @@ pub(crate) fn shadow_paints(
             (pw - 2.0 * sh.spread).max(0.0),
             (ph - 2.0 * sh.spread).max(0.0),
         );
+        let inner_y = radius_y.map(|ry| -> Corners {
+            [
+                (ry[0] - border.top.max(border.left)).max(0.0),
+                (ry[1] - border.top.max(border.right)).max(0.0),
+                (ry[2] - border.bottom.max(border.right)).max(0.0),
+                (ry[3] - border.bottom.max(border.left)).max(0.0),
+            ]
+        });
         out.push(Paint::InsetShadow {
             x: px,
             y: py,
             width: pw,
             height: ph,
             radius: inner,
+            radius_y: inner_y,
             hole,
             hole_radius: (inner.iter().copied().fold(0.0, f32::max) - sh.spread).max(0.0),
             blur: sh.blur,
@@ -1262,10 +1278,23 @@ impl Outline {
     pub const RING: Rgba = Rgba { r: 0.54, g: 0.71, b: 0.98, a: 1.0 }; // #89b4fa
 }
 
+/// One radius of a corner: a length, or a percentage of the box's side it
+/// runs along (its width for the horizontal radius, its height for the vertical).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Rad {
+    Px(f32),
+    Pct(f32),
+}
+
 /// The style properties hardly any box sets, kept behind one pointer on
 /// [`Style`] so each costs a box nothing until it is written (watchlist #41).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rare {
+    /// The vertical radius of each corner, when `border-radius` wrote one
+    /// (`10px / 20px`, or a longhand with two values). A corner with `None`
+    /// takes its horizontal radius: the same in px, or the same percentage of
+    /// the box's height.
+    pub radius_y: Option<[Option<Rad>; 4]>,
     /// What the element is to dragging and dropping. Layout ignores it; the
     /// shell finds it by the node's path. See [`Dnd`].
     pub dnd: Option<Box<Dnd>>,
@@ -1522,6 +1551,11 @@ impl Style {
         self.rare.as_ref().map_or(AppRegion::None, |r| r.app_region)
     }
 
+    /// The vertical radii `border-radius` wrote, `None` when it wrote none.
+    pub fn radius_y(&self) -> Option<[Option<Rad>; 4]> {
+        self.rare.as_ref().and_then(|r| r.radius_y)
+    }
+
     /// The margin sides written `auto` (top, right, bottom, left).
     pub fn margin_auto(&self) -> [bool; 4] {
         self.rare.as_ref().map_or([false; 4], |r| r.margin_auto)
@@ -1627,13 +1661,9 @@ pub struct Style {
     /// The same four corners when written as a **percentage**, which cannot be
     /// resolved here: the cascade runs before there is a box. `Some(50.0)` on a
     /// corner means "half the shorter side", worked out at paint time, and
-    /// overrides that corner's `radius`.
-    ///
-    /// Rux draws circular corners only (see `parse_border_radius`), so there is
-    /// one scalar per corner and a percentage resolves against the **shorter**
-    /// side rather than per axis. On a square that is CSS's answer exactly; on
-    /// an oblong CSS would give an ellipse, which this cannot represent, and
-    /// half the shorter side is the pill an author reaching for `50%` wants.
+    /// overrides that corner's `radius`. As in CSS it is a percentage of the
+    /// width across and of the height down, so `50%` on an oblong is an
+    /// ellipse; the vertical half is in [`Rare::radius_y`].
     pub radius_pct: [Option<f32>; 4],
     /// `box-shadow`: the outer ones drawn behind the box's own background,
     /// the inset ones over it.
@@ -3148,6 +3178,9 @@ pub struct PaintRect {
     pub height: f32,
     pub background: Option<Background>,
     pub radius: Corners,
+    /// The vertical radius of each corner when any is not circular; `None`
+    /// takes `radius` for both.
+    pub radius_y: Option<Corners>,
     /// Border width **per side** (all zero = none).
     ///
     /// This used to be one `f32` filled from `style.border.top`, so the three
@@ -3233,6 +3266,7 @@ pub enum Paint {
         width: f32,
         height: f32,
         radius: Corners,
+        radius_y: Option<Corners>,
         hole: (f32, f32, f32, f32),
         hole_radius: f32,
         blur: f32,
@@ -3245,6 +3279,7 @@ pub enum Paint {
         width: f32,
         height: f32,
         radius: Corners,
+        radius_y: Option<Corners>,
     },
     /// Begin clipping subsequent items to this outline (`clip-path`), in
     /// absolute coordinates. Ended by [`Paint::PopClip`] like any clip.
@@ -3285,6 +3320,7 @@ pub enum Paint {
         width: f32,
         height: f32,
         radius: Corners,
+        radius_y: Option<Corners>,
         ops: std::sync::Arc<[filter::FilterOp]>,
     },
     /// End the most recent clip.
@@ -3373,6 +3409,9 @@ pub struct PaintBackground {
     pub width: f32,
     pub height: f32,
     pub radius: Corners,
+    /// The vertical radius of each corner when any is not circular; `None`
+    /// takes `radius` for both.
+    pub radius_y: Option<Corners>,
     pub border: Sides,
     pub padding: Sides,
     /// Where a `fixed` layer is placed: the window.
@@ -3392,6 +3431,9 @@ pub struct PaintBorder {
     pub width: f32,
     pub height: f32,
     pub radius: Corners,
+    /// The vertical radius of each corner when any is not circular; `None`
+    /// takes `radius` for both.
+    pub radius_y: Option<Corners>,
     pub border: Sides,
     pub styles: [BorderStyle; 4],
     /// Per side, top, right, bottom, left.
@@ -4308,31 +4350,43 @@ pub struct InlineGeometry {
     pub runs: Vec<Vec<(f32, f32, f32, f32)>>,
 }
 
-/// Turn any percentage corners into pixels, now that the box has a size.
+/// A box's corners in pixels, now that it has a size: the horizontal radius of
+/// each, and the vertical one when any corner is not circular (`None` when
+/// every corner is, which is almost every box).
 ///
-/// A percentage is resolved against the **shorter side**, because Rux draws
-/// circular corners: there is one scalar per corner, so there is no way to say
-/// "half the width horizontally and half the height vertically", which is what
-/// CSS's `50%` means on an oblong. On a square the two answers are identical.
-/// On an oblong CSS draws an ellipse and this draws a pill, which is what
-/// somebody writing `border-radius: 50%` on a button is after.
+/// A percentage is of the width across and of the height down, so `50%` on a
+/// 200 by 100 box is an ellipse, as in CSS. A vertical radius that
+/// `border-radius` wrote (`10px / 20px`) takes the place of that; a corner
+/// written in px with none is circular.
 ///
-/// The value is not clamped here. A radius wider than the box is already
-/// clamped by the rounded-rect builder, which is the same path that makes
-/// `9999px` a reliable way to say "as round as it goes", and clamping twice
-/// would be one place too many to keep in agreement.
-fn resolve_radius(radius: Corners, pct: [Option<f32>; 4], width: f32, height: f32) -> Corners {
-    if pct.iter().all(Option::is_none) {
-        return radius;
+/// Nothing is clamped here. A radius too long for its side is scaled down at
+/// paint, which is also what makes `9999px` a reliable way to say "as round
+/// as it goes".
+fn resolve_radius(
+    radius: Corners,
+    pct: [Option<f32>; 4],
+    vertical: Option<[Option<Rad>; 4]>,
+    width: f32,
+    height: f32,
+) -> (Corners, Option<Corners>) {
+    if vertical.is_none() && pct.iter().all(Option::is_none) {
+        return (radius, None);
     }
-    let shorter = width.min(height).max(0.0);
-    let mut out = radius;
-    for (i, p) in pct.iter().enumerate() {
-        if let Some(p) = p {
-            out[i] = shorter * p / 100.0;
+    let (w, h) = (width.max(0.0), height.max(0.0));
+    let mut x = radius;
+    let mut y = radius;
+    for i in 0..4 {
+        if let Some(p) = pct[i] {
+            x[i] = w * p / 100.0;
+            y[i] = h * p / 100.0;
+        }
+        match vertical.and_then(|v| v[i]) {
+            Some(Rad::Px(v)) => y[i] = v,
+            Some(Rad::Pct(p)) => y[i] = h * p / 100.0,
+            None => {}
         }
     }
-    out
+    (x, if x == y { None } else { Some(y) })
 }
 
 /// What each taffy node paints.
@@ -4342,6 +4396,8 @@ enum PaintKind {
         radius: Corners,
         /// Percentage corners, resolved against this box once it has a size.
         radius_pct: [Option<f32>; 4],
+        /// The vertical radii `border-radius` wrote, if it wrote any.
+        radius_y: Option<[Option<Rad>; 4]>,
         border: Sides,
         border_color: Option<Rgba>,
         border_colors: [Option<Rgba>; 4],
@@ -5576,6 +5632,7 @@ fn build(
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
                 radius_pct: node.style.radius_pct,
+                radius_y: node.style.radius_y(),
                 border: node.style.border,
                 border_color: node.style.border_color,
                 border_colors: node.style.border_colors(),
@@ -5600,6 +5657,7 @@ fn build(
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
                 radius_pct: node.style.radius_pct,
+                radius_y: node.style.radius_y(),
                 border: node.style.border,
                 border_color: node.style.border_color,
                 border_colors: node.style.border_colors(),
@@ -5616,6 +5674,7 @@ fn build(
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
                 radius_pct: node.style.radius_pct,
+                radius_y: node.style.radius_y(),
                 border: node.style.border,
                 border_color: node.style.border_color,
                 border_colors: node.style.border_colors(),
@@ -5645,6 +5704,7 @@ fn build(
                 bg: node.style.background.clone(),
                 radius: node.style.radius,
                 radius_pct: node.style.radius_pct,
+                radius_y: node.style.radius_y(),
                 // Uniform border for rendering (top width is representative).
                 border: node.style.border,
                 border_color: node.style.border_color,
@@ -5910,6 +5970,7 @@ struct Clip {
     width: f32,
     height: f32,
     radius: Corners,
+    radius_y: Option<Corners>,
 }
 
 /// A box held back until its stacking context reaches its layer, with
@@ -6498,7 +6559,7 @@ fn drain(
         let start = marks(out);
         if !shared {
             for c in d.clips.iter() {
-                out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius });
+                out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius, radius_y: c.radius_y });
                 walk.clips.push(*c);
             }
             open = Some(d.clips.clone());
@@ -6747,8 +6808,8 @@ fn collect(
     let filtered = filters.is_some_and(|f| !f.filter.is_empty());
     if let Some(f) = filters.filter(|f| !f.backdrop.is_empty()) {
         let radius = own.iter().find_map(|(_, k)| match k {
-            PaintKind::Box { radius, radius_pct, .. } => {
-                Some(resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height))
+            PaintKind::Box { radius, radius_pct, radius_y, .. } => {
+                Some(resolve_radius(*radius, *radius_pct, *radius_y, layout.size.width, layout.size.height))
             }
             _ => None,
         });
@@ -6757,7 +6818,8 @@ fn collect(
             y,
             width: layout.size.width,
             height: layout.size.height,
-            radius: radius.unwrap_or([0.0; 4]),
+            radius: radius.map_or([0.0; 4], |r| r.0),
+            radius_y: radius.and_then(|r| r.1),
             ops: f.backdrop.clone().into(),
         });
     }
@@ -6768,6 +6830,7 @@ fn collect(
 
     let mut clip = false;
     let mut clip_radius = [0.0; 4];
+    let mut clip_radius_y: Option<Corners> = None;
     // The parts of a sentence and where they landed, for their regions.
     let mut placed: Vec<(inline::InlinePart, Vec<Rect4>)> = Vec::new();
     // A node can emit more than one paint (a text node paints its box, then its
@@ -6779,9 +6842,10 @@ fn collect(
     // a box's clip and nothing it paints or answers taps with.
     if walk.dry {
         for (_, kind) in own {
-            if let PaintKind::Box { radius, radius_pct, clip: c, .. } = kind {
+            if let PaintKind::Box { radius, radius_pct, radius_y, clip: c, .. } = kind {
                 clip = *c;
-                clip_radius = resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
+                (clip_radius, clip_radius_y) =
+                    resolve_radius(*radius, *radius_pct, *radius_y, layout.size.width, layout.size.height);
             }
         }
     } else {
@@ -6791,6 +6855,7 @@ fn collect(
                     bg,
                     radius,
                     radius_pct,
+                    radius_y,
                     border,
                     border_color,
                     border_colors,
@@ -6801,14 +6866,15 @@ fn collect(
                     clip = *c;
                     // Here, and not in the cascade, is the first moment a
                     // percentage has a box to be a percentage of.
-                    let radius =
-                        &resolve_radius(*radius, *radius_pct, layout.size.width, layout.size.height);
-                    clip_radius = *radius;
+                    let (radius, ry) =
+                        resolve_radius(*radius, *radius_pct, *radius_y, layout.size.width, layout.size.height);
+                    let radius = &radius;
+                    (clip_radius, clip_radius_y) = (*radius, ry);
                     // The outer shadows go down first, so the box's own fill
                     // sits on top of them; the inset ones go over it.
                     let rect = (x, y, layout.size.width, layout.size.height);
                     let shadows = shadow.as_deref().unwrap_or_default();
-                    shadow_paints(shadows, rect, radius, border, false, &mut out.paints);
+                    shadow_paints(shadows, rect, radius, ry, border, false, &mut out.paints);
                     let widest = border.top.max(border.right).max(border.bottom).max(border.left);
                     // Each side's colour: its own, else the box's.
                     let colors: [Option<Rgba>; 4] = std::array::from_fn(|i| border_colors[i].or(*border_color));
@@ -6837,6 +6903,7 @@ fn collect(
                                 width: layout.size.width,
                                 height: layout.size.height,
                                 radius: *radius,
+                                radius_y: ry,
                                 border: side(layout.border),
                                 padding: side(layout.padding),
                                 view: (0.0, 0.0, vp.0, vp.1),
@@ -6855,6 +6922,7 @@ fn collect(
                             height: layout.size.height,
                             background: bg.clone(),
                             radius: *radius,
+                            radius_y: ry,
                             border: *border,
                             border_color: if styled { None } else { *border_color },
                         }));
@@ -6874,12 +6942,13 @@ fn collect(
                             width: layout.size.width,
                             height: layout.size.height,
                             radius: *radius,
+                            radius_y: ry,
                             border,
                             styles: *border_style,
                             colors: colors.map(|c| c.unwrap_or(transparent)),
                         }));
                     }
-                    shadow_paints(shadows, rect, radius, border, true, &mut out.paints);
+                    shadow_paints(shadows, rect, radius, ry, border, true, &mut out.paints);
                 }
                 // Glyphs go in the *content* box, inside this node's own padding and
                 // border. Painting them at the border box put a padded label flush
@@ -6915,6 +6984,7 @@ fn collect(
                             width: layout.size.width,
                             height: layout.size.height,
                             radius: clip_radius,
+                            radius_y: clip_radius_y,
                         });
                     }
                     // Shadows go under the glyphs, the last written lowest.
@@ -7088,6 +7158,7 @@ fn collect(
                 height: *height,
                 background: Some(Background::Color(color)),
                 radius: Corners::default(),
+                radius_y: None,
                 border: Sides::default(),
                 border_color: None,
             }));
@@ -7096,8 +7167,8 @@ fn collect(
 
     // overflow: clip/scroll, bound the subtree to this box (following its corners).
     if clip {
-        let c = Clip { x, y, width: layout.size.width, height: layout.size.height, radius: clip_radius };
-        out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius });
+        let c = Clip { x, y, width: layout.size.width, height: layout.size.height, radius: clip_radius, radius_y: clip_radius_y };
+        out.paints.push(Paint::PushClip { x: c.x, y: c.y, width: c.width, height: c.height, radius: c.radius, radius_y: c.radius_y });
         walk.clips.push(c);
     }
 
@@ -7267,7 +7338,7 @@ fn collect(
     // be taught each of those one at a time.
     for (_, kind) in own.iter().filter(|_| !at.invisible) {
         if let PaintKind::Outline(o) = kind {
-            out.paints.push(outline_paint(o, x, y, layout.size.width, layout.size.height, clip_radius));
+            out.paints.push(outline_paint(o, x, y, layout.size.width, layout.size.height, clip_radius, clip_radius_y));
         }
     }
     if filtered {
@@ -7788,7 +7859,7 @@ fn bands((x, y, w, h): Rect4, vp: (f32, f32), clips: &[Clip]) -> (bool, bool, bo
 /// border is drawn inward. Each rounded corner grows by the same distance, so
 /// the line stays parallel to the curve; a square corner stays square. An
 /// `auto` ring is always a little round, as a platform's focus ring is.
-fn outline_paint(o: &Outline, x: f32, y: f32, width: f32, height: f32, radius: Corners) -> Paint {
+fn outline_paint(o: &Outline, x: f32, y: f32, width: f32, height: f32, radius: Corners, radius_y: Option<Corners>) -> Paint {
     let out = o.offset + o.width;
     let corner = |r: f32| {
         let grown = if r > 0.0 { (r + out).max(0.0) } else { 0.0 };
@@ -7799,11 +7870,12 @@ fn outline_paint(o: &Outline, x: f32, y: f32, width: f32, height: f32, radius: C
         }
     };
     let (x, y, width, height) = (x - out, y - out, (width + 2.0 * out).max(0.0), (height + 2.0 * out).max(0.0));
-    let radius = [corner(radius[0]), corner(radius[1]), corner(radius[2]), corner(radius[3])];
+    let radius = radius.map(corner);
+    let radius_y = radius_y.map(|r| r.map(corner));
     let color = o.color.unwrap_or(Outline::RING);
     if !o.style.is_solid() {
         let (border, styles) = (Sides::uniform(o.width), [o.style; 4]);
-        return Paint::Border(PaintBorder { x, y, width, height, radius, border, styles, colors: [color; 4] });
+        return Paint::Border(PaintBorder { x, y, width, height, radius, radius_y, border, styles, colors: [color; 4] });
     }
     Paint::Rect(PaintRect {
         x,
@@ -7812,6 +7884,7 @@ fn outline_paint(o: &Outline, x: f32, y: f32, width: f32, height: f32, radius: C
         height,
         background: None,
         radius,
+        radius_y,
         border: Sides::uniform(o.width),
         border_color: Some(color),
     })

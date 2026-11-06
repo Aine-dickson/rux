@@ -302,7 +302,7 @@ pub(crate) fn place_part(
         PartWhat::Item { look, .. } => {
             let (x, y, w, h) = rects[0];
             let shadows = look.shadow.as_deref().unwrap_or_default();
-            crate::shadow_paints(shadows, (x, y, w, h), &look.radius, &look.border, false, paints);
+            crate::shadow_paints(shadows, (x, y, w, h), &look.radius, None, &look.border, false, paints);
             let widest = look.border.top.max(look.border.right).max(look.border.bottom).max(look.border.left);
             if look.bg.is_some() || (widest > 0.0 && look.border_color.is_some()) {
                 paints.push(Paint::Rect(PaintRect {
@@ -312,11 +312,12 @@ pub(crate) fn place_part(
                     height: h,
                     background: look.bg.clone(),
                     radius: look.radius,
+                    radius_y: None,
                     border: look.border,
                     border_color: look.border_color,
                 }));
             }
-            crate::shadow_paints(shadows, (x, y, w, h), &look.radius, &look.border, true, paints);
+            crate::shadow_paints(shadows, (x, y, w, h), &look.radius, None, &look.border, true, paints);
             match &look.content {
                 ItemContent::Image(ic) => {
                     paints.push(Paint::Image(PaintImage { x, y, width: w, height: h, content: ic.clone() }))

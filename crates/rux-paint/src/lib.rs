@@ -343,9 +343,10 @@ fn fill_background(
     bg: &Background,
     (x, y, width, height): (f32, f32, f32, f32),
     radius: Corners,
+    ry: Option<Corners>,
     images: &mut ImageCache,
 ) {
-    let shape = rounded_rect(x, y, width, height, radius, 0.0);
+    let shape = rounded_rect(x, y, width, height, radius, ry, 0.0);
     match bg {
         Background::Color(c) => {
             scene.fill(Fill::NonZero, cur, to_color(*c), None, &shape);
@@ -364,6 +365,7 @@ fn fill_background(
                 width,
                 height,
                 radius,
+                radius_y: ry,
                 border: Sides::default(),
                 padding: Sides::default(),
                 view: (x, y, width, height),
@@ -394,7 +396,7 @@ fn fill_background(
 
 /// One of a box's three boxes, `(x, y, width, height)`, and its corners: the
 /// border box's corners, less the border and padding inside them.
-fn box_of(b: &PaintBackground, which: BgBox) -> ((f32, f32, f32, f32), Corners) {
+fn box_of(b: &PaintBackground, which: BgBox) -> ((f32, f32, f32, f32), Corners, Option<Corners>) {
     let s = |a: Sides, c: Sides| Sides { top: a.top + c.top, right: a.right + c.right, bottom: a.bottom + c.bottom, left: a.left + c.left };
     let i = match which {
         BgBox::Border => Sides::default(),
@@ -403,14 +405,15 @@ fn box_of(b: &PaintBackground, which: BgBox) -> ((f32, f32, f32, f32), Corners) 
     };
     let rect = (b.x + i.left, b.y + i.top, (b.width - i.left - i.right).max(0.0), (b.height - i.top - i.bottom).max(0.0));
     // Each corner loses the thicker of the two sides that meet at it.
-    let r = b.radius;
-    let radius = [
-        (r[0] - i.top.max(i.left)).max(0.0),
-        (r[1] - i.top.max(i.right)).max(0.0),
-        (r[2] - i.bottom.max(i.right)).max(0.0),
-        (r[3] - i.bottom.max(i.left)).max(0.0),
-    ];
-    (rect, radius)
+    let less = |r: Corners| -> Corners {
+        [
+            (r[0] - i.top.max(i.left)).max(0.0),
+            (r[1] - i.top.max(i.right)).max(0.0),
+            (r[2] - i.bottom.max(i.right)).max(0.0),
+            (r[3] - i.bottom.max(i.left)).max(0.0),
+        ]
+    };
+    (rect, less(b.radius), b.radius_y.map(less))
 }
 
 /// The most tiles one layer draws one at a time. A gradient pattern a few
@@ -422,8 +425,8 @@ const MAX_TILES: usize = 4096;
 /// layer's clip, then the layers from the bottom up.
 fn draw_background(scene: &mut Scene, cur: Affine, b: &PaintBackground, images: &mut ImageCache) {
     if let Some(c) = b.layers.color {
-        let ((x, y, w, h), radius) = box_of(b, b.layers.color_clip());
-        scene.fill(Fill::NonZero, cur, to_color(c), None, &rounded_rect(x, y, w, h, radius, 0.0));
+        let ((x, y, w, h), radius, ry) = box_of(b, b.layers.color_clip());
+        scene.fill(Fill::NonZero, cur, to_color(c), None, &rounded_rect(x, y, w, h, radius, ry, 0.0));
     }
     for layer in b.layers.layers.iter().rev() {
         draw_layer(scene, cur, b, layer, images);
@@ -483,7 +486,7 @@ fn draw_layer(scene: &mut Scene, cur: Affine, b: &PaintBackground, layer: &BgLay
     if tw <= 0.0 || th <= 0.0 {
         return;
     }
-    let ((cx, cy, cw, ch), clip_radius) = box_of(b, layer.clip);
+    let ((cx, cy, cw, ch), clip_radius, clip_ry) = box_of(b, layer.clip);
     if cw <= 0.0 || ch <= 0.0 {
         return;
     }
@@ -513,7 +516,7 @@ fn draw_layer(scene: &mut Scene, cur: Affine, b: &PaintBackground, layer: &BgLay
         }
         out
     };
-    let shape = rounded_rect(cx, cy, cw, ch, clip_radius, 0.0);
+    let shape = rounded_rect(cx, cy, cw, ch, clip_radius, clip_ry, 0.0);
     scene.push_clip_layer(Fill::NonZero, cur, &shape);
     match &layer.image {
         // An image repeated on both axes is one fill with a repeating brush,
@@ -640,7 +643,13 @@ fn draw_border(scene: &mut Scene, cur: Affine, b: &PaintBorder) {
     // The wedges below reach past each corner by its radius, so a radius
     // taken as written (9999px for a circle) swept one side's colour over
     // the whole ring.
-    let fitted = PaintBorder { radius: fit_radii(b.radius, b.width, b.height), ..b.clone() };
+    let fitted = match b.radius_y {
+        None => PaintBorder { radius: fit_radii(b.radius, b.width, b.height), ..b.clone() },
+        Some(ry) => {
+            let (rx, ry) = fit_ellipses(b.radius, ry, b.width, b.height);
+            PaintBorder { radius: rx, radius_y: Some(ry), ..b.clone() }
+        }
+    };
     let b = &fitted;
     let w = [b.border.top, b.border.right, b.border.bottom, b.border.left];
     let shade = |c: Rgba| to_color(Rgba::new(c.r * 2.0 / 3.0, c.g * 2.0 / 3.0, c.b * 2.0 / 3.0, c.a));
@@ -666,7 +675,7 @@ fn draw_border(scene: &mut Scene, cur: Affine, b: &PaintBorder) {
     let shaded = matches!(style, BorderStyle::Groove | BorderStyle::Ridge | BorderStyle::Inset | BorderStyle::Outset);
     if uniform && !shaded && w[0] > 0.0 {
         let width = w[0] as f64;
-        let ring = |inset: f64, thick: f64| (rounded_rect(b.x, b.y, b.width, b.height, b.radius, inset), Stroke::new(thick));
+        let ring = |inset: f64, thick: f64| (rounded_rect(b.x, b.y, b.width, b.height, b.radius, b.radius_y, inset), Stroke::new(thick));
         match style {
             BorderStyle::Dashed => {
                 let (shape, stroke) = ring(width / 2.0, width);
@@ -702,25 +711,31 @@ fn draw_border(scene: &mut Scene, cur: Affine, b: &PaintBorder) {
     // past each inner corner as far as the padding box's curve reaches, and
     // cut to its slice of the ring between two rounded rectangles. A corner's
     // radius shrinks by the wider of the two widths either side of it.
-    let rounded = b.radius.iter().any(|v| *v > 0.0);
+    let rounded = b.radius.iter().any(|v| *v > 0.0) || b.radius_y.is_some_and(|ry| ry.iter().any(|v| *v > 0.0));
     let across = [t.max(l), t.max(r), bt.max(r), bt.max(l)];
     // The rounded rectangle `f` of the way from the border box (0) to the
     // padding box (1).
     let ring_at = |f: f64| {
+        let rect = Rect::new(x0 + l * f, y0 + t * f, x1 - r * f, y1 - bt * f);
         let rad = |i: usize| (b.radius[i] as f64 - across[i] * f).max(0.0);
-        RoundedRect::from_rect(
-            Rect::new(x0 + l * f, y0 + t * f, x1 - r * f, y1 - bt * f),
-            RoundedRectRadii::new(rad(0), rad(1), rad(2), rad(3)),
-        )
+        match b.radius_y {
+            None => RoundedRect::from_rect(rect, RoundedRectRadii::new(rad(0), rad(1), rad(2), rad(3))).to_path(0.1),
+            Some(ry) => {
+                let rady = |i: usize| (ry[i] as f64 - across[i] * f).max(0.0);
+                elliptic_path(rect, [rad(0), rad(1), rad(2), rad(3)], [rady(0), rady(1), rady(2), rady(3)])
+            }
+        }
     };
     let slice = |from: f64, to: f64| {
-        let mut path = ring_at(from).to_path(0.1);
-        path.extend(ring_at(to).to_path(0.1));
+        let mut path = ring_at(from);
+        path.extend(ring_at(to));
         path
     };
     let toward = [(1.0, 1.0), (-1.0, 1.0), (-1.0, -1.0), (1.0, -1.0)];
     let far: [(f64, f64); 4] = std::array::from_fn(|i| {
-        let k = (b.radius[i] as f64 - across[i]).max(0.0);
+        // The longer of the two radii, so the wedge reaches past the curve.
+        let longest = b.radius[i].max(b.radius_y.map_or(0.0, |ry| ry[i]));
+        let k = (longest as f64 - across[i]).max(0.0);
         (inner[i].0 + toward[i].0 * k, inner[i].1 + toward[i].1 * k)
     });
     for (side, &wide) in w.iter().enumerate() {
@@ -832,18 +847,60 @@ fn mix_of(blend: BlendMode) -> Mix {
 /// A rounded rect with independent corner radii, optionally inset on all sides
 /// by `inset` (used to sit a stroked border inside the box; corner radii shrink
 /// by the same amount, floored at 0). `radius` is CSS order: TL, TR, BR, BL.
-fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: Corners, inset: f64) -> RoundedRect {
+///
+/// `ry` is the vertical radius of each corner when any is not circular, and
+/// `radius` then the horizontal one: the corner is a quarter of an ellipse.
+fn rounded_rect(x: f32, y: f32, w: f32, h: f32, radius: Corners, ry: Option<Corners>, inset: f64) -> BezPath {
     let rect = Rect::new(
         x as f64 + inset,
         y as f64 + inset,
         (x + w) as f64 - inset,
         (y + h) as f64 - inset,
     );
-    let r = |i: usize| (radius[i] as f64 - inset).max(0.0);
-    RoundedRect::from_rect(
-        rect,
-        RoundedRectRadii::new(r(0), r(1), r(2), r(3)),
-    )
+    match ry {
+        None => {
+            let r = |i: usize| (radius[i] as f64 - inset).max(0.0);
+            RoundedRect::from_rect(rect, RoundedRectRadii::new(r(0), r(1), r(2), r(3))).to_path(0.1)
+        }
+        Some(ry) => {
+            let (rx, ry) = fit_ellipses(radius, ry, w, h);
+            let less = |r: Corners| -> [f64; 4] { r.map(|v| (v as f64 - inset).max(0.0)) };
+            elliptic_path(rect, less(rx), less(ry))
+        }
+    }
+}
+
+/// Elliptical corner radii shrunk, all by one factor, until the two on each
+/// side fit along it: CSS's rule, which `fit_radii` applies to circles.
+fn fit_ellipses(rx: Corners, ry: Corners, width: f32, height: f32) -> (Corners, Corners) {
+    let clean = |r: Corners, side: f32| r.map(|v| if v.is_nan() { 0.0 } else { v.clamp(0.0, side) });
+    let (rx, ry) = (clean(rx, width), clean(ry, height));
+    let fits = |side: f32, a: f32, b: f32| if a + b > side && a + b > 0.0 { side / (a + b) } else { 1.0 };
+    let f = fits(width, rx[0], rx[1])
+        .min(fits(width, rx[3], rx[2]))
+        .min(fits(height, ry[0], ry[3]))
+        .min(fits(height, ry[1], ry[2]));
+    (rx.map(|v| v * f), ry.map(|v| v * f))
+}
+
+/// The outline of `rect` with a quarter ellipse, `rx` across and `ry` down,
+/// at each corner, TL, TR, BR, BL.
+fn elliptic_path(rect: Rect, rx: [f64; 4], ry: [f64; 4]) -> BezPath {
+    // The control-point distance that makes a cubic follow a quarter circle.
+    const K: f64 = 0.552_284_749_830_793_4;
+    let (x0, y0, x1, y1) = (rect.x0, rect.y0, rect.x1, rect.y1);
+    let mut p = BezPath::new();
+    p.move_to((x0 + rx[0], y0));
+    p.line_to((x1 - rx[1], y0));
+    p.curve_to((x1 - rx[1] * (1.0 - K), y0), (x1, y0 + ry[1] * (1.0 - K)), (x1, y0 + ry[1]));
+    p.line_to((x1, y1 - ry[2]));
+    p.curve_to((x1, y1 - ry[2] * (1.0 - K)), (x1 - rx[2] * (1.0 - K), y1), (x1 - rx[2], y1));
+    p.line_to((x0 + rx[3], y1));
+    p.curve_to((x0 + rx[3] * (1.0 - K), y1), (x0, y1 - ry[3] * (1.0 - K)), (x0, y1 - ry[3]));
+    p.line_to((x0, y0 + ry[0]));
+    p.curve_to((x0, y0 + ry[0] * (1.0 - K)), (x0 + rx[0] * (1.0 - K), y0), (x0 + rx[0], y0));
+    p.close_path();
+    p
 }
 
 pub fn to_wrap(w: TextWrap) -> Wrap {
@@ -1269,7 +1326,7 @@ fn build(
             }
             // Everything drawn so far, each level of it with its open layers
             // closed, drawn apart; the result shows inside this box.
-            Paint::Backdrop { x, y, width, height, radius, ops } => {
+            Paint::Backdrop { x, y, width, height, radius, radius_y, ops } => {
                 if let Some(a) = apart.as_deref_mut() {
                     let mut behind = Scene::new();
                     let closed = |s: &Scene, open: usize| {
@@ -1282,7 +1339,7 @@ fn build(
                     }
                     behind.append(&closed(&scene, depth), None);
                     let image = a.placeholder(a.view);
-                    let shape = rounded_rect(*x, *y, *width, *height, *radius, 0.0);
+                    let shape = rounded_rect(*x, *y, *width, *height, *radius, *radius_y, 0.0);
                     scene.push_clip_layer(Fill::NonZero, cur, &shape);
                     a.draw(&mut scene, &image, (0.0, 0.0));
                     scene.pop_layer();
@@ -1292,7 +1349,7 @@ fn build(
             }
             Paint::Rect(r) => {
                 if let Some(bg) = &r.background {
-                    fill_background(&mut scene, cur, bg, (r.x, r.y, r.width, r.height), r.radius, images);
+                    fill_background(&mut scene, cur, bg, (r.x, r.y, r.width, r.height), r.radius, r.radius_y, images);
                 }
                 // Border. Two ways to draw one, because a rounded corner and an
                 // uneven edge want different things.
@@ -1315,7 +1372,7 @@ fn build(
                     if widest > 0.0 {
                         if b.is_uniform() {
                             let half = (b.top / 2.0) as f64;
-                            let inner = rounded_rect(r.x, r.y, r.width, r.height, r.radius, half);
+                            let inner = rounded_rect(r.x, r.y, r.width, r.height, r.radius, r.radius_y, half);
                             scene.stroke(
                                 &Stroke::new(b.top as f64),
                                 cur,
@@ -1379,7 +1436,7 @@ fn build(
                     // deviation of zero drew a round shadow in a colour of
                     // its own over whatever was under it: a white ring on an
                     // avatar came out a darker copy of the avatar beneath.
-                    let shape = rounded_rect(*x, *y, *width, *height, [radius; 4], 0.0);
+                    let shape = rounded_rect(*x, *y, *width, *height, [radius; 4], None, 0.0);
                     scene.fill(Fill::NonZero, cur, to_color(*color), None, &shape);
                 } else {
                     // CSS blur radius is ~2σ of the gaussian; vello wants σ.
@@ -1391,8 +1448,8 @@ fn build(
             // out of it: a layer clipped to the box, then the hole drawn
             // into it with `DestOut`, which keeps what is there only where
             // the hole is not.
-            Paint::InsetShadow { x, y, width, height, radius, hole, hole_radius, blur, color } => {
-                let shape = rounded_rect(*x, *y, *width, *height, *radius, 0.0);
+            Paint::InsetShadow { x, y, width, height, radius, radius_y, hole, hole_radius, blur, color } => {
+                let shape = rounded_rect(*x, *y, *width, *height, *radius, *radius_y, 0.0);
                 scene.push_layer(Fill::NonZero, Mix::Normal, 1.0, cur, &shape);
                 scene.fill(Fill::NonZero, cur, to_color(*color), None, &shape);
                 let (hx, hy, hw, hh) = *hole;
@@ -1426,7 +1483,7 @@ fn build(
                     cur,
                 );
                 scene.push_layer(Fill::NonZero, PenikoBlend::new(Mix::Normal, Compose::SrcIn), 1.0, cur, &clip);
-                fill_background(&mut scene, cur, fill, *rect, [0.0; 4], images);
+                fill_background(&mut scene, cur, fill, *rect, [0.0; 4], None, images);
                 scene.pop_layer();
                 scene.pop_layer();
             }
@@ -1650,8 +1707,9 @@ fn build(
                 width,
                 height,
                 radius,
+                radius_y,
             } => {
-                let shape = rounded_rect(*x, *y, *width, *height, *radius, 0.0);
+                let shape = rounded_rect(*x, *y, *width, *height, *radius, *radius_y, 0.0);
                 scene.push_clip_layer(Fill::NonZero, cur, &shape);
             }
             // The layer so far is kept only where the mask is: drawn over the
@@ -1667,7 +1725,7 @@ fn build(
                     let keep = PenikoBlend::new(Mix::Normal, Compose::DestIn);
                     scene.push_layer(Fill::NonZero, keep, 1.0, Affine::IDENTITY, &all);
                 }
-                fill_background(&mut scene, cur, image, (*x, *y, *width, *height), [0.0; 4], images);
+                fill_background(&mut scene, cur, image, (*x, *y, *width, *height), [0.0; 4], None, images);
                 scene.pop_layer();
             }
             Paint::PushShapeClip { commands, evenodd } => {

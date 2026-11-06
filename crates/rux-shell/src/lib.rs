@@ -669,6 +669,7 @@ fn grip_paints(r: &ResizeRegion) -> Vec<Paint> {
                 height: 2.0,
                 background: Some(Background::Color(color)),
                 radius: Default::default(),
+                radius_y: None,
                 border: Sides::default(),
                 border_color: None,
             })
@@ -981,6 +982,7 @@ fn scrollbar_paints(r: &ScrollRegion, offset: Offset, fade: f32, hovered: Option
                 height,
                 background: Some(Background::Color(faded(color))),
                 radius: [thick / 2.0; 4],
+                radius_y: None,
                 border: Sides::ZERO,
                 border_color: None,
             })
@@ -1064,6 +1066,7 @@ fn toolbar_paints(
         height: h,
         background: Some(Background::Color(panel_bg)),
         radius: [8.0; 4],
+        radius_y: None,
         border: Sides::uniform(1.0),
         border_color: Some(border),
     }));
@@ -1079,6 +1082,7 @@ fn toolbar_paints(
                 height: bh - 14.0,
                 background: Some(Background::Color(divider)),
                 radius: [0.0; 4],
+                radius_y: None,
                 border: Sides::ZERO,
                 border_color: None,
             }));
@@ -1302,6 +1306,7 @@ fn handle_paints(handle: Handle, (x, y): (f32, f32), color: Rgba) -> Vec<Paint> 
             height: d,
             background: Some(Background::Color(color)),
             radius,
+            radius_y: None,
             border: Sides::ZERO,
             border_color: None,
         })
@@ -1417,11 +1422,12 @@ fn dropdown_paints(sel: &SelectRegion, panel: &DropPanel, value: &str, pick: Opt
         height: ph,
         background: Some(Background::Color(panel_bg)),
         radius: [8.0; 4],
+        radius_y: None,
         border: Sides::uniform(1.0),
         border_color: Some(border),
     }));
     // The rows scroll inside the panel when they do not all fit.
-    out.push(Paint::PushClip { x: px, y: py, width: pw, height: ph, radius: [8.0; 4] });
+    out.push(Paint::PushClip { x: px, y: py, width: pw, height: ph, radius: [8.0; 4], radius_y: None });
 
     for (i, option) in sel.options.iter().enumerate() {
         let y = dropdown_row(panel, i).1;
@@ -1437,6 +1443,7 @@ fn dropdown_paints(sel: &SelectRegion, panel: &DropPanel, value: &str, pick: Opt
                 height: DROPDOWN_ROW_H - 4.0,
                 background: None,
                 radius: [5.0; 4],
+                radius_y: None,
                 border: Sides::uniform(2.0),
                 border_color: Some(ink),
             }));
@@ -1450,6 +1457,7 @@ fn dropdown_paints(sel: &SelectRegion, panel: &DropPanel, value: &str, pick: Opt
                 height: DROPDOWN_ROW_H - 6.0,
                 background: Some(Background::Color(selected)),
                 radius: [5.0; 4],
+                radius_y: None,
                 border: Sides::ZERO,
                 border_color: None,
             }));
@@ -1462,6 +1470,7 @@ fn dropdown_paints(sel: &SelectRegion, panel: &DropPanel, value: &str, pick: Opt
                 height: 1.0,
                 background: Some(Background::Color(border)),
                 radius: [0.0; 4],
+                radius_y: None,
                 border: Sides::ZERO,
                 border_color: None,
             }));
@@ -1792,6 +1801,7 @@ fn overlay_paints(diag: &rux_runtime::Diagnostics, path: &Path, width: f32) -> O
         height: panel_h,
         background: Some(Background::Color(bg)),
         radius: [10.0; 4],
+        radius_y: None,
         border: Sides::uniform(2.0),
         border_color: Some(edge),
     }));
@@ -1872,6 +1882,7 @@ fn print_badge(diag: &rux_runtime::Diagnostics, width: f32, height: f32) -> Opti
             height: h,
             background: Some(Background::Color(Rgba::new(0.11, 0.14, 0.22, 0.95))),
             radius: [8.0; 4],
+            radius_y: None,
             border: Sides::uniform(1.0),
             border_color: Some(Rgba::new(0.54, 0.71, 0.98, 1.0)),
         }),
@@ -8331,6 +8342,7 @@ impl App {
                 height: h,
                 background: Some(Background::Color(handle_color)),
                 radius: [0.0; 4],
+                radius_y: None,
                 border: Sides::ZERO,
                 border_color: None,
             })];

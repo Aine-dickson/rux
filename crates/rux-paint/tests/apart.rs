@@ -14,6 +14,7 @@ fn rect(r: f32) -> Paint {
         height: 10.0,
         background: Some(Background::Color(Rgba::new(r, 0.0, 0.0, 1.0))),
         radius: [0.0; 4],
+        radius_y: None,
         border: Sides::default(),
         border_color: None,
     })
@@ -33,7 +34,7 @@ fn parts_drawn_apart_come_innermost_first() {
         rect(0.3),
         Paint::PopFilter,
         Paint::PopFilter,
-        Paint::Backdrop { x: 0.0, y: 0.0, width: 10.0, height: 10.0, radius: [0.0; 4], ops },
+        Paint::Backdrop { x: 0.0, y: 0.0, width: 10.0, height: 10.0, radius: [0.0; 4], radius_y: None, ops },
     ];
     let (mut text, mut images) = (TextEngine::new(), ImageCache::new());
     let (_, jobs) = build_scene_apart(&items, &mut text, &mut images, false, (100.0, 50.0), 1.5);
