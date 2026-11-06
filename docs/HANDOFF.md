@@ -256,19 +256,17 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
    still unchecked.
    ~~MS-014~~ **done 2026-11-06**: a dev build's wrapper embeds the full icon set
    (`embed_all_icons` in `build.rs`) and says so in the build output; covered by a wrapper
-   test, **not yet driven in a real native-crate window**.
+   test, and driven in a real native-crate window (the heart draws).
 2. ~~`rux new` asks whether to include a router~~ **done 2026-11-06** (plan:
    `C:\Users\USER\.claude\plans\deep-popping-raccoon.md`). `--router` / `--no-router`;
    at a terminal `minimal` asks `Include a router? [Y/n]` (Enter = yes); no terminal = on.
    Routed minimal gains `pages/about.rux` and a tab bar; router-off writes `<home />` in
    `app.rux` and no `missing.rux`/`about.rux`. `tasks` is always routed (`--no-router`
-   refused). **Not driven:** the prompt at a real terminal, and the routed project in a
-   window (listed in `docs/08-user-tests.md`).
+   refused). Driven on Windows: the prompt at a real console, both projects in a window.
 
 ## Next action
 
-Next: the owner decides (see the list below). Open from 11-06: drive the `rux new` prompt
-and the routed scaffold, and an MS-014 dev build with icons. The older list follows:
+Next: the owner decides (see the list below), including whether to cut v0.9. The older list follows:
 
 1. ~~Child windows~~ done (steps 1 to 6).
 2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,

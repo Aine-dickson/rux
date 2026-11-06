@@ -3524,8 +3524,10 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | No terminal | `rux new y` with stdin closed or piped | routed, no question (tests) | pass (`tests/new.rs`) |
 | Flags | `--no-router`, `--router`, both, `--template tasks --no-router` | plain, routed, refused, refused | pass (`tests/new.rs`) |
 | Router off checks and formats clean | `rux check`, `rux fmt --check` | no findings | pass (`tests/new.rs`) |
-| At a real terminal: Enter, `n`, a stray answer then `y`, Ctrl+Z | `rux new demo` | routed; plain; one `answer y or n`; error exit | **not driven** |
-| The routed project in a window | `rux run`, tap About then Home | the tab highlights and the page changes | **not driven** |
+| At a real terminal: Enter, `n`, a stray answer then `y`, Ctrl+Z, no name then a name | `rux new` in its own console, keys written with `WriteConsoleInput` (`rux-harness/rux-new-router`) | routed; plain; one `answer y or n`; `needs an answer` and no directory; both questions asked | pass |
+| The routed project in a window | `rux run`, real click on About then Home | the tab highlights and the page changes | pass (Windows) |
+| The router-less project in a window | `rux run` | the greeting, no tab bar | pass (Windows) |
+| MS-014: `<icon>` in a dev build with a native crate | `rux build`, run `dist/ico.exe`, click About | the heart is drawn; the build says it embeds all 5148 icons | pass (Windows; the build took 10 minutes cold) |
 
 ## Standing gaps
 
