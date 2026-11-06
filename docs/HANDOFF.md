@@ -254,6 +254,13 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
    A method a number does not have (`n.trim()` on an `int` or `float`) is now an error in
    a template (`method` in `rux-script/src/check.rs`); other receivers' unknown methods are
    still unchecked.
+   **New, open (owner, 2026-11-06): MS-014 in `docs/field-reports/mava-studio-2.md`**
+   (`<icon>` is blank in a desktop dev build with a native crate: `set_icons` is never
+   called when `embed_icons` is skipped, `build.rs` desktop branch near line 836). A
+   small follow-up, so do it before 2, in its own Sonnet-sized step: the report suggests a
+   dev build installs the icon set too (the names the project names, or the full set with
+   the cost said in the build output). Read the report entry first; the report file's edit
+   is the owner's and was still uncommitted.
 2. **`rux new` asks whether to include a router.** Both a prompt and a flag; the
    flag skips the prompt (prompt only when stdin is a terminal, as the name is).
    `pages/`, `stores/` and the rest are settled and independent of this. Opting
