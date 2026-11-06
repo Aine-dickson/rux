@@ -234,6 +234,25 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
   deciding: run `rux check` on a thread with a larger stack.
 - Python heredocs lose backslashes: use Edit for docs with Windows paths.
 
+## Next sessions (owner's decisions, 2026-11-06; each its own Opus plan session, then Sonnet builds)
+
+1. **`rux check` checks every `.rux` file under the root** (the folder with `rux.toml`),
+   not just what the routes reach: components, pages, stores and the rest, each by
+   its own context. A component is checked alone (what its props declare is what
+   its template may use; today it is skipped with "name one to check it on its
+   own"). A store is only a script, but its scope still catches what is wrong in
+   it. A page is checked by itself as a file that must be written right: a wrong
+   component import, a misused type, an unknown name. The owner's reference:
+   how Vue's tooling checks a single-file component alone. Plan first: how a
+   required prop is satisfied when nothing calls the component, and whether
+   `native/` and `locks/` are skipped.
+2. **`rux new` asks whether to include a router.** Both a prompt and a flag; the
+   flag skips the prompt (prompt only when stdin is a terminal, as the name is).
+   `pages/`, `stores/` and the rest are settled and independent of this. Opting
+   in must make the router central to the scaffold (the planner chooses how);
+   opting out is the developer's choice and must still scaffold a project that
+   checks clean. Do 1 first: 2 relies on it for a router-less project.
+
 ## Next action
 
 One item left, in its own session on Opus plan mode (it sets design):
