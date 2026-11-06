@@ -85,8 +85,32 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   `docs/08-user-tests.md`. Known gaps: the drawn buttons have no accessibility
   nodes; `min-width`/`min-height` count the caption's height on Windows.
   Probe and driver: `C:\Users\USER\Mobile\rux-harness\titlebar-overlay`.
-- **Asked for, not designed**: child windows an app can spawn (roadmap item 8
-  now), which needs an Opus plan and the owner's say on the syntax before code.
+- **Child windows (roadmap item 8): designed and approved 2026-11-06, steps 1
+  and 2 built (`db718e2`).** Plan: `C:\Users\USER\.claude\plans\optimized-shimmying-aho.md`
+  (copy to `docs/archive/child-windows-plan.md` when done). Owner's choices:
+  `window.open(path, options)` opens a `.rux` file as its own document; stores
+  are process-wide; the opener passes `props`; `close()` in a child closes that
+  child; the handle has `close()`, `focus()`, `isOpen`, and `onClose` in the
+  options; owned by default (`owned: false` for a taskbar button); `window.*`
+  is the window the code runs in; `window.canOpen` is false on Android and web.
+  - **Done**: (1) store hub `crates/rux-script/src/shared.rs` holds `V` values
+    (not `Value`: ints and records survive); `Engine::join_stores` /
+    `adopt_stores`, pulled by `Document::refresh_native_signals`; a hot reload
+    calls `reset_shared_stores()`. (2) `Document::load_window(path, props)`;
+    props become `let`s on the script's first line.
+  - **Next**: (3) the shell holds several windows: `Shell` owning
+    `HashMap<WindowId, App>`, shared wgpu context/text engine/images, events
+    routed by `WindowId`, earliest deadline over all windows, and after every
+    event each window calls `refresh_native_signals` and redraws if it moved
+    (a store written in one window must repaint the others). (4) `window.open`,
+    the handle, per-window `window` module (`window_module.rs` has a global
+    `WINDOW` static and `MAXIMIZED` signal to make per window), and the
+    `rux check` of literal `window.open` paths/props. (5) closing. (6) docs.
+  - **Check first in 4**: a script `fn` value must be passable to a native call
+    and run later in the opener's scope (`onClose`); if not, stop and ask.
+  - **Known**: `what_the_scaffold_writes_checks_clean` overflows the stack in
+    about 4 of 10 runs on unmodified `HEAD` too (watchlist #41); it is not new.
+    Init side effects in a store file still run once per window.
 - `Style` has a size budget (744 bytes, watchlist #41): a new rarely used
   style property goes in `Rare`, as `app_region` does. One byte over it
   overflowed `rux check` on the tasks scaffold in a debug build.
@@ -148,8 +172,8 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 One item left, in its own session on Opus plan mode (it sets design):
 
-1. **Child windows** an app can spawn (roadmap item 8): needs the owner's say
-   on the syntax before code.
+1. **Child windows**, step 3 (the shell holds several windows) onward; see the
+   child windows entry above. The syntax is settled.
 2. ~~MS-013~~ done 2026-11-06 (`3a2c96c`): percent radii per axis, `a / b`,
    two-value longhands; drawn by an elliptical path in `rux-paint`
    (`rounded_rect` takes `radius_y`). Driven in no window yet; tests only.
