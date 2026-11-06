@@ -680,10 +680,72 @@ pub fn to_any(v: &V) -> Any {
         V::Rec(r) => Any::Map(r.entries().map(|(k, v)| (k.to_string(), to_any(v))).collect()),
         V::Range(a, b) => Any::Array((*a..*b).map(Any::Int).collect()),
         V::Native(h) => Any::Resource(h.as_ref().clone()),
-        // Nothing Rust could use: a closure runs only in the interpreter,
-        // and an element is the runtime's.
-        V::Fn(_) | V::Element(_) => Any::None,
+        // A closure runs only in the interpreter, so Rust is given a handle
+        // to it and the closure stays where it can run: see [`Callback`].
+        V::Fn(_) => park(v),
+        // An element is the runtime's.
+        V::Element(_) => Any::None,
     }
+}
+
+/// A script `fn` handed to a native call: an opaque resource Rust can keep and
+/// give back with [`rux_runtime`-side] `Document::run_callback`. The closure
+/// itself stays in the engine that made it (a closure's code is only
+/// meaningful there), so a native call that stores the handle can neither call
+/// it nor see into it.
+///
+/// Rust that is done with the handle just drops it: the closure is released
+/// the next time its engine looks ([`Engine::claim_callbacks`]).
+pub struct Callback {
+    id: u64,
+}
+
+impl rux_native::Resource for Callback {
+    const NAME: &'static str = "Callback";
+}
+
+impl Drop for Callback {
+    fn drop(&mut self) {
+        RELEASED.lock().unwrap_or_else(|e| e.into_inner()).push(self.id);
+    }
+}
+
+/// The id of the closure a [`Callback`] handle stands for; `None` for any
+/// other resource.
+pub fn callback_id(handle: &rux_native::Handle) -> Option<u64> {
+    handle.get::<Callback>().map(|c| c.id)
+}
+
+static NEXT_CALLBACK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Callbacks whose handle was dropped, until the engine that holds the
+/// closure takes them. Shared by every engine, so each takes only its own.
+static RELEASED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+thread_local! {
+    /// Closures given to a native call and not yet claimed by the engine
+    /// that ran it. One engine runs at a time on the UI thread, and it
+    /// claims them as it settles what the call did.
+    static PARKED: std::cell::RefCell<Vec<(u64, V)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep closure `v` for its engine and hand Rust a [`Callback`] for it.
+fn park(v: &V) -> Any {
+    let id = NEXT_CALLBACK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    PARKED.with(|p| p.borrow_mut().push((id, v.clone())));
+    Any::Resource(rux_native::Handle::new(Callback { id }))
+}
+
+/// The closures parked since the last call.
+pub(crate) fn take_parked() -> Vec<(u64, V)> {
+    PARKED.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+
+/// Remove from `held` every callback whose handle has been dropped, and from
+/// the list, leaving the ones another engine holds for it.
+pub(crate) fn release_dropped(held: &mut std::collections::HashMap<u64, V>) {
+    let mut released = RELEASED.lock().unwrap_or_else(|e| e.into_inner());
+    released.retain(|id| held.remove(id).is_none());
 }
 
 /// The shape of the one native record type a map from Rust with these keys

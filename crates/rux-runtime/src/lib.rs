@@ -5337,6 +5337,7 @@ impl Document {
             let changed = match run {
                 Run::Handler(src) => self.engine.run_handler_tracked_in(src, &event),
                 Run::Task(id) => self.engine.resume_task(id),
+                Run::Callback(id) => self.engine.run_callback(id).unwrap_or_default(),
             };
             // An `emit` outside a component has nobody to tell: the document is
             // the top of the tree. Say so rather than dropping it, since the
@@ -5361,6 +5362,8 @@ impl Document {
         let (after, mut changed) = match run {
             Run::Handler(src) => self.engine.run_scoped_handler(src, &locals),
             Run::Task(id) => self.engine.resume_scoped_task(id, &locals),
+            // A callback has no component to run in: it is document-level.
+            Run::Callback(id) => (locals.clone(), self.engine.run_callback(id).unwrap_or_default()),
         };
 
         // Only the component's own names are written back. A prop belongs to the
@@ -5805,6 +5808,8 @@ impl Document {
             let owner = if self.engine.task_is_a_modules(id) { None } else { instance.map(str::to_string) };
             self.tasks.push((id, owner));
         }
+        // The script `fn`s native calls were just given are the engine's now.
+        self.engine.claim_callbacks();
         // And any the code just ran cancelled are gone.
         let engine = &self.engine;
         self.tasks.retain(|(id, _)| engine.has_task(*id));
@@ -5945,6 +5950,25 @@ impl Document {
         self.report_task_failures();
         self.diagnostics.warnings.extend(collect_warnings());
         ran
+    }
+
+    /// Native code calls back the script `fn` it was given as `handle` (see
+    /// [`rux_script::native::Callback`]): run it as a handler runs, here in
+    /// the document that gave it. Says whether the document changed. A handle
+    /// that is not a callback, or one of another document's, does nothing.
+    pub fn run_callback(&mut self, handle: &rux_native::Handle) -> bool {
+        let Some(id) = rux_script::native::callback_id(handle) else { return false };
+        let _ = rux_script::take_emissions();
+        let _ = rux_script::take_navigations();
+        let _ = rux_script::take_close_request();
+        let _ = rux_script::take_element_actions();
+        let changed = self.dispatch(Run::Callback(id), None, 0, None);
+        self.collect_prints();
+        let acted = self.apply_element_actions();
+        self.apply_timer_requests(None);
+        let moved = self.apply_navigations() || acted;
+        self.diagnostics.warnings.extend(collect_warnings());
+        changed || moved
     }
 
     /// Whether any `async fn` is waiting for an answer.
@@ -7038,11 +7062,13 @@ impl Hooks {
     }
 }
 
-/// What a dispatch runs: a handler's text, or a waiting task going on.
+/// What a dispatch runs: a handler's text, a waiting task going on, or a
+/// script `fn` that native code was given and is now calling back.
 #[derive(Clone, Copy)]
 enum Run<'a> {
     Handler(&'a str),
     Task(u64),
+    Callback(u64),
 }
 
 /// One running interval.
@@ -11663,6 +11689,88 @@ fn set() { m.level = 10; }</script>",
         assert_eq!(text_of(&doc.root).join("|"), "6.5|-1|meter", "written through the setter, shown at once");
         doc.apply_handler("set()");
         assert_eq!(*meter.level.lock().unwrap(), 10.0, "an int given to a float property");
+    }
+
+    static KEPT: std::sync::Mutex<Vec<(String, rux_native::Handle)>> = std::sync::Mutex::new(Vec::new());
+
+    /// `cbprobe.keep(name, options)`: keeps the handle of the `fn` that
+    /// `options.onDone` is, as a native call that calls back later would.
+    fn callback_module() {
+        rux_native::Module::new("rts_callbacks")
+            .export(rux_native::Export::function(
+                "keep",
+                &[("name", "string"), ("options", "any")],
+                "void",
+                rux_native::Call::sync(|args| {
+                    let (Some(rux_native::Any::Str(name)), Some(rux_native::Any::Map(options))) = (args.first(), args.get(1))
+                    else {
+                        return Err(rux_native::Error::new("type", "a name and options"));
+                    };
+                    match options.get("onDone") {
+                        Some(rux_native::Any::Resource(h)) => KEPT.lock().unwrap().push((name.clone(), h.clone())),
+                        _ => return Err(rux_native::Error::new("type", "onDone is not a callback")),
+                    }
+                    Ok(rux_native::Any::None)
+                }),
+            ))
+            .install();
+    }
+
+    fn kept(name: &str) -> rux_native::Handle {
+        let mut all = KEPT.lock().unwrap();
+        let at = all.iter().position(|(n, _)| n == name).expect("the call kept a handle");
+        all.remove(at).1
+    }
+
+    fn callback_doc(name: &str) -> Document {
+        callback_module();
+        let src = format!(
+            "<template><screen><text>{{{{ seen }}}}</text></screen></template>
+             <script>use native::rts_callbacks;
+let seen = signal(0);
+fn arm() {{ rts_callbacks.keep(\"{name}\", {{ onDone: () => {{ seen = 5; }} }}); }}</script>"
+        );
+        Document::from_source(&src).expect("load")
+    }
+
+    /// A script `fn` given to a native call is kept for the engine, and Rust
+    /// runs it later, from nowhere near a handler: it writes the document's
+    /// signal and the binding follows.
+    #[test]
+    fn a_callback_given_to_native_runs_later_and_writes_a_signal() {
+        let mut doc = callback_doc("cb_runs");
+        doc.apply_handler("arm()");
+        assert_eq!(text_of(&doc.root).join("|"), "0");
+        let handle = kept("cb_runs");
+        assert!(doc.run_callback(&handle), "the callback changed the document");
+        assert_eq!(text_of(&doc.root).join("|"), "5");
+        assert!(doc.diagnostics.warnings.is_empty(), "{:?}", doc.diagnostics.warnings);
+    }
+
+    /// Rust that drops the handle lets the closure go, the next time the
+    /// engine looks; a handle held keeps it.
+    #[test]
+    fn a_dropped_callback_is_released() {
+        let mut doc = callback_doc("cb_drops");
+        doc.apply_handler("arm()");
+        let handle = kept("cb_drops");
+        assert_eq!(doc.engine.callbacks_held(), 1);
+        drop(handle);
+        doc.apply_handler("seen = 1");
+        assert_eq!(doc.engine.callbacks_held(), 0);
+    }
+
+    /// A callback is its own document's: another document, handed the handle,
+    /// does nothing (a closure's code ids mean something only to its engine).
+    #[test]
+    fn a_callback_is_not_run_by_another_document() {
+        let mut a = callback_doc("cb_owner");
+        let mut b = callback_doc("cb_other");
+        a.apply_handler("arm()");
+        let handle = kept("cb_owner");
+        assert!(!b.run_callback(&handle));
+        assert_eq!(text_of(&b.root).join("|"), "0");
+        assert!(a.run_callback(&handle));
     }
 
     /// A read-only property cannot be written, from script or from a

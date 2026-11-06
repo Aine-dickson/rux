@@ -194,6 +194,9 @@ pub struct Interp {
     flats: HashMap<u32, Result<Rc<flat::Flat>, String>>,
     /// Tasks started and waiting since the runtime last asked.
     started: Vec<u64>,
+    /// The script `fn`s native code holds a handle to, by id: see
+    /// [`crate::native::Callback`].
+    pub(crate) callbacks: HashMap<u64, V>,
     /// Tasks that failed with nothing to catch it, since the runtime asked.
     failed: Vec<(String, Fault)>,
     /// What each native call being waited on is for: its ticket, and the task.
@@ -282,6 +285,7 @@ impl Interp {
             tasks: HashMap::new(),
             flats: HashMap::new(),
             started: Vec::new(),
+            callbacks: HashMap::new(),
             failed: Vec::new(),
             waiting: HashMap::new(),
             driving: Vec::new(),

@@ -2421,6 +2421,41 @@ impl Engine {
         self.ir.collect_answers()
     }
 
+    // ----- Callbacks: script `fn`s that native code holds -------------------
+
+    /// Take the closures the native calls just run were given, and let go of
+    /// the ones whose handle Rust has dropped. The runtime calls it with the
+    /// tasks, after everything a handler ran.
+    pub fn claim_callbacks(&mut self) {
+        for (id, f) in native::take_parked() {
+            self.ir.callbacks.insert(id, f);
+        }
+        native::release_dropped(&mut self.ir.callbacks);
+    }
+
+    /// Run callback `id` with no arguments, in this engine, and say which
+    /// signals it changed. `None` when it is not held here (released, or
+    /// another document's) or when it failed, which is reported as a handler's
+    /// failure is.
+    pub fn run_callback(&mut self, id: u64) -> Option<HashSet<String>> {
+        let f = self.ir.callbacks.get(&id)?.clone();
+        let (ran, changed) = self.tracking(|e| match e.ir.call_value_pub(f, Vec::new()) {
+            Ok(_) => true,
+            Err(interp::Flow::Fault(f)) => {
+                warn(format!("a callback failed: {}", explain(&f.message)));
+                false
+            }
+            Err(_) => false,
+        });
+        ran.then_some(changed)
+    }
+
+    /// How many callbacks this engine holds: for tests of their release.
+    #[doc(hidden)]
+    pub fn callbacks_held(&self) -> usize {
+        self.ir.callbacks.len()
+    }
+
     /// Whether task `id` is still waiting.
     pub fn has_task(&self, id: u64) -> bool {
         self.ir.has_task(id)
