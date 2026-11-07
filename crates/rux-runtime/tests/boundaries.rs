@@ -82,6 +82,40 @@ fn a_prop_that_does_not_fit_is_reported_and_left_out() {
     assert!(shown(&doc).contains(&"a=5".to_string()), "{:?}", shown(&doc));
 }
 
+/// A `computed` handed to a typed prop with no default, as the `minimal`
+/// scaffold does with its greeting, reaches the component.
+#[test]
+fn a_computed_fills_a_typed_required_prop() {
+    let doc = with_stat(
+        "<stat :label=\"greeting\" />",
+        "let who = signal(\"Ada\");\ncomputed greeting = \"Hello, \" + who;",
+    );
+    assert!(errors(&doc).is_empty(), "{:?}", errors(&doc));
+    assert!(shown(&doc).contains(&"Hello, Ada=0".to_string()), "{:?}", shown(&doc));
+
+    // The same from a page, where the computed belongs to the component. The
+    // page's computed is a placeholder until its instance has been made, and
+    // the card in its template was once built from the placeholder, printing
+    // "`label` is not defined" on stderr before the second pass put it right.
+    // That line is not something a test can catch; this holds the final tree.
+    let dir = project(&[
+        (
+            "app.rux",
+            "<template><screen><home /></screen></template>\n<script>\nuse pages::home;\n</script>",
+        ),
+        (
+            "pages/home.rux",
+            "<template><view><stat :label=\"greeting\" /></view></template>\n\
+             <script>\nuse components::stat;\nlet who = signal(\"Ada\");\n\
+             computed greeting = \"Hello, \" + who;\n</script>",
+        ),
+        ("components/stat.rux", STAT),
+    ]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    assert!(errors(&doc).is_empty(), "{:?}", errors(&doc));
+    assert!(shown(&doc).contains(&"Hello, Ada=0".to_string()), "{:?}", shown(&doc));
+}
+
 /// A prop may name a type the component imports, and the check walks it.
 #[test]
 fn a_named_prop_type_is_walked() {

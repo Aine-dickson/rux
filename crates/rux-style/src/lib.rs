@@ -9999,7 +9999,7 @@ fn expand_component(
     let entry = instances.entry(key.clone()).or_insert_with(|| Instance {
         tag: comp_tag.to_string(),
         // In the component's own scope, which its state carries from here on.
-        state: engine.init_component(comp_tag, &component.script),
+        state: engine.init_component_with(comp_tag, &component.script, &props),
         ..Instance::default()
     });
     entry.touched = true;

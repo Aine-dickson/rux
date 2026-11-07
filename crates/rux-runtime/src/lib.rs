@@ -3092,6 +3092,14 @@ impl Document {
         let mut engine = build_engine_linked(&combined_script, &ordered, aliases, component_sources, imported_types.clone())
             .map_err(|e| LoadError::in_script(e, sfc.script_line, main_script_lines, Some(path)))?;
         report_module_findings(&engine, &ordered);
+        // So a new instance works its computeds out as it is made, before the
+        // first tree is built from it.
+        for (key, list) in &component_computeds {
+            engine.set_component_computeds(
+                key,
+                list.iter().map(|c| (c.name.clone(), c.expr.clone())).collect(),
+            );
+        }
         // What `x is T` resolves a name against, beyond the script's own
         // `type`s: what the document imports, and what its components declare
         // and import, since their functions run in this engine too.

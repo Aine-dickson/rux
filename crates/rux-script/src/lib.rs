@@ -904,6 +904,10 @@ pub struct Engine {
     /// Where the shared stores were when this engine last looked: see
     /// [`shared`].
     store_epoch: u64,
+    /// Each component's `computed`s as (name, expression), in declaration
+    /// order, by the component's key. A new instance computes them as it is
+    /// made: see [`Engine::init_component_with`].
+    component_computeds: HashMap<String, Vec<(String, String)>>,
 }
 
 // ── Warning collection ──────────────────────────────────────────────────────
@@ -1716,7 +1720,38 @@ impl Engine {
             source_hash: 0,
             check_scope: std::cell::RefCell::new(None),
             store_epoch: 0,
+            component_computeds: HashMap::new(),
         }
+    }
+
+    /// Record a component's `computed`s, as (name, expression) in declaration
+    /// order, for [`Engine::init_component_with`].
+    pub fn set_component_computeds(&mut self, key: &str, computeds: Vec<(String, String)>) {
+        self.component_computeds.insert(key.to_string(), computeds);
+    }
+
+    /// [`Engine::init_component`], then each of the component's `computed`s
+    /// worked out from the new state and the `props` the caller handed in.
+    ///
+    /// The script starts a computed as a placeholder, since it runs without the
+    /// document's signals. Left as one until the mount refresh, a child built
+    /// from it in the same pass is handed the placeholder: a typed prop
+    /// rejects it, and the child reads a prop that is not there.
+    pub fn init_component_with(&mut self, key: &str, script: &str, props: &[(String, Value)]) -> Vec<(String, Value)> {
+        let mut state = self.init_component(key, script);
+        let Some(list) = self.component_computeds.get(key).cloned() else { return state };
+        let mut locals = state.clone();
+        locals.extend(props.iter().cloned());
+        for (name, expr) in list {
+            let Some(value) = self.eval_value(&expr, &locals) else { continue };
+            if let Some(slot) = state.iter_mut().find(|(n, _)| *n == name) {
+                slot.1 = value.clone();
+            }
+            if let Some(local) = locals.iter_mut().find(|(n, _)| *n == name) {
+                local.1 = value;
+            }
+        }
+        state
     }
 
     /// Run `f` with the load-time checks ([`Engine::check_syntax`],
