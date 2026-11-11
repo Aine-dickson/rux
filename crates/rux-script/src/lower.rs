@@ -26,9 +26,8 @@ const BUILTINS: &[&str] = &[
     "print", "debug", "emit", "navigate", "replace", "back", "forward", "close", crate::ANSWER_FN, "blur", "query",
     "setInterval",
     "clearInterval", "cancel", "__interval", SPREAD_FN, "Ok", "Err", "parseInt", "parseFloat", "Number", "String", "isNaN", "intDiv",
-    "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan", "atan2", "exp",
-    "ln", "log", "log10", "keys", "values", "range", "path_for", "pathFor", "type_of", "to_string", "to_int",
-    "to_float", "parse_int", "parse_float", "is_def_var", "is_def_fn", "now",
+    "toFloat",
+    "keys", "values", "pathFor", "now",
 ];
 
 /// What an array with `...` in it is lowered to a call of: the language's

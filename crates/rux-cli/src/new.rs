@@ -60,7 +60,7 @@ const APP: &str = r#"<!-- The entry point. `rux run` looks for this file here an
   <screen class="app">
     <view class="header">
       <text class="brand">Tasks</text>
-      <text class="tally">{{ todo.done_count() }} of {{ todo.tasks.len() }} done</text>
+      <text class="tally">{{ todo.done_count() }} of {{ todo.tasks.length }} done</text>
     </view>
 
     <view class="stage">
@@ -163,7 +163,7 @@ const HOME: &str = r#"<!-- The list. A page is an ordinary component that a `<ro
      root is a `<view>` and not a second `<screen>`. -->
 <template>
   <view class="page">
-    <view class="rows" r-if="todo.tasks.len() > 0">
+    <view class="rows" r-if="todo.tasks.length > 0">
       <task-row
       r-for="t in todo.tasks"
       r-key="t.id"
@@ -469,7 +469,7 @@ const TASK_ROW: &str = r#"<!-- One row of the list.
      `id_of`) and reads nothing else of its caller's, so this file can be
      dropped into another app as it is. Its CSS styles this subtree only. -->
 <template>
-  <view class="row" :class='{ done: done }' :to='path_for("task", { id: id_of })'>
+  <view class="row" :class='{ done: done }' :to='pathFor("task", { id: id_of })'>
     <view class="box">
       <path class="tick" d="M 4 9 L 7 12 L 14 4" />
     </view>
@@ -583,7 +583,7 @@ const TODO: &str = r#"<!-- The app's state. A file with no <template> is a modul
   }
 
   export fn toggle(id: string) {
-    for i in 0..tasks.len() {
+    for i in 0..tasks.length {
       if tasks[i].id == id {
         tasks[i].done = !tasks[i].done;
       }

@@ -268,7 +268,6 @@ of a name for the rest of the region they guard:
 | `x != none` | `x` to everything but `none` |
 | `if x` | `x` without `none` inside the block. The `else` learns nothing about a `string?` or `int?`, since `""` and `0` are falsy too |
 | `load.state == "done"` | `load` to the member whose `state` is `"done"` |
-| `type_of(x) == "string"` | `x` to `string`. Also `"bool"`, `"array"`, `"map"`, `"()"`, and `"f64"` or `"i64"` for an `int` or a `float` |
 | `"note" in t` | `t` to the members where `note` is present, and `t.note` to present |
 | `x is Task` | `x` to `Task`, checked at run time (see [Boundaries](#boundaries)) |
 | an early `return` | the rest of the function, to whatever the guard excluded |

@@ -180,7 +180,7 @@ fn a_components_prop_is_held_to_its_declared_type() {
 
     // A method a number does not have is said in the template too, where the
     // call was once left unchecked; the ones it has are silent.
-    for (call, ok) in [("n.trim()", false), ("n.toFixed(1)", true), ("n.abs()", true)] {
+    for (call, ok) in [("n.trim()", false), ("n.toFixed(1)", true), ("n.ceil()", true)] {
         std::fs::write(
             dir.join("components/row.rux"),
             format!("<template><view><text>{{{{ {call} }}}}</text></view></template>\n<script>\n  prop n: int;\n</script>"),

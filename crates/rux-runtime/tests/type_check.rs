@@ -253,7 +253,7 @@ fn select_events_and_marks_have_names() {
 <script>\n\
 let text = signal(\"query { user }\");\n\
 let caret = signal(0);\n\
-fn onSel(e: SelectEvent) { caret = e.caret + e.start + e.end + e.value.len(); }\n\
+fn onSel(e: SelectEvent) { caret = e.caret + e.start + e.end + e.value.length; }\n\
 fn marks(src: string): TextMark[] {\n\
   let out: TextMark[] = [];\n\
   if src.startsWith(\"query\") { out.push({ start: 0, end: 5, class: \"kw\" }); }\n\

@@ -1529,9 +1529,9 @@ fn send() {
 }
 ```
 
-**`.length` is a property, not `len()`.** Arrays and strings only: JavaScript has
+**`.length` is a property.** Arrays and strings only: JavaScript has
 no `length` on a plain object, and inventing one for maps would be making up a
-rule rather than matching a known one. Use `keys(m)` and `values(m)` for maps.
+rule rather than matching a known one. Use `keys(m).length` and `values(m)` for maps.
 
 **A record keeps its fields in the order its type declares them.** `${item}`,
 `{{ item }}`, `keys(item)` and `values(item)` go in that order, as JavaScript,
@@ -1546,6 +1546,32 @@ Writing a field a declared record type does not have is an error the checker
 reports; reached anyway, through `any`, it throws with `kind` `"type"`. Two
 records are equal when their fields are, whatever order they were written in.
 
+### Retired names
+
+Rux ran on a fork of rhai until 2026-09-26 and kept some of rhai's spellings
+beside JavaScript's. They are gone: `rux check` reports each one as an error
+that says what to write, and a program that reaches one anyway fails with the
+same sentence. A file's own `fn` of the same name is unaffected.
+
+| Retired | Write |
+|---|---|
+| `x.len()`, `x.is_empty()` | `x.length`, `x.length == 0`; on a map, `keys(m).length` |
+| `x.contains(y)` | `x.includes(y)`; on a map, `keys(m).includes(k)` |
+| `a.append(x)`, `a.index_of(x)`, `a.extract(i, n)` | `a.push(x)` (or `a.push(...)` for each item of an array), `a.indexOf(x)`, `a.slice(i, i + n)` |
+| `a.retain(f)`, `a.drain(f)`, `a.dedup()` | assign a `filter` of the array back to it |
+| `s.to_upper()`, `s.to_lower()`, `s.make_upper()`, `s.make_lower()` | `s.toUpperCase()`, `s.toLowerCase()`, or assign one back |
+| `s.starts_with(x)`, `s.ends_with(x)` | `s.startsWith(x)`, `s.endsWith(x)` |
+| `s.sub_string(i, n)`, `s.chars()`, `s.pad(n, f)` | `s.substring(i, i + n)`, `s.split("")`, assign `s.padEnd(n, f)` back |
+| `x.to_string()`, a free `to_string(x)` | `String(x)` |
+| `x.to_int()`, `x.ceiling()`, `x.to_float()`, `x.is_nan()` | `x.trunc()`, `x.ceil()`, `x.toFloat()`, `isNaN(x)` |
+| `parse_int(s)`, `to_int(s)`, `parse_float(s)`, `to_float(s)` | `parseInt(s)`, `parseFloat(s)`: these give `none`, not an error, for text that is not a number |
+| `abs`, `sqrt`, `min`, `max`, `sin`, `cos`, `tan`, `atan`, `atan2`, `exp`, `ln`, `log10`, `floor`, `ceil`, `round`, `trunc` as free functions, and `x.abs()`, `x.sqrt()`, `x.min(y)`, `x.max(y)` | `Math.abs(x)` and the rest of `Math`; `x.floor()`, `x.ceil()`, `x.round()` and `x.trunc()` stay as methods |
+| `log(x)` (base 10) | `Math.log10(x)`; `Math.log` is the natural logarithm |
+| `type_of(x)` | `x is string` |
+| `is_def_var(n)`, `is_def_fn(n)` | nothing: an undeclared name is an error at check time |
+| `range(a, b)` | `a..b` |
+| `path_for(...)` | `pathFor(...)` |
+
 ## Talking to the outside
 
 | Call | Does |
@@ -1555,7 +1581,7 @@ records are equal when their fields are, whatever order they were written in.
 | `emit("name")`, `emit("name", payload)` | A component telling its caller something happened |
 | `navigate(path)`, `replace(path)` | Router. `replace` is the only way to redirect: `navigate` leaves the redirecting page in the history, so Back returns to it and redirects again |
 | `back()`, `forward()` | Walk the history |
-| `path_for("route")`, `path_for("route", { id: x })` | Build a path from a named route |
+| `pathFor("route")`, `pathFor("route", { id: x })` | Build a path from a named route |
 
 **`log` is a logarithm**, not a logging function: `log(2)` returns `0.301`
 (base 10), `log(x, base)` takes the base, and `Math.log` is the natural one.
@@ -1709,12 +1735,12 @@ statement and an operator that already work; `match` and `yield` are held for
 the language. `this` is reserved. `null`, `nil`, `var` and `new` are other
 languages' spellings, and their error says what Rux writes instead (`none`
 for `null`, which `rux fmt` writes).
-`void` is a type. `print`, `debug`, `type_of`, `eval`, `call`, `curry`,
-`is_def_var` and `Fn` are built-in functions: they can be called, not declared.
+`void` is a type. `print`, `debug`, `eval`, `call`, `curry` and `Fn` are
+built-in functions: they can be called, not declared.
 
 ```text
 use is match yield null nil this var new void
-print debug type_of eval call curry is_def_var Fn
+print debug eval call curry Fn
 ```
 
 `signal`, `computed`, `effect`, `mounted`, `unmounted` and `prop` mean

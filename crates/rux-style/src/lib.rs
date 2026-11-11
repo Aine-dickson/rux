@@ -2313,7 +2313,7 @@ fn build_media(
         bar.children.push(part(1.0 - fraction, SLIDER_REST));
         // Guarded on `event.x` as the slider's is: Space and `tap()` have
         // no pointer to seek to.
-        bar.on_tap = Some(format!("if event.contains(\"x\") {{ {seek} }}"));
+        bar.on_tap = Some(format!("if event?.x != none {{ {seek} }}"));
         bar.gestures.push((rux_layout::Gesture::Drag, seek));
         bar.focus_path = Some(at(2));
         bar.instance = instance.map(str::to_string);
@@ -9427,7 +9427,7 @@ fn build_node_inner(
             // `tap()` run, and neither has a pointer to place the thumb at.
             let (input, change) = (block(&input), block(&change));
             node.on_tap = Some(format!(
-                "if event.contains(\"x\") {{ let __before = {model}; {set}; \
+                "if event?.x != none {{ let __before = {model}; {set}; \
                  if {model} != __before {{ let event = #{{ value: {model} }}; {input} {change} }} }}"
             ));
             node.gestures.push((

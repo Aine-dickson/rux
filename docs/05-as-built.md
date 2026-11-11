@@ -1646,7 +1646,7 @@ variables captured where the input was built, so a model may mention the loop
 variable:
 ```html
 <input r-for="item in items" r-key="item.id"
-       r-model="items[item.at.to_int()].note" />
+       r-model="items[item.at.trunc()].note" />
 ```
 Writing goes through an assignment rather than setting a scope variable, so an
 `r-model` that is a path (`user.name`, `items[0].note`) writes through to the
@@ -1661,7 +1661,7 @@ nested in a row is placed through that row, and a computed collection
 (`items.filter(…)`) has no place, so its rows still cannot be written to.
 Under test in `crates/rux-runtime/tests/list_rows.rs`.
 
-Two consequences worth knowing. Numbers are f64, so an index needs `to_int()`.
+Two consequences worth knowing. Numbers are f64, so an index needs `trunc()`.
 And the caret follows its row across a reorder with nothing to remap, because
 the identity *is* the row; tapping a button to reorder still moves keyboard
 focus to that button, as any tap on a button does.
@@ -2602,7 +2602,7 @@ field and one on a file input:
 ```xml
 <input r-model="query" enterkeyhint="search" @change="run_search(event.value)" />
 <input r-model="code" inputmode="numeric" maxlength="6" autofocus />
-<button :disabled="code.len() < 6" @tap="verify()">Verify</button>
+<button :disabled="code.length < 6" @tap="verify()">Verify</button>
 ```
 
 **Marks.** `:marks` on a text field draws runs of its text styled by a class,
@@ -3515,7 +3515,7 @@ its state and its scroll position as you move between the things it lists.
 Parameters are **merged down the chain**: a child view sees what its parent
 captured, and the `params` signal outside the router sees what a child captured.
 A name resolves to its **full** path, built from its ancestors, so
-`path_for("crew-detail", { id: "grace" })` returns `/crew/grace` from a name
+`pathFor("crew-detail", { id: "grace" })` returns `/crew/grace` from a name
 written on the child.
 
 A path that matches a parent but nothing under it is not a half match: the whole
@@ -3580,16 +3580,16 @@ key keeps the first.
 
 **Named routes.** A path is written into every link that leads to it, so a URL
 scheme that can never be changed afterwards is not much of a scheme. Name a
-route and build its path with `path_for`:
+route and build its path with `pathFor`:
 ```xml
 <route name="crew-detail" path="/crew/:id" view="crew-detail" />
 ...
-<view :to="path_for(&quot;crew-detail&quot;, { id: member.id })">
+<view :to="pathFor(&quot;crew-detail&quot;, { id: member.id })">
 ```
 It returns a **string**, so it composes with `to`, `:to`, `navigate` and
 `replace` rather than needing a second form of each. Values matching a `:name`
 segment fill it; whatever is left over becomes a query string, which is what
-makes `path_for("search", { q: "rust" })` work for a route with no parameters
+makes `pathFor("search", { q: "rust" })` work for a route with no parameters
 at all. Values are escaped on the way in and unescaped on the way out, so an id
 containing a `/` survives the round trip. A missing parameter or an unknown name
 warns, and produces a path that visibly does not work: landing on the fallback

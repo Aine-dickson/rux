@@ -8262,7 +8262,7 @@ mod tests {
              <button @tap=\"tasks.push(&quot;x&quot;)\">b</button>\
              <button @tap=\"bump()\">c</button>\
              <button @tap=\"count = count + 1\">d</button>\
-             <button @tap=\"count += tasks.len()\">e</button>\
+             <button @tap=\"count += tasks.length\">e</button>\
              </screen></template>\n\
              <script>\
              let tasks = signal([\"a\"]);\
@@ -8597,15 +8597,15 @@ mod tests {
 
     /// A row's field can be read and written, which needs that row's loop
     /// variable in scope: the `r-model` is recorded as written, so
-    /// `rows[row.at.to_int()].note` is not an expression without `row`. Reading
+    /// `rows[row.at.trunc()].note` is not an expression without `row`. Reading
     /// it raw returned "" and warned `Variable not found`, and writing it set a
-    /// scope variable *named* `rows[row.at.to_int()].note`, leaving the real
+    /// scope variable *named* `rows[row.at.trunc()].note`, leaving the real
     /// target untouched. Typing into a row's field did nothing at all.
     #[test]
     fn a_rows_field_reads_and_writes_in_its_own_scope() {
         let mut doc = Document::from_source(
             "<template><screen>\
-               <input r-for=\"row in rows\" r-key=\"row.id\" r-model=\"rows[row.at.to_int()].note\" />\
+               <input r-for=\"row in rows\" r-key=\"row.id\" r-model=\"rows[row.at.trunc()].note\" />\
              </screen></template>
              <script>\
                let rows = signal([\
@@ -8615,7 +8615,7 @@ mod tests {
              </script>",
         )
         .expect("load");
-        let model = "rows[row.at.to_int()].note";
+        let model = "rows[row.at.trunc()].note";
 
         assert_eq!(doc.value_in(model, Some("a"), None), "alpha");
         assert_eq!(doc.value_in(model, Some("b"), None), "bravo", "each row reads its own value");
@@ -9054,7 +9054,7 @@ mod tests {
     #[test]
     fn a_named_child_route_resolves_to_its_full_path() {
         let mut doc = nested_router_app();
-        assert!(doc.apply_handler("navigate(path_for(\"crew-detail\", #{ id: \"grace\" }))"));
+        assert!(doc.apply_handler("navigate(pathFor(\"crew-detail\", #{ id: \"grace\" }))"));
         assert_eq!(doc.engine_mut().get_string("route"), "/crew/grace");
         assert!(doc.diagnostics().is_empty(), "and quietly: {:?}", doc.diagnostics());
     }
@@ -9341,7 +9341,7 @@ use components::detail;
     fn a_named_route_builds_its_own_path() {
         let mut doc = with_router(
             "<template><screen>\
-               <view @tap=\"navigate(path_for(&quot;who&quot;, #{ id: &quot;7&quot; }))\">\
+               <view @tap=\"navigate(pathFor(&quot;who&quot;, #{ id: &quot;7&quot; }))\">\
                  <text>go</text>\
                </view>\
                <router>\
@@ -9365,7 +9365,7 @@ use components::detail;
     fn path_for_puts_what_is_left_over_in_the_query() {
         let mut doc = with_router(
             "<template><screen>\
-               <view @tap=\"navigate(path_for(&quot;who&quot;, \
+               <view @tap=\"navigate(pathFor(&quot;who&quot;, \
                  #{ id: &quot;7&quot;, tab: &quot;posts&quot; }))\">\
                  <text>go</text>\
                </view>\
@@ -9393,7 +9393,7 @@ use components::detail;
     fn path_for_escapes_what_it_is_given() {
         let mut doc = with_router(
             "<template><screen>\
-               <view @tap=\"navigate(path_for(&quot;who&quot;, \
+               <view @tap=\"navigate(pathFor(&quot;who&quot;, \
                  #{ id: &quot;a/b&quot;, q: &quot;x&amp;y z&quot; }))\">\
                  <text>go</text>\
                </view>\
@@ -11224,15 +11224,15 @@ let open = signal(true);
         static TICK: rux_native::Signal<i64> = rux_native::Signal::new();
         rux_native::Module::new("rts_sim").export(rux_native::Export::signal("tick", "int?", || TICK.__read())).install();
         let mut doc = Document::from_source(
-            "<template><screen><text>{{ rts_sim.tick ?? \"waiting\" }}</text><text>{{ type_of(rts_sim.tick) }}</text></screen></template>
+            "<template><screen><text>{{ rts_sim.tick ?? \"waiting\" }}</text><text>{{ rts_sim.tick is int }}</text></screen></template>
              <script>use native::rts_sim;</script>",
         )
         .expect("load");
-        assert_eq!(text_of(&doc.root).join("|"), "waiting|()");
+        assert_eq!(text_of(&doc.root).join("|"), "waiting|false");
         TICK.set(41);
         TICK.set(42);
         assert!(doc.refresh_native_signals(), "two sets, one refresh");
-        assert_eq!(text_of(&doc.root).join("|"), "42|i64", "the newest, and an int");
+        assert_eq!(text_of(&doc.root).join("|"), "42|true", "the newest, and an int");
         assert!(!doc.refresh_native_signals(), "nothing set since");
     }
 

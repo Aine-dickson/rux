@@ -392,7 +392,7 @@ variables captured where the input was built, so a model may mention the loop
 variable:
 ```html
 <input r-for="item in items" r-key="item.id"
-       r-model="items[item.at.to_int()].note" />
+       r-model="items[item.at.trunc()].note" />
 ```
 Writing goes through an assignment rather than setting a scope variable, so an
 `r-model` that is a path (`user.name`, `items[0].note`) writes through to the
@@ -407,7 +407,7 @@ nested in a row is placed through that row, and a computed collection
 (`items.filter(…)`) has no place, so its rows still cannot be written to.
 Under test in `crates/rux-runtime/tests/list_rows.rs`.
 
-Two consequences worth knowing. Numbers are f64, so an index needs `to_int()`.
+Two consequences worth knowing. Numbers are f64, so an index needs `trunc()`.
 And the caret follows its row across a reorder with nothing to remap, because
 the identity *is* the row; tapping a button to reorder still moves keyboard
 focus to that button, as any tap on a button does.
@@ -1138,7 +1138,7 @@ field and one on a file input:
 ```xml
 <input r-model="query" enterkeyhint="search" @change="run_search(event.value)" />
 <input r-model="code" inputmode="numeric" maxlength="6" autofocus />
-<button :disabled="code.len() < 6" @tap="verify()">Verify</button>
+<button :disabled="code.length < 6" @tap="verify()">Verify</button>
 ```
 
 **Marks.** `:marks` on a text field draws runs of its text styled by a class,

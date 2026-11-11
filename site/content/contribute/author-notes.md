@@ -150,6 +150,7 @@ consequence appears somewhere the author was not looking.** A departing box
 keeps its place, which is right, and the consequence lands on the element below
 it. Paint is CSS, which is right, and the consequence is that specificity
 changes an animation's duration.
+| A file written for the old spellings (`len`, `to_int`, `parse_int`, a free `sqrt`) stops checking | Those names are retired and `rux check` says what to write. `rux fmt` rewrites the ones that mean the same thing (`.len()` to `.length`, `to_string(x)` to `String(x)`). One is not a rename: `parse_int(s)` threw on text that was not a number, and `parseInt(s)` gives `none`, so it needs `parseInt(s) ?? 0` or a check | `/reference/script/` "Retired names" | closed |
 
 That suggests the documentation these need is not a list of rules. It is a list
 of *consequences*, written from where the author is standing when they get

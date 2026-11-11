@@ -1100,8 +1100,8 @@ fn fast_path(op: BinOp) -> Option<&'static str> {
 /// The methods that change their receiver: a copy of the interpreter's list
 /// (`rux_script::aot::MUTATING`), which `rux-aot-tests` holds this to.
 pub const MUTATING: &[&str] = &[
-    "push", "append", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort", "set", "splice",
-    "retain", "dedup", "drain", "pad", "make_upper", "make_lower", "unshift", "fill",
+    "push", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort", "set", "splice",
+    "unshift", "fill",
 ];
 
 /// `root` as the generated code names it.

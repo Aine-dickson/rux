@@ -27,7 +27,9 @@ window: tests protect against regression and do not show that the thing works.
 Android and the web) and 10 are done. Built beside them, not on the original
 list: the file input and `pickFile`, Tailwind directives in `<style>`, network,
 `data:` and SVG images, `@key`, settings, native signals and channels, `now()`,
-`async fn` handles, and `<icon>`. **Still open:** item 7 (physics), item 9
+`async fn` handles, `<icon>`, and the retirement of the spellings the language
+took from rhai (`len`, `contains`, a free `sqrt`; see
+[Retired names](./07-script.md#retired-names)). **Still open:** item 7 (physics), item 9
 (live regions), item 11 (pinch and rotate, and the `rux doctor` device survey,
 both waiting on a phone), `hyphens: auto`, video on macOS and Linux, and the
 0.9 publish itself, which has to include `rux-native`, `rux-native-macros` and

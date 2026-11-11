@@ -2074,6 +2074,9 @@ impl Interp {
                     all.extend(argv);
                     return self.call_fn(FnId(i as u32), all);
                 }
+                if let Some(hint) = stdlib::retired(name) {
+                    return fail(format!("`{name}` is retired: {hint}"));
+                }
                 let mut types = vec![recv.type_name()];
                 types.extend(argv.iter().map(V::type_name));
                 fail(format!("Function not found: {name} ({})", types.join(", ")))

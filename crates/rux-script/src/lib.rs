@@ -841,10 +841,13 @@ impl CallProblem {
     /// anything else that grows a use of this cannot word it three ways.
     pub fn describe(&self) -> String {
         match self {
-            Self::NoSuchFunction(name) => format!(
-                "calls `{name}`, which does not exist, so it will do nothing at that \
-                 point when it runs"
-            ),
+            Self::NoSuchFunction(name) => match interp::stdlib::retired(name) {
+                Some(hint) => format!("calls `{name}`, which is retired: {hint}"),
+                None => format!(
+                    "calls `{name}`, which does not exist, so it will do nothing at that \
+                     point when it runs"
+                ),
+            },
             Self::WrongArgumentCount { name, given, wanted } => {
                 let plural = |n: usize| if n == 1 { "argument" } else { "arguments" };
                 let takes = match wanted.as_slice() {
@@ -1626,6 +1629,9 @@ fn rux_phrasing(message: &str) -> String {
             }
             None => (rest, None),
         };
+        if let Some(hint) = interp::stdlib::retired_free(name) {
+            return format!("`{name}` is retired: {hint}");
+        }
         return match args {
             Some(1) => format!("there is no function `{name}` taking 1 argument"),
             Some(n) => format!("there is no function `{name}` taking {n} arguments"),
@@ -1633,7 +1639,7 @@ fn rux_phrasing(message: &str) -> String {
         };
     }
     // Reserved words are a real trap, because the good ones are exactly the
-    // names someone would pick: `null`, `this`, `type_of`.
+    // names someone would pick: `null`, `this`, `new`.
     if let Some(rest) = message.strip_suffix(" is a reserved keyword") {
         let name = rest.trim().trim_matches('\'');
         return format!("`{name}` is a reserved word, so it cannot be used as a name here");
@@ -3010,7 +3016,7 @@ mod tests {
         assert_eq!(e.eval_display("let m = { a: 1, b: \"two\" }; m.b", &[]), "two");
         assert_eq!(e.eval_display("{ a: 1 }.a + 1", &[]), "2");
         assert_eq!(e.eval_display("let m = { \"x-y\": 3 }; m[\"x-y\"]", &[]), "3");
-        assert_eq!(e.eval_display("let m = {}; m.len()", &[]), "0");
+        assert_eq!(e.eval_display("let m = {}; keys(m).length", &[]), "0");
         assert_eq!(e.eval_display("{ a: { b: 5 } }.a.b", &[]), "5");
         assert_eq!(e.eval_display("[{ a: 1 }, { a: 2 }][1].a", &[]), "2");
         assert_eq!(e.eval_display("#{ a: 7 }.a", &[]), "7");
@@ -3067,7 +3073,7 @@ mod tests {
         assert_eq!(e.eval_display("nums.map(n => { id: n })[0].id", &locals), "1");
         // `type` is a word only where a declaration can start.
         assert_eq!(e.eval_display("let type = 1; type + 1", &[]), "2");
-        assert_eq!(e.eval_display("type_of(\"x\")", &[]), "string");
+        assert_eq!(e.eval_display("\"x\" is string", &[]), "true");
         assert!(take_warnings().is_empty(), "{:?}", take_warnings());
     }
 

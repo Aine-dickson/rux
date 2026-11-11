@@ -68,7 +68,7 @@ its state and its scroll position as you move between the things it lists.
 Parameters are **merged down the chain**: a child view sees what its parent
 captured, and the `params` signal outside the router sees what a child captured.
 A name resolves to its **full** path, built from its ancestors, so
-`path_for("crew-detail", { id: "grace" })` returns `/crew/grace` from a name
+`pathFor("crew-detail", { id: "grace" })` returns `/crew/grace` from a name
 written on the child.
 
 A path that matches a parent but nothing under it is not a half match: the whole
@@ -133,16 +133,16 @@ key keeps the first.
 
 **Named routes.** A path is written into every link that leads to it, so a URL
 scheme that can never be changed afterwards is not much of a scheme. Name a
-route and build its path with `path_for`:
+route and build its path with `pathFor`:
 ```xml
 <route name="crew-detail" path="/crew/:id" view="crew-detail" />
 ...
-<view :to="path_for(&quot;crew-detail&quot;, { id: member.id })">
+<view :to="pathFor(&quot;crew-detail&quot;, { id: member.id })">
 ```
 It returns a **string**, so it composes with `to`, `:to`, `navigate` and
 `replace` rather than needing a second form of each. Values matching a `:name`
 segment fill it; whatever is left over becomes a query string, which is what
-makes `path_for("search", { q: "rust" })` work for a route with no parameters
+makes `pathFor("search", { q: "rust" })` work for a route with no parameters
 at all. Values are escaped on the way in and unescaped on the way out, so an id
 containing a `/` survives the round trip. A missing parameter or an unknown name
 warns, and produces a path that visibly does not work: landing on the fallback

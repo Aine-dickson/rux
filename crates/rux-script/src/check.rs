@@ -1386,21 +1386,6 @@ impl<'a> Checker<'a> {
     /// `other` a literal or `null`. `None` when `side` is not something a fact
     /// can be kept about.
     fn facts_of_equality(&mut self, side: &Expr, other: &Expr, equal: bool) -> Option<Vec<(String, Type)>> {
-        // `type_of(x) == "string"`.
-        if let (ExprKind::Call { callee, args, .. }, ExprKind::Str(tag)) = (&side.kind, &other.kind) {
-            if is_named(callee, "type_of") && args.len() == 1 {
-                let path = path_of(&args[0])?;
-                let t = self.infer_quietly(&args[0]);
-                let t = self.resolve(&t);
-                let members = match t {
-                    Type::Union(m) => m,
-                    other => vec![other],
-                };
-                let kept: Vec<Type> =
-                    members.into_iter().filter(|m| is_type_of(m, tag, &self.types) == equal).collect();
-                return Some(if kept.is_empty() { Vec::new() } else { vec![(path, Type::union(kept))] });
-            }
-        }
         let path = path_of(side)?;
         let t = self.infer_quietly(side);
         if matches!(other.kind, ExprKind::Unit | ExprKind::Null) {
@@ -2840,7 +2825,6 @@ impl<'a> Checker<'a> {
     fn element_of(&self, e: &Expr, ty: &Type) -> Type {
         match &e.kind {
             ExprKind::Binary { op: ".." | "..=", .. } => return Type::Int,
-            ExprKind::Call { callee, .. } if is_named(callee, "range") => return Type::Int,
             _ => {}
         }
         match self.resolve(ty) {
@@ -3026,28 +3010,28 @@ impl<'a> Checker<'a> {
                     _ => Type::Any,
                 }));
             }
-            // `int` in and out, and a `float` as soon as one comes in.
-            ("max" | "min" | "abs", _) => {
-                let mut all_int = !args.is_empty();
-                for a in args {
-                    let t = self.infer(a);
-                    all_int &= self.resolve(&t) == Type::Int;
-                }
-                return if all_int { Type::Int } else { Type::Float };
+            // `floor` and the rest are methods now, and `Math`'s: a bare call
+            // is a retired spelling, unless the file declares the name.
+            ("floor" | "ceil" | "round" | "trunc", _)
+                if !self.fns.contains_key(&(name.to_string(), args.len())) && self.lookup(name).is_none() =>
+            {
+                self.infer_all(args);
+                self.error(pos, format!("`{name}(x)` is retired: write `Math.{name}(x)` or `x.{name}()`"));
+                return Type::Int;
             }
-            ("Number" | "parse_float" | "to_float" | "toFloat" | "sqrt", _) => {
+            ("Number" | "toFloat", _) => {
                 self.infer_all(args);
                 return Type::Float;
             }
-            ("to_int" | "parse_int" | "trunc" | "floor" | "ceil" | "round" | "intDiv", _) => {
+            ("intDiv", _) => {
                 self.infer_all(args);
                 return Type::Int;
             }
-            ("String" | "type_of" | "path_for" | "to_string", _) => {
+            ("String" | "pathFor", _) => {
                 self.infer_all(args);
                 return Type::String;
             }
-            ("isNaN" | "is_def_var" | "is_def_fn", _) => {
+            ("isNaN", _) => {
                 self.infer_all(args);
                 return Type::Bool;
             }
@@ -3752,20 +3736,20 @@ impl<'a> Checker<'a> {
                         self.callback(&args[0], Some((vec![acc.clone(), item, Type::Int], acc.clone())));
                         return acc;
                     }
-                    "push" | "append" if args.len() == 1 => {
+                    "push" if args.len() == 1 => {
                         self.check_expr(&args[0], &item);
                         return Type::Null;
                     }
                     "pop" | "shift" => return item.optional(),
-                    "includes" | "contains" => {
+                    "includes" => {
                         self.infer_all(args);
                         return Type::Bool;
                     }
-                    "indexOf" | "index_of" | "lastIndexOf" | "len" => {
+                    "indexOf" | "lastIndexOf" => {
                         self.infer_all(args);
                         return Type::Int;
                     }
-                    "slice" | "reverse" | "extract" => {
+                    "slice" | "reverse" => {
                         self.infer_all(args);
                         return Type::Array(Box::new(item));
                     }
@@ -3781,17 +3765,17 @@ impl<'a> Checker<'a> {
                     self.infer_all(args);
                     return Type::Array(Box::new(Type::String));
                 }
-                "trim" | "toLowerCase" | "toUpperCase" | "to_lower" | "to_upper" | "repeat"
-                | "charAt" | "slice" | "substring" | "sub_string" | "to_string" | "replace" | "replaceAll"
+                "trim" | "toLowerCase" | "toUpperCase" | "repeat"
+                | "charAt" | "slice" | "substring" | "replace" | "replaceAll"
                 | "padStart" | "padEnd" | "trimStart" | "trimEnd" => {
                     self.infer_all(args);
                     return Type::String;
                 }
-                "startsWith" | "endsWith" | "includes" | "contains" | "starts_with" | "ends_with" => {
+                "startsWith" | "endsWith" | "includes" => {
                     self.infer_all(args);
                     return Type::Bool;
                 }
-                "indexOf" | "index_of" | "lastIndexOf" | "len" => {
+                "indexOf" | "lastIndexOf" => {
                     self.infer_all(args);
                     return Type::Int;
                 }
@@ -3806,16 +3790,8 @@ impl<'a> Checker<'a> {
                     self.infer_all(args);
                     return Type::String;
                 }
-                "to_int" | "trunc" | "floor" | "ceil" | "round" => return Type::Int,
-                "to_float" | "toFloat" | "sqrt" => return Type::Float,
-                "abs" => return base.clone(),
-                "to_string" => return Type::String,
-                "ceiling" => return Type::Int,
-                "is_nan" => return Type::Bool,
-                "min" | "max" => {
-                    self.infer_all(args);
-                    return base.clone();
-                }
+                "trunc" | "floor" | "ceil" | "round" => return Type::Int,
+                "toFloat" => return Type::Float,
                 // Every method a number answers is above: anything else is a
                 // call that fails when it runs, and is said where it is written.
                 _ => {
@@ -3824,9 +3800,7 @@ impl<'a> Checker<'a> {
                     self.error(
                         at,
                         format!(
-                            "{kind} has no method `{name}`; its methods are `abs`, `ceil`, `floor`, \
-                             `round`, `trunc`, `sqrt`, `min`, `max`, `toFixed`, `to_string`, `to_int`, \
-                             `to_float` and `is_nan`"
+                            "{kind} has no method `{name}`; its methods are `ceil`, `floor`, `round`, `trunc`, `toFloat` and `toFixed`"
                         ),
                     );
                     return Type::Any;
@@ -3834,11 +3808,6 @@ impl<'a> Checker<'a> {
             },
             Type::Record(_) | Type::Dict(_) => match name {
                 "keys" => return Type::Array(Box::new(Type::String)),
-                "len" => return Type::Int,
-                "contains" => {
-                    self.infer_all(args);
-                    return Type::Bool;
-                }
                 _ => {}
             },
             _ => {}
@@ -4041,24 +4010,6 @@ fn falsy_only_when_null(t: &Type) -> bool {
     match t {
         Type::Record(_) | Type::Array(_) | Type::Dict(_) | Type::Function(..) => true,
         Type::Union(m) => m.iter().all(falsy_only_when_null),
-        _ => false,
-    }
-}
-
-/// Whether `type_of` answers `tag` for a value of type `t`. The names are
-/// rhai's own: `"f64"` and `"i64"` for numbers, `"()"` for `null`.
-fn is_type_of(t: &Type, tag: &str, types: &HashMap<String, Type>) -> bool {
-    let t = match t {
-        Type::Named(n) => types.get(n).cloned().unwrap_or(Type::Any),
-        other => other.clone(),
-    };
-    match tag {
-        "string" => matches!(t, Type::String | Type::Literal(_)),
-        "bool" => matches!(t, Type::Bool | Type::BoolLit(_)),
-        "array" => matches!(t, Type::Array(_)),
-        "map" => matches!(t, Type::Record(_) | Type::Dict(_)),
-        "()" => t == Type::Null,
-        "f64" | "i64" => matches!(t, Type::Float | Type::Int),
         _ => false,
     }
 }
@@ -4407,14 +4358,14 @@ mod tests {
             "let x = signal(0.5); fn f() { x = x * 2; x = 3; }",
             "let n = 2 ** 3; let m: int = n;",
             "let n: int = 7; let f: float = n; let g: float = n + 0.5;",
-            "let n: int = max(1, 2) + abs(-3) + 4.5.trunc() + 2.5.round() + 1.5.floor() + 0.5.ceil();",
+            "let n: int = Math.max(1, 2) + Math.abs(-3) + 4.5.trunc() + 2.5.round() + 1.5.floor() + 0.5.ceil();",
             "let xs = [1, 2]; let i = 1; let a = xs[i]; let b = xs[1];",
             "let x: float = 1.5; let n: int = x.trunc(); let back: float = n.toFloat();",
             "fn half(x: float): float { x / 2 }\nlet h = half(3);",
         ] {
             assert!(errors(quiet).is_empty(), "{quiet}\n{:?}", errors(quiet));
         }
-        one_error("let m: int = max(1, 2.5);", "`float`, where `int` is expected");
+        one_error("let m: int = Math.max(1, 2.5);", "`float`, where `int` is expected");
         one_error("fn f(): int { 2 ** -1 }", "an `int` raised to a negative power");
         // A name on the right is an `int` too: exact, or it fails running.
         assert!(errors("fn f(a: int, b: int): int { a ** b }").is_empty());
@@ -4777,6 +4728,39 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         }
     }
 
+    /// A retired spelling is reported, in whichever stage meets it, with what
+    /// to write instead; a file's own function of the same name is left alone.
+    #[test]
+    fn a_retired_name_says_what_to_write() {
+        let said = |src: &str, part: &str| match Builder::new().build(src) {
+            Err(e) => assert!(e.message.contains(part), "{src}: {}", e.message),
+            Ok(engine) => {
+                let calls: Vec<String> =
+                    engine.unknown_calls(src).into_iter().map(|p| p.describe()).collect();
+                let found: Vec<String> = engine
+                    .check_types(&Context::default())
+                    .into_iter()
+                    .filter(|f| f.is_error)
+                    .map(|f| f.message)
+                    .chain(calls)
+                    .collect();
+                assert!(found.iter().any(|m| m.contains(part)), "{src}: {found:?}");
+            }
+        };
+        said("let n = [1, 2].len();", "write `.length`");
+        said("let n = [1, 2].contains(1);", "write `.includes(x)`");
+        said("let s = \"a\".to_upper();", "write `.toUpperCase()`");
+        said("let n = sqrt(4);", "write `Math.sqrt(x)`");
+        said("let n = max(1, 2);", "write `Math.max(a, b)`");
+        said("let n = floor(2.5);", "write `Math.floor(x)`");
+        said("let t = type_of(1);", "ask with `x is T`");
+        said("let p = path_for(\"a\");", "write `pathFor`");
+        said("let n = 2.5.abs();", "write `Math.abs(x)`");
+        clean("fn len(a: int[]): int { 0 }
+let n = [1].len();");
+        clean("let n = Math.max(1, 2) + Math.floor(2.5) + 2.5.floor() + [1].length;");
+    }
+
     #[test]
     fn a_resource_is_opaque_and_has_its_methods() {
         // Its type resolves once its module is imported, and naming it asks
@@ -4902,13 +4886,6 @@ async fn read(f: File): string { let n: int = f.size; let t: string = f.type; le
         clean(&format!("{m}fn f(k: string): bool {{ if k in m {{ m[k] }} else {{ false }} }}"));
         clean(&format!("{m}fn f(): bool {{ if \"a\" in m {{ m.a }} else {{ false }} }}"));
         clean(&format!("{m}fn f() {{ for k in keys(m) {{ print(m[k]); }} }}"));
-    }
-
-    #[test]
-    fn type_of_narrows() {
-        let v = "let v: string | { n: int } = \"x\";\n";
-        clean(&format!("{v}fn f(): int {{ if type_of(v) == \"map\" {{ v.n }} else {{ 0 }} }}"));
-        one_error(&format!("{v}fn f() {{ v.n }}"), "no property `n`");
     }
 
     #[test]

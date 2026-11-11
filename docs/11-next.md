@@ -65,7 +65,7 @@ sensitive.
   are lower case, so the two never collide.
 - **Everything else is camelCase by convention**: `pathFor`, `parseInt`,
   `toFloat`. The snake_case names inherited from the old engine (`path_for`,
-  `parse_int`, `to_int`, `len()`) still work. **Not built:** retiring them.
+  `parse_int`, `to_int`, `len()`) are retired: see [Retired names](./07-script.md#retired-names).
 
 ### Keywords
 
@@ -85,7 +85,7 @@ type signal computed effect mounted unmounted prop
 
 Words held back or answered with the Rux spelling cannot be names either:
 `use is match yield var new this null nil void`, and the built-in functions
-`print debug type_of eval call curry is_def_var Fn`. `null`, `()`, `var`,
+`print debug eval call curry Fn`. `null`, `()`, `var`,
 `new`, `nil` and `this` are errors that say what to write instead (`none`,
 `let`, a literal or a function that returns one). `class`, `interface` and
 `function` are plain syntax errors, not answered by name. **Not built:** a
@@ -223,7 +223,7 @@ A union may begin with `|` so a long one lines up.
 - **`float` keeps IEEE behaviour**: `1.0 / 0` is `Infinity`, `0.0 / 0` is `NaN`,
   and both display under those names.
 - **Converting:** `x.toFloat()` on an `int`; `x.trunc()`, `x.round()`,
-  `x.floor()`, `x.ceil()` on a `float` give an `int`. `to_int()` still works.
+  `x.floor()`, `x.ceil()` on a `float` give an `int`.
   **Not built:** failing for `NaN`, an infinity or a value out of range; they do
   not throw.
 - **Text to a number:** `parseInt(s): int?` and `parseFloat(s): float?` read a
@@ -301,9 +301,7 @@ Everything in [Types, optional fields](./10-types.md#optional-fields-and-) and
 - Comparing against a literal a union does not contain, or between types with
   nothing in common, is an error.
 
-`x is string` asks a type at run time. `type_of(x)` still exists and gives the
-engine's own tag strings (`"i64"`, `"f64"`); `is` is preferred. **Not built:**
-retiring `type_of`.
+`x is string` asks a type at run time. `type_of(x)` is retired.
 
 ### `switch`
 
@@ -709,8 +707,8 @@ JavaScript's answers.
 | `toSorted`, `toReversed`, `concat(other)`, `flat()` | Give a new array |
 | `a + b` | Concatenation |
 
-`forEach` is called with `(item, index)` or `(item)`. `.len()` is accepted as
-`.length`.
+`forEach` is called with `(item, index)` or `(item)`. `.len()` is retired (write
+`.length`).
 
 ### Strings
 
@@ -743,7 +741,7 @@ only.**
 | `print(x)`, `debug(x)` | Reaches the dev overlay. Not a warning; never fails a build |
 | `emit("name")`, `emit("name", payload)` | A component telling its caller something happened |
 | `navigate(path)`, `replace(path)`, `back()`, `forward()` | The router; recorded, applied after the handler |
-| `pathFor("route", { id: x })` | The path of a named route; `path_for` is the same function |
+| `pathFor("route", { id: x })` | The path of a named route |
 | `query(selector)` | The tree, in a handler only; see [Script, reading the tree](./07-script.md#reading-the-tree) |
 | `el.tap()`, `el.focus()`, `blur()`, `el.scrollIntoView()`, `el.setSelectionRange(a, b)`, `el.insertText(t)`, `el.clearHistory()` | Act on an element |
 | `setInterval(ms) { }`, `clearInterval(h)`, `cancel(h)` | Intervals and async runs |

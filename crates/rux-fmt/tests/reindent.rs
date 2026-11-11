@@ -189,7 +189,7 @@ fn a_closed_string_still_hides_what_is_inside_it() {
 /// crew_list.rux` came out of `rux fmt` with a `</view>` at the left margin.
 #[test]
 fn a_start_tag_over_two_lines_opens_a_level() {
-    let src = "<template>\n  <view class=\"rows\">\n    <view class=\"row\" r-for=\"m in crew\"\n          :to=\"path_for(&quot;x&quot;, { id: m.id })\">\n      <text>{{ m.name }}</text>\n    </view>\n  </view>\n</template>\n";
+    let src = "<template>\n  <view class=\"rows\">\n    <view class=\"row\" r-for=\"m in crew\"\n          :to=\"pathFor(&quot;x&quot;, { id: m.id })\">\n      <text>{{ m.name }}</text>\n    </view>\n  </view>\n</template>\n";
     let out = reindent(src, UNIT);
     assert_eq!(out, src, "already formatted, so nothing moves");
 

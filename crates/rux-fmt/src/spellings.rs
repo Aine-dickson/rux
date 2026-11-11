@@ -34,6 +34,7 @@ pub fn rewrite(text: &str) -> String {
 /// [`rewrite`], writing every import in `imports`' spelling (see
 /// `crate::imports`).
 pub fn rewrite_with(text: &str, imports: crate::Imports) -> String {
+    remember_declared(text);
     // A module written as bare script, with no tags, is script throughout.
     if is_bare_module(text) {
         return export_types(&crate::imports::rewrite(&code(text), imports));
@@ -204,6 +205,54 @@ fn string_end(b: &[u8], start: usize, quote: u8) -> usize {
     i.min(b.len())
 }
 
+thread_local! {
+    /// The functions the file being rewritten declares: a call of one of
+    /// those is its own, whatever the retired spelling of the same name.
+    static DECLARED: std::cell::RefCell<std::collections::HashSet<String>> = Default::default();
+}
+
+fn declares(name: &str) -> bool {
+    DECLARED.with(|d| d.borrow().contains(name))
+}
+
+/// The `fn` names a file declares, found the way a reader would: the word
+/// after `fn`.
+fn remember_declared(text: &str) {
+    let mut names = std::collections::HashSet::new();
+    let mut words = text.split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'));
+    while let Some(w) = words.next() {
+        if w == "fn" {
+            if let Some(name) = words.next() {
+                names.insert(name.to_string());
+            }
+        }
+    }
+    DECLARED.with(|d| *d.borrow_mut() = names);
+}
+
+/// The spelling the language has for a retired one that means exactly the
+/// same, where the call can be rewritten from its name alone. The rest are
+/// left for `rux check` to report: they need the receiver moved, or the
+/// arguments changed, or the type known.
+fn renamed(word: &str, is_method: bool, after: &str) -> Option<&'static str> {
+    if !after.starts_with('(') {
+        return None;
+    }
+    match (is_method, word) {
+        (true, "index_of") => Some("indexOf"),
+        (true, "to_upper") => Some("toUpperCase"),
+        (true, "to_lower") => Some("toLowerCase"),
+        (true, "starts_with") => Some("startsWith"),
+        (true, "ends_with") => Some("endsWith"),
+        (true, "to_int") => Some("trunc"),
+        (true, "ceiling") => Some("ceil"),
+        (true, "to_float") => Some("toFloat"),
+        (false, "to_string") => Some("String"),
+        (false, "path_for") => Some("pathFor"),
+        _ => None,
+    }
+}
+
 /// Rewrite the retired spellings in a piece of script.
 fn code(src: &str) -> String {
     let number_types = number_types(src);
@@ -234,8 +283,16 @@ fn code(src: &str) -> String {
             c if (c.is_ascii_alphabetic() || c == b'_') => {
                 let end = src[i..].find(|c: char| !(c.is_ascii_alphanumeric() || c == '_')).map_or(b.len(), |e| i + e);
                 let word = &src[i..end];
+                let after = &src[end..];
+                let is_method = out.trim_end().ends_with('.') && !out.trim_end().ends_with("..");
                 // Not `x.null`, a field that happens to have the name.
-                if word == "null" && !out.trim_end().ends_with('.') {
+                if is_method && word == "len" && after.starts_with("()") && !declares(word) {
+                    out.push_str("length");
+                    i = end + 2;
+                    continue;
+                } else if let Some(new) = renamed(word, is_method, after).filter(|_| !declares(word)) {
+                    out.push_str(new);
+                } else if word == "null" && !out.trim_end().ends_with('.') {
                     out.push_str("none");
                 } else if word == "number" && number_types.contains(&i) {
                     out.push_str("float");
@@ -443,5 +500,44 @@ mod tests {
         let src = "<template><view :class=\"#{ a: b }\" /></template>\n<script>let m = #{ a: 1 };</script>";
         let once = bare_maps(src);
         assert_eq!(bare_maps(&once), once);
+    }
+
+    #[test]
+    fn retired_names_that_mean_the_same_are_rewritten() {
+        let src = "<template><text>{{ items.len() }} {{ s.to_upper() }}</text></template>
+<script>
+let a = xs.index_of(1) + n.to_int() + n.to_float() + c.ceiling();
+let t = to_string(3) + path_for(\"x\") + s.starts_with(\"a\") + s.ends_with(\"b\");
+let l = s.to_lower(); // x.len()
+let q = \"y.len()\";
+</script>";
+        assert_eq!(
+            bare_maps(src),
+            "<template><text>{{ items.length }} {{ s.toUpperCase() }}</text></template>
+<script>
+let a = xs.indexOf(1) + n.trunc() + n.toFloat() + c.ceil();
+let t = String(3) + pathFor(\"x\") + s.startsWith(\"a\") + s.endsWith(\"b\");
+let l = s.toLowerCase(); // x.len()
+let q = \"y.len()\";
+</script>"
+        );
+        assert_eq!(bare_maps(&bare_maps(src)), bare_maps(src));
+    }
+
+    #[test]
+    fn the_names_that_need_more_than_a_rename_are_left_for_the_checker() {
+        let src = "<script>
+let a = xs.append(ys) + s.extract(1, 2) + x.is_empty() + x.contains(y) + s.to_string() + sqrt(4) + type_of(x);
+</script>";
+        assert_eq!(bare_maps(src), src);
+    }
+
+    #[test]
+    fn a_file_that_declares_the_name_keeps_it() {
+        let src = "<script>
+fn len(a: int[]): int { 0 }
+let n = xs.len();
+</script>";
+        assert_eq!(bare_maps(src), src);
     }
 }

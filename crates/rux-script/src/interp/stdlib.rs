@@ -1,9 +1,8 @@
 //! The language's functions and methods.
 //!
-//! The names and answers are the ones the fork gave: JavaScript's where Rux
-//! took them (`length`, `includes`, `slice`, `forEach`), and rhai's own where
-//! the fork kept them (`len`, `contains`, `index_of`). Both spellings stay
-//! until `docs/11-next.md`'s "Names that change" retires one.
+//! The names and answers are JavaScript's. The spellings the language took
+//! from rhai (`len`, `contains`, `to_upper`, a free `sqrt`) are retired: they
+//! are not in the lists below, and [`retired`] says what to write instead.
 
 use std::rc::Rc;
 
@@ -14,11 +13,9 @@ use crate::{ElementAction, ElementHandle, Nav};
 /// Every function [`Interp::builtin`] answers, for a check that a call can
 /// resolve at all. A test holds the two together.
 pub const FUNCTIONS: &[&str] = &[
-    "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "close", "path_for", "pathFor", "blur",
+    "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "close", "pathFor", "blur",
     crate::SUBMIT_FN, crate::ANSWER_FN, crate::MEDIA_FN, crate::MEDIA_ASK_FN, "query", "clearInterval", "setInterval", "cancel", crate::lower::SPREAD_FN, "__interval", "Ok", "Err", "Number", "parseInt",
-    "parseFloat", "parse_int", "to_int", "parse_float", "to_float", "String", "to_string", "isNaN", "type_of",
-    "intDiv", "toFloat", "trunc", "floor", "ceil", "round", "abs", "min", "max", "sqrt", "sin", "cos", "tan",
-    "atan2", "atan", "exp", "ln", "log", "log10", "keys", "values", "range", "is_def_fn", "is_def_var", "now",
+    "parseFloat", "String", "isNaN", "intDiv", "toFloat", "keys", "values", "now",
     // JavaScript's namespaces, written as JavaScript writes them: see
     // `link::namespaces`, which turns `Math.max(a, b)` into a call of these.
     "Math.max", "Math.min", "Math.floor", "Math.ceil", "Math.round", "Math.trunc", "Math.abs", "Math.sign",
@@ -33,25 +30,92 @@ pub const FUNCTIONS: &[&str] = &[
 
 /// Every method [`Interp::method`] answers on some kind of value.
 pub const METHODS: &[&str] = &[
-    "len", "is_empty", "push", "append", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort",
-    "map", "filter", "retain", "drain", "dedup", "find", "findIndex", "some", "every", "forEach", "reduce",
-    "includes", "contains", "indexOf", "index_of", "slice", "extract", "splice", "join", "get", "to_string", "trim",
-    "toUpperCase", "to_upper", "toLowerCase", "to_lower", "make_upper", "make_lower", "startsWith", "starts_with",
-    "endsWith", "ends_with", "repeat", "charAt", "substring", "sub_string", "split", "chars", "to_chars", "replace",
-    "pad", "to_int", "trunc", "floor", "ceil", "ceiling", "round", "to_float", "toFloat", "sqrt", "abs", "is_nan",
-    "min", "max", "keys", "values", "unwrap", "focus", "scrollIntoView", "scrollBy", "tap", "play", "pause",
+    "push", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort",
+    "map", "filter", "find", "findIndex", "some", "every", "forEach", "reduce",
+    "includes", "indexOf", "slice", "splice", "join", "get", "trim",
+    "toUpperCase", "toLowerCase", "startsWith", "endsWith", "repeat", "charAt", "substring", "split", "replace",
+    "trunc", "floor", "ceil", "round", "toFloat",
+    "keys", "values", "unwrap", "focus", "scrollIntoView", "scrollBy", "tap", "play", "pause",
     "setSelectionRange", "insertText", "clearHistory", "call", "set",
     "concat", "flat", "flatMap", "findLast", "findLastIndex", "lastIndexOf", "at", "fill", "toReversed", "toSorted",
     "unshift", "replaceAll", "padStart", "padEnd", "trimStart", "trimEnd", "toFixed",
 ];
+
+/// The spellings the language no longer has, and what to write instead. A
+/// name here is in neither list above, so a call of it fails to resolve; the
+/// checker and the interpreter look the name up to say what to write.
+pub const RETIRED: &[(&str, &str)] = &[
+    ("len", "write `.length` (on a map, `keys(m).length`)"),
+    ("is_empty", "write `.length == 0` (on a map, `keys(m).length == 0`)"),
+    ("append", "write `.push(x)`"),
+    ("contains", "write `.includes(x)` (on a map, `keys(m).includes(k)`)"),
+    ("index_of", "write `.indexOf(x)`"),
+    ("extract", "write `.slice(start, start + count)`"),
+    ("retain", "assign a `.filter(...)` of the array back to it"),
+    ("drain", "assign a `.filter(...)` of the array back to it"),
+    ("dedup", "filter the array against the items already seen"),
+    ("to_upper", "write `.toUpperCase()`"),
+    ("to_lower", "write `.toLowerCase()`"),
+    ("make_upper", "assign `s.toUpperCase()` back to it"),
+    ("make_lower", "assign `s.toLowerCase()` back to it"),
+    ("starts_with", "write `.startsWith(x)`"),
+    ("ends_with", "write `.endsWith(x)`"),
+    ("sub_string", "write `.substring(start, start + length)`"),
+    ("chars", "write `.split(\"\")`"),
+    ("to_chars", "write `.split(\"\")`"),
+    ("pad", "assign `s.padEnd(n, fill)` back to it"),
+    ("to_string", "write `String(x)`"),
+    ("to_int", "write `.trunc()`"),
+    ("to_float", "write `.toFloat()`"),
+    ("ceiling", "write `.ceil()`"),
+    ("is_nan", "write `isNaN(x)`"),
+    ("parse_int", "write `parseInt(s)`, which gives `none` for text that is not a number"),
+    ("parse_float", "write `parseFloat(s)`, which gives `none` for text that is not a number"),
+    ("type_of", "ask with `x is T`"),
+    ("is_def_var", "a name that is not declared is an error at check time"),
+    ("is_def_fn", "a name that is not declared is an error at check time"),
+    ("range", "write `a..b`"),
+    ("path_for", "write `pathFor`"),
+    ("abs", "write `Math.abs(x)`"),
+    ("sqrt", "write `Math.sqrt(x)`"),
+    ("min", "write `Math.min(a, b)`"),
+    ("max", "write `Math.max(a, b)`"),
+    ("sin", "write `Math.sin(x)`"),
+    ("cos", "write `Math.cos(x)`"),
+    ("tan", "write `Math.tan(x)`"),
+    ("atan", "write `Math.atan(x)`"),
+    ("atan2", "write `Math.atan2(y, x)`"),
+    ("exp", "write `Math.exp(x)`"),
+    ("ln", "write `Math.log(x)`, which is the natural logarithm"),
+    ("log", "write `Math.log10(x)` for the old base 10, or `Math.log(x)` for the natural one"),
+    ("log10", "write `Math.log10(x)`"),
+];
+
+/// What to write instead of a retired name, or `None` for a name that was
+/// never one.
+pub fn retired(name: &str) -> Option<&'static str> {
+    RETIRED.iter().find(|(n, _)| *n == name).map(|(_, hint)| *hint)
+}
+
+/// [`retired`], for a name called on its own, where `floor`, `ceil`, `round`
+/// and `trunc` are retired too: they are methods and `Math`'s, not functions.
+pub fn retired_free(name: &str) -> Option<&'static str> {
+    match name {
+        "floor" => Some("write `Math.floor(x)` or `x.floor()`"),
+        "ceil" => Some("write `Math.ceil(x)` or `x.ceil()`"),
+        "round" => Some("write `Math.round(x)` or `x.round()`"),
+        "trunc" => Some("write `Math.trunc(x)` or `x.trunc()`"),
+        _ => retired(name),
+    }
+}
 
 /// Whether a method changes its receiver, so a call on a place writes the
 /// place: `items.push(x)`, `list.sort()`.
 /// The methods that change the value they are called on, so the receiver
 /// is a place to write back to.
 pub const MUTATING: &[&str] = &[
-    "push", "append", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort", "set", "splice",
-    "retain", "dedup", "drain", "pad", "make_upper", "make_lower", "unshift", "fill",
+    "push", "pop", "shift", "insert", "remove", "clear", "truncate", "reverse", "sort", "set", "splice",
+    "unshift", "fill",
 ];
 
 pub(crate) fn mutates(name: &str) -> bool {
@@ -62,10 +126,19 @@ fn args_of<const N: usize>(name: &str, argv: &[V]) -> R<[V; N]> {
     match <[V; N]>::try_from(argv.to_vec()) {
         Ok(a) => Ok(a),
         Err(_) => {
-            let types: Vec<&str> = argv.iter().map(V::type_name).collect();
-            fail(format!("Function not found: {name} ({})", types.join(", ")))
+            fail(not_found(name, argv))
         }
     }
+}
+
+/// What a call of a function or method that is not there says: a retired name
+/// says what to write instead.
+pub(super) fn not_found(name: &str, argv: &[V]) -> String {
+    if let Some(hint) = retired(name) {
+        return format!("`{name}` is retired: {hint}");
+    }
+    let types: Vec<&str> = argv.iter().map(V::type_name).collect();
+    format!("Function not found: {name} ({})", types.join(", "))
 }
 
 fn text(v: &V) -> R<Rc<str>> {
@@ -239,7 +312,7 @@ impl Interp {
                 crate::ANSWERED_FALSE.with(|a| a.set(refused));
                 V::None
             }
-            ("path_for" | "pathFor", 1 | 2) => {
+            ("pathFor", 1 | 2) => {
                 let name = text(&argv[0])?;
                 let values: Vec<(String, rux_reactive::Value)> = match argv.get(1) {
                     Some(V::Map(m)) => m.iter().map(|(k, v)| (k.clone(), v.to_value())).collect(),
@@ -364,23 +437,8 @@ impl Interp {
                 V::Float(f) => V::Float(*f),
                 other => return fail(format!("Function not found: parseFloat ({})", other.type_name())),
             },
-            ("parse_int" | "to_int", 1) => match &argv[0] {
-                V::Str(s) => match s.trim().parse::<i64>() {
-                    Ok(i) => V::Int(i),
-                    Err(_) => return fail(format!("Error parsing integer: '{s}'")),
-                },
-                v => whole_of(v, f64::trunc)?,
-            },
-            ("parse_float" | "to_float", 1) => match &argv[0] {
-                V::Str(s) => match s.trim().parse::<f64>() {
-                    Ok(f) => V::Float(f),
-                    Err(_) => return fail(format!("Error parsing floating-point number: '{s}'")),
-                },
-                v => V::Float(number(v)?),
-            },
-            ("String" | "to_string", 1) => V::str(argv[0].display()),
+                                    ("String", 1) => V::str(argv[0].display()),
             ("isNaN", 1) => V::Bool(argv[0].number().is_some_and(f64::is_nan)),
-            ("type_of", 1) => V::str(argv[0].type_name()),
             ("intDiv", 2) => {
                 let (a, b) = (number(&argv[0])?.trunc(), number(&argv[1])?.trunc());
                 if b == 0.0 {
@@ -389,18 +447,18 @@ impl Interp {
                 V::Int((a / b).trunc() as i64)
             }
             ("toFloat", 1) => V::Float(number(&argv[0])?),
-            ("trunc", 1) => whole_of(&argv[0], f64::trunc)?,
-            ("floor", 1) => whole_of(&argv[0], f64::floor)?,
-            ("ceil", 1) => whole_of(&argv[0], f64::ceil)?,
-            ("round", 1) => whole_of(&argv[0], f64::round)?,
-            ("abs", 1) => match &argv[0] {
+            ("Math.trunc", 1) => whole_of(&argv[0], f64::trunc)?,
+            ("Math.floor", 1) => whole_of(&argv[0], f64::floor)?,
+            ("Math.ceil", 1) => whole_of(&argv[0], f64::ceil)?,
+            ("Math.round", 1) => whole_of(&argv[0], f64::round)?,
+            ("Math.abs", 1) => match &argv[0] {
                 V::Int(i) => V::Int(i.checked_abs().ok_or_else(super::overflow)?),
                 v => V::Float(number(v)?.abs()),
             },
-            ("min" | "max", _) if n >= 1 => {
+            ("Math.min" | "Math.max", _) if n >= 1 => {
                 let mut best = argv[0].clone();
                 for v in &argv[1..] {
-                    let better = dynamic(if name == "min" { "<" } else { ">" }, v.clone(), best.clone())?;
+                    let better = dynamic(if name == "Math.min" { "<" } else { ">" }, v.clone(), best.clone())?;
                     if better.truthy() {
                         best = v.clone();
                     }
@@ -435,15 +493,13 @@ impl Interp {
                     _ => V::Int(at.weekday().num_days_from_sunday() as i64),
                 }
             }
-            ("sqrt", 1) => V::Float(number(&argv[0])?.sqrt()),
-            ("sin", 1) => V::Float(number(&argv[0])?.sin()),
-            ("cos", 1) => V::Float(number(&argv[0])?.cos()),
-            ("tan", 1) => V::Float(number(&argv[0])?.tan()),
-            ("atan2", 2) | ("atan", 2) => V::Float(number(&argv[0])?.atan2(number(&argv[1])?)),
-            ("exp", 1) => V::Float(number(&argv[0])?.exp()),
-            ("ln", 1) => V::Float(number(&argv[0])?.ln()),
-            ("log", 1) | ("log10", 1) => V::Float(number(&argv[0])?.log10()),
-            ("log", 2) => V::Float(number(&argv[0])?.log(number(&argv[1])?)),
+            ("Math.sqrt", 1) => V::Float(number(&argv[0])?.sqrt()),
+            ("Math.sin", 1) => V::Float(number(&argv[0])?.sin()),
+            ("Math.cos", 1) => V::Float(number(&argv[0])?.cos()),
+            ("Math.tan", 1) => V::Float(number(&argv[0])?.tan()),
+            ("Math.atan2", 2) => V::Float(number(&argv[0])?.atan2(number(&argv[1])?)),
+            ("Math.exp", 1) => V::Float(number(&argv[0])?.exp()),
+            ("Math.log10", 1) => V::Float(number(&argv[0])?.log10()),
             ("keys", 1) => match &argv[0] {
                 V::Map(m) => V::array(m.keys().map(|k| V::str(k.as_str())).collect()),
                 V::Rec(r) => V::array(r.entries().map(|(k, _)| V::str(k)).collect()),
@@ -454,25 +510,13 @@ impl Interp {
                 V::Rec(r) => V::array(r.entries().map(|(_, v)| v.clone()).collect()),
                 other => return fail(format!("Function not found: values ({})", other.type_name())),
             },
-            ("range", 2) => match (argv[0].whole(), argv[1].whole()) {
-                (Some(a), Some(b)) => V::Range(a, b),
-                _ => return fail("range needs two whole numbers"),
-            },
-            ("is_def_fn", _) => V::Bool(match argv.first() {
-                Some(V::Str(s)) => self.unit.fns.iter().any(|f| f.name.as_str() == s.as_ref()),
-                _ => false,
-            }),
-            ("is_def_var", 1) => V::Bool(match &argv[0] {
-                V::Str(s) => self.has_global(s),
-                _ => false,
-            }),
             ("__interval", 2) => {
                 let ms = argv[0].number().unwrap_or(0.0);
                 V::Float(crate::start_interval(ms, text(&argv[1])?.to_string()))
             }
             // `Math`'s, as the language's own where it has them. `Math.log`
             // is the natural one, as in JavaScript.
-            ("Math.log", 1) => self.builtin("ln", argv)?,
+            ("Math.log", 1) => V::Float(number(&argv[0])?.ln()),
             ("Math.log2", 1) => V::Float(number(&argv[0])?.log2()),
             ("Math.cbrt", 1) => V::Float(number(&argv[0])?.cbrt()),
             ("Math.atan", 1) => V::Float(number(&argv[0])?.atan()),
@@ -491,7 +535,6 @@ impl Interp {
                     V::Float(if f == 0.0 || f.is_nan() { f } else { f.signum() })
                 }
             },
-            (m, _) if m.starts_with("Math.") => self.builtin(&m[5..], argv)?,
             ("Object.keys", 1) => self.builtin("keys", argv)?,
             ("Object.values", 1) => self.builtin("values", argv)?,
             ("Object.entries", 1) => {
@@ -523,10 +566,7 @@ impl Interp {
                 Ok(v) => v,
                 Err(e) => return fail(format!("JSON.parse: {e}")),
             },
-            _ => {
-                let types: Vec<&str> = argv.iter().map(V::type_name).collect();
-                return fail(format!("Function not found: {name} ({})", types.join(", ")));
-            }
+            _ => return fail(not_found(name, &argv)),
         })
     }
 
@@ -536,15 +576,9 @@ impl Interp {
         let n = argv.len();
         let out = match recv {
             V::Array(items) => match (name, n) {
-                ("len", 0) => V::Int(items.len() as i64),
-                ("is_empty", 0) => V::Bool(items.is_empty()),
-                ("push" | "append", 1) => {
+                ("push", 1) => {
                     let [x] = args_of::<1>(name, argv)?;
-                    let list = Rc::make_mut(items);
-                    match (name, x) {
-                        ("append", V::Array(more)) => list.extend(more.iter().cloned()),
-                        (_, x) => list.push(x),
-                    }
+                    Rc::make_mut(items).push(x);
                     V::None
                 }
                 ("pop", 0) => Rc::make_mut(items).pop().unwrap_or(V::None),
@@ -735,40 +769,6 @@ impl Interp {
                     }
                     V::array(out)
                 }
-                ("retain", 1) => {
-                    let f = argv[0].clone();
-                    let list = items.as_ref().clone();
-                    let mut keep = Vec::new();
-                    let mut removed = Vec::new();
-                    for (i, x) in list.into_iter().enumerate() {
-                        if self.call_value(f.clone(), vec![x.clone(), V::Int(i as i64)])?.truthy() {
-                            keep.push(x);
-                        } else {
-                            removed.push(x);
-                        }
-                    }
-                    *items = Rc::new(keep);
-                    V::array(removed)
-                }
-                ("drain", 1) => {
-                    let f = argv[0].clone();
-                    let list = items.as_ref().clone();
-                    let mut keep = Vec::new();
-                    let mut removed = Vec::new();
-                    for (i, x) in list.into_iter().enumerate() {
-                        if self.call_value(f.clone(), vec![x.clone(), V::Int(i as i64)])?.truthy() {
-                            removed.push(x);
-                        } else {
-                            keep.push(x);
-                        }
-                    }
-                    *items = Rc::new(keep);
-                    V::array(removed)
-                }
-                ("dedup", 0) => {
-                    Rc::make_mut(items).dedup();
-                    V::None
-                }
                 ("find", 1) => {
                     let f = argv[0].clone();
                     let list = Rc::clone(items);
@@ -824,8 +824,8 @@ impl Interp {
                     }
                     acc
                 }
-                ("includes" | "contains", 1) => V::Bool(items.iter().any(|x| *x == argv[0])),
-                ("indexOf" | "index_of", 1) => {
+                ("includes", 1) => V::Bool(items.iter().any(|x| *x == argv[0])),
+                ("indexOf", 1) => {
                     V::Int(items.iter().position(|x| *x == argv[0]).map_or(-1, |i| i as i64))
                 }
                 ("slice", 1 | 2) => {
@@ -835,16 +835,6 @@ impl Interp {
                     };
                     let (from, to) = bounds(items.len(), number(&argv[0])?, end);
                     V::array(items[from..to].to_vec())
-                }
-                ("extract", 1 | 2) => {
-                    let len = items.len() as i64;
-                    let start = argv[0].whole().unwrap_or(0);
-                    let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                    let end = match argv.get(1) {
-                        Some(c) => (start + c.whole().unwrap_or(0).max(0) as usize).min(items.len()),
-                        None => items.len(),
-                    };
-                    V::array(items[start..end].to_vec())
                 }
                 ("splice", 2 | 3) => {
                     let list = Rc::make_mut(items);
@@ -890,30 +880,19 @@ impl Interp {
                     }
                     None => V::None,
                 },
-                ("to_string", 0) => V::str(recv.display()),
                 _ => return Ok(None),
             },
             V::Str(s) => match (name, n) {
-                ("len", 0) => V::Int(s.chars().count() as i64),
-                ("is_empty", 0) => V::Bool(s.is_empty()),
                 ("trim", 0) => V::str(s.trim()),
-                ("toUpperCase" | "to_upper", 0) => V::str(s.to_uppercase()),
-                ("toLowerCase" | "to_lower", 0) => V::str(s.to_lowercase()),
-                ("make_upper", 0) => {
-                    *s = s.to_uppercase().into();
-                    V::None
-                }
-                ("make_lower", 0) => {
-                    *s = s.to_lowercase().into();
-                    V::None
-                }
-                ("startsWith" | "starts_with", 1) => V::Bool(s.starts_with(text(&argv[0])?.as_ref())),
-                ("endsWith" | "ends_with", 1) => V::Bool(s.ends_with(text(&argv[0])?.as_ref())),
-                ("includes" | "contains", 1) => V::Bool(match &argv[0] {
+                ("toUpperCase", 0) => V::str(s.to_uppercase()),
+                ("toLowerCase", 0) => V::str(s.to_lowercase()),
+                ("startsWith", 1) => V::Bool(s.starts_with(text(&argv[0])?.as_ref())),
+                ("endsWith", 1) => V::Bool(s.ends_with(text(&argv[0])?.as_ref())),
+                ("includes", 1) => V::Bool(match &argv[0] {
                     V::Str(p) => s.contains(p.as_ref()),
-                    other => return fail(format!("Function not found: contains (string, {})", other.type_name())),
+                    other => return fail(format!("Function not found: includes (string, {})", other.type_name())),
                 }),
-                ("indexOf" | "index_of", 1) => {
+                ("indexOf", 1) => {
                     let p = text(&argv[0])?;
                     V::Int(s.find(p.as_ref()).map_or(-1, |i| s[..i].chars().count() as i64))
                 }
@@ -931,23 +910,16 @@ impl Interp {
                     let (from, to) = bounds(chars.len(), number(&argv[0])?, end);
                     V::str(chars[from..to].iter().collect::<String>())
                 }
-                ("sub_string", 1 | 2) => {
-                    let chars: Vec<char> = s.chars().collect();
-                    let len = chars.len() as i64;
-                    let start = argv[0].whole().unwrap_or(0);
-                    let start = if start < 0 { (len + start).max(0) } else { start.min(len) } as usize;
-                    let end = match argv.get(1) {
-                        Some(c) => (start + c.whole().unwrap_or(0).max(0) as usize).min(chars.len()),
-                        None => chars.len(),
-                    };
-                    V::str(chars[start..end].iter().collect::<String>())
-                }
                 ("split", 0) => V::array(s.split_whitespace().map(V::str).collect()),
+                // JavaScript's: an empty separator splits into characters.
                 ("split", 1) => {
                     let sep = text(&argv[0])?;
-                    V::array(s.split(sep.as_ref()).map(V::str).collect())
+                    if sep.is_empty() {
+                        V::array(s.chars().map(|c| V::str(c.to_string())).collect())
+                    } else {
+                        V::array(s.split(sep.as_ref()).map(V::str).collect())
+                    }
                 }
-                ("chars" | "to_chars", 0) => V::array(s.chars().map(|c| V::str(c.to_string())).collect()),
                 // JavaScript's: the first match, in a new text, the receiver
                 // left alone. It changed the receiver, every match, and gave
                 // `none` back (AW-020).
@@ -985,16 +957,6 @@ impl Interp {
                     let p = text(&argv[0])?;
                     V::Int(s.rfind(p.as_ref()).map_or(-1, |i| s[..i].chars().count() as i64))
                 }
-                ("pad", 2) => {
-                    let to = argv[0].whole().unwrap_or(0).max(0) as usize;
-                    let with = text(&argv[1])?;
-                    let mut out = s.to_string();
-                    while out.chars().count() < to && !with.is_empty() {
-                        out.push_str(&with);
-                    }
-                    *s = out.into();
-                    V::None
-                }
                 ("clear", 0) => {
                     *s = "".into();
                     V::None
@@ -1004,7 +966,6 @@ impl Interp {
                     *s = s.chars().take(to).collect::<String>().into();
                     V::None
                 }
-                ("to_string", 0) => V::Str(Rc::clone(s)),
                 ("get", 1) => match argv[0].whole() {
                     Some(i) => s.chars().nth(i.max(0) as usize).map_or(V::None, |c| V::str(c.to_string())),
                     None => V::None,
@@ -1014,16 +975,11 @@ impl Interp {
             V::Int(_) | V::Float(_) => {
                 let v = recv.clone();
                 match (name, n) {
-                    ("to_int" | "trunc", 0) => whole_of(&v, f64::trunc)?,
+                    ("trunc", 0) => whole_of(&v, f64::trunc)?,
                     ("floor", 0) => whole_of(&v, f64::floor)?,
-                    ("ceil" | "ceiling", 0) => whole_of(&v, f64::ceil)?,
+                    ("ceil", 0) => whole_of(&v, f64::ceil)?,
                     ("round", 0) => whole_of(&v, f64::round)?,
-                    ("to_float" | "toFloat", 0) => V::Float(number(&v)?),
-                    ("sqrt", 0) => V::Float(number(&v)?.sqrt()),
-                    ("abs", 0) => self.builtin("abs", vec![v])?,
-                    ("to_string", 0) => V::str(v.display()),
-                    ("is_nan", 0) => V::Bool(v.number().is_some_and(f64::is_nan)),
-                    ("min" | "max", 1) => self.builtin(name, vec![v, argv[0].clone()])?,
+                    ("toFloat", 0) => V::Float(number(&v)?),
                     ("toFixed", 0 | 1) => {
                         let digits = match argv.first() {
                             Some(d) => number(d)?.clamp(0.0, 100.0) as usize,
@@ -1037,9 +993,6 @@ impl Interp {
             V::Map(m) => match (name, n) {
                 ("keys", 0) => V::array(m.keys().map(|k| V::str(k.as_str())).collect()),
                 ("values", 0) => V::array(m.values().cloned().collect()),
-                ("len", 0) => V::Int(m.len() as i64),
-                ("is_empty", 0) => V::Bool(m.is_empty()),
-                ("contains", 1) => V::Bool(m.contains_key(text(&argv[0])?.as_ref())),
                 ("get", 1) => m.get(text(&argv[0])?.as_ref()).cloned().unwrap_or(V::None),
                 ("remove", 1) => Rc::make_mut(m).remove(text(&argv[0])?.as_ref()).unwrap_or(V::None),
                 ("set", 2) => {
@@ -1051,18 +1004,13 @@ impl Interp {
                     Rc::make_mut(m).clear();
                     V::None
                 }
-                ("to_string", 0) => V::str(recv.display()),
                 ("unwrap", 0) => unwrap_result(recv)?,
                 _ => return Ok(None),
             },
             V::Rec(r) => match (name, n) {
                 ("keys", 0) => V::array(r.entries().map(|(k, _)| V::str(k)).collect()),
                 ("values", 0) => V::array(r.entries().map(|(_, v)| v.clone()).collect()),
-                ("len", 0) => V::Int(r.entries().count() as i64),
-                ("is_empty", 0) => V::Bool(r.entries().next().is_none()),
-                ("contains", 1) => V::Bool(r.has(text(&argv[0])?.as_ref())),
                 ("get", 1) => r.get(text(&argv[0])?.as_ref()).cloned().unwrap_or(V::None),
-                ("to_string", 0) => V::str(recv.display()),
                 ("unwrap", 0) => unwrap_result(recv)?,
                 ("set", 2) => {
                     let key = text(&argv[0])?;
@@ -1092,11 +1040,7 @@ impl Interp {
                 }
                 _ => return Ok(None),
             },
-            V::Range(a, b) => match (name, n) {
-                ("len", 0) => V::Int((*b - *a).max(0)),
-                ("contains", 1) => V::Bool(argv[0].whole().is_some_and(|x| *a <= x && x < *b)),
-                _ => return Ok(None),
-            },
+            V::Range(..) => return Ok(None),
             V::Element(el) => {
                 let path = el.facts.path.clone();
                 let action = match (name, n) {
@@ -1130,10 +1074,7 @@ impl Interp {
                 }
                 _ => return Ok(None),
             },
-            V::Bool(_) | V::None => match (name, n) {
-                ("to_string", 0) => V::str(recv.display()),
-                _ => return Ok(None),
-            },
+            V::Bool(_) | V::None => return Ok(None),
             // A resource's methods are its Rust's, called as native calls.
             V::Native(_) => return Ok(None),
         };
