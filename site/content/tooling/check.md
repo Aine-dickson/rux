@@ -11,6 +11,7 @@ rux check                      # every .rux under the current directory
 rux check examples             # or a named file or directory
 rux check --deny-warnings .    # warnings fail too, which is what CI wants
 rux check --format json .      # for an editor to turn into squiggles
+rux check --native             # also cargo check the app's native/ crate
 ```
 
 Output is `path:line:col: severity: message`, the shape every compiler emits
@@ -26,18 +27,46 @@ the failure would land on whoever trusted it.
 the things the dev overlay lists: unhonored CSS, unknown pseudo-classes,
 undefined `var()`, expressions that did not evaluate.
 
-## Handlers are compiled at load
+## Handlers are checked at load
 
-Every event handler is compiled when the document loads, and one that will not
-compile is a warning.
+Every event handler is compiled and type-checked when the document loads, so a
+broken one is reported before anyone taps it, not as a button that looks right
+and does nothing. Handlers inside branches that are not currently rendered are
+checked too, since a false `r-if` is where a broken handler hides longest.
 
-Nothing compiled a handler until it was tapped, which meant a syntax error
-reached the window as a button that looked correct and did nothing at all.
-Handlers inside branches that are not currently rendered are checked too, since
-a false `r-if` is where a broken handler hides longest.
+A handler that calls a function that does not exist, or writes a value of the
+wrong type, is an error:
 
-It is syntax only. A handler naming an `r-for` local or a component's own state
-is fine, because those are runtime lookups and not compile errors.
+```text
+app.rux:3: error: the `@tap` handler calls `nope`, which does not exist, so it will do nothing at that point when it runs
+app.rux:3: error: `@tap` on <button>: this is `string`, where `int` is expected
+```
+
+A handler that will not compile at all (a stray character, an operator the
+language does not have) is a warning that says it will never run.
+
+## The app's Rust
+
+`rux check` reads the signatures of the functions `native/` exports, from the
+source and without building it, so a call from a `.rux` file with the wrong
+arguments is reported like any other. The Rust bodies themselves are cargo's to
+check:
+
+```bash
+rux check --native
+```
+
+runs `cargo check` on `native/` as well and reports its errors in the same
+`path:line` form. It compiles Rux's dependencies the first time, which can take
+several minutes, so it is off unless asked for.
+
+## Windows a script opens
+
+A `window.open("windows/inspector.rux", { ... })` whose path is written out is
+checked too: the file must exist, its root must be a `<screen>`, the `props` it
+is given must be ones the file declares, with the right types, and every option
+must be one `window.open` takes. A path built at run time is a warning, because
+it cannot be followed.
 
 ## Every file is checked, each in its own context
 
@@ -87,6 +116,13 @@ Selector-level warnings report the line of the rule.
 There is no column. The CSS parser locates a rule and gives the declarations
 inside it no position of their own, so the line is recovered by scanning
 forward from the rule. That finds the line but not the offset within it.
+
+## For an editor
+
+`--format json` prints the diagnostics as JSON, and `--types` adds the types the
+checker worked out, which is what hover and completion in the VS Code extension
+read. `rux vocab` is the other half: what the runtime understands, for an editor
+that wants to complete it.
 
 ## Exit codes
 

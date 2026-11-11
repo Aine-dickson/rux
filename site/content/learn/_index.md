@@ -59,17 +59,15 @@ so you can skip ahead, or check your file against a working one when something
 looks wrong. The last chapter's version is `05-components.rux`.
 
 ```rux
-<view class="row" r-for="t in items" :class='#{ done: t.done }'
-      @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
+<view class="row" r-for="(t, i) in items" :class="{ done: t.done }" @tap="toggle(i)">
   <view class="box" />
   <text class="label">{{ t.label }}</text>
 </view>
 ```
 
 That is the heart of it: a repeated row, a class bound to state, and a handler
-that writes back to the list. If that line looks slightly unusual, chapter 5
-explains exactly why it is written that way, and what happens if you write the
-obvious thing instead.
+that writes back to the list through its index. Chapter 4 explains why the
+write goes through `items[i]`, and what happens if you write to `t` instead.
 
 ## A note on versions
 

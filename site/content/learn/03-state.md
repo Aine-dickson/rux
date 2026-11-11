@@ -4,8 +4,8 @@ description = "Signals, interpolation, tap handlers, and functions that can chan
 weight = 3
 +++
 
-Add a `<script>` section. It is [rhai], a small embedded scripting language, and
-`signal()` is the only new thing in it:
+Add a `<script>` section. It holds the app's state, in Rux's own script language,
+and `signal()` is the only new thing in it:
 
 ```rux
 <script>
@@ -28,8 +28,8 @@ Now read it in the template with `{{ }}`, and change it with `@tap`:
 
 Tap the button and the tally moves.
 
-Anything between `{{ }}` is a rhai *expression*, not just a name. `{{ count * 2 }}`
-and `{{ items.len() }}` are both fine. You will use that in the next chapter to
+Anything between `{{ }}` is an *expression*, not just a name. `{{ count * 2 }}`
+and `{{ items.length }}` are both fine. You will use that in the next chapter to
 count finished tasks without keeping a second signal in sync.
 
 ## Only what reads it updates
@@ -66,31 +66,19 @@ obvious thing works:
 <button @tap="add()">
 ```
 
-That is worth a sentence of history, because it is new. Until v0.7 a `fn` got
-its own scope with none of your signals in it, so `add()` ran, changed nothing,
-and reported no error, and every handler in every example had to be written
-inline. If you have read older Rux material telling you to keep `fn`s pure, that
-is what it was about, and it no longer applies.
-
 Inline still works and is still right for one-liners: `@tap="count = count + 1"`
 needs no function. Handlers take several statements too, and an `if`. Reach for
 a `fn` when the handler stops fitting on a line, or when two handlers want the
 same thing.
 
-### The one that still catches people
-
-A closure passed to a **method** cannot see the surrounding scope:
+A closure sees the scope too, including one passed to a method, so a function
+can count with `filter` and read a signal inside it:
 
 ```rux
-fn tally() {
-  // WRONG: `done` is not visible inside the closure
-  items.filter(|t| t.done == done).len()
+fn tally(): int {
+  items.filter(t => t.done == showDone).length
 }
 ```
-
-A method call passes its receiver by reference, and the scope cannot be borrowed
-at the same time, so method dispatch does not capture. A plain call does. Lift
-what the closure needs into a parameter, or use a loop.
 
 ## Quoting
 
@@ -107,8 +95,9 @@ script sees it. The examples in this repository lean on it, because an attribute
 that already contains single quotes has no other way out.
 
 What does **not** work is `'x'`: the script reads single quotes as a **character**,
-not a string, which is rhai's rule and not something Rux changes. So
-`@tap="name = 'ada'"` is an error rather than an assignment.
+not a string, so `'x'` holds exactly one character. So
+`@tap="name = 'ada'"` is an error rather than an assignment, and `rux check`
+says to write `"ada"`.
 
 ## `r-if`
 
@@ -127,5 +116,3 @@ but doesn't paint it.
 `examples/learn/03-state.rux`.
 
 Next: a real list, and a real text input.
-
-[rhai]: https://rhai.rs/

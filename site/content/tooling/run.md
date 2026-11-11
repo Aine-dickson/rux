@@ -45,6 +45,9 @@ they typed produced a panic out of the file watcher.
 |---|---|
 | `--route <path>` | Open on this route instead of `/`, the way a deep link arrives. With `--device` it is sent as a real link, which needs a [`scheme`](@/tooling/build.md#links-open-the-app) |
 | `--preview <device>` | Size the window to a device, and answer as one |
+| `--device` | Build an APK, install it and start it on the attached phone or running emulator, then stay and hot reload on every save. Needs a `rux.toml`; see [Android](@/tooling/android.md) |
+| `--no-watch` | With `--device`: install, start and exit |
+| `--serial <serial>` | With `--device`: which device, when several are attached (or set `ANDROID_SERIAL`) |
 
 ```bash
 rux run --route /settings
@@ -76,6 +79,13 @@ units that matter, since 393 by 852 is 1278 physical pixels on a 1.5x display.
 
 The profiles are nominal rather than measurements of one handset. The point is
 to be *a* phone, not *the* phone. Portrait only so far.
+
+## The window
+
+The window is sized by the `[window]` table in `rux.toml`, the same one a build
+reads, so the window you work in is the one you ship: its size, minimum size,
+whether it opens maximized, and whether it has the system's frame. See
+[the desktop window](@/tooling/build.md#the-desktop-window).
 
 ## Hot reload
 

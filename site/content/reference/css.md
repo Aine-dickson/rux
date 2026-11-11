@@ -343,10 +343,12 @@ does. A selector for any other attribute an element cannot carry matches
 nothing.
 
 **Pseudo-classes:** `:hover`, `:focus`, `:focus-visible`, `:active`, `:checked`, `:current` (a
-link whose `to` names the path you are on), `:disabled` / `:enabled` (an
+link whose `to` names the path you are on), `:dragging` (the elements carrying
+what is being dragged) and `:drag-over` (the drop target the pointer is over; both
+under Drag and drop in [Script](/reference/script/)), `:disabled` / `:enabled` (an
 `<input>` or `<button>` with or without `disabled`; a plain box is neither, as in
 CSS), `:valid` / `:invalid`, `:user-valid` / `:user-invalid` and `:required` /
-`:optional` (an input's checks, under [Forms](#forms)), and `:enter-from` / `:leave-to`
+`:optional` (an input's checks, under [Forms](/reference/#forms)), and `:enter-from` / `:leave-to`
 (the two sides of an enter/leave swap, below). They stack
 (`.btn:hover:active`), count as class-level specificity, and work anywhere in a
 chain, `.card:hover .title` recolours the title while the pointer is over the

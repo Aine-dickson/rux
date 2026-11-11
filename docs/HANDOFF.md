@@ -1,7 +1,7 @@
 # Handoff
 
 Read this first. Keep it short; history goes to an archive, not here.
-Last updated 2026-11-06.
+Last updated 2026-11-11.
 
 ## Objective
 
@@ -265,6 +265,15 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
    refused). Driven on Windows: the prompt at a real console, both projects in a window.
 
 ## Next action
+
+**2026-11-11, docs and site pass** (owner's decisions: docs are versioned and
+public docs show only their release; the playground keeps running the latest
+release and moves to `playground.ruxlang.dev`). The audit is
+`docs/archive/docs-audit-2026-11-11.md`; its "Fixed" section lists what was
+corrected on this branch. Open from it: the restructure (section 4), the
+playground move (section 5), the per-command `--help` defect, and the same
+stale text on `release/v0.8.0` (Learn, home, how-it-works, why), which needs its
+own pass on that branch, with the owner's go-ahead.
 
 Next: the owner decides (see the list below). `main` takes a version only when it is published, and v0.8 is queued ahead of v0.9, so no merge to `main` yet. 2026-11-07: an `<icon>` now draws in its own `color`, and an author `fill`/`stroke` beats it (`icon_box` in `rux-style`; tests in `rux-runtime/tests/icon_color.rs`, driven). Not checked: `transition: color` on an icon. The older list follows:
 

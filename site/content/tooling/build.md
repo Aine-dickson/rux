@@ -334,7 +334,7 @@ plate.
 
 So `icon` is the **foreground**: the mark, usually on transparency, with room
 around it. It should be square. The whole image is a 108dp canvas of which
-**only the middle 72dp is certain to be seen** — the rest is under the mask,
+**only the middle 72dp is certain to be seen**: the rest is under the mask,
 and some launchers shift it as the user scrolls. Artwork that runs to the edge
 of the file will have that edge eaten. It is the platform's rule rather than
 Rux's, and designing to it is what makes an icon look right on a device nobody
@@ -433,7 +433,7 @@ a link straight to `/admin` passes the same check a tap would.
 needs a `scheme` and proves the whole path: the manifest's filter, the handoff
 and the route.
 
-## Dev builds and release builds differ in one way
+## Dev builds and release builds differ in two ways
 
 A **dev build** points the executable at the project directory. Documents are
 read from disk as the app runs, so hot reload works exactly as it does under
@@ -447,6 +447,12 @@ directory and it still runs.
 **Android is the exception, and always embeds.** There is no filesystem behind
 an APK to read documents back from, so a dev build for Android carries them too
 and does not hot reload yet.
+
+A **release build also compiles the entry document's script to Rust**, function
+by function, and the build log says how much: `compiled 12 functions and 3
+closure bodies to Rust`. What cannot be compiled stays interpreted, and so does
+every other document, so compiling can make a build faster but never different.
+`RUX_AOT=0 rux build --release` builds without it, for comparing the two.
 
 ## What it needs installed
 

@@ -4,7 +4,7 @@
   <screen class="app">
     <view class="head">
       <text class="title">Tasks</text>
-      <!-- Any rhai expression goes between the braces, not just a name. -->
+      <!-- Any expression goes between the braces, not just a name. -->
       <text class="tally">{{ count }} added</text>
     </view>
 

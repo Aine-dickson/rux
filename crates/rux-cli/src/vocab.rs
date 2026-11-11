@@ -596,16 +596,14 @@ const ELEMENT_METHODS: &[Entry] = &[
 
 /// Methods on strings and arrays: JavaScript's names, deliberately.
 ///
-/// Worth publishing because rhai's own string methods are **in-place mutators**
-/// with some of the same names, and Rux shadows them with returning versions.
-/// An editor completing from rhai's list would be completing a different
-/// language that happens to share the spelling.
+/// Worth publishing because they return new values and leave the receiver
+/// alone, where the rhai-era methods of the same spelling mutated it.
 const VALUE_METHODS: &[Entry] = &[
-    Entry { name: "map", detail: "map(|x| …)", doc: "A new array, each item transformed. Returns; the receiver is untouched." },
-    Entry { name: "filter", detail: "filter(|x| …)", doc: "A new array of the items that passed." },
-    Entry { name: "reduce", detail: "reduce(|acc, x| …, start)", doc: "Fold the array to one value." },
-    Entry { name: "forEach", detail: "forEach(|item, index| …)", doc: "Called with `(item, index)`, and falls back to `(item)`." },
-    Entry { name: "find", detail: "find(|x| …)", doc: "The first item that passed, or absent." },
+    Entry { name: "map", detail: "map(x => …)", doc: "A new array, each item transformed. Returns; the receiver is untouched." },
+    Entry { name: "filter", detail: "filter(x => …)", doc: "A new array of the items that passed." },
+    Entry { name: "reduce", detail: "reduce((acc, x) => …, start)", doc: "Fold the array to one value." },
+    Entry { name: "forEach", detail: "forEach((item, index) => …)", doc: "Called with `(item, index)`, and falls back to `(item)`." },
+    Entry { name: "find", detail: "find(x => …)", doc: "The first item that passed, or `none`." },
     Entry { name: "findIndex", detail: "findIndex(x => …)", doc: "Where the first item that passed is, or -1." },
     Entry { name: "some", detail: "some(x => …)", doc: "Whether any item passes." },
     Entry { name: "every", detail: "every(x => …)", doc: "Whether every item passes." },
@@ -619,7 +617,7 @@ const VALUE_METHODS: &[Entry] = &[
     Entry { name: "repeat", detail: "repeat(n)", doc: "The string over again, n times." },
     Entry { name: "startsWith", detail: "startsWith(s)", doc: "Whether it begins with that." },
     Entry { name: "endsWith", detail: "endsWith(s)", doc: "Whether it ends with that." },
-    Entry { name: "trim", detail: "trim()", doc: "**Returns** the trimmed string and leaves the receiver alone. rhai's own `trim` empties the string it was given and returns nothing, which rendered `{{ name.trim() }}` blank; Rux shadows it." },
+    Entry { name: "trim", detail: "trim()", doc: "**Returns** the trimmed string and leaves the receiver alone." },
     Entry { name: "toLowerCase", detail: "toLowerCase()", doc: "Returns a new string." },
     Entry { name: "toUpperCase", detail: "toUpperCase()", doc: "Returns a new string." },
     Entry { name: "length", detail: "length", doc: "A **property, not `len()`**, and only on arrays and strings." },

@@ -5,27 +5,25 @@
     <view class="head">
       <text class="title">Tasks</text>
       <!-- No second signal for the count: a closure over the list does it. -->
-      <text class="tally">{{ items.filter(|t| t.done).len() }} / {{ items.len() }}</text>
+      <text class="tally">{{ items.filter(t => t.done).length }} / {{ items.length }}</text>
     </view>
 
     <view class="composer">
       <input class="field" r-model="draft" placeholder="add a task…" />
-      <!-- Single-quoted attribute, so rhai sees a real "" string literal.
-           A double-quoted attribute would need HTML entities, which we do not
-           decode, and rhai reads '' as a char rather than a string. -->
-      <button class="add" @tap='if draft != "" { items.push(#{ label: draft, done: false }); draft = ""; }'>
+      <!-- Single-quoted attribute, so the script sees a real "" string literal.
+           In a double-quoted one it would be &quot;&quot;. -->
+      <button class="add" @tap='if draft != "" { items.push({ label: draft, done: false }); draft = ""; }'>
         <text class="addlabel">Add</text>
       </button>
     </view>
 
-    <text class="empty" r-if="items.len() == 0">Nothing yet. Add your first task.</text>
+    <text class="empty" r-if="items.length == 0">Nothing yet. Add your first task.</text>
 
     <view class="list">
       <!-- `t` is a SNAPSHOT of the item, baked into the handler as a literal.
            Writing `t.done = !t.done` would mutate that copy and change nothing;
            the write has to go through `items` itself, by index. -->
-      <view class="row" r-for="t in items" :class='#{ done: t.done }'
-      @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
+      <view class="row" r-for="(t, i) in items" :class="{ done: t.done }" @tap="toggle(i)">
         <view class="box" />
         <text class="label">{{ t.label }}</text>
       </view>
@@ -127,7 +125,12 @@
 <script>
   let draft = signal("");
   let items = signal([
-    #{ label: "read the reference", done: true },
-    #{ label: "build a task list", done: false },
+    { label: "read the reference", done: true },
+    { label: "build a task list", done: false },
   ]);
+
+  // `fn` can write state, so the toggle is a function the row calls with its index.
+  fn toggle(i: int) {
+    items[i].done = !items[i].done;
+  }
 </script>

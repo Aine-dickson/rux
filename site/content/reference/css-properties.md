@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places Rux behaves differently and what to write there.
 
-250 properties and 26 pseudo-classes, as of `rux 0.9.0-dev`.
+250 properties and 28 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -275,6 +275,8 @@ Every property below is one the runtime interprets, and the list is written by t
 | `:active` | **a press is down on this box.** Held between press and release, so it is the state a button uses to look pushed. |
 | `:checked` | **a checkbox or radio is on.** Resolved during the build from the input's live state, rather than supplied by the shell as `:hover` and `:active` are. |
 | `:current` | **this link names the path you are on.** Matches an element whose `to` is the route you are currently on. It is the nav highlight, without a signal to track it. |
+| `:dragging` | **the element carrying what is being dragged.** Matches the elements whose `drag-data` equals what is being dragged, so it stays on the row when a live move has rebuilt the list. |
+| `:drag-over` | **the drop target the pointer is over.** Matches the drop target the dragged thing is over. |
 | `:enter-from` | **the frame an element enters from.** Under `r-transition`: the style the element holds for exactly one frame as it arrives, and animates away from. The *hidden* end of the animation goes here. |
 | `:leave-to` | **the state an element leaves to.** Under `r-transition`: the style the element animates towards while it is held on screen on its way out. `position: absolute` here takes it out of flow, so the rest of a list closes up under it rather than waiting. |
 | `:disabled` | **an input or button that is switched off.** Matches a `<input>` or `<button>` with `disabled` (or a truthy `:disabled`). Rux draws no default look for it, so this is where the dimming goes. |

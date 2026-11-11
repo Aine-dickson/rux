@@ -45,7 +45,7 @@ pages=(
   # Weights interleave with the `splits` table below, which is what orders the
   # reference sidebar: overview, elements, layout, CSS, reactivity, script, then
   # the rest of the runtime, with the v0.1 design history last.
-  "07-script.md|reference/script.md|Script|6|The script language: state, functions, values, the element API, and every way it differs from rhai and from JavaScript."
+  "07-script.md|reference/script.md|Script|6|The script language: state, functions, values, the element API, and every way it differs from JavaScript."
   "02-spec.md|reference/spec.md|Design surface (v0.1)|16|The original v0.1 spec, kept as design history. Not a description of the built runtime, and parts of it are false."
   "01-rationale.md|reference/rationale.md|Design rationale|17|The four laws, the element audit, and the decisions behind them, with the tradeoffs each one accepted."
   "06-roadmap.md|roadmap/_index.md|Roadmap|4|Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
@@ -173,11 +173,24 @@ strip_sections() {
 # general rule is not possible from the link alone: `dont` in an anchor could be
 # a real word. Add a line here when a heading with an apostrophe is linked to.
 fix_apostrophe_anchors() {
-  sed -E -e 's;#law-4-stay-close-to-rust-dont-pop-the-balloon;#law-4-stay-close-to-rust-don-t-pop-the-balloon;g'
+  sed -E -e 's;#law-4-stay-close-to-rust-dont-pop-the-balloon;#law-4-stay-close-to-rust-don-t-pop-the-balloon;g' \
+    -e 's;#a-form-submits-as-htmls-does-refusal-included;#a-form-submits-as-html-s-does-refusal-included;g'
+}
+
+# A `(#anchor)` link inside 05 names a heading that the split may have put on
+# another page. Point those at the page that holds the heading. On the page
+# that holds it, the absolute link still lands on the same heading.
+cross_page_anchors() {
+  sed -E \
+    -e 's;\(#forms\);(/reference/#forms);g' \
+    -e 's;\(#field-attributes-and-events\);(/reference/#field-attributes-and-events);g' \
+    -e 's;\(#selection-{1,2}clipboard\);(/reference/selection/);g' \
+    -e 's;\(#elements\);(/reference/elements/);g' \
+    -e 's;\(#touch\);(/reference/touch/);g'
 }
 
 rewrite_links() {
-  fix_apostrophe_anchors | sed -E \
+  fix_apostrophe_anchors | cross_page_anchors | sed -E \
     -e ':a' -e 's;(\(#[a-z0-9-]*)--;\1-;g' -e 'ta' \
     -e 's;(\(#v[0-9])([0-9]);\1-\2;g' \
     -e 's;\.\/05-as-built\.md#honored-css;/reference/css/;g' \

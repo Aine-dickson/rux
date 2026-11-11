@@ -121,3 +121,15 @@ fn key_on_a_component_tag_is_still_a_listener_for_its_emit() {
     let _ = fs::remove_dir_all(&dir);
     assert!(first_key(&d.root).is_none(), "the tag's @key is the caller's listener, not a key handler");
 }
+
+/// The message-list recipe sends on Enter, from the field's own `@key`.
+#[test]
+fn the_message_list_recipe_sends_on_enter() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/recipes/message-list.rux");
+    let mut d = Document::load(&path).expect("loads");
+    let (body, instance) = first_key(&d.root).expect("the field carries its @key");
+    assert!(d.apply_handler(r#"draft = "hello from enter""#));
+    d.dispatch_key(&body, instance.as_deref(), &key("Enter", false));
+    assert!(shown(&d).contains("hello from enter"), "the message was sent");
+    assert!(!d.apply_handler(r#"if draft != "" { draft = "x"; }"#), "send() cleared the draft");
+}

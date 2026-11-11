@@ -72,15 +72,18 @@ Law 1 is meant to kill, and it's the main thing Rux is actually claiming.
 bind the ones you need. There's no sprawling widget catalogue to learn, and no
 `FancyButton` that's just a button with opinions.
 
-**Law 3: few elements, `role=` for meaning.** Six elements (`screen`, `view`,
-`text`, `image`, `button`, `input`) cover the ground. Semantics come from `role=`,
+**Law 3: few elements, `role=` for meaning.** A short, fixed set of elements
+(`screen`, `view`, `text`, `image`, `icon`, `path`, `button`, `input`, `audio`,
+`video`, and `slot`, `router`, `route` and `router-view` for structure) covers the
+ground. Semantics come from `role=`,
 never from layout.
 
 **Law 4: stay close to Rust.** Rux is glue over the best crates in the ecosystem
 rather than a from-scratch engine: [taffy] for layout, [parley] for text, [vello]
-for painting, [lightningcss] for CSS, [rhai] for script, Leptos-style signals for
-state. Fewer things to reinvent, and each one is maintained by people who care
-about it more than we could.
+for painting, [lightningcss] for CSS, Leptos-style signals for state. Fewer
+things to reinvent, and each one is maintained by people who care about it more
+than we could. The script is the one large part Rux writes itself: a small,
+checked language of its own, with its types checked rather than erased.
 
 ## Where Rux is not novel
 
@@ -97,7 +100,7 @@ The claim is narrower, and it's entirely about *ergonomics*:
 
 |            | authoring model                         | language | renderer            |
 |------------|-----------------------------------------|----------|---------------------|
-| **Rux**    | **literal CSS + 6 elements**            | **Rust** | own, GPU ([vello])  |
+| **Rux**    | **literal CSS + a fixed element set**   | **Rux script + Rust** | own, GPU ([vello])  |
 | Flutter    | widget tree (layout *is* nested widgets) | Dart     | own, GPU            |
 | React Native | React tree → native widgets            | JS/TS    | platform widgets    |
 | Slint      | its own `.slint` DSL (QML-like)          | Rust/C++/JS | own, GPU/software |
@@ -110,10 +113,11 @@ already know. **That's the whole difference, and it's a bet, not a proven win.**
 ## When you should not use Rux
 
 - **You need to ship a real app soon.** Use Flutter, React Native, or Slint. Rux
-  is `0.x`; it has no accessibility story yet, no mobile backend yet, and its CSS
-  support has real holes (variables, `@media`, `:hover`).
-- **You need a rich widget catalogue.** There are six elements. Everything else you
-  build.
+  is `0.x`: there is no iOS backend yet, the accessibility tree is desktop only,
+  and the [list of what is not built](@/reference/_index.md#known-gaps-backlog) is
+  real.
+- **You need a rich widget catalogue.** There are fourteen elements. Everything
+  else you build.
 - **You want native platform look-and-feel.** Rux draws its own pixels; it doesn't
   wrap platform widgets.
 - **You need text selection across arbitrary content.** Selection works inside
@@ -143,6 +147,5 @@ grained reactivity is the next real piece of work.
 [parley]: https://github.com/linebender/parley
 [vello]: https://github.com/linebender/vello
 [lightningcss]: https://lightningcss.dev/
-[rhai]: https://rhai.rs/
 [as-built]: https://github.com/Aine-dickson/rux/blob/main/docs/05-as-built.md
 [roadmap]: https://github.com/Aine-dickson/rux/blob/main/docs/06-roadmap.md

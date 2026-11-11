@@ -32,7 +32,7 @@ empty. The caret survives the rebuild that follows each keystroke.
 Inputs **fill their slot** (default `width: 100%`) rather than hug their text, so
 a field doesn't shrink as you type, and single-line inputs **never wrap**. They
 clip overflow and scroll sideways to keep the caret in view (see
-[Selection & clipboard](#selection-clipboard)).
+[Selection & clipboard](/reference/selection/)).
 
 `<input type="textarea" r-model="sig">` is the same, but **Enter inserts a
 newline** (in a single-line input it commits the field, below), the value wraps across lines,

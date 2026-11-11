@@ -79,16 +79,14 @@ fn step3_a_function_can_write_a_signal() {
     assert!(find_text(&doc.root, "2 added"), "it reads what it wrote last time");
 }
 
-/// The trap chapter 3 puts in place of the old one: a closure passed to a
-/// **method** cannot see the surrounding scope, while a plain call can.
-///
-/// If this ever starts working, the chapter's callout is wrong and has to go.
+/// Chapter 3: a closure sees the surrounding scope, including one passed to a
+/// method. (Until the move off rhai it could not, and the chapter warned about it.)
 #[test]
-fn step3_a_closure_in_a_method_call_cannot_capture() {
+fn step3_a_closure_in_a_method_call_captures() {
     let mut doc = load("03-state.rux");
     // `count` is a document signal; the closure is passed to `filter`, a method.
-    let captured = doc.apply_handler("count = [1, 2, 3].filter(|n| n == count).len()");
-    assert!(!captured, "the method's closure could not see `count`, so nothing moved");
+    assert!(doc.apply_handler("count = [1, 0, 3].filter(n => n == count).length"));
+    assert!(find_text(&doc.root, "1 added"), "the closure saw `count` (0), so one item matched");
 }
 
 /// Step 4's claims, in the order the guide makes them.
@@ -99,26 +97,23 @@ fn step4_task_list_behaves_as_documented() {
     // Seeded state: two rows, one of them done.
     assert!(find_text(&doc.root, "read the reference"));
     assert!(find_text(&doc.root, "build a task list"));
-    assert!(find_text(&doc.root, "1 / 2"), "the closure tally counts done items");
+    assert!(find_text(&doc.root, "1 / 2"), "the filter tally counts done items");
 
     // Adding: push a map onto the signal array, then clear the draft.
     let added = doc.apply_handler(
-        r#"if draft != "" { items.push(#{ label: draft, done: false }); draft = ""; }"#,
+        r#"if draft != "" { items.push({ label: draft, done: false }); draft = ""; }"#,
     );
     assert!(!added, "an empty draft adds nothing");
 
     doc.apply_handler(r#"draft = "ship /learn""#);
     assert!(doc.apply_handler(
-        r#"if draft != "" { items.push(#{ label: draft, done: false }); draft = ""; }"#
+        r#"if draft != "" { items.push({ label: draft, done: false }); draft = ""; }"#
     ));
     assert!(find_text(&doc.root, "ship /learn"), "the new row rendered");
     assert!(find_text(&doc.root, "1 / 3"), "the tally counted the new row");
 
-    // Toggling, exactly as the template writes it, including the baked-in
-    // `t` snapshot the handler matches against.
-    let toggle = r#"let t = #{ label: "ship /learn", done: false };
-                    for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }"#;
-    assert!(doc.apply_handler(toggle), "the indexed write was detected");
+    // Toggling, exactly as the template writes it: the row's index, to a `fn`.
+    assert!(doc.apply_handler("toggle(2)"), "the indexed write was detected");
     assert!(find_text(&doc.root, "2 / 3"), "toggling moved the tally");
 }
 
@@ -132,12 +127,15 @@ fn step4_writing_through_the_loop_local_is_a_no_op() {
 
     let changed = doc.apply_handler("for t in items { t.done = true; }");
     assert!(!changed, "mutating the loop local reported no change");
+    // The row handler the chapter warns about: `t` is baked in as a copy.
+    let tap = r#"let t = { label: "build a task list", done: false }; let i = 1; t.done = !t.done"#;
+    assert!(!doc.apply_handler(tap), "writing to the row's `t` reported no change");
     assert!(find_text(&doc.root, "1 / 2"), "the tally did not move");
     assert_eq!(count_text(&doc.root, "/ 2"), before);
 }
 
-/// `:class` accepts rhai's object form. The ternary does NOT, rhai has no
-/// `?:` operator, and the guide tells readers to use `if`/`else` instead.
+/// `:class` accepts the object form. The ternary does NOT: there is no `?:`
+/// operator, and the guide tells readers to use `if`/`else` instead.
 #[test]
 fn class_binding_object_form_applies_and_ternary_does_not_parse() {
     // A 99px marker is the only way to observe a bound class: classes are
@@ -148,7 +146,7 @@ fn class_binding_object_form_applies_and_ternary_does_not_parse() {
                  <view r-for="t in items" :class='{expr}'><text>x</text></view>
                </screen></template>
                <style>.done text {{ font-size: 99px; }}</style>
-               <script>let items = signal([#{{ label: "a", done: true }}]);</script>"#
+               <script>let items = signal([{{ label: "a", done: true }}]);</script>"#
         )
     };
     let marked = |node: &rux_layout::Node| -> bool {
@@ -159,8 +157,8 @@ fn class_binding_object_form_applies_and_ternary_does_not_parse() {
         walk(node)
     };
 
-    let object = Document::from_source(&src(r#"#{ done: t.done }"#)).expect("object form loads");
-    assert!(marked(&object.root), "`#{{ done: t.done }}` applied the class");
+    let object = Document::from_source(&src(r#"{ done: t.done }"#)).expect("object form loads");
+    assert!(marked(&object.root), "`{{ done: t.done }}` applied the class");
 
     let if_else =
         Document::from_source(&src(r#"if t.done { "done" } else { "" }"#)).expect("if form loads");
@@ -170,7 +168,7 @@ fn class_binding_object_form_applies_and_ternary_does_not_parse() {
     // because the guide warns that it doesn't.
     let ternary = Document::from_source(&src(r#"t.done ? "done" : ""#));
     let applied = ternary.map(|d| marked(&d.root)).unwrap_or(false);
-    assert!(!applied, "the ternary must NOT apply the class; rhai has no ?: operator");
+    assert!(!applied, "the ternary must NOT apply the class; there is no ?: operator");
 }
 
 /// Step 5: the component renders its props, and its own CSS styles its subtree.

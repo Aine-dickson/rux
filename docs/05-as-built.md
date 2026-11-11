@@ -49,8 +49,9 @@ my-app/
   app.rux                the frame and the routes
   rux.toml               name, id and version
   pages/
-    home.rux             the home page, which calls the app's Rust
-    missing.rux          the fallback, for a path nothing matches
+    home.rux             the home page, which shows the store's greeting
+    about.rux            the second page (with the router)
+    missing.rux          the fallback, for a path nothing matches (with the router)
   stores/
     greeter.rux          the app's rules: writes the greeting (calls Rust with native/)
   components/
@@ -630,8 +631,7 @@ it with nothing written per icon. `color` written on the icon itself (a class,
 a `style=`) recolours it, and `fill`, `stroke` and `stroke-width` override
 both, so `stroke: #f38ba8` recolours the lines and `fill` paints inside an
 outline icon. The stroke scales with the drawing, so one weight stays right at
-every size. (Until 2026-11-07 the icon read its parent's `color`, and a `color`
-or `stroke` written on the icon did nothing.)
+every size.
 
 **Solid and outline are different artwork, not a render mode**, and cannot be
 derived from one another. Roughly four icons in five are outline only, which is
@@ -1253,7 +1253,9 @@ does. A selector for any other attribute an element cannot carry matches
 nothing.
 
 **Pseudo-classes:** `:hover`, `:focus`, `:focus-visible`, `:active`, `:checked`, `:current` (a
-link whose `to` names the path you are on), `:disabled` / `:enabled` (an
+link whose `to` names the path you are on), `:dragging` (the elements carrying
+what is being dragged) and `:drag-over` (the drop target the pointer is over; both
+under Drag and drop in [Script](./07-script.md)), `:disabled` / `:enabled` (an
 `<input>` or `<button>` with or without `disabled`; a plain box is neither, as in
 CSS), `:valid` / `:invalid`, `:user-valid` / `:user-invalid` and `:required` /
 `:optional` (an input's checks, under [Forms](#forms)), and `:enter-from` / `:leave-to`
@@ -3935,8 +3937,9 @@ the order and the reasons.
 - **Error boundaries.** A failing expression is reported and the document
   carries on; a subtree cannot catch one and show a fallback.
 - **A capability model for native code.** A native module has full trust.
-- **Drag and drop** of elements. `@tap` and the gesture events are the
-  vocabulary; dragging selected text inside a field is built.
+- **Dropping files from the system.** A file dragged onto the window from the
+  desktop or a file manager is not received; drag and drop between elements is
+  built (see `07-script`, "Drag and drop").
 - **Multiple windows on Android and the web.** `window.open` is desktop only
   (`window.canOpen`); see `07-script`.
 - **CSS left out:** table properties, `writing-mode`, `column-span`, and

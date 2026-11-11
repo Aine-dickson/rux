@@ -983,7 +983,7 @@ const NATIVE_LIB: &str = "//! The Rust half of this app: what its pages reach as
     \n\
     pub mod hello;\n";
 
-const NATIVE_HELLO: &str = r#"//! The greeting on the home page: `use native::hello;` in `pages/home.rux`.
+const NATIVE_HELLO: &str = r#"//! The greeting on the home page: `use native::hello;` in `stores/greeter.rux`.
 
 /// A greeting for `name`, or for the world when there is no name.
 ///

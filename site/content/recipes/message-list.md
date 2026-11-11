@@ -154,12 +154,10 @@ the last message.
     </view>
 
     <view class="composer">
-      <!-- No `@submit`: an `<input>` raises no events of its own yet, so Enter
-           does not send. This carried `@submit="send()"` from the day it was
-           written until 2026-09-15, when the check for unknown `@events`
-           found it. It had never once fired, and the button beside it working
-           is what kept anyone from noticing. Input events are on the list. -->
-      <input class="field" r-model="draft" placeholder="say something…" />
+      <!-- Enter sends: a field's own `@key` sees the key before the field
+           does. `enterkeyhint` labels a phone keyboard's action key to match. -->
+      <input class="field" r-model="draft" placeholder="say something…"
+             enterkeyhint="send" @key='if event.key == "Enter" { send(); }' />
       <view class="send" :class="{ dead: draft.trim() == &quot;&quot; }" @tap="send()">
         <text class="send-label">send</text>
       </view>

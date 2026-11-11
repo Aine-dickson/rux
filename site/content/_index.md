@@ -8,7 +8,7 @@ template = "index.html"
 [extra]
 headline = "Write a native app the way you write a web page."
 lede = "Rux is a pure-Rust UI language: familiar template / style / script sections and literal CSS, laid out by a real flexbox and grid engine and painted on the GPU. No browser. No webview. No JavaScript."
-note = "Early and experimental (0.x) · Apache-2.0 or MIT · desktop today, mobile next"
+note = "Early and experimental (0.x) · Apache-2.0 or MIT · desktop, Android and the web; iOS next"
 shot_caption = "examples/showcase.rux, running in a native window"
 +++
 
@@ -142,16 +142,32 @@ GPU, [winit] holds the window.
   <li>nested routes + guards</li>
   <li>element access from script</li>
   <li>position: sticky / fixed</li>
+  <li>anchor positioning</li>
+  <li>inline text runs</li>
+  <li>Tabler icons</li>
+  <li>audio + video</li>
+  <li>file input + pickers</li>
+  <li>forms + validation</li>
+  <li>sliders + switches</li>
+  <li>drag and drop</li>
+  <li>context menus + double tap</li>
+  <li>typed script</li>
+  <li>async fn + await</li>
+  <li>modules + stores</li>
+  <li>native Rust modules</li>
+  <li>settings + clipboard</li>
+  <li>several windows</li>
+  <li>custom title bars</li>
+  <li>Android builds</li>
+  <li>web builds</li>
+  <li>Tailwind</li>
 </ul>
 
 The exact honored-CSS set lives in [the reference](@/reference/_index.md), the
 authoritative "what actually works" doc. What's missing is written down just as
-plainly. The biggest gap is **true inline text flow**: two `<text>` elements
-cannot share a line, so bold inside a sentence is not expressible. After that:
-`r-for` gives you the item but no index, a closure passed to a *method* cannot
-capture the surrounding scope, there are no promises and no async anything, the
-router is desktop-only until `rux build` can bundle components for the web, and
-text editing lacks word-wise movement and triple-click selection.
+plainly, at the end of it: spring physics, screen-reader live regions and
+accessibility off the desktop, pinch and rotate, `hyphens: auto`, video on macOS
+and Linux, and iOS.
 
 > **Rux is 0.x and experimental.** It is not trying to replace Flutter, React
 > Native, or Slint. Those are mature, and if you need to ship an app this

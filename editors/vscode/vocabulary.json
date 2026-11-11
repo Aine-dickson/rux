@@ -253,11 +253,11 @@
     { "name": "clearHistory", "detail": "clearHistory()", "doc": "Forget a text field's undo and redo, so an app keeping one undo for a whole editor can drop the field's steps once its own undo has moved past them. The text and the focus stay as they are." }
   ],
   "valueMethods": [
-    { "name": "map", "detail": "map(|x| …)", "doc": "A new array, each item transformed. Returns; the receiver is untouched." },
-    { "name": "filter", "detail": "filter(|x| …)", "doc": "A new array of the items that passed." },
-    { "name": "reduce", "detail": "reduce(|acc, x| …, start)", "doc": "Fold the array to one value." },
-    { "name": "forEach", "detail": "forEach(|item, index| …)", "doc": "Called with `(item, index)`, and falls back to `(item)`." },
-    { "name": "find", "detail": "find(|x| …)", "doc": "The first item that passed, or absent." },
+    { "name": "map", "detail": "map(x => …)", "doc": "A new array, each item transformed. Returns; the receiver is untouched." },
+    { "name": "filter", "detail": "filter(x => …)", "doc": "A new array of the items that passed." },
+    { "name": "reduce", "detail": "reduce((acc, x) => …, start)", "doc": "Fold the array to one value." },
+    { "name": "forEach", "detail": "forEach((item, index) => …)", "doc": "Called with `(item, index)`, and falls back to `(item)`." },
+    { "name": "find", "detail": "find(x => …)", "doc": "The first item that passed, or `none`." },
     { "name": "findIndex", "detail": "findIndex(x => …)", "doc": "Where the first item that passed is, or -1." },
     { "name": "some", "detail": "some(x => …)", "doc": "Whether any item passes." },
     { "name": "every", "detail": "every(x => …)", "doc": "Whether every item passes." },
@@ -271,7 +271,7 @@
     { "name": "repeat", "detail": "repeat(n)", "doc": "The string over again, n times." },
     { "name": "startsWith", "detail": "startsWith(s)", "doc": "Whether it begins with that." },
     { "name": "endsWith", "detail": "endsWith(s)", "doc": "Whether it ends with that." },
-    { "name": "trim", "detail": "trim()", "doc": "**Returns** the trimmed string and leaves the receiver alone. rhai's own `trim` empties the string it was given and returns nothing, which rendered `{{ name.trim() }}` blank; Rux shadows it." },
+    { "name": "trim", "detail": "trim()", "doc": "**Returns** the trimmed string and leaves the receiver alone." },
     { "name": "toLowerCase", "detail": "toLowerCase()", "doc": "Returns a new string." },
     { "name": "toUpperCase", "detail": "toUpperCase()", "doc": "Returns a new string." },
     { "name": "length", "detail": "length", "doc": "A **property, not `len()`**, and only on arrays and strings." }

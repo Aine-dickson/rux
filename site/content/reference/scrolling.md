@@ -59,7 +59,7 @@ until the thumb reaches the pointer. `scrollbar-width: thin` draws it thinner,
 press). `scrollbar-color: <thumb> <track>` colours it; the default is a grey
 that shows on a light page and a dark one.
 
-**A touch drag ends in a fling**, described under [Touch](#touch). There is no
+**A touch drag ends in a fling**, described under [Touch](/reference/touch/). There is no
 bounce at the ends.
 
 **Snapping and smooth scrolling.** `scroll-snap-type`, `scroll-snap-align`,

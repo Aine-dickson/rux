@@ -41,7 +41,7 @@ is the part that held up.
 ## Contents
 
 - [File format: the SFC](#file-format-the-sfc)
-- [Elements](#elements)
+- [Elements](/reference/elements/)
 - [Roles](#roles)
 - [Directives & bindings](#directives-bindings)
 - [Events](#events)

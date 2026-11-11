@@ -2,7 +2,7 @@
      the caller's signals are not in scope here, and its CSS styles only this
      subtree. That isolation is why the finished look lives in this file. -->
 <template>
-  <view class="task" :class='#{ done: done }'>
+  <view class="task" :class="{ done: done }">
     <view class="box" />
     <text class="label">{{ label }}</text>
   </view>
@@ -35,6 +35,6 @@
 </style>
 
 <script>
-  prop label;
-  prop done;
+  prop label: string;
+  prop done: bool;
 </script>

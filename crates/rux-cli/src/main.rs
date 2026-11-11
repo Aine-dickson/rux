@@ -48,21 +48,26 @@ const USAGE: &str = "\
 rux: the Rux runtime and tools
 
 Usage:
-  rux new [name]             Create a project: app.rux, pages/, components/,
-                             native/ (the app's Rust), assets/. Asks for the
-                             name at a terminal when none is given
+  rux new [name]             Create a project: app.rux, pages/, stores/,
+                             components/, native/ (the app's Rust), assets/.
+                             Asks for the name at a terminal when none is given
       --template <name>      minimal (default) or tasks, a larger example
+      --router, --no-router  With or without a router (minimal only; asked
+                             at a terminal, on where nobody can answer)
       --no-native            Leave out the native/ Rust crate
   rux run                    Run the workspace: its app.rux or index.rux,
                              looked for here and in every parent directory
   rux run <app.rux>          Run a named document
   rux <app.rux>              The same, for a file you can name
-  rux check [path...]        Check documents and report problems
-                             (defaults to the current directory)
+  rux check [path...]        Check documents and report problems: every .rux
+                             file in the project by default, each in its own
+                             context
   rux fmt [path...]          Re-indent files in place, and format their CSS
                              (defaults to the current directory)
   rux build                  Build the project into something you can hand
                              to someone: one executable, in dist/
+  rux native [dir]           Print what Rux sees of the app's Rust in native/,
+                             as Rux declarations
   rux vocab                  Print what the runtime understands (elements,
                              directives, honored CSS) as JSON, for an editor
   rux doctor                 Check this machine for the Android toolchain:

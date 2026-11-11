@@ -6,8 +6,11 @@ weight = 2
 +++
 
 Rux is a pipeline, not a framework. A `.rux` file goes in one end, a native window
-comes out the other, and every stage is a crate you can read in an afternoon. The
-whole runtime is about 7,000 lines.
+comes out the other, and every stage is a crate of its own. The heavy parts
+(layout, text, painting, the window) are mature crates Rux composes; what Rux
+writes is the script language, the template parser, the reactive graph and the
+document model. The [architecture tour](@/contribute/_index.md) has every stage in
+detail.
 
 ## The pipeline
 
@@ -36,22 +39,28 @@ whole runtime is about 7,000 lines.
 └──────────────┘
 ```
 
-Two crates sit alongside rather than in the flow: **rux-script** (the [rhai]
-engine holding state and running `@tap` handlers) and **rux-text** ([parley]
-shaping, measuring and drawing text). **rux-runtime** owns the `Document` that
-ties it together: load, resolve imports, build the engine, rebuild the tree.
+Beside the flow sit **rux-script** (Rux's own script language: the checker, the
+typed IR and the interpreter that holds state and runs handlers) and **rux-text**
+([parley] shaping, measuring and drawing text). **rux-runtime** owns the
+`Document` that ties it together: load, resolve imports, build the engine, patch
+the tree.
 
 | Crate | Job |
 |---|---|
 | `rux-parser` | SFC split + template parser (ours) |
 | `rux-style` | lightningcss → our cascade → `Style`; directives; components |
-| `rux-script` | rhai engine (state + handlers) + `host::` registry |
+| `rux-syntax`, `rux-ir`, `rux-script` | the script language: parser, typed IR, checker and interpreter |
+| `rux-codegen` | Rust written from the IR, for release builds |
+| `rux-reactive` | signal values |
 | `rux-layout` | `Style` → taffy → paint items, hit / focus / scroll regions |
 | `rux-text` | parley shaping, measure, wrapping; vello glyph drawing |
 | `rux-paint` | paint items → vello scene |
-| `rux-runtime` | `Document`: load, imports, engine, rebuild |
-| `rux-shell` | window, GPU, input, focus, clipboard, watcher |
-| `rux-cli` | `rux [file.rux]` |
+| `rux-runtime` | `Document`: load, imports, engine, patching |
+| `rux-shell` | window, GPU, input, focus, clipboard, accessibility, watcher |
+| `rux-native`, `rux-bindgen` | an app's own Rust, `#[rux::export]`, and reading its signatures |
+| `rux-audio`, `rux-video`, `rux-icons` | sound, video, and the Tabler icon set |
+| `rux-web` | the same shell compiled to WebAssembly, on a canvas |
+| `rux-cli` | the `rux` command |
 
 ## Layout is CSS, not a lookalike
 
@@ -71,10 +80,11 @@ included:
 - A word longer than its box **overflows** unless you set `overflow-wrap:
   break-word`.
 
-Those aren't Rux quirks. That's CSS. What taffy has no notion of is **inline text
-flow**: there's no inline formatting context, so text can't wrap around a floating
-image and `display: inline` isn't real. Everything defaults to `display: block`,
-and you reach for `display: flex` to lay things out.
+Those aren't Rux quirks. That's CSS. Inline flow is built for text: a `<text>`
+inside a `<text>` is part of the same sentence, and an `<image>` or `<path>` in
+one sits in the line. Boxes with their own layout do not flow inline (there is no
+`display: inline-block`), so everything defaults to `display: block`, and you
+reach for `display: flex` to lay things out.
 
 ## Text hugs its box
 
@@ -96,20 +106,21 @@ every wrapped line.
 ## Painting
 
 `rux-layout` doesn't produce a widget tree. It produces a flat, ordered list of
-paint items: `Rect`, `Text`, `Image`, `Shadow`, `Tick`, and the bracket pairs
-`PushClip`/`PopClip`, `PushTransform`/`PopTransform`, `PushOpacity`/`PopOpacity`.
+paint items (rectangles, text, images, shadows, paths, and bracket pairs that push
+and pop a clip, a transform or an opacity).
 `rux-paint` walks that list into a [vello] `Scene`, keeping a transform stack so a
 transformed element carries its subtree with it.
 
 Vello renders the scene with compute shaders on the GPU via [wgpu]. Rux is
 **event-driven**: it paints in response to a redraw request (resize, tap,
-keystroke, reload) rather than on a frame clock. An idle Rux window uses no CPU. The one
-exception is the caret, which blinks on a 530 ms timer while an input is focused,
-and stops the timer the moment it isn't.
+keystroke, reload) rather than on a frame clock. An idle Rux window paints
+nothing. A running transition, playing media, an interval and the caret's blink
+(a 530 ms timer while an input is focused) wake it while they last, and stop when
+they end.
 
-## State, and the rebuild
+## State, and what a change touches
 
-State lives in [rhai] signals:
+State lives in signals, declared in the script:
 
 ```rux
 <script>
@@ -118,44 +129,33 @@ State lives in [rhai] signals:
 ```
 
 `{{ n }}` reads it. `@tap="n = n + 1"` writes it. `r-model="name"` binds an input
-two ways. Handlers are interpreted, so **they hot-reload**; heavy work goes to
-compiled Rust through a `host::` registry, which needs a rebuild. That split is
-deliberate: script is glue, Rust is the engine.
+two ways. Script is interpreted, so **it hot-reloads**, and work that belongs in
+Rust goes to the app's own `native/` crate, as functions marked `#[rux::export]`
+that script calls like a module (that part needs a rebuild). A release build also
+compiles the script's functions to Rust.
 
-Here is the crude part, stated plainly: **any signal change rebuilds the entire
-tree.** Not a diff, not a subscription: the whole thing, then a fresh layout.
-
-At these sizes it's imperceptible, and it's simple to reason about. But it means
-every piece of *ephemeral* UI state (the caret, the selection, scroll offsets,
-which dropdown is open, where keyboard focus is) is thrown away on every
-keystroke and has to be **put back by hand** afterwards. There's a named restore
-pass for each one. This has already produced one real bug (the caret stayed
-visible in the input you'd just left, because the restore pass only ever *set* a
-caret and never cleared one), which is why the roadmap keeps a running list of
-every restore pass that exists.
-
-Fine-grained, per-binding reactivity deletes that whole category. It's the next
-significant piece of work, and the last real divergence between the architecture
-doc and the code.
+**A change touches only what reads it.** Each binding records the signals it
+read, and a handler is known by the signals it wrote, so after a handler runs the
+runtime patches the text and attributes those signals reach, mounts or unmounts
+`r-if` subtrees, and reconciles `r-for` lists by `r-key`. Parse and cascade do
+not run again. Because the tree is patched rather than rebuilt, the caret, the
+selection, scroll offsets and an open dropdown stay where they were.
+`RUX_TRACE=1 rux run app.rux` prints the path each interaction took.
 
 ## Hot reload
 
 A [notify] watcher watches the file's directory recursively, so imported
-components reload too, and wakes the event loop through an `EventLoopProxy` on
-any `.rux` change. The `Document` reloads, rebuilds, repaints. If the new file
-fails to parse, the last good document stays on screen and the error goes to
-stderr rather than blanking the window.
-
-That's a stand-in for a proper dev overlay, and it points at a real ceiling:
-**Rux's error surfacing is poor.** Unknown CSS is ignored (it now warns once per
-property), a bad file gives you stderr, and there's no in-window diagnostic. It's
-on the list.
+components and stylesheets reload too. The document loads again and is swapped
+in; the window keeps its size and the page it was on. If the new file fails to
+load, the last good frame stays on screen under a **dev overlay** naming the
+error, never a crash and never a blank window. `rux run --device` does the same
+on an Android device or emulator.
 
 ## Why compose instead of build
 
 Every heavy part of Rux is someone else's crate: taffy, parley, vello, wgpu,
-winit, lightningcss, rhai. That's Law 4, and it's why a UI language with a GPU
-renderer fits in ~7,000 lines. It also means Rux inherits their bugs and their
+winit, lightningcss, accesskit. That's Law 4, and it's why one project can carry
+a UI language with a GPU renderer. It also means Rux inherits their bugs and their
 release cadences, which is a trade worth making: those crates are maintained by
 people who care about layout, text and rasterisation more than this project ever
 could.
@@ -165,5 +165,4 @@ could.
 [vello]: https://github.com/linebender/vello
 [wgpu]: https://wgpu.rs/
 [lightningcss]: https://lightningcss.dev/
-[rhai]: https://rhai.rs/
 [notify]: https://github.com/notify-rs/notify

@@ -101,8 +101,7 @@ it with nothing written per icon. `color` written on the icon itself (a class,
 a `style=`) recolours it, and `fill`, `stroke` and `stroke-width` override
 both, so `stroke: #f38ba8` recolours the lines and `fill` paints inside an
 outline icon. The stroke scales with the drawing, so one weight stays right at
-every size. (Until 2026-11-07 the icon read its parent's `color`, and a `color`
-or `stroke` written on the icon did nothing.)
+every size.
 
 **Solid and outline are different artwork, not a render mode**, and cannot be
 derived from one another. Roughly four icons in five are outline only, which is
@@ -1111,7 +1110,7 @@ an email layout would give up the no-learning guarantee.
 changed, then does what `enterkeyhint` says the field can do by itself: `next`
 and `previous` move focus as Tab and Shift+Tab do, `done` drops focus and the
 keyboard. `go`, `search` and `send` name what the *app* will do: in a
-[form](#forms) they submit it, and outside one the app answers with `@change`.
+[form](/reference/#forms) they submit it, and outside one the app answers with `@change`.
 Left off, the key is worked out: `next` on a form's typing fields and `go` on
 its last, and outside a form `done` on a phone. That is the phone's action
 key. A keyboard's Enter in a form's field submits the form from any field, as
@@ -1431,8 +1430,9 @@ the order and the reasons.
 - **Error boundaries.** A failing expression is reported and the document
   carries on; a subtree cannot catch one and show a fallback.
 - **A capability model for native code.** A native module has full trust.
-- **Drag and drop** of elements. `@tap` and the gesture events are the
-  vocabulary; dragging selected text inside a field is built.
+- **Dropping files from the system.** A file dragged onto the window from the
+  desktop or a file manager is not received; drag and drop between elements is
+  built (see `07-script`, "Drag and drop").
 - **Multiple windows on Android and the web.** `window.open` is desktop only
   (`window.canOpen`); see `07-script`.
 - **CSS left out:** table properties, `writing-mode`, `column-span`, and

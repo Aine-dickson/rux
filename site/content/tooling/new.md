@@ -1,6 +1,6 @@
 +++
 title = "rux new"
-description = "Create a project: the entry point, a page, a component, the Rust half in native/, and the directories the runtime already looks in."
+description = "Create a project: the entry point, pages, a store, a component, the Rust half in native/, and the directories the runtime already looks in."
 weight = 1
 +++
 
@@ -41,8 +41,11 @@ routed, and `--no-router` with it is an error.
 my-app/
   app.rux              the frame and the routes
   pages/
-    home.rux           the home page, which calls Rust
-    missing.rux        the fallback, for a path nothing matches
+    home.rux           the home page, which shows the store's greeting
+    about.rux          the second page (with the router)
+    missing.rux        the fallback, for a path nothing matches (with the router)
+  stores/
+    greeter.rux        the app's rules: writes the greeting (calls Rust with native/)
   components/
     message-card.rux   a card that takes props
   native/              the app's Rust, always here, beside rux.toml
@@ -56,8 +59,10 @@ my-app/
   .vscode/settings.json
 ```
 
-That is the `minimal` template, and the default: a frame, one page, one
-component, and nothing to delete before the first line of your own. The README
+That is the `minimal` template, and the default: a frame, a page or two, one
+store, one component, and nothing to delete before the first line of your own.
+A store is a script file loaded once and shared by every file that imports it
+(`use stores::greeter;`). The README
 it writes describes exactly this tree and is written for the choices made, so it
 never names a directory that is not there.
 
@@ -68,7 +73,7 @@ with `signal`, a two-way bound `<input>` with `r-model`, a `@tap` handler that
 calls a named function, a list with `r-for` and `r-key`, and a component
 receiving props.
 
-`pages/`, `components/` and `assets/` are conventions the runtime already
+`pages/`, `stores/`, `components/` and `assets/` are conventions the runtime already
 followed, which is the reason they are the ones scaffolded:
 
 - `use components::message_card;` in a `<script>` names the file

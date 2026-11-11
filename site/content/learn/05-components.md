@@ -11,7 +11,7 @@ The row has grown enough markup and CSS to deserve its own file. Put it in a
 
 ```rux
 <template>
-  <view class="task" :class='#{ done: done }'>
+  <view class="task" :class="{ done: done }">
     <view class="box" />
     <text class="label">{{ label }}</text>
   </view>
@@ -43,13 +43,13 @@ The row has grown enough markup and CSS to deserve its own file. Put it in a
 </style>
 
 <script>
-  prop label;
-  prop done;
+  prop label: string;
+  prop done: bool;
 </script>
 ```
 
 The two `prop` lines are the component's inputs: what its caller has to hand
-it. `prop done = false;` would give one a default, so a caller could leave it
+it. `prop done: bool = false;` would give one a default, so a caller could leave it
 off.
 
 Import it and use it as a tag. A prop is passed as a `:`-prefixed attribute,
@@ -65,15 +65,13 @@ evaluated in the caller's scope:
 ```
 
 ```rux
-<view class="slot" r-for="t in items"
-      @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
+<view class="slot" r-for="(t, i) in items" @tap="toggle(i)">
   <row :label="t.label" :done="t.done" />
 </view>
 ```
 
 `use components::row;` resolves to `components/row.rux`, relative to the file
-doing the importing. It has to be **alone on its own line**: the import is
-picked out of the script by a line scan, not parsed.
+doing the importing.
 
 The declarations are checked at the tag. Misspell one (`:lable`) or pass
 something `row.rux` never declared, and `rux check` says so, naming the props
@@ -85,7 +83,7 @@ A component instance sees **only its props**. `items` and `draft` do not exist
 inside `row.rux`, and its CSS styles its own subtree and nothing else.
 
 That is why the tap handler stays in the parent, on a wrapper `<view>`: the
-handler needs `items`, which the component cannot reach. The component receives
+handler needs `items` (through `toggle`), which the component cannot reach. The component receives
 two plain values and decides how they look. It is a slightly awkward split here
 and a very useful one as an app grows: a component can never quietly reach into
 state it doesn't own.
@@ -108,37 +106,23 @@ components. There is no fifth concept waiting for you.
 
 The most useful next step is to break it. A few that are worth the time:
 
-- **Delete a row.** `items.remove(i)` inside the same indexed loop. Watch out
+- **Delete a row.** `items.remove(i)`, from a button inside the row. Watch out
   for the tap on the row firing at the same time.
 - **Filter it.** Add a `filter` signal and an `r-if` on the row, or drive the
   list through `items.filter(…)` in the `r-for` expression itself.
-- **Persist it.** This one needs Rust: register a `host::` function and call it
-  from a handler. That is the escape hatch for anything the script tier can't do.
+- **Persist it.** `settings.set("tasks", items)` keeps a value between runs, and
+  `settings.get("tasks")` reads it back at start (see the script reference).
+  For anything the script cannot do, write it in Rust in the project's `native/`
+  crate and call it as a module.
 - **Use a real checkbox.** `<input type="checkbox" r-model="flag" />` is a
   tap-toggle that writes its signal directly, and `.box:checked { … }` styles
-  it. (A synthetic `checked` class still works for one more release, but
-  `:checked` is the one to write.)
+  it.
 
 ## Where the edges are
 
-Rux is `0.x` and honest about it. Things you will run into if you keep going,
-as of **v0.7**:
-
-- **No true inline text flow.** Two `<text>` elements cannot share a line, so
-  bold inside a sentence is not expressible. This is still the largest gap.
-- **No index in `r-for`.** `r-for="t in items"` gives you the item and not its
-  position, so an indexed write goes through `items[i]` with `i` from a range.
-- **A closure passed to a method cannot capture** the surrounding scope, which
-  [chapter 3](@/learn/03-state.md) covers. A plain call can.
-- **No promises, and no async anything.** Everything a handler does happens
-  before the next frame.
-- **`position: sticky` and the rest of `position` are honored, but a
-  `transform` on an ancestor captures `fixed` descendants**, as in a browser.
-
-Things that used to be on this list and are not any more, in case you have read
-older material: a `fn` **can** read and write state (v0.7), a component **can**
-emit events and render children through `<slot>`, and `computed` and `effect`
-both exist, per component instance as well as per document.
+Rux is `0.x` and honest about it. The [reference](@/reference/_index.md) ends
+with the list of what is not built yet, kept current with every change, and the
+[roadmap](@/roadmap/_index.md) says in what order those gaps close.
 
 ## Where to go next
 

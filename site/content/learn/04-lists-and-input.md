@@ -31,14 +31,14 @@ you.
 
 ## Adding an item
 
-Make `items` a list of maps, using rhai's map literal `#{ … }`:
+Make `items` a list of maps, written `{ key: value }`:
 
 ```rux
 <script>
   let draft = signal("");
   let items = signal([
-    #{ label: "read the reference", done: true },
-    #{ label: "build a task list", done: false },
+    { label: "read the reference", done: true },
+    { label: "build a task list", done: false },
   ]);
 </script>
 ```
@@ -46,7 +46,7 @@ Make `items` a list of maps, using rhai's map literal `#{ … }`:
 The Add button pushes onto it and clears the field:
 
 ```rux
-<button class="add" @tap='if draft != "" { items.push(#{ label: draft, done: false }); draft = ""; }'>
+<button class="add" @tap='if draft != "" { items.push({ label: draft, done: false }); draft = ""; }'>
   <text class="addlabel">Add</text>
 </button>
 ```
@@ -73,13 +73,13 @@ The tally from the last chapter can now count for real, with a closure and no
 second signal to keep in sync:
 
 ```rux
-<text class="tally">{{ items.filter(|t| t.done).len() }} / {{ items.len() }}</text>
+<text class="tally">{{ items.filter(t => t.done).length }} / {{ items.length }}</text>
 ```
 
 And the empty state gets a real condition:
 
 ```rux
-<text class="empty" r-if="items.len() == 0">Nothing yet. Add your first task.</text>
+<text class="empty" r-if="items.length == 0">Nothing yet. Add your first task.</text>
 ```
 
 ## The snapshot rule
@@ -97,28 +97,31 @@ in as a literal value, because by the time you tap, the loop is long over. So
 `t.done = !t.done` flips a copy that is discarded a moment later, and since
 `items` never changed, nothing re-renders.
 
-The same is true of rhai's own `for` loop, for the same reason:
+The same is true of a `for` loop in a handler, for the same reason:
 
 ```rux
 @tap="for t in items { t.done = true; }"    <!-- WRONG: also a copy -->
 ```
 
-**Writes have to go through the signal, by index:**
+**Writes have to go through the signal, by index.** `r-for` hands you the index
+as well as the item when you name both:
 
 ```rux
-<view class="row" r-for="t in items"
-      @tap='for i in 0..items.len() { if items[i].label == t.label { items[i].done = !items[i].done; } }'>
+<view class="row" r-for="(t, i) in items" @tap="items[i].done = !items[i].done">
 ```
 
 `items[i]` reaches into the signal itself, so the change is real and detected.
-Reading `t` is still fine, and that is what `t.label` is doing, matching the
-snapshot against the live list to find the right row.
+Reading `t` is still fine; it is only writing to it that goes nowhere. The same
+handler works as a function, since a `fn` can write state:
 
-It is more verbose than it should be. `r-for` has no index variable yet, which
-is why the match is on `label`, and the underlying reason a reusable
-`toggle(i)` function can't help here is the `fn` rule from
-[the last chapter](@/learn/03-state.md). Both are known gaps rather than
-design.
+```rux
+fn toggle(i: int) {
+  items[i].done = !items[i].done;
+}
+```
+```rux
+<view class="row" r-for="(t, i) in items" @tap="toggle(i)">
+```
 
 ## Styling by state
 
@@ -126,7 +129,7 @@ design.
 cascade matches, so a bound class styles exactly like a written one:
 
 ```rux
-<view class="row" r-for="t in items" :class='#{ done: t.done }' @tap='…'>
+<view class="row" r-for="(t, i) in items" :class="{ done: t.done }" @tap="toggle(i)">
 ```
 
 ```css
@@ -134,17 +137,17 @@ cascade matches, so a bound class styles exactly like a written one:
 .row.done .label { color: #6c7086; text-decoration: line-through; }
 ```
 
-`#{ done: t.done }` is rhai's object form: apply `done` when the value is true.
+`{ done: t.done }` is the object form: apply `done` when the value is true.
 A plain string or an array works too.
 
-> **Watch out:** rhai has **no ternary operator**. `:class='t.done ? "done" : ""'`
-> does not parse, and the class silently never appears. Use an `if` expression
-> instead, either `:class='if t.done { "done" } else { "" }'` or the object
+> **Watch out:** there is **no ternary operator**. `:class='t.done ? "done" : ""'`
+> does not compile, and `rux check` says `` `?` is not an operator ``. Use an `if`
+> expression instead, `:class='if t.done { "done" } else { "" }'`, or the object
 > form above.
 
 There is also `:style`, which takes a declaration string and overlays it like an
 inline style, and `:src` / `:options` for images and selects. Any attribute
-prefixed with `:` is a rhai expression, and rhai has backtick templates, so
+prefixed with `:` is an expression, and backtick templates are expressions, so
 `` :style="`background: ${c}`" `` works with no extra syntax.
 
 ## Making it scroll

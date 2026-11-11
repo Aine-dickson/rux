@@ -116,7 +116,7 @@ The table that proves Law 3. Every commonly-requested "missing element" and wher
 | `a` / link | `role="link"` + `to=` (router is ecosystem) | Law 3 |
 | `ul` / `ol` / `li` | `role="list"` + `r-for` loop + CSS `list-style` | Laws 1 & 3 |
 | `label` | `role="label"` + `for=` | Law 3 |
-| `form` | `role="form"` + `@submit`, `<button type="submit">`, HTML's check attributes ([decision](#a-form-submits-as-htmls-does-refusal-included)) | Laws 2 & 3 |
+| `form` | `role="form"` + `@submit`, `<button type="submit">`, HTML's check attributes ([decision](#a-form-submits-as-html-s-does-refusal-included)) | Laws 2 & 3 |
 | `select`, `option`, `textarea`, checkbox, radio | `<input type=…>` with options as **bound data** | Laws 3 & 4 |
 | `table` | *deferred*: `display: grid` + row/col roles cover most; true data-grids are ecosystem | Law 1 |
 

@@ -24,7 +24,7 @@ weight = 3
   all three. An item is placed by line, `span`, line name (`full-start`,
   `col 2`, `span col`) or area (`grid-area: main`).
 - Two `<text>` siblings **stack**, as two paragraphs do. A `<text>` *inside* a
-  `<text>` shares its line: see [Elements](#elements).
+  `<text>` shares its line: see [Elements](/reference/elements/).
 - **Lengths are logical pixels.** Layout and taps run in logical space and the
   scene is scaled to the display's DPI, so `16px` is the same physical size on a
   1x and a 2x screen.

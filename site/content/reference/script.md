@@ -1,6 +1,6 @@
 +++
 title = "Script"
-description = "The script language: state, functions, values, the element API, and every way it differs from rhai and from JavaScript."
+description = "The script language: state, functions, values, the element API, and every way it differs from JavaScript."
 weight = 6
 +++
 

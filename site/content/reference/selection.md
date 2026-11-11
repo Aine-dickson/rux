@@ -111,7 +111,7 @@ the caret where the finger is, with its handle and the menu of what a caret can
 do: Paste (only when the clipboard holds something, as in any Android field),
 Select text (the word at the caret, or the one before it when the caret is
 after it; the label is the phone's own) and Select all, and Autofill (see
-[Autofill](#field-attributes-and-events)). Both go after five seconds with
+[Autofill](/reference/#field-attributes-and-events)). Both go after five seconds with
 nothing touching them;
 dragging the handle or tapping it resets the clock, and a tap on it toggles the
 menu. A plain tap places a caret and shows nothing. A selection has no clock. A
@@ -165,7 +165,7 @@ including which end the caret is at (`selectionStart`/`End` are ordered, so
 
 A script reads a text field's selection as `el.selection` and sets it with
 `el.setSelectionRange(start, end)`; `@select` fires when it moves (see
-[Field attributes and events](#field-attributes-and-events) and
+[Field attributes and events](/reference/#field-attributes-and-events) and
 [Script](/reference/script/#acting-on-an-element)). A text field's undo (Ctrl+Z,
 Ctrl+Y) is in [Script](/reference/script/#keys).
 
