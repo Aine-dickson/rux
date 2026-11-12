@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::android::{Abi, Toolchain, MIN_API};
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, Permissions};
 
 /// The API level the app declares it was built against.
 ///
@@ -553,13 +553,75 @@ fn native_uses_network(root: &Path) -> bool {
     false
 }
 
+/// The `<uses-permission>` lines for `[permissions]`, each group under the
+/// reason the author gave. Android names only; a name written twice (a portable
+/// one and its raw spelling, or `INTERNET` again) is written once.
+///
+/// Precise location asks for the coarse permission too: Android 12 lets the
+/// person choose "approximate" in the dialog and refuses an app that did not
+/// declare both.
+fn permission_lines(permissions: &Permissions, internet: bool) -> String {
+    let mut seen: Vec<String> = Vec::new();
+    if internet {
+        seen.push("android.permission.INTERNET".into());
+    }
+    let mut out = String::new();
+    let mut group = |why: Option<&str>, names: &[&str]| {
+        let fresh: Vec<&&str> = names.iter().filter(|n| !seen.iter().any(|s| s == **n)).collect();
+        if fresh.is_empty() {
+            return;
+        }
+        if let Some(why) = why {
+            // `--` ends an XML comment early, and `aapt2` refuses the manifest.
+            let mut why = why.replace(['\n', '\r'], " ");
+            while why.contains("--") {
+                why = why.replace("--", "- -");
+            }
+            out.push_str(&format!("\n    <!-- {} -->", why.trim()));
+        }
+        for name in fresh {
+            out.push_str(&format!("\n    <uses-permission android:name=\"{name}\" />"));
+            seen.push((*name).to_string());
+        }
+    };
+    for p in &permissions.entries {
+        match p.name.as_str() {
+            "location" if p.approximate => {
+                group(Some(&p.why), &["android.permission.ACCESS_COARSE_LOCATION"])
+            }
+            "location" if p.background => group(
+                Some(&p.why),
+                &[
+                    "android.permission.ACCESS_FINE_LOCATION",
+                    "android.permission.ACCESS_COARSE_LOCATION",
+                    "android.permission.ACCESS_BACKGROUND_LOCATION",
+                ],
+            ),
+            "location" => group(
+                Some(&p.why),
+                &["android.permission.ACCESS_FINE_LOCATION", "android.permission.ACCESS_COARSE_LOCATION"],
+            ),
+            "notifications" => group(Some(&p.why), &["android.permission.POST_NOTIFICATIONS"]),
+            "camera" => group(Some(&p.why), &["android.permission.CAMERA"]),
+            "microphone" => group(Some(&p.why), &["android.permission.RECORD_AUDIO"]),
+            _ => {}
+        }
+    }
+    for raw in &permissions.android {
+        group(None, &[raw.as_str()]);
+    }
+    out
+}
+
 fn android_manifest(manifest: &Manifest, dev: bool, network: bool) -> String {
+    let network = network || manifest.permissions.network;
     let internet = if dev || network {
         "\n    <!-- Hot reload (a dev build) and network images. -->\n    \
          <uses-permission android:name=\"android.permission.INTERNET\" />"
     } else {
         ""
     };
+    let internet = format!("{internet}{}", permission_lines(&manifest.permissions, dev || network));
     // A dev build is debuggable, as Gradle's debug builds are. It is what lets
     // `rux run --device` write hot reload's token into the app's own files with
     // `adb shell run-as`, where no other app can read it.
@@ -734,6 +796,7 @@ mod tests {
             scheme: None,
             link_hosts: Vec::new(),
             window: Default::default(),
+            permissions: Default::default(),
             dev_watch: Vec::new(),
             build_before: Vec::new(),
         }
@@ -872,6 +935,63 @@ mod tests {
         for name in ["quiet", "address", "crate"] {
             let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("rux-net-{name}-{}", std::process::id())));
         }
+    }
+
+    fn declared(toml: &str) -> Manifest {
+        let text = format!(
+            "[app]\nname = \"Task List\"\nid = \"dev.example.tasks\"\nversion = \"0.1.0\"\nentry = \"Cargo.toml\"\n{toml}"
+        );
+        Manifest::parse(&text, PathBuf::from(".")).unwrap()
+    }
+
+    /// Nothing is requested that `rux.toml` did not say, and each group sits
+    /// under the author's reason.
+    #[test]
+    fn only_declared_permissions_are_written_and_each_carries_its_reason() {
+        let none = android_manifest(&manifest("Task List"), false, false);
+        assert!(!none.contains("uses-permission"), "{none}");
+
+        let m = declared(
+            "\n[permissions.location]\nwhy = \"Shows the rider -- live\"\nbackground = true\n\
+             [permissions.notifications]\nwhy = \"New jobs\"\n\
+             [permissions.camera]\nwhy = \"Hand-over photo\"\n",
+        );
+        let xml = android_manifest(&m, false, false);
+        for name in [
+            "ACCESS_FINE_LOCATION",
+            "ACCESS_COARSE_LOCATION",
+            "ACCESS_BACKGROUND_LOCATION",
+            "POST_NOTIFICATIONS",
+            "CAMERA",
+        ] {
+            assert!(xml.contains(&format!("android.permission.{name}\"")), "{name} in {xml}");
+        }
+        assert!(!xml.contains("RECORD_AUDIO") && !xml.contains("INTERNET"), "{xml}");
+        assert!(xml.contains("<!-- Shows the rider - - live -->"), "a `--` would end the comment: {xml}");
+        assert!(xml.contains("<!-- New jobs -->"), "{xml}");
+    }
+
+    #[test]
+    fn approximate_location_asks_for_coarse_alone() {
+        let xml = android_manifest(
+            &declared("\n[permissions.location]\nwhy = \"Nearby shops\"\napproximate = true\n"),
+            false,
+            false,
+        );
+        assert!(xml.contains("ACCESS_COARSE_LOCATION") && !xml.contains("ACCESS_FINE_LOCATION"), "{xml}");
+    }
+
+    /// `network = true` is the way for an app whose connections the scan cannot
+    /// see, and a raw name that repeats another is written once.
+    #[test]
+    fn network_true_asks_for_internet_and_a_repeated_name_is_written_once() {
+        let m = declared(
+            "\n[permissions]\nnetwork = true\nandroid = [\"android.permission.INTERNET\", \
+             \"android.permission.READ_CONTACTS\", \"android.permission.READ_CONTACTS\"]\n",
+        );
+        let xml = android_manifest(&m, false, false);
+        assert_eq!(xml.matches("android.permission.INTERNET").count(), 1, "{xml}");
+        assert_eq!(xml.matches("android.permission.READ_CONTACTS").count(), 1, "{xml}");
     }
 
     /// Each release has a larger `versionCode` than the one before, or Play
