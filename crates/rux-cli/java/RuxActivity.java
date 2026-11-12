@@ -709,6 +709,102 @@ public class RuxActivity extends NativeActivity {
     /** The key {@link #captureUri} is kept under across a re-creation. */
     private static final String CAPTURE_KEY = "dev.ruxlang.shell.capture";
 
+    /** The code a runtime permission request is made under. */
+    private static final int REQUEST_PERMISSIONS = 0x5258;
+
+    /** Where "this permission has been asked for" is kept; see {@link #ruxPermissionAsked}. */
+    private static final String PERMISSIONS_PREFS = "dev.ruxlang.shell.permissions";
+
+    /** A permission request finished; Rust then asks for the status again. */
+    private static native void nativePermissionsDone();
+
+    /**
+     * Whether the person has allowed {@code name}. The notification
+     * permission is a runtime one only from Android 13; before that the
+     * question is whether notifications are switched on for the app at all.
+     */
+    boolean ruxPermissionGranted(String name) {
+        if (name.equals("android.permission.POST_NOTIFICATIONS") && Build.VERSION.SDK_INT < 33) {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            return nm == null || nm.areNotificationsEnabled();
+        }
+        // Before Android 10 there is no separate background permission: the
+        // foreground one covers it.
+        if (name.equals("android.permission.ACCESS_BACKGROUND_LOCATION") && Build.VERSION.SDK_INT < 29) {
+            return checkSelfPermission("android.permission.ACCESS_FINE_LOCATION")
+                            == PackageManager.PERMISSION_GRANTED
+                    || checkSelfPermission("android.permission.ACCESS_COARSE_LOCATION")
+                            == PackageManager.PERMISSION_GRANTED;
+        }
+        return checkSelfPermission(name) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    /**
+     * Whether the app has ever asked for {@code name}. Android gives no way to
+     * ask this: "never asked" and "refused for good" both read as not granted
+     * with no reason to explain it, which is the one difference a person's
+     * next step depends on.
+     */
+    boolean ruxPermissionAsked(String name) {
+        return getSharedPreferences(PERMISSIONS_PREFS, MODE_PRIVATE).getBoolean(name, false);
+    }
+
+    /** Whether Android would still show its dialog: asked before, and not told never to ask again. */
+    boolean ruxPermissionRationale(String name) {
+        return shouldShowRequestPermissionRationale(name);
+    }
+
+    /**
+     * Ask for {@code names} together, which is how the system dialog wants
+     * a location's fine and coarse pair. Answered by
+     * {@link #nativePermissionsDone} from {@link #onRequestPermissionsResult}.
+     */
+    void ruxRequestPermissions(final String[] names) {
+        runOnUiThread(
+                () -> {
+                    android.content.SharedPreferences.Editor asked =
+                            getSharedPreferences(PERMISSIONS_PREFS, MODE_PRIVATE).edit();
+                    boolean any = false;
+                    for (String name : names) {
+                        asked.putBoolean(name, true);
+                        any |= !ruxPermissionGranted(name);
+                    }
+                    asked.apply();
+                    // Nothing to ask: the dialog would not show, and the answer
+                    // is the state it is already in.
+                    if (!any || Build.VERSION.SDK_INT < 33
+                            && names.length == 1
+                            && names[0].equals("android.permission.POST_NOTIFICATIONS")) {
+                        nativePermissionsDone();
+                        return;
+                    }
+                    requestPermissions(names, REQUEST_PERMISSIONS);
+                });
+    }
+
+    /** This app's page in the system settings, where a refused permission is changed. */
+    void ruxOpenAppSettings() {
+        runOnUiThread(
+                () -> {
+                    Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                    intent.setData(android.net.Uri.fromParts("package", getPackageName(), null));
+                    try {
+                        startActivity(intent);
+                    } catch (RuntimeException e) {
+                        android.util.Log.w("rux", "no settings page", e);
+                    }
+                });
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int request, String[] names, int[] results) {
+        super.onRequestPermissionsResult(request, names, results);
+        if (request == REQUEST_PERMISSIONS) {
+            nativePermissionsDone();
+        }
+    }
+
     /**
      * Report what a file input's picker gave: one line per file, its URI,
      * size, media type and name, separated by tabs; or {@code null} when

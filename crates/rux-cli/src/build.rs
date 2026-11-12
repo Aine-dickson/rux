@@ -169,6 +169,20 @@ pub(crate) fn key(path: &Path) -> String {
 ///
 /// Windows paths are full of backslashes and a raw string would break on a path
 /// containing `"#`, so this escapes rather than using `r"..."`.
+/// The call that hands the shell what `[permissions]` declared. Always
+/// written, an empty table included: an app that declared nothing is one whose
+/// `permissions.request` throws `undeclared`, not one the runtime knows nothing about.
+fn permissions_registration(manifest: &Manifest) -> String {
+    let p = &manifest.permissions;
+    let entries: Vec<String> = p
+        .entries
+        .iter()
+        .map(|e| format!("({}, {}, {}, {})", literal(&e.name), literal(&e.why), e.background, e.approximate))
+        .collect();
+    let android: Vec<String> = p.android.iter().map(|a| literal(a)).collect();
+    format!("    rux_shell::set_permissions(&[{}], &[{}]);\n", entries.join(", "), android.join(", "))
+}
+
 fn literal(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
@@ -1069,6 +1083,8 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
     // Which app this is, for where `settings.set` keeps its values. First, so
     // nothing the app runs at start can read another app's.
     main = with_registration(&main, &format!("    rux_shell::set_app_id({});\n", literal(&manifest.id)));
+    // What `[permissions]` declared, for `permissions.request` to hold a script to.
+    main = with_registration(&main, &permissions_registration(&manifest));
     // A release build's script, compiled (step 9 of docs/archive/language-build-log.md).
     let _ = std::fs::remove_file(work.join("src").join("rux_aot.rs"));
     if options.release {
@@ -1315,6 +1331,30 @@ mod tests {
         assert_eq!(uses[0].name.as_deref(), Some("a"));
         assert!(uses[1].bound);
         assert!(uses[1].name.is_none(), "a bound name is not a literal one");
+    }
+
+    #[test]
+    fn the_declared_permissions_reach_the_wrapper_even_when_there_are_none() {
+        assert_eq!(
+            permissions_registration(&manifest()),
+            "    rux_shell::set_permissions(&[], &[]);\n"
+        );
+        let mut m = manifest();
+        m.permissions = crate::manifest::Permissions {
+            network: false,
+            entries: vec![crate::manifest::Permission {
+                name: "location".into(),
+                why: "Shows \"you\"".into(),
+                background: true,
+                approximate: false,
+            }],
+            android: vec!["android.permission.READ_CONTACTS".into()],
+        };
+        assert_eq!(
+            permissions_registration(&m),
+            "    rux_shell::set_permissions(&[(\"location\", \"Shows \\\"you\\\"\", true, false)], \
+             &[\"android.permission.READ_CONTACTS\"]);\n"
+        );
     }
 
     fn manifest() -> Manifest {

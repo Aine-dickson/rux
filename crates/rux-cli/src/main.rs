@@ -456,6 +456,14 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
         Some(m) => {
             // Where `settings.set` keeps this app's values.
             rux_shell::set_app_id(&m.id);
+            let entries: Vec<_> = m
+                .permissions
+                .entries
+                .iter()
+                .map(|e| (e.name.as_str(), e.why.as_str(), e.background, e.approximate))
+                .collect();
+            let android: Vec<&str> = m.permissions.android.iter().map(String::as_str).collect();
+            rux_shell::set_permissions(&entries, &android);
             m.window_settings()
         }
         None => rux_shell::WindowSettings::default(),

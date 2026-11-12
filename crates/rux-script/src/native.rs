@@ -293,6 +293,40 @@ pub fn clipboard_interface() -> rux_native::Interface {
     }
 }
 
+/// The module behind `permissions.status`, `permissions.request`,
+/// `permissions.why` and `permissions.openSettings`: what the app declared in
+/// `rux.toml`'s `[permissions]`, asked of the platform at run time.
+pub const PERMISSIONS_MODULE: &str = "native/rux/permissions";
+
+/// The name a script reaches [`PERMISSIONS_MODULE`] by without importing it.
+pub const PERMISSIONS_NAME: &str = "permissions";
+
+/// The permissions module's interface. A name is `"location"`,
+/// `"location-background"` (the separate step Android asks for after the first),
+/// `"notifications"`, `"camera"` or `"microphone"`; the answer is `"granted"`,
+/// `"limited"` (an approximate position only), `"denied"`, `"blocked"` (refused
+/// for good, so only the settings page can change it) or `"unasked"`.
+pub fn permissions_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str, params: &[(&str, &str)], result: &str, is_async: bool| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            result: result.into(),
+            is_async,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux::permissions".into(),
+        items: vec![
+            f("status", &[("name", "string")], "string", true),
+            f("request", &[("name", "string")], "string", true),
+            f("why", &[("name", "string")], "string", false),
+            f("openSettings", &[], "void", false),
+        ],
+    }
+}
+
 /// The module behind `window.minimize()`, `window.maximize()`,
 /// `window.restore()`, `window.toggleMaximize()` and `window.maximized`: the
 /// desktop window an app with its own title bar draws the buttons of (Mava
@@ -364,6 +398,9 @@ pub fn ensure_builtins() {
     if registry::interface(WINDOW_MODULE).is_none() {
         let _ = registry::declare(window_interface());
     }
+    if registry::interface(PERMISSIONS_MODULE).is_none() {
+        let _ = registry::declare(permissions_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -374,9 +411,12 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
     // `settings.get(…)`, `clipboard.writeText(…)`: each a whole module,
     // unless the file has one of that name of its own (a `use
     // native::settings;`, a `let settings`).
-    for (name, module) in
-        [(SETTINGS_NAME, SETTINGS_MODULE), (CLIPBOARD_NAME, CLIPBOARD_MODULE), (WINDOW_NAME, WINDOW_MODULE)]
-    {
+    for (name, module) in [
+        (SETTINGS_NAME, SETTINGS_MODULE),
+        (CLIPBOARD_NAME, CLIPBOARD_MODULE),
+        (WINDOW_NAME, WINDOW_MODULE),
+        (PERMISSIONS_NAME, PERMISSIONS_MODULE),
+    ] {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
         });

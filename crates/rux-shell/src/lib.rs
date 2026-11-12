@@ -41,6 +41,7 @@ mod files;
 /// `filter` and `backdrop-filter`, as compute passes. See [`filter::GpuFilters`].
 mod filter;
 mod clipboard;
+mod permissions;
 mod settings;
 mod caption;
 mod dnd;
@@ -48,6 +49,7 @@ mod dnd_session;
 mod slides;
 mod window_module;
 
+pub use permissions::set_permissions;
 pub use settings::set_app_id;
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
@@ -12538,6 +12540,7 @@ fn install_rux_modules() {
     dialogs::install_builtins();
     settings::install_settings();
     clipboard::install_clipboard();
+    permissions::install_permissions();
     window_module::install_window();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
@@ -13747,6 +13750,86 @@ fn android_pick_files(mimes: &str, multiple: bool, capture: Option<&str>) {
         )?;
         Ok::<(), jni::errors::Error>(())
     });
+}
+
+/// One of the activity's yes-or-no questions about a permission, by its
+/// Android name: `granted`, `asked` or `rationale` (see `RuxActivity.java`).
+/// `false` if the activity could not be asked.
+#[cfg(target_os = "android")]
+pub(crate) fn android_permission_flag(question: &str, name: &str) -> bool {
+    let Ok(activity) = ACTIVITY.lock() else { return false };
+    let Some(activity) = activity.as_ref() else { return false };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        let name = env.new_string(name)?;
+        let args = [jni::JValue::Object(&name)];
+        let sig = jni::jni_sig!("(Ljava/lang/String;)Z");
+        let answer = match question {
+            "granted" => env.call_method(activity, jni::jni_str!("ruxPermissionGranted"), sig, &args)?,
+            "asked" => env.call_method(activity, jni::jni_str!("ruxPermissionAsked"), sig, &args)?,
+            _ => env.call_method(activity, jni::jni_str!("ruxPermissionRationale"), sig, &args)?,
+        };
+        Ok::<bool, jni::errors::Error>(answer.z()?)
+    })
+    .unwrap_or(false)
+}
+
+/// Ask the person for these permissions together. The answer arrives as
+/// [`Java_dev_ruxlang_shell_RuxActivity_nativePermissionsDone`].
+#[cfg(target_os = "android")]
+pub(crate) fn android_request_permissions(names: &[&str]) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        let string = env.find_class(jni::jni_str!("java/lang/String"))?;
+        let empty = env.new_string("")?;
+        let array = env.new_object_array(names.len() as i32, &string, &empty)?;
+        for (i, name) in names.iter().enumerate() {
+            let name = env.new_string(name)?;
+            array.set_element(env, i, &name)?;
+        }
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxRequestPermissions"),
+            jni::jni_sig!("([Ljava/lang/String;)V"),
+            &[jni::JValue::Object(&array)],
+        )?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// Open this app's page in the system settings.
+#[cfg(target_os = "android")]
+pub(crate) fn android_open_app_settings() {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(activity, jni::jni_str!("ruxOpenAppSettings"), jni::jni_sig!("()V"), &[])?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// A permission request finished: the person answered, or there was nothing
+/// to ask. Called from Java on Android's main thread.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativePermissionsDone<'frame>(
+    _env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+) {
+    permissions::request_done();
 }
 
 /// The whole of a picked file, by its `content://` URI, read by the
