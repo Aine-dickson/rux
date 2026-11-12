@@ -51,10 +51,14 @@
 //! beside `rux run` instead of in a second terminal: commands Rux starts and
 //! stops, knowing nothing about what they do. See `commands.rs`.
 //!
-//! **Deliberately absent, and each for the same reason.** `splash` names an
-//! asset nothing yet draws. `permissions` would be a list the runtime cannot
-//! request, since no Rux API needs one. Both are scheduled, and each lands in
-//! the commit that makes it do something rather than ahead of it.
+//! A `[permissions]` table does as of the platform services (UD-002 location,
+//! UD-003 notifications, `docs/field-reports/urbandrop.md`): one sub-table per
+//! permission, each with the reason for asking, and nothing inferred. See
+//! [`Permissions`].
+//!
+//! **Deliberately absent.** `splash` names an asset nothing yet draws. It is
+//! scheduled, and lands in the commit that makes it do something rather than
+//! ahead of it.
 //!
 //! The manifest is also what makes a project root explicit. `workspace_root`
 //! infers one today by finding `app.rux` while walking up, which is a guess
@@ -97,11 +101,59 @@ pub struct Manifest {
     pub link_hosts: Vec<String>,
     /// The desktop window, from `[window]`. Default when there is none.
     pub window: Window,
+    /// `[permissions]`: what the app asks the platform for, with the reason.
+    pub permissions: Permissions,
     /// `[dev] watch`: commands kept running beside `rux run`.
     pub dev_watch: Vec<String>,
     /// `[build] before`: commands run to completion before a build, and before
     /// `rux run` opens the window.
     pub build_before: Vec<String>,
+}
+
+/// The permissions Rux has a portable name for. Each earns its place by
+/// having a mapping on Android and a request behind it; a name is added in the
+/// commit that makes it do something.
+pub const PORTABLE_PERMISSIONS: [&str; 4] = ["location", "notifications", "camera", "microphone"];
+
+/// `[permissions]`: the one place an app says what it asks the platform for.
+///
+/// **Declared, never inferred.** A permission the build adds on its own is one
+/// the author did not decide and may not know they ship, and the Rust in an
+/// app's `native/` crate cannot be read for what it will ask. So nothing is
+/// requested that is not written here, and `rux check` and the runtime say
+/// what to add when script asks for one that is not.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Permissions {
+    /// `network = true`: ask for the network whatever the scan finds. For an
+    /// app whose connections are made by code the scan cannot read.
+    pub network: bool,
+    /// The portable permissions, in the order written.
+    pub entries: Vec<Permission>,
+    /// Platform names Rux has no portable name for, copied as written. Android
+    /// only; the runtime refuses to ask for one on another target.
+    pub android: Vec<String>,
+}
+
+/// One `[permissions.<name>]` table.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Permission {
+    /// One of [`PORTABLE_PERMISSIONS`].
+    pub name: String,
+    /// Why the app asks, in the author's words. Required: it is shown back to
+    /// the person when they have refused, and some platforms print it in the
+    /// system dialog.
+    pub why: String,
+    /// `location` only: also while the app is not on screen.
+    pub background: bool,
+    /// `location` only: a rough position is enough.
+    pub approximate: bool,
+}
+
+impl Permissions {
+    /// The declared permission called `name`, if any.
+    pub fn get(&self, name: &str) -> Option<&Permission> {
+        self.entries.iter().find(|p| p.name == name)
+    }
 }
 
 /// `[window]`: the desktop window's opening size, its smallest, and whether
@@ -389,6 +441,12 @@ impl Manifest {
             Some(_) => return Err("[window] must be a table".into()),
         };
 
+        let permissions = match value.get("permissions") {
+            None => Permissions::default(),
+            Some(toml::Value::Table(table)) => read_permissions(table)?,
+            Some(_) => return Err("[permissions] must be a table".into()),
+        };
+
         let dev_watch = read_commands(&value, "dev", "watch")?;
         let build_before = read_commands(&value, "build", "before")?;
 
@@ -403,6 +461,7 @@ impl Manifest {
             scheme,
             link_hosts,
             window,
+            permissions,
             dev_watch,
             build_before,
         })
@@ -512,13 +571,107 @@ impl Manifest {
 const TAKEN_SCHEMES: [&str; 10] =
     ["http", "https", "file", "content", "intent", "mailto", "tel", "sms", "geo", "javascript"];
 
-/// A custom scheme, checked and lowercased.
-///
-/// **Lowercased, not refused.** RFC 3986 says a scheme is case-insensitive and
-/// browsers lowercase one on the way through, while Android matches an
-/// intent-filter's scheme case-sensitively. An app declaring `MyApp` would
-/// match nothing a browser sent it, so the one spelling that works is the only
-/// one written into the filter.
+fn read_permissions(table: &toml::Table) -> Result<Permissions, String> {
+    let mut out = Permissions::default();
+    for (key, value) in table {
+        match key.as_str() {
+            "network" => match value {
+                toml::Value::Boolean(b) => out.network = *b,
+                _ => return Err("[permissions] `network` must be true or false".into()),
+            },
+            "android" => {
+                let toml::Value::Array(names) = value else {
+                    return Err("[permissions] `android` must be a list of strings".into());
+                };
+                for name in names {
+                    let toml::Value::String(name) = name else {
+                        return Err("[permissions] `android` must be a list of strings".into());
+                    };
+                    out.android.push(check_android_permission(name)?);
+                }
+            }
+            name if PORTABLE_PERMISSIONS.contains(&name) => {
+                let toml::Value::Table(t) = value else {
+                    return Err(format!(
+                        "[permissions] `{name}` is a table with the reason for asking:\n\n\
+                         [permissions.{name}]\nwhy = \"What the person gets from allowing it\""
+                    ));
+                };
+                out.entries.push(read_permission(name, t)?);
+            }
+            other => {
+                return Err(format!(
+                    "[permissions] has no permission called `{other}`. The portable ones are {}.\n\n\
+                     For one Rux has no name for, list the platform's own in \
+                     `android = [\"android.permission.NAME\"]`.",
+                    PORTABLE_PERMISSIONS.join(", ")
+                ))
+            }
+        }
+    }
+    Ok(out)
+}
+
+fn read_permission(name: &str, table: &toml::Table) -> Result<Permission, String> {
+    let location = name == "location";
+    for key in table.keys() {
+        let known = key == "why" || (location && (key == "background" || key == "approximate"));
+        if !known {
+            return Err(if key == "background" || key == "approximate" {
+                format!("[permissions.{name}] `{key}` only means something for `location`")
+            } else {
+                format!("[permissions.{name}] has no `{key}`. Its keys are `why`{}", if location {
+                    ", `background` and `approximate`"
+                } else {
+                    ""
+                })
+            });
+        }
+    }
+    let why = match table.get("why") {
+        Some(toml::Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+        Some(toml::Value::String(_)) => return Err(format!("[permissions.{name}] `why` is empty")),
+        Some(_) => return Err(format!("[permissions.{name}] `why` must be a string")),
+        None => {
+            return Err(format!(
+                "[permissions.{name}] has no `why`. Say what the person gets from allowing it; \
+                 the app can show that sentence if they refuse, and the system may print it"
+            ))
+        }
+    };
+    let flag = |key: &str| match table.get(key) {
+        None => Ok(false),
+        Some(toml::Value::Boolean(b)) => Ok(*b),
+        Some(_) => Err(format!("[permissions.{name}] `{key}` must be true or false")),
+    };
+    let (background, approximate) = (flag("background")?, flag("approximate")?);
+    if background && approximate {
+        return Err(format!(
+            "[permissions.{name}] asks for `background` and `approximate` together. A position \
+             followed while the app is away is a precise one; choose one"
+        ));
+    }
+    Ok(Permission { name: name.to_string(), why, background, approximate })
+}
+
+/// A platform permission name, checked to be one that can be written into a
+/// manifest. Only the shape is checked: Rux does not carry the list of what
+/// Android defines, and a name it does not know fails at install, not here.
+fn check_android_permission(name: &str) -> Result<String, String> {
+    let ok = name.contains('.')
+        && !name.starts_with('.')
+        && !name.ends_with('.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '_');
+    if ok {
+        Ok(name.to_string())
+    } else {
+        Err(format!(
+            "[permissions] `android` has `{name}`, which is not a permission name. Write it in \
+             full, like `android.permission.READ_CONTACTS`"
+        ))
+    }
+}
+
 fn read_window(table: &toml::Table) -> Result<Window, String> {
     const KEYS: [&str; 7] =
         ["width", "height", "min-width", "min-height", "maximized", "decorations", "title-bar"];
@@ -626,6 +779,13 @@ fn read_commands(value: &toml::Table, table: &str, key: &str) -> Result<Vec<Stri
     }
 }
 
+/// A custom scheme, checked and lowercased.
+///
+/// **Lowercased, not refused.** RFC 3986 says a scheme is case-insensitive and
+/// browsers lowercase one on the way through, while Android matches an
+/// intent-filter's scheme case-sensitively. An app declaring `MyApp` would
+/// match nothing a browser sent it, so the one spelling that works is the only
+/// one written into the filter.
 fn check_scheme(text: &str) -> Result<String, String> {
     let bare = text.trim_end_matches("://").trim_end_matches(':');
     if bare != text {
@@ -756,6 +916,42 @@ id = "dev.example.tasks"
 version = "0.1.0"
 entry = "Cargo.toml"
 "#;
+
+    #[test]
+    fn permissions_are_optional_and_read_with_their_reasons() {
+        assert_eq!(parse(MINIMAL).unwrap().permissions, Permissions::default());
+        let text = format!(
+            "{MINIMAL}\n[permissions]\nnetwork = true\nandroid = [\"android.permission.READ_CONTACTS\"]\n\
+             [permissions.location]\nwhy = \"Shows the rider\"\nbackground = true\n\
+             [permissions.notifications]\nwhy = \"New jobs\"\n"
+        );
+        let p = parse(&text).unwrap().permissions;
+        assert!(p.network);
+        assert_eq!(p.android, ["android.permission.READ_CONTACTS"]);
+        let location = p.get("location").unwrap();
+        assert_eq!(location.why, "Shows the rider");
+        assert!(location.background && !location.approximate);
+        assert!(p.get("notifications").is_some());
+        assert!(p.get("camera").is_none());
+    }
+
+    #[test]
+    fn a_permission_is_refused_in_its_own_words() {
+        let bad = |body: &str| parse(&format!("{MINIMAL}\n[permissions]\n{body}")).unwrap_err();
+        assert!(bad("telepathy = {why = \"x\"}").contains("no permission called `telepathy`"));
+        assert!(bad("location = true").contains("[permissions.location]"));
+        assert!(bad("[permissions.location]\nbackground = true").contains("no `why`"));
+        assert!(bad("[permissions.camera]\nwhy = \"  \"").contains("`why` is empty"));
+        assert!(bad("[permissions.camera]\nwhy = \"x\"\nbackground = true").contains("only means something for `location`"));
+        assert!(bad("[permissions.location]\nwhy = \"x\"\nbackground = true\napproximate = true")
+            .contains("together"));
+        assert!(bad("[permissions.camera]\nwhy = \"x\"\nflash = 1").contains("no `flash`"));
+        assert!(bad("android = [\"READ_CONTACTS\"]").contains("not a permission name"));
+        assert!(bad("android = [\"a.b\\\" />\"]").contains("not a permission name"));
+        assert!(bad("network = \"yes\"").contains("true or false"));
+        // Before `[app]`, or it would be a key of that table.
+        assert!(parse(&format!("permissions = 3\n{MINIMAL}")).unwrap_err().contains("must be a table"));
+    }
 
     #[test]
     fn a_window_table_reads_and_is_optional() {
