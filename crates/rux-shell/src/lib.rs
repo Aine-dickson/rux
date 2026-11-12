@@ -7302,8 +7302,18 @@ impl App {
                 EnterKey::Search => 6,
                 EnterKey::Send => 7,
             };
-            let (keyboard, enter) = if on { (keyboard, enter) } else { (0, 0) };
-            FOCUSED_KIND.store(kind | keyboard << 8 | enter << 16, std::sync::atomic::Ordering::Relaxed);
+            let caps = match self.focused_field.autocapitalize {
+                rux_layout::Autocapitalize::Default => 0,
+                rux_layout::Autocapitalize::Off => 1,
+                rux_layout::Autocapitalize::Sentences => 2,
+                rux_layout::Autocapitalize::Words => 3,
+                rux_layout::Autocapitalize::Characters => 4,
+            };
+            let (keyboard, enter, caps) = if on { (keyboard, enter, caps) } else { (0, 0, 0) };
+            FOCUSED_KIND.store(
+                kind | keyboard << 8 | enter << 16 | caps << 24,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             // Written after the text, so an input method that reads both in the
             // same breath cannot see "yes, and it is empty" for a field that
             // has contents.
@@ -7448,6 +7458,14 @@ impl App {
             }
             None => {
                 let _ = el.remove_attribute("enterkeyhint");
+            }
+        }
+        match self.focused_field.autocapitalize.name() {
+            Some(caps) => {
+                let _ = el.set_attribute("autocapitalize", caps);
+            }
+            None => {
+                let _ = el.remove_attribute("autocapitalize");
             }
         }
         // What the field holds, for the browser's own autofill. The hidden
@@ -13349,7 +13367,9 @@ const KIND_NUMBER: i32 = 4;
 /// Packed: the kind in the low byte, `inputmode` in the next ([`Keyboard`],
 /// 0 text, 1 numeric, 2 decimal, 3 tel, 4 email, 5 url, 6 search) and
 /// `enterkeyhint` in the third ([`EnterKey`], 0 unset, then enter, done, go,
-/// next, previous, search, send). `RuxActivity.java` unpacks the same layout.
+/// next, previous, search, send) and `autocapitalize` in the fourth
+/// ([`rux_layout::Autocapitalize`], 0 unset, 1 off, 2 sentences, 3 words, 4
+/// characters). `RuxActivity.java` unpacks the same layout.
 #[cfg(target_os = "android")]
 static FOCUSED_KIND: std::sync::atomic::AtomicI32 =
     std::sync::atomic::AtomicI32::new(KIND_TEXT);

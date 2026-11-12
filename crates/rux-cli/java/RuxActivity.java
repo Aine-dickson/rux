@@ -1394,6 +1394,7 @@ public class RuxActivity extends NativeActivity {
             int kind = packed & 0xff;
             int keyboard = (packed >> 8) & 0xff;
             int enter = (packed >> 16) & 0xff;
+            int caps = (packed >> 24) & 0xff;
             boolean multiline = kind == KIND_TEXTAREA;
             if (kind == KIND_PASSWORD) {
                 // **The variation is not cosmetic and not about the glyphs.**
@@ -1442,6 +1443,7 @@ public class RuxActivity extends NativeActivity {
                 out.imeOptions = EditorInfo.IME_FLAG_NO_FULLSCREEN | EditorInfo.IME_ACTION_DONE;
             }
             applyKeyboard(out, kind, keyboard);
+            applyCaps(out, caps);
             if (!multiline) {
                 applyEnterKey(out, enter);
             }
@@ -1506,6 +1508,40 @@ public class RuxActivity extends NativeActivity {
                         out.imeOptions = (out.imeOptions & ~EditorInfo.IME_MASK_ACTION)
                                 | EditorInfo.IME_ACTION_SEARCH;
                     }
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        /**
+         * {@code autocapitalize}: whether the keyboard starts letters in
+         * capitals. Only a plain text field takes it: a password, an email or
+         * a URL keeps what its variation says, as in a browser, and a number
+         * or phone pad has no letters. Unset leaves the keyboard's own habit.
+         */
+        private void applyCaps(EditorInfo out, int caps) {
+            int variation = out.inputType & EditorInfo.TYPE_MASK_VARIATION;
+            boolean text = (out.inputType & EditorInfo.TYPE_MASK_CLASS) == EditorInfo.TYPE_CLASS_TEXT
+                    && variation != EditorInfo.TYPE_TEXT_VARIATION_PASSWORD
+                    && variation != EditorInfo.TYPE_TEXT_VARIATION_EMAIL_ADDRESS
+                    && variation != EditorInfo.TYPE_TEXT_VARIATION_URI;
+            if (!text) {
+                return;
+            }
+            int flags = EditorInfo.TYPE_TEXT_FLAG_CAP_SENTENCES
+                    | EditorInfo.TYPE_TEXT_FLAG_CAP_WORDS
+                    | EditorInfo.TYPE_TEXT_FLAG_CAP_CHARACTERS;
+            switch (caps) {
+                case CAPS_OFF: out.inputType &= ~flags; break;
+                case CAPS_SENTENCES:
+                    out.inputType = (out.inputType & ~flags) | EditorInfo.TYPE_TEXT_FLAG_CAP_SENTENCES;
+                    break;
+                case CAPS_WORDS:
+                    out.inputType = (out.inputType & ~flags) | EditorInfo.TYPE_TEXT_FLAG_CAP_WORDS;
+                    break;
+                case CAPS_CHARACTERS:
+                    out.inputType = (out.inputType & ~flags) | EditorInfo.TYPE_TEXT_FLAG_CAP_CHARACTERS;
                     break;
                 default:
                     break;
@@ -2257,11 +2293,18 @@ public class RuxActivity extends NativeActivity {
     private static final int ENTER_SEARCH = 6;
     private static final int ENTER_SEND = 7;
 
+    // `autocapitalize`, the fourth byte. 0 is unset: the keyboard decides.
+    private static final int CAPS_OFF = 1;
+    private static final int CAPS_SENTENCES = 2;
+    private static final int CAPS_WORDS = 3;
+    private static final int CAPS_CHARACTERS = 4;
+
     /**
      * What kind of field has focus, so the right keyboard can be asked for.
      *
      * <p>One of the {@code KIND_} constants above in the low byte, with a
-     * {@code KEYBOARD_} in the next and an {@code ENTER_} in the third. Every
+     * {@code KEYBOARD_} in the next, an {@code ENTER_} in the third and a
+     * {@code CAPS_} in the fourth. Every
      * other input type Rux grows will arrive through here, because an
      * {@code EditorInfo} is the only thing that decides which keys an input
      * method offers.

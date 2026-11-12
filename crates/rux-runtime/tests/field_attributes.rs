@@ -140,6 +140,7 @@ fn an_unknown_keyboard_or_action_or_length_is_refused() {
     for (attr, said) in [
         (r#"inputmode="digits""#, "numeric"),
         (r#"enterkeyhint="submit""#, "send"),
+        (r#"autocapitalize="upper""#, "characters"),
         (r#"maxlength="ten""#, "whole number"),
     ] {
         let d = doc(&format!(r#"<input r-model="a" {attr} />"#), "let a = signal(\"\");");
@@ -167,4 +168,25 @@ fn a_checkbox_change_sees_the_new_value() {
     let tap = laid_out(&d).hits.iter().find_map(|h| h.on_tap.clone()).expect("the box taps");
     d.apply_handler(&tap);
     assert_eq!(d.value_in("seen", None, None), "true");
+}
+
+/// `autocapitalize`, as HTML spells it, reaches the field, with HTML's two
+/// other names for the same answers (Urbandrop's small notes: number plates).
+#[test]
+fn autocapitalize_reaches_the_field() {
+    use rux_layout::Autocapitalize as Caps;
+    for (written, want) in [
+        ("characters", Caps::Characters),
+        ("words", Caps::Words),
+        ("on", Caps::Sentences),
+        ("sentences", Caps::Sentences),
+        ("none", Caps::Off),
+        ("off", Caps::Off),
+    ] {
+        let d = doc(&format!(r#"<input r-model="a" autocapitalize="{written}" />"#), "let a = signal(\"\");");
+        assert_eq!(input(&d, "a").field().autocapitalize, want, "{written}");
+        assert!(!problems(&d).contains("level: Error"), "{written}: {}", problems(&d));
+    }
+    let d = doc(r#"<input r-model="a" />"#, "let a = signal(\"\");");
+    assert_eq!(input(&d, "a").field().autocapitalize, Caps::Default);
 }

@@ -205,3 +205,22 @@ fn load_time_errors_survive_a_mounted_hook() {
     let doc = Document::load(dir.join("app.rux")).expect("loads");
     assert!(errors(&doc).iter().any(|e| e.contains("`@frob`")), "{:?}", errors(&doc));
 }
+
+/// A bare attribute on a component tag is on, as `disabled` is on an
+/// element (Urbandrop's small notes): `<stat strict />` passes `true`.
+#[test]
+fn a_bare_attribute_passes_true() {
+    let component = "<template><view><text>{{ strict }}/{{ label }}</text></view></template>\n\
+                     <script>\n  prop strict = false;\n  prop label = \"x\";\n</script>";
+    let doc = load("<stat strict />", component);
+    assert!(errors(&doc).is_empty(), "{:?}", errors(&doc));
+    assert_eq!(shown(&doc), vec!["true/x"]);
+    // Written with a value it is still the text, as before.
+    let doc = load("<stat label=\"Battery\" />", component);
+    assert_eq!(shown(&doc), vec!["false/Battery"]);
+    // Bare on a prop that is not a `bool` is said, not passed as "".
+    let typed = "<template><view><text>{{ label }}</text></view></template>\n\
+                 <script>\n  prop label: string = \"x\";\n</script>";
+    let doc = load("<stat label />", typed);
+    assert!(errors(&doc).iter().any(|e| e.contains("`label`")), "{:?}", errors(&doc));
+}

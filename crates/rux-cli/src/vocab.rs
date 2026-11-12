@@ -273,6 +273,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
             Entry { name: "maxlength", detail: "the most characters it takes", doc: "Counted in UTF-16 units, so an emoji can count as two. Typing past it is refused and a paste is cut short." },
             Entry { name: "inputmode", detail: "text | numeric | decimal | tel | email | url | search | none", doc: "Which keyboard a phone raises. The field is still a text field and its value still text: a PIN or a phone number is `inputmode=\"numeric\"`, not a number." },
             Entry { name: "enterkeyhint", detail: "enter | done | go | next | previous | search | send", doc: "What the keyboard's action key says. `next` and `previous` move focus like Tab, `done` closes the field, and in a form every other one submits it; every one commits the field first, which fires `@change`. Left off in a form, it is `next` on each typing field and `go` on the last." },
+            Entry { name: "autocapitalize", detail: "off | sentences | words | characters", doc: "Whether the keyboard starts letters in capitals, as HTML has it: `characters` for number plates and codes, `words` for names. A hint to the keyboard; what is typed is kept as typed. A password, email or URL field takes none. `none` is `off` and `on` is `sentences`." },
             Entry { name: "autocomplete", detail: "what the field holds, for autofill", doc: "The standard field names: `username`, `current-password`, `new-password`, `email`, `tel`, `name`, `postal-code`, `cc-number`, `one-time-code` and the rest. A phone's password manager fills the fields of the focused field's form from them, and offers to save after `@submit`. `off` keeps the field away from autofill. Without it, a password, an email keyboard and a phone keyboard are recognised anyway." },
             Entry { name: "autofocus", detail: "take focus when it appears", doc: "Valueless. Focuses the field when it first appears, a route or an `r-if` bringing it in included, unless something already has focus." },
             Entry { name: "accept", detail: "which files a file input offers", doc: "For `type=\"file\"`: extensions (`.png`), media types (`application/pdf`) and families (`image/*`, `video/*`, `audio/*`), comma-separated. A hint to the picker, not a check: `File.type` says what was picked." },
@@ -371,6 +372,14 @@ const ATTRIBUTE_VALUES: &[(&str, &[(&str, &[Entry])])] = &[(
             Entry { name: "previous", detail: "Previous: the field before", doc: "Commits, then moves focus as Shift+Tab does." },
             Entry { name: "search", detail: "Search", doc: "Commits; the search is the app's `@change`." },
             Entry { name: "send", detail: "Send", doc: "Commits; sending is the app's `@change`." },
+        ],
+    ), (
+        "autocapitalize",
+        &[
+            Entry { name: "off", detail: "no capitals", doc: "The keyboard starts every letter small. `none` is the same." },
+            Entry { name: "sentences", detail: "each sentence's first letter", doc: "`on` is the same." },
+            Entry { name: "words", detail: "each word's first letter", doc: "For names and places." },
+            Entry { name: "characters", detail: "every letter", doc: "For number plates and codes." },
         ],
     )],
 )];

@@ -2722,6 +2722,50 @@ impl EnterKey {
     }
 }
 
+/// Whether the keyboard starts letters in capitals: `autocapitalize=`, as HTML
+/// names it. A hint to the keyboard, never a change to what was typed; a
+/// password, email or URL field takes none, as in a browser.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Autocapitalize {
+    /// Whatever the keyboard does when nobody says.
+    #[default]
+    Default,
+    /// `off` or `none`.
+    Off,
+    /// `on` or `sentences`: the first letter of each sentence.
+    Sentences,
+    /// The first letter of each word.
+    Words,
+    /// Every letter: number plates, codes.
+    Characters,
+}
+
+impl Autocapitalize {
+    /// Every value `autocapitalize=` accepts, for the error that names them.
+    pub const NAMES: [&'static str; 6] = ["off", "none", "on", "sentences", "words", "characters"];
+
+    pub fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "off" | "none" => Self::Off,
+            "on" | "sentences" => Self::Sentences,
+            "words" => Self::Words,
+            "characters" => Self::Characters,
+            _ => return None,
+        })
+    }
+
+    /// The `autocapitalize` value that names it; `None` when it was not given.
+    pub fn name(self) -> Option<&'static str> {
+        Some(match self {
+            Self::Default => return None,
+            Self::Off => "off",
+            Self::Sentences => "sentences",
+            Self::Words => "words",
+            Self::Characters => "characters",
+        })
+    }
+}
+
 /// What an `<input>` says about itself beyond its type: the attributes that
 /// constrain editing, what its keyboard looks like, and who to tell when
 /// something happens to it.
@@ -2745,6 +2789,8 @@ pub struct Field {
     pub keyboard: Keyboard,
     /// `enterkeyhint`.
     pub enter_key: EnterKey,
+    /// `autocapitalize`.
+    pub autocapitalize: Autocapitalize,
     /// `autofocus`: takes focus when it first appears, if nothing has it.
     pub autofocus: bool,
     /// `@input`: after every change to the text, however it was made.

@@ -2551,6 +2551,7 @@ what HTML means by them.
 | `maxlength` | text inputs | The most text the field takes, in UTF-16 units as HTML counts. Typing past it is refused; a paste is cut short. The *inserted* text is what gets cut, so typing into the middle of a full field does not eat its end. Not applied mid-composition, where the commit is cut instead |
 | `inputmode` | text inputs | Which keyboard a phone raises: `text`, `numeric`, `decimal`, `tel`, `email`, `url`, `search`, or `none` for no on-screen keyboard at all |
 | `enterkeyhint` | text inputs | What the action key says: `enter`, `done`, `go`, `next`, `previous`, `search`, `send` |
+| `autocapitalize` | text inputs | Whether the keyboard starts letters in capitals, as HTML has it: `off` (or `none`), `sentences` (or `on`), `words`, `characters`. A hint to the keyboard, not a change to the text; a password, email or URL field takes none |
 | `autofocus` | text inputs | Takes focus when it first appears, if nothing has focus |
 | `accept` | `type="file"` | Which files the picker offers, as HTML's: extensions, media types, `image/*`-style families |
 | `multiple` | `type="file"` | More than one file; the model holds a `File[]` |
@@ -2559,8 +2560,8 @@ what HTML means by them.
 `disabled` and `readonly` are **boolean attributes**: written means on, whatever
 they say, so `disabled="false"` is disabled, exactly as in HTML, and warns.
 `:disabled="expr"` and `:readonly="expr"` are the bound forms, and a change to
-what they read restyles the element in place. An unknown `inputmode` or
-`enterkeyhint`, or a `maxlength` that is not a whole number, is an error naming
+what they read restyles the element in place. An unknown `inputmode`,
+`enterkeyhint` or `autocapitalize`, or a `maxlength` that is not a whole number, is an error naming
 the line, because each would otherwise give an ordinary field in silence.
 
 **`inputmode` is a keyboard, not a type.** `email`, `tel` and `url` are text

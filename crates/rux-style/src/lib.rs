@@ -457,6 +457,7 @@ fn check_field_attributes(el: &Element) {
     for (name, names) in [
         ("inputmode", &rux_layout::Keyboard::NAMES[..]),
         ("enterkeyhint", &rux_layout::EnterKey::NAMES[..]),
+        ("autocapitalize", &rux_layout::Autocapitalize::NAMES[..]),
     ] {
         let Some(value) = el.attr(name) else { continue };
         if !names.contains(&value) {
@@ -622,6 +623,10 @@ fn field_of(
         enter_key: el
             .attr("enterkeyhint")
             .and_then(rux_layout::EnterKey::parse)
+            .unwrap_or_default(),
+        autocapitalize: el
+            .attr("autocapitalize")
+            .and_then(rux_layout::Autocapitalize::parse)
             .unwrap_or_default(),
         autofocus: el.attr("autofocus").is_some(),
         on_input: handler("@input"),
@@ -9884,7 +9889,7 @@ fn expand_component(
     let mut props: Locals = Vec::new();
     let mut prop_deps: HashSet<String> = HashSet::new();
     let mut listeners: Vec<(String, String)> = Vec::new();
-    for rux_parser::Attr { name: key, value: expr, .. } in &el.attrs {
+    for rux_parser::Attr { name: key, value: expr, has_value, .. } in &el.attrs {
         // `@event="body"` is a listener, not a prop: the body is the caller's
         // code to run *later*, so it is carried as text and never evaluated
         // here. Evaluating it would run the caller's statements at build time,
@@ -9916,8 +9921,11 @@ fn expand_component(
         // `prop name` must not be handed the route's name. It passes props
         // only in the bound form.
         let name = key.replace('-', "_");
+        // Written bare, it is on, as `disabled` is on an element: `<driver-fields
+        // strict />` is `:strict="true"`. A prop that is not a `bool` is told
+        // so by the check below rather than handed an empty string.
         if el.tag != "route" && component.props.iter().any(|p| p.name == name) {
-            props.push((name, Value::Text(expr.clone())));
+            props.push((name, if *has_value { Value::Text(expr.clone()) } else { Value::Bool(true) }));
         }
     }
     // A prop is a boundary, so what it was given is held to what it declared,

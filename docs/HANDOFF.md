@@ -55,8 +55,9 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   `effect` cases are fixed, each with a test that failed first (`crates/rux-runtime/tests/`: `modules.rs`, `slot_scope.rs`,
   `async_listeners.rs`, `native_props.rs`), plus the small notes `flex-flow` and the image path in `rux check`
   (`image_base.rs`). All 144 suites pass (`cargo test --workspace -j 2`). Not yet driven in the Urbandrop app (the CLI
-  on the PATH is not reinstalled); UD-012's Android sign-in case is open until it is tried on the emulator. **Owner to decide:** a bare boolean attribute on a component tag (`true`, or an
-  error), and `autocapitalize`. **Open features, each an Opus plan the owner approves:** UD-001 to UD-007 and UD-013 to
+  on the PATH is not reinstalled); UD-012's Android sign-in case is open until it is tried on the emulator. Owner's calls, built: a bare attribute on a component tag passes `true`; `autocapitalize` as HTML has it
+  (Android caps flags, web attribute; the CLI must be rebuilt for the Java shim). **v0.9 is frozen, not released,
+  until v0.8 ships (needs a phone); new work goes on the next version.** **Open features, each an Opus plan the owner approves:** UD-001 to UD-007 and UD-013 to
   UD-016 (native errors with a code, location, background work and notifications, file bytes to Rust, opening other
   apps, maps, secret storage, date-time input, scroll position, sharing code between apps, print or PDF). The owner's
   rule: Urbandrop does not work around these; Rux builds them.

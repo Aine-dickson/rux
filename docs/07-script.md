@@ -1113,6 +1113,10 @@ With a default and no annotation, the default's type is inferred, as for a
 A plain attribute, `label="Save"`, passes a `string`, so a `float` prop must be
 bound: `:price="3"`. Passing text to it is an error at the tag.
 
+Written bare, with no `=`, an attribute passes `true`, as `disabled` is on for
+an element: `<driver-fields strict />` is `:strict="true"`. Bare on a prop that
+is not a `bool` is an error when the program runs.
+
 **Props are also checked when the program runs, in release builds as well as
 in development.** A prop is a boundary: its value can come from a route
 parameter, from another file checked separately, or from a value the checker
