@@ -462,7 +462,8 @@ fn dirs_home() -> PathBuf {
 ///   reload is a socket to the host through `adb reverse`, and Android refuses
 ///   to open one without it. A release build asks for it only when a document
 ///   or stylesheet names an `http:` or `https:` address, which is what a
-///   network image is (see [`uses_network`]); otherwise nothing in it connects
+///   network image is, or the app's own Rust does (an address in `native/`, or
+///   an HTTP crate it depends on; see [`uses_network`]); otherwise nothing in it connects
 ///   anywhere and it asks for nothing. Android grants it at install, without
 ///   asking the person.
 /// - **`launchMode="singleTask"`, whether or not the app takes links.** By
@@ -498,13 +499,58 @@ pub fn version_code(version: &str) -> u32 {
 /// rather than of the documents: an address a script builds from pieces is
 /// missed, and one in a comment is counted, which costs a permission Android
 /// grants silently.
+///
+/// The app's own Rust (`native/`) counts too. The build leaves it out of the
+/// files it collects, because it is compiled in and never shipped as source, so
+/// it is read here directly: an app whose only network calls are an API client
+/// in `native/` names its address in Rust, or depends on an HTTP crate, and
+/// would otherwise get a release APK that cannot connect.
 fn uses_network(root: &Path) -> bool {
-    let Ok(files) = crate::build::collect(root) else { return false };
+    let named = |text: &str| text.contains("http://") || text.contains("https://");
+    let Ok(files) = crate::build::collect(root) else { return native_uses_network(root) };
     files
         .iter()
         .filter(|f| f.extension().is_some_and(|e| e == "rux" || e == "css"))
         .filter_map(|f| std::fs::read_to_string(root.join(f)).ok())
-        .any(|text| text.contains("http://") || text.contains("https://"))
+        .any(|text| named(&text))
+        || native_uses_network(root)
+}
+
+/// The HTTP and socket crates an app's `native/Cargo.toml` is likely to name.
+/// A guess by name: a crate not listed is caught only when a Rust file spells
+/// an address out, and `[permissions] network = true` covers the rest.
+const NETWORK_CRATES: &[&str] =
+    &["reqwest", "ureq", "hyper", "isahc", "surf", "attohttpc", "tungstenite", "tokio-tungstenite", "tonic"];
+
+fn native_uses_network(root: &Path) -> bool {
+    let native = root.join(crate::native::DIR);
+    if let Ok(cargo) = std::fs::read_to_string(native.join("Cargo.toml")) {
+        let in_deps = cargo.lines().map(str::trim).any(|line| {
+            NETWORK_CRATES.iter().any(|c| {
+                line.strip_prefix(c).is_some_and(|rest| rest.trim_start().starts_with(['=', '.']))
+            })
+        });
+        if in_deps {
+            return true;
+        }
+    }
+    let mut stack = vec![native.join("src")];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if text.contains("http://") || text.contains("https://") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 fn android_manifest(manifest: &Manifest, dev: bool, network: bool) -> String {
@@ -795,6 +841,37 @@ mod tests {
         assert!(android_manifest(&manifest("Task List"), true, false).contains(internet));
         assert!(android_manifest(&manifest("Task List"), false, true).contains(internet));
         assert!(!android_manifest(&manifest("Task List"), false, false).contains(internet));
+    }
+
+    /// The app's own Rust is not among the files a build collects, so an API
+    /// client living only in `native/` was invisible to the scan and its release
+    /// APK could not connect.
+    #[test]
+    fn an_address_or_an_http_crate_in_native_asks_for_the_network() {
+        let scratch = |name: &str| {
+            let dir = std::env::temp_dir().join(format!("rux-net-{name}-{}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            std::fs::create_dir_all(dir.join("native/src")).unwrap();
+            std::fs::write(dir.join("app.rux"), "<view />").unwrap();
+            dir
+        };
+
+        let quiet = scratch("quiet");
+        std::fs::write(quiet.join("native/src/lib.rs"), "pub fn add(a: i64, b: i64) -> i64 { a + b }").unwrap();
+        assert!(!uses_network(&quiet));
+
+        let address = scratch("address");
+        std::fs::write(address.join("native/src/lib.rs"), "const API: &str = \"https://api.example.com\";").unwrap();
+        assert!(uses_network(&address));
+
+        let krate = scratch("crate");
+        std::fs::write(krate.join("native/src/lib.rs"), "pub fn f() {}").unwrap();
+        std::fs::write(krate.join("native/Cargo.toml"), "[dependencies]\nreqwest = { version = \"0.12\" }\n").unwrap();
+        assert!(uses_network(&krate));
+
+        for name in ["quiet", "address", "crate"] {
+            let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("rux-net-{name}-{}", std::process::id())));
+        }
     }
 
     /// Each release has a larger `versionCode` than the one before, or Play
