@@ -278,6 +278,31 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next action
 
+**2026-11-12, read this first.** The owner froze v0.9: it is not released before v0.8, which waits for a
+phone to test its Android features. New work goes on the next version (v0.10). Two decisions are open with
+the owner before any v0.10 work:
+
+1. **The branch:** proposed `build/v0.10` made from the tip of `build/v0.9`. Ask; do not create it unasked.
+2. **The order.** Proposed, owner has not answered:
+   (a) fix the web build: `cargo check -p rux-web --target wasm32-unknown-unknown` fails in `rux-shell`
+   (`self.window_settings` at about line 4192 does not exist on `App`; `web_time::Instant` passed where
+   `std::time::Instant` is wanted at about 8034 and 8063). Found 2026-11-12, already in committed code; a
+   frozen version should build for every target;
+   (b) the web-standard Urbandrop items: UD-013 (`datetime-local`, `time`, labelled and disabled select
+   options), UD-014 (`scrollTop`/`scrollLeft`, `@scroll`, `scrollTo`), UD-005 parts 1 to 3 (open a URL, dial,
+   directions);
+   (c) the Rust boundary: UD-001 (native errors with a kind and fields), UD-004 (file bytes to Rust),
+   UD-007 (secret storage), UD-015 (sharing code between apps);
+   (d) the capability model (roadmap v0.10 item 2: manifest permissions from what native code uses);
+   (e) platform services: UD-002 (location, foreground service), UD-003 (notifications, background work,
+   lifecycle). The emulator can fake location and notifications; background survival needs a phone;
+   (f) later: UD-006 maps (needs pinch), UD-016 print and PDF.
+   The open v0.9 items (physics, live regions, pinch and rotate, `rux doctor` survey, `hyphens: auto`, video
+   on macOS and Linux, child windows driven off Windows) move to v0.10. The owner may want the "needed now"
+   items (location, notifications) first instead.
+
+Each feature group is its own Opus plan the owner approves before Sonnet builds it.
+
 **2026-11-11, docs and site pass** (owner's decisions: docs are versioned and
 public docs show only their release; the playground keeps running the latest
 release and moves to `playground.ruxlang.dev`). The audit is
