@@ -10,6 +10,8 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
 
 ## State
 
+- 2026-11-12: **one script reference.** `docs/07-script.md` is now the whole language (grammar, types, state, functions, modules, native, standard library, runtime calls); `10-types.md` and `11-next.md` are in `docs/archive/` and `docs/archive/script-reference-merge-2026-11.md` maps every section. The pipeline moved to `04-architecture.md`. Still one page on the site; splitting it is a separate step. **Next:** the same docs on `release/v0.8.0` (worktree `../rux-v080-docs`; Learn, anchors, how-it-works, why done in `9a17365`).
+- 2026-11-12: the rhai-era names are retired (local commit on `build/v0.9`, not pushed). The list and what to write instead is `RETIRED` in `crates/rux-script/src/interp/stdlib.rs` and "Retired names" in `docs/07-script.md`. `rux check` errors with the replacement, `rux fmt` rewrites the renames that need no types. Math is `Math.*` only; maps lose `len`, `contains` and `is_empty`. All 140 test suites pass (`cargo test --workspace -j 2`). **Next, in its own Opus session:** one script reference (merge 07, 10 and 11). **Open:** the same docs fixes on `release/v0.8.0` (Learn, sync anchors, how-it-works and why are done there in `9a17365`, worktree `../rux-v080-docs`; the reference pages, tooling and home are not). The CLI on the PATH is not reinstalled.
 - Branch `build/v0.9`, pushed 2026-11-06 at `d56e2c3` (CI runs on push). `main` and `build/v0.9-icons` are merged in (the icons one with `-s ours`: its content was hand-merged in `20939f2`). CLI reinstalled from it.
 - 2026-11-06: `build/v0.9-icons` was found never to have been merged, and is now
   in the tip (merge commit `20939f2`). `<icon>`, `rux-icons` and the build's
@@ -37,8 +39,7 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
   for the owner) is `docs/archive/docs-audit-2026-11-06.md`. Read it before
   auditing the docs again.
 - The owner will decide the docs and site redesign. Open questions for it:
-  `07-script`, `10-types` and `11-next` overlap heavily and could become one
-  document; much of the CSS section of `05-as-built` is not CSS (r-transition,
+  (the script references are one document now); much of the CSS section of `05-as-built` is not CSS (r-transition,
   computed/effect, keyed lists, Tailwind, `env()`); `03-guide` is false as
   written; `02-spec` is design history.
 

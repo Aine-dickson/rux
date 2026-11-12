@@ -4,7 +4,7 @@ Reads a [Rux](https://ruxlang.dev) app's `native/` Rust crate for what it
 exports with `#[rux::export]`, and says what each Rust type is in Rux. Used
 by the `#[rux::export]` macro and by the `rux` CLI, so what the checker is
 told and what the compiled code does come from one mapping. Step 8 of
-`docs/11-next.md`.
+`docs/archive/language-build-log.md`.
 
 ## Internal to Rux
 

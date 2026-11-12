@@ -2,7 +2,7 @@
 //!
 //! Types are erased, so this is the only place one meets a value. Two things
 //! ask: a component tag, whose props are checked against what the component
-//! declared, and `x is T` in script. See `docs/10-types.md`, "Props" and
+//! declared, and `x is T` in script. See `docs/07-script.md`, "Props" and
 //! "Boundaries". The walk never raises: a value that does not fit is `false`.
 //!
 //! A prop arrives as a [`Value`] and `is` sees the interpreter's value, so

@@ -1,4 +1,4 @@
-//! A kept layout is the whole one: track (g).4 of `docs/11-next.md`.
+//! A kept layout is the whole one: track (g).4 of `docs/07-script.md`.
 //!
 //! [`LayoutState`] keeps the Taffy tree between frames and touches only what
 //! changed, so Taffy can answer for the rest from its cache. Wrong here is

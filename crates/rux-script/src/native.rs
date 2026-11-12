@@ -1,4 +1,4 @@
-//! Native modules in the language: step 8.3 of `docs/11-next.md`.
+//! Native modules in the language: step 8.3 of `docs/archive/language-build-log.md`.
 //!
 //! A native module is linked the way a script module is (`use native::shop;`
 //! makes `shop.cheapest(x)` the linked name `native/shop::cheapest`), with

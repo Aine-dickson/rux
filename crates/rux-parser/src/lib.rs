@@ -294,7 +294,7 @@ pub struct Sfc {
     /// The file is a script module: a `<script>` and nothing else, or bare
     /// script with no tags at all. It holds functions, types and state for
     /// other files to import, and its template is an empty `<view>` standing
-    /// in for the one it does not have. See `docs/11-next.md`, "Modules".
+    /// in for the one it does not have. See `docs/07-script.md`, "Modules".
     pub module: bool,
     /// Every declared type a prop of this file may name, as name and text:
     /// its own `type`s and what it brings in with `use types::X`, the types

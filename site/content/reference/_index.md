@@ -1458,6 +1458,5 @@ crate layout and the reused-crates table describe what is built.
 
 The [spec](/reference/spec/) is the v0.1 design surface and the [guide](https://github.com/Aine-dickson/rux/blob/main/docs/03-guide.md)
 a tutorial written before the runtime existed. Both are history, and parts of
-each are false. The script references are [Script](/reference/script/) (the guide to
-using it), [The Rux language](./11-next.md) (the language itself) and
-[Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md) (the type checker).
+each are false. The script reference is [Script](/reference/script/): the language, its types, and the
+calls the runtime gives a script.

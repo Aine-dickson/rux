@@ -1,4 +1,4 @@
-//! The app's `native/` crate: step 8.4 of `docs/11-next.md`.
+//! The app's `native/` crate: step 8.4 of `docs/archive/language-build-log.md`.
 //!
 //! An app keeps its Rust in `native/` beside `rux.toml`, an ordinary library
 //! crate depending on `rux-native` as `rux`. The CLI reads its source with

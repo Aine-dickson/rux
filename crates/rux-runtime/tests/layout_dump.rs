@@ -1,5 +1,5 @@
 //! Every example's layout, written out whole, so a change under the layout
-//! (a Taffy upgrade, track (g).4a of `docs/11-next.md`) can be diffed against
+//! (a Taffy upgrade, track (g).4a of `docs/07-script.md`) can be diffed against
 //! the build before it, box by box. Ignored; run it with a directory:
 //!
 //! `LAYOUT_DUMP=some/dir cargo test -p rux-runtime --test layout_dump -- --ignored`

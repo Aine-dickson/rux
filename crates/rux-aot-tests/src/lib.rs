@@ -1,4 +1,4 @@
-//! The step 9 proof of `docs/11-next.md`: the corpus's scripts, compiled to
+//! The step 9 proof of `docs/archive/language-build-log.md`: the corpus's scripts, compiled to
 //! Rust by `rux-codegen` in `build.rs`, and the tests in `tests/` running
 //! each on both engines.
 

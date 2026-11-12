@@ -1,7 +1,7 @@
 //! A change to a list builds that list, not the whole document.
 //!
 //! A reconcile used to build the whole document to splice in the one list
-//! that changed (docs/11-next.md, track (g)). Now a structural parent in the
+//! that changed (docs/archive/language-build-log.md, track (g)). Now a structural parent in the
 //! document's own markup keeps what its children were built from, and a
 //! change to it builds only them (`rux_style::rebuild_children`). Debug builds
 //! check every such reconcile against a whole build, tree and registry, and

@@ -1,4 +1,4 @@
-//! The attributes of `rux-native`: step 8 of `docs/11-next.md`.
+//! The attributes of `rux-native`: step 8 of `docs/archive/language-build-log.md`.
 //!
 //! Each writes the item back as it was (less its `#[rux(…)]` attributes) and
 //! adds what Rux needs: conversions for a struct, and a hidden function per

@@ -69,7 +69,7 @@ pub use rux_style::warn_stylesheet;
 /// Where a waiting native call's answer comes back: `set_waker`.
 pub use rux_script::host;
 /// Native modules: what an app's Rust registers, and what the generated
-/// registration calls. Step 8 of docs/11-next.md.
+/// registration calls. Step 8 of docs/archive/language-build-log.md.
 pub use rux_native as native;
 /// Rux's own native functions, the file dialogs among them: their
 /// interface, which a shell installs with code behind it.
@@ -82,7 +82,7 @@ pub mod builtins {
 /// What is asked of an `<audio>`'s sound. See [`Document::take_media_requests`].
 pub use rux_script::MediaAsk;
 /// Compiled script functions, for the code a release build generates: step 9
-/// of docs/11-next.md.
+/// of docs/archive/language-build-log.md.
 pub use rux_script::aot;
 /// Where a frame's time goes, when `RUX_PROFILE` is set.
 pub use rux_script::profile;
@@ -895,7 +895,7 @@ fn exports_in(path: &Path) -> Option<Vec<(String, bool)>> {
 }
 
 /// Run the type checker over the document's own script and report what it
-/// finds on the file's lines. See `docs/10-types.md`.
+/// finds on the file's lines. See `docs/07-script.md`.
 ///
 /// Only the document's own lines are reported: a component's functions ride
 /// in the same script, and are the component's to answer for when it is the
@@ -1015,7 +1015,7 @@ fn check_script_types(
 }
 
 /// The file's script lowered to the typed IR and held to the IR's rules:
-/// step 4 of `docs/11-next.md`. Debug builds do this on every load, and a
+/// step 4 of `docs/archive/language-build-log.md`. Debug builds do this on every load, and a
 /// broken rule is a bug in the lowering, so it panics. A program with a type
 /// error is not held to them: the checker has already said what is wrong.
 ///
@@ -1095,7 +1095,7 @@ fn lower_and_verify(
 
 /// The template as the type checker reads it: what every expression in it has
 /// to be, which only the runtime knows, since it is what an attribute of an
-/// element takes and what an event hands over. See `docs/10-types.md`,
+/// element takes and what an event hands over. See `docs/07-script.md`,
 /// "Templates".
 fn template_for_types(root: &rux_parser::Element, tags: &TagProps) -> Vec<rux_script::check::Tpl> {
     let mut out = Vec::new();
@@ -2032,7 +2032,7 @@ thread_local! {
 pub type TypeTable = rux_script::check::Table;
 
 /// Keep (or stop keeping) the types the checker works out, for `rux check
-/// --types`. See `docs/10-types.md`, "Editor".
+/// --types`. See `docs/07-script.md`, "Editor".
 pub fn record_types(on: bool) {
     TYPE_TABLE.with(|t| *t.borrow_mut() = on.then(rux_script::check::Table::default));
 }
@@ -2137,7 +2137,7 @@ pub fn imports_of(path: impl AsRef<Path>) -> Option<Vec<(String, PathBuf)>> {
 }
 
 /// Whether the file at `path` is a script module: a `.rux` file with no
-/// `<template>` (step 7 of `docs/11-next.md`). One that some other file
+/// `<template>` (step 7 of `docs/archive/language-build-log.md`). One that some other file
 /// imports is checked through that file, with its own lines.
 pub fn is_module_file(path: impl AsRef<Path>) -> bool {
     source::read_text(path.as_ref()).ok().and_then(|s| rux_parser::parse_sfc(&s).ok()).is_some_and(|sfc| sfc.module)
@@ -2553,7 +2553,7 @@ impl Document {
     /// Load a document, flattening any failure to a sentence.
     /// The unit this document's script runs as, and the hash compiled code
     /// for it is registered under: what `rux build --release` compiles (step
-    /// 9 of docs/11-next.md).
+    /// 9 of docs/archive/language-build-log.md).
     pub fn compiled_unit(&self) -> (u64, &rux_ir::ir::Unit) {
         (self.engine.source_hash(), self.engine.ir_unit())
     }
@@ -2676,7 +2676,7 @@ impl Document {
                     return Err(LoadError::at_line(problem, at, &job.owner_path));
                 }
                 // `use native::shop;`: the app's Rust, found in the registry
-                // by name, never on disk (step 8 of docs/11-next.md).
+                // by name, never on disk (step 8 of docs/archive/language-build-log.md).
                 if let Some(module) = native_module_of(&import.file) {
                     let written = module.replace('/', "::");
                     let Some(iface) = rux_native::registry::interface(&module) else {
@@ -3020,7 +3020,7 @@ impl Document {
                     comp_sfc.types = rux_script::Engine::declared_types(&comp_script);
                 }
                 // Its functions go to the engine in a scope of the component's
-                // own (step 7.4 of `docs/11-next.md`): they call each other by
+                // own (step 7.4 of `docs/archive/language-build-log.md`): they call each other by
                 // name and see what the component imports, and a caller's
                 // names are not theirs. Its `let`s are each instance's state.
                 let functions = component_functions(&comp_script);
@@ -5840,7 +5840,7 @@ impl Document {
     /// of API has ever had.
     fn apply_timer_requests(&mut self, instance: Option<&str>) {
         // Tasks an `async fn` call started go the same way: to whoever ran
-        // the code that started them. See `docs/11-next.md`, "Async".
+        // the code that started them. See `docs/07-script.md`, "Async".
         for id in self.engine.take_started_tasks() {
             // A module's function writes only the module's state, which lives
             // as long as the document: so does the task.
@@ -7441,7 +7441,7 @@ struct Import {
     /// snake form, which finds the same file either way.
     hyphenated_path: bool,
     /// `use type types::Task;`: a type declared in `file`, not a component.
-    /// See `docs/10-types.md`.
+    /// See `docs/07-script.md`.
     type_name: Option<String>,
 }
 
@@ -8683,7 +8683,7 @@ mod tests {
     /// [`with_component`], with a store beside them: `stores/probe.rux`,
     /// which either may import (`use stores::probe;`). A component's names
     /// are its own, so what it shares with the document goes through one
-    /// (step 7.4 of `docs/11-next.md`). Its state reads back from the
+    /// (step 7.4 of `docs/archive/language-build-log.md`). Its state reads back from the
     /// engine by its linked name, `stores/probe::name`.
     fn with_store(component: &str, app: &str, store: &str) -> Document {
         use std::fs;
@@ -9970,7 +9970,7 @@ prop who: { name: string };
     }
 
     /// A component's names are its own, all of them (step 7.4 of
-    /// `docs/11-next.md`): its template, handlers and functions see its state,
+    /// `docs/archive/language-build-log.md`): its template, handlers and functions see its state,
     /// its props, what it imports and what the runtime provides (`{{ route }}`
     /// inside a route view), and not the document's signals. State the two
     /// share lives in a store both import; the component reads it and changes
@@ -12368,7 +12368,7 @@ async fn go() {
     }
 
     /// A component's `async fn` that fails is reported in the component's
-    /// file, at the line of its `await` (step 6.x of docs/11-next.md; it
+    /// file, at the line of its `await` (step 6.x of docs/archive/language-build-log.md; it
     /// had no line before).
     #[test]
     fn a_components_async_fn_that_fails_is_reported_in_its_file() {

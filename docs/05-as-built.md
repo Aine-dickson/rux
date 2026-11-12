@@ -3833,7 +3833,7 @@ app is watching.
   that does not fit, an `@event` the runtime never dispatches and a value on a
   valueless directive are all definitely wrong, so `rux check` exits non-zero
   for them. The window still runs the app: blanking it over a typo mid-edit
-  would be worse than useless. Type findings are described in [Types](./10-types.md);
+  would be worse than useless. Type findings are described in [Types](./07-script.md#types);
   every page and every component is checked in its own file and scope, and a
   script that does not parse fails its load at its line.
 
@@ -3965,6 +3965,5 @@ crate layout and the reused-crates table describe what is built.
 
 The [spec](./02-spec.md) is the v0.1 design surface and the [guide](./03-guide.md)
 a tutorial written before the runtime existed. Both are history, and parts of
-each are false. The script references are [Script](./07-script.md) (the guide to
-using it), [The Rux language](./11-next.md) (the language itself) and
-[Types](./10-types.md) (the type checker).
+each are false. The script reference is [Script](./07-script.md): the language, its types, and the
+calls the runtime gives a script.

@@ -9902,7 +9902,7 @@ fn expand_component(
     // in release builds too: a value from a route, from a file checked on its
     // own, or from an `any` never met the checker. One that does not fit is
     // reported and left out, so the default below takes its place. See
-    // `docs/10-types.md`, "Props".
+    // `docs/07-script.md`, "Props".
     let named = |n: &str| component.types.get(n).cloned();
     // The tag as the caller wrote it: `comp_tag` is the component's key, which
     // is a path, and a route stands in for the view it names.
@@ -10577,7 +10577,7 @@ pub const ROW_PLACE: &str = "_rux_at_";
 /// An `r-key` that names a field of the loop variable (`item.id`), read off
 /// the row's record rather than evaluated: the same value, shown the way
 /// `eval_display` shows it. A script evaluation per row was most of what
-/// planning a 300-row list cost (docs/11-next.md, track (g)). `None` for any
+/// planning a 300-row list cost (docs/archive/language-build-log.md, track (g)). `None` for any
 /// other key, and for a field the record does not have, which the engine
 /// then reports as it always has.
 fn field_key(expr: &str, var: &str, locals: &Locals) -> Option<String> {
@@ -11682,7 +11682,7 @@ struct BuildRows {
 /// where its registry entries are found by [`merge_rows`].
 ///
 /// A reused row used to be copied out of the cache, node and registry
-/// entries, 1.9 of a 300-row list's 5 ms (docs/11-next.md, track (g)).
+/// entries, 1.9 of a 300-row list's 5 ms (docs/archive/language-build-log.md, track (g)).
 /// A build of one list has the rows it is replacing in hand, and a row that
 /// is reused is the same row, so it is moved instead.
 struct LiveRow {
@@ -11773,7 +11773,7 @@ pub struct Rebuilt {
 /// the rest of the document, reusing rows from `cache` as a whole build does.
 ///
 /// A reconcile used to build the whole document to splice in the one list
-/// that changed: 5 of a 300-row list's 7 ms (docs/11-next.md, track (g)).
+/// that changed: 5 of a 300-row list's 7 ms (docs/archive/language-build-log.md, track (g)).
 /// This is the same build started at the parent, from what the parent's
 /// children were built from last time ([`ListCtx`]).
 ///

@@ -1,6 +1,6 @@
 //! Rux's typed IR, and the types it is written in.
 //!
-//! Step 4 of `docs/11-next.md`: between the checker and every backend sits
+//! Step 4 of `docs/archive/language-build-log.md`: between the checker and every backend sits
 //! one representation of what a Rux file means. [`ir`] is that
 //! representation, [`verify`] checks the rules it promises, [`print`] shows
 //! it as text, and [`table`] answers what a type name stands for and what

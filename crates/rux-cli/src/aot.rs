@@ -1,4 +1,4 @@
-//! Compiling a release build's script: step 9 of `docs/11-next.md`.
+//! Compiling a release build's script: step 9 of `docs/archive/language-build-log.md`.
 //!
 //! The entry document is loaded exactly as the app will load it, so its unit
 //! and the hash of its text are the ones the app will compute; `rux-codegen`

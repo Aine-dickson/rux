@@ -6,7 +6,7 @@
 // makes every answer here as old as the last save. A table is looked up by name
 // and line rather than by exact position, so an edit a few lines up moves the
 // answers only as far as the lines moved, and a name that is not on the line
-// any more is simply not answered. See `docs/10-types.md`, "Editor".
+// any more is simply not answered. See `docs/07-script.md`, "Editor".
 
 const path = require('path');
 

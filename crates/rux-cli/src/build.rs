@@ -1069,7 +1069,7 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
     // Which app this is, for where `settings.set` keeps its values. First, so
     // nothing the app runs at start can read another app's.
     main = with_registration(&main, &format!("    rux_shell::set_app_id({});\n", literal(&manifest.id)));
-    // A release build's script, compiled (step 9 of docs/11-next.md).
+    // A release build's script, compiled (step 9 of docs/archive/language-build-log.md).
     let _ = std::fs::remove_file(work.join("src").join("rux_aot.rs"));
     if options.release {
         if let Some((code, line)) = crate::aot::generate(&manifest) {

@@ -17,12 +17,12 @@ rux-style.workspace = true
 rux-reactive.workspace = true
 rux-layout.workspace = true
 rux-script.workspace = true
-# Native modules, re-exported as `rux_runtime::native`: docs/11-next.md, step 8.
+# Native modules, re-exported as `rux_runtime::native`: docs/archive/language-build-log.md, step 8.
 rux-native.workspace = true
 # The declarations in a script (`use`, `prop`, `computed`, lifecycle blocks)
-# are found by Rux's own parser. See docs/11-next.md, step 2.
+# are found by Rux's own parser. See docs/archive/language-build-log.md, step 2.
 rux-syntax.workspace = true
-# The typed IR, lowered and verified on load: docs/11-next.md, step 4.
+# The typed IR, lowered and verified on load: docs/archive/language-build-log.md, step 4.
 rux-ir.workspace = true
 # An SVG's size, for layout; the painter draws it with vello_svg over the
 # same usvg (0.46, what vello_svg 0.10 is built on).

@@ -5018,7 +5018,7 @@ type IdMap<V> = HashMap<NodeId, V, std::hash::BuildHasherDefault<IdHasher>>;
 ///
 /// `collect` used to find them by walking each list from the start for every
 /// node, so a layout cost the square of its size: 5 ms of a 300-row list's
-/// 12 ms went there (docs/11-next.md, track (g)). Found once per layout here.
+/// 12 ms went there (docs/archive/language-build-log.md, track (g)). Found once per layout here.
 #[derive(Default, Clone, Copy)]
 struct At {
     /// A node's paints are pushed one after another, so they are a range.
@@ -7926,7 +7926,7 @@ pub fn layout_scrolled(
 }
 
 /// The Taffy tree kept from one frame to the next, so a frame lays out only
-/// what changed (track (g).4 of `docs/11-next.md`).
+/// what changed (track (g).4 of `docs/07-script.md`).
 ///
 /// Each frame's nodes are matched to the last frame's (see `Kept`), and a node
 /// whose style, text, text cap and children are all as they were keeps its

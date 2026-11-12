@@ -22,8 +22,6 @@ content="$repo/site/content"
 # Not every doc is publishable, and that is deliberate:
 #   03-guide      -> opens by saying it does not work as written; /learn is
 #                    authored against 05-as-built instead, by hand
-#   10-types      -> the type system while it is being built; each part's
-#                    rules move into 07-script as it lands
 # See docs/README.md.
 #
 # `01-rationale.md` used to be on that list, on the grounds that the
@@ -45,7 +43,7 @@ pages=(
   # Weights interleave with the `splits` table below, which is what orders the
   # reference sidebar: overview, elements, layout, CSS, reactivity, script, then
   # the rest of the runtime, with the v0.1 design history last.
-  "07-script.md|reference/script.md|Script|6|The script language: state, functions, values, the element API, and every way it differs from JavaScript."
+  "07-script.md|reference/script.md|Script|6|The script language: grammar, types, state, functions, modules, native code, the standard library, and the calls the runtime gives a script."
   "02-spec.md|reference/spec.md|Design surface (v0.1)|16|The original v0.1 spec, kept as design history. Not a description of the built runtime, and parts of it are false."
   "01-rationale.md|reference/rationale.md|Design rationale|17|The four laws, the element audit, and the decisions behind them, with the tradeoffs each one accepted."
   "06-roadmap.md|roadmap/_index.md|Roadmap|4|Where Rux goes next: milestones, the release cadence, and what is deliberately not being built."
@@ -174,7 +172,8 @@ strip_sections() {
 # a real word. Add a line here when a heading with an apostrophe is linked to.
 fix_apostrophe_anchors() {
   sed -E -e 's;#law-4-stay-close-to-rust-dont-pop-the-balloon;#law-4-stay-close-to-rust-don-t-pop-the-balloon;g' \
-    -e 's;#a-form-submits-as-htmls-does-refusal-included;#a-form-submits-as-html-s-does-refusal-included;g'
+    -e 's;#a-form-submits-as-htmls-does-refusal-included;#a-form-submits-as-html-s-does-refusal-included;g' \
+    -e 's;#a-typed-function-cannot-read-its-callers-locals;#a-typed-function-cannot-read-its-caller-s-locals;g'
 }
 
 # A `(#anchor)` link inside 05 names a heading that the split may have put on
@@ -206,7 +205,6 @@ rewrite_links() {
     -e 's;\.\/04-architecture\.md;/contribute/;g' \
     -e 's;\.\/01-rationale\.md;/reference/rationale/;g' \
     -e 's;\.\/03-guide\.md;https://github.com/Aine-dickson/rux/blob/main/docs/03-guide.md;g' \
-    -e 's;\.\/10-types\.md;https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md;g' \
     -e 's;\.\/README\.md;https://github.com/Aine-dickson/rux/tree/main/docs;g'
 }
 

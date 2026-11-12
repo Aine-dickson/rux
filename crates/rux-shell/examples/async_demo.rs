@@ -1,6 +1,6 @@
 //! A Rust program giving a Rux page two asynchronous native functions, and
 //! the page awaiting them from `async fn`s: steps 6 and 8 of
-//! `docs/11-next.md`.
+//! `docs/archive/language-build-log.md`.
 //!
 //! ```text
 //! cargo run -p rux-shell --example async_demo

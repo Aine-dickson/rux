@@ -1,5 +1,5 @@
 //! Script modules, linked into the files that import them: step 7 of
-//! `docs/11-next.md`, "Modules".
+//! `docs/archive/language-build-log.md`, "Modules".
 //!
 //! A module's names reach an importing file under their **linked** name,
 //! [`qualified`]: `items` in `stores/cart.rux` is `stores/cart::items` in
@@ -91,7 +91,7 @@ pub struct Linking {
     pub scopes: HashMap<String, Scope>,
 }
 
-/// A component's own names: step 7.4 of `docs/11-next.md`. A component's
+/// A component's own names: step 7.4 of `docs/archive/language-build-log.md`. A component's
 /// functions are linked under `name` (`components/badge::inc`), and its code
 /// sees them, what it imports, and nothing of the document's.
 #[derive(Clone, Debug, Default)]

@@ -7,7 +7,7 @@
 #
 # Watchlist #31: nothing watched the dependency graph. (A second job watched
 # the vendored rhai fork against upstream until Rux's own interpreter replaced
-# it, step 5 of docs/11-next.md.)
+# it, step 5 of docs/archive/language-build-log.md.)
 name: Advisories
 
 on:

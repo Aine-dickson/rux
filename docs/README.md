@@ -50,9 +50,7 @@ Three sections, ten element types, real CSS, gesture events, signals. No layout 
 | [Guide](./03-guide.md) | *How Rux was going to be used*: a tutorial written before the runtime existed, kept as history. **False as written**; the tutorial is the site's Learn section. |
 | [Architecture](./04-architecture.md) | *How the runtime works*: the parse→cascade→reactive→layout→paint pipeline, crate layout, the milestone plan, and open questions. The plan for building it. |
 | **[As Built](./05-as-built.md)** | **The reference.** What actually works today: running it, honored CSS, gotchas, and gaps. Authoritative wherever anything else disagrees. Start here if you're writing `.rux` code. |
-| **[Script](./07-script.md)** | **The script language in depth**: state, functions, values, the element API, and every way it differs from JavaScript. |
-| [Types](./10-types.md) | *The type system*: annotations, inference, unions and narrowing, and what is checked at run time. |
-| [The Rux language](./11-next.md) | *The language itself*: `int`/`float`, `none`, generics, `try`/`catch`, `async fn`, script modules and `native` Rust exports, with each rule marked Kept, Changed or New against the rhai-based script it replaced. |
+| **[Script](./07-script.md)** | **The script language**: grammar, types and the checker, state, functions, modules, `native` Rust exports, the standard library, and the calls the runtime gives a script (windows, keys, files, sounds, settings, the clipboard, the tree). |
 | [Roadmap](./06-roadmap.md) | *What's next*: what is still open: the rest of v0.9, then v0.10, v0.11, iOS and the v1.0 freeze, with the decisions that still bind. The history of the finished milestones is in `archive/roadmap-history.md`. Start here if you're picking the work up. |
 | [File input proposal](./12-file-input-proposal.md) | *Why `<input type="file">` and the pickers look as they do*: the proposal behind the file input, kept as the reasoning. |
 | [File input and media plan](./13-file-input-and-media-plan.md) | *How the file input, audio and video were built*, step by step, with the owner's decisions and what was driven on each platform. |

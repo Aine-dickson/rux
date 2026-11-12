@@ -1,5 +1,5 @@
 //! What a frame's layout costs, measured outside the window: track (g) of
-//! `docs/11-next.md` item 10. Ignored by default; run it in release:
+//! `docs/07-script.md` item 10. Ignored by default; run it in release:
 //!
 //! `cargo test -p rux-shell --release --test layout_cost -- --ignored --nocapture`
 //!

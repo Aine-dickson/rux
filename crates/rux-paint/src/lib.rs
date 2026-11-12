@@ -1055,7 +1055,7 @@ fn text_reaches(
 }
 
 /// Which of `items` can show any of themselves in a window `view` wide and
-/// high, one flag per item (track (g).6 of `docs/11-next.md`).
+/// high, one flag per item (track (g).6 of `docs/07-script.md`).
 ///
 /// A long list paints every row, and all but the few on screen were encoded
 /// and handed to the GPU for nothing. Each item's bounds are tested against

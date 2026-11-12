@@ -1,4 +1,4 @@
-//! Rust code a Rux app calls from script: step 8 of `docs/11-next.md`.
+//! Rust code a Rux app calls from script: step 8 of `docs/archive/language-build-log.md`.
 //!
 //! An app's `native/` crate depends on this one as `rux` and marks what Rux
 //! may call with [`export`]; a type Rux holds without seeing into is a

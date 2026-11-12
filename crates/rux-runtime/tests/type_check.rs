@@ -1,7 +1,7 @@
 //! The type checker, as a document meets it: findings on the file's own lines,
 //! types imported from another file, and a component checked on its own with
 //! its props typed. The rules themselves are tested in `rux-script`
-//! (`check.rs`); these are about the wiring. See `docs/10-types.md`.
+//! (`check.rs`); these are about the wiring. See `docs/07-script.md`.
 
 use std::fs;
 use std::path::PathBuf;

@@ -5,9 +5,9 @@
 //! handlers against it. A script is read by Rux's parser (`rux-syntax`),
 //! checked ([`check`]), lowered to the typed IR ([`lower`], `rux-ir`) and run
 //! by Rux's interpreter ([`interp`]). An app's Rust is reached through
-//! `native` modules ([`native`], step 8 of `docs/11-next.md`).
+//! `native` modules ([`native`], step 8 of `docs/archive/language-build-log.md`).
 //!
-//! Until step 5 of `docs/11-next.md` (2026-09-26) the running was done by
+//! Until step 5 of `docs/archive/language-build-log.md` (2026-09-26) the running was done by
 //! `rux-rhai`, a fork of rhai; the checks on names and calls, the error
 //! wording and several of the language's rules still say where they came
 //! from.
@@ -237,7 +237,7 @@ pub struct Builder {
 /// it belongs to. [`Engine::init_component`] adds it, the runtime hands the
 /// state back on every run in the instance, and the run is then in the
 /// component's scope: its own functions and imports, and none of the
-/// document's names (step 7.4 of `docs/11-next.md`).
+/// document's names (step 7.4 of `docs/archive/language-build-log.md`).
 pub const SCOPE_LOCAL: &str = "__scope";
 
 /// A component's functions, for [`Builder::component`].
@@ -254,7 +254,7 @@ pub struct ComponentSource {
 }
 
 /// A script module, for [`Builder::module`]: a `.rux` file with no
-/// `<template>`. See `docs/11-next.md`, "Modules".
+/// `<template>`. See `docs/07-script.md`, "Modules".
 #[derive(Clone, Debug)]
 pub struct ModuleSource {
     /// `stores/cart`: what its names are linked under.
@@ -514,7 +514,7 @@ impl Builder {
             ir.set_global(name, v);
         }
         // Compiled functions, when a build registered some for this exact
-        // text: step 9 of docs/11-next.md.
+        // text: step 9 of docs/archive/language-build-log.md.
         let hash = aot::source_hash(
             std::iter::once(script)
                 .chain(self.modules.iter().flat_map(|m| [m.name.as_str(), m.script.as_str()]))
@@ -1813,7 +1813,7 @@ impl Engine {
     }
 
     /// Check the script against its type annotations. See [`check`] and
-    /// `docs/10-types.md`.
+    /// `docs/07-script.md`.
     pub fn check_types(&self, cx: &check::Context) -> Vec<check::Finding> {
         self.check_types_recording(cx, false).0
     }
@@ -2445,7 +2445,7 @@ impl Engine {
 
     /// Whether task `id` runs a script module's function. A module's state
     /// outlives any component, so such a task belongs to the document, not
-    /// to the instance whose handler started it (`docs/11-next.md`,
+    /// to the instance whose handler started it (`docs/07-script.md`,
     /// "Stores").
     pub fn task_is_a_modules(&self, id: u64) -> bool {
         // A component's functions have linked names too; only a module's
@@ -2713,7 +2713,7 @@ impl Engine {
     ///
     /// A number written into something declared an `int` is cut toward zero
     /// first: a number field bound to an `int` writes a whole number
-    /// (`docs/11-next.md`, "Templates").
+    /// (`docs/07-script.md`, "Templates").
     pub fn assign_value(&mut self, target: &str, value: &Value, locals: &[(String, Value)]) -> HashSet<String> {
         let value = match value {
             Value::Number(n) if n.is_finite() && self.ir.declared_int(target) => Value::Number(n.trunc()),

@@ -56,7 +56,7 @@ fn a_caller_s_local_is_in_scope_and_stays_silent() {
 }
 
 /// A typed function does not get that scope, and one with no parameters is
-/// typed (`docs/10-types.md`). That is the type checker's to say, in its own
+/// typed (`docs/07-script.md`). That is the type checker's to say, in its own
 /// words; the undefined-name check still says nothing, since the name exists.
 #[test]
 fn a_typed_function_reading_a_caller_s_local_is_the_type_checker_s_error() {

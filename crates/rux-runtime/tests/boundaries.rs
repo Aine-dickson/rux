@@ -1,4 +1,4 @@
-//! Props checked when the program runs, and `x is T`. See `docs/10-types.md`,
+//! Props checked when the program runs, and `x is T`. See `docs/07-script.md`,
 //! "Props" and "Boundaries".
 //!
 //! The checker sees a tag's props when it can, but not a value that was `any`,

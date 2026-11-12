@@ -1,6 +1,6 @@
 //! The typed IR: what a Rux file means, once, for every backend.
 //!
-//! Step 4 of `docs/11-next.md`. The checker has worked out every type; this is
+//! Step 4 of `docs/archive/language-build-log.md`. The checker has worked out every type; this is
 //! the program with those types written in and every name resolved, so a
 //! backend never looks a name up or asks what `+` means. Rux's interpreter
 //! (step 5) runs it, and Rust generation (step 9) reads it.
@@ -65,7 +65,7 @@ pub struct Unit {
     /// The names read or written that nothing in the file declares, which
     /// [`Root::Outer`] and [`ExprKind::Outer`] index. Found where they run,
     /// in whoever called: a component's function reading its instance's
-    /// state, a component reading the document's. See `docs/11-next.md`,
+    /// state, a component reading the document's. See `docs/07-script.md`,
     /// "What a function can see"; step 7 settles these with stores.
     pub outer: Vec<String>,
 }

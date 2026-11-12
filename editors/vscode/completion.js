@@ -523,7 +523,7 @@ function members(vscode, text, offset, document) {
  * null when the table has nothing to say about it.
  *
  * A field that may be absent is read with `?.` (decision 10 in
- * `docs/10-types.md`), and so is any field of a value that may be `null`, so
+ * `docs/07-script.md`), and so is any field of a value that may be `null`, so
  * choosing one after a plain `.` turns that `.` into `?.` rather than leaving
  * the author a line the checker will reject.
  */

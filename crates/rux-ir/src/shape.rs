@@ -1,4 +1,4 @@
-//! A record's layout: step 10, track (c) of `docs/11-next.md`.
+//! A record's layout: step 10, track (c) of `docs/archive/language-build-log.md`.
 //!
 //! A record holds its fields' values in slots, in the order its type
 //! declares them, and a [`Shape`] says which name is in which slot. A shape

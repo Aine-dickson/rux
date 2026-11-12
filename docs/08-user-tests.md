@@ -2114,7 +2114,7 @@ originals at `f5aeb53`, then diffing the two sets.
 
 ## Templates, type-checked, 2026-09-24
 
-Step 5 of `docs/10-types.md`: a file's template is checked against its script.
+Step 5 of `docs/archive/language-build-log.md`: a file's template is checked against its script.
 Under test in `rux-script` (`check.rs`, the rules) and `rux-runtime`
 (`tests/type_check.rs`, the wiring). Driven with `rux check` from the debug
 binary, on probe files written to be wrong and on every `.rux` in `examples/`
@@ -2135,7 +2135,7 @@ and in the apps built so far.
 
 ## Props at run time, and `is`, 2026-09-24
 
-Step 6 of `docs/10-types.md`. Under test in `rux-script` (`validate.rs`, the
+Step 6 of `docs/archive/language-build-log.md`. Under test in `rux-script` (`validate.rs`, the
 walk; `check.rs`, `is` narrowing) and `rux-runtime` (`tests/boundaries.rs`).
 Driven with `rux run --route` from the debug binary on a probe project: a
 `<stat>` given an `any` holding text for `prop value: number = 0`, a `<card>`
@@ -2157,7 +2157,7 @@ types file), and `<route path="/task/:id">` into `prop id: int = 0`, shown as
 
 ## Types in the editor, 2026-09-24
 
-Step 7 of `docs/10-types.md`: hover, completion after a `.`, and the quick-fix
+Step 7 of `docs/archive/language-build-log.md`: hover, completion after a `.`, and the quick-fix
 that writes a parameter's type, all read from `rux check --format json
 --types`. Under test in `rux-script` (`check.rs`, the table) and the extension
 (`test/types.test.js`). The table was driven from the debug binary on a probe:
@@ -2177,7 +2177,7 @@ untyped `shout(s, n)` called as `shout("hi", 1)` and `shout("yo", 2)`, and
 
 ## `async fn` and `await`, 2026-09-26
 
-Step 6 of `docs/11-next.md`. Driven in a desktop window with
+Step 6 of `docs/archive/language-build-log.md`. Driven in a desktop window with
 `crates/rux-shell/examples/async_demo` (`cargo run -p rux-shell --example
 async_demo`): `host::lookup(id)` answers from another thread after a second,
 `host::store(x)` fails after half a second. The harness is
@@ -2197,7 +2197,7 @@ and `rux-runtime` (the `an_async_fn_*` tests).
 
 ## Script modules and stores, 2026-09-26
 
-Step 7 of `docs/11-next.md`. Driven in a desktop window with `rux run` on
+Step 7 of `docs/archive/language-build-log.md`. Driven in a desktop window with `rux run` on
 `examples/store.rux` (a cart store in `examples/stores/cart.rux`, a bare
 `examples/utils/money.rux`, a `<product>` card and a `<basket>` badge shown
 twice), and on the two examples whose shared state moved into stores. The
@@ -2221,7 +2221,7 @@ and the `with_store` tests).
 
 ## Native modules, 2026-09-27
 
-Step 8 of `docs/11-next.md`. Driven in a desktop window on
+Step 8 of `docs/archive/language-build-log.md`. Driven in a desktop window on
 `examples/native-shop`, an app with a `native/` crate (`native/src/shop.rs`:
 a `Product` record with a method, a `Till` resource with a `Result` and an
 `async` method), built with `rux build` and with `rux run`. The harness is
@@ -2246,7 +2246,7 @@ nobody at the machine: the screenshots are what was looked at. Under test in
 
 ## Records in their declared order, 2026-09-28
 
-Step 10, track (c) of `docs/11-next.md`: a record keeps its fields in slots,
+Step 10, track (c) of `docs/archive/language-build-log.md`: a record keeps its fields in slots,
 in the order its type declares them. Driven with `rux run` in a desktop
 window on `rux-harness/track-c/records-probe.rux` (`type Pt = { y: int, x:
 int, label?: string }`, declared in an order that is not alphabetical, so a

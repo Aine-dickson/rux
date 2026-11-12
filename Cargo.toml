@@ -17,15 +17,15 @@ members = [
     "crates/rux-fmt",
     "crates/rux-reactive",
     "crates/rux-script",
-    # Rux's own parser: docs/11-next.md, step 2.
+    # Rux's own parser: docs/archive/language-build-log.md, step 2.
     "crates/rux-syntax",
-    # Rux's typed IR, between the checker and every backend: docs/11-next.md, step 4.
+    # Rux's typed IR, between the checker and every backend: docs/archive/language-build-log.md, step 4.
     "crates/rux-ir",
-    # Native modules: an app's Rust, called from script. docs/11-next.md, step 8.
+    # Native modules: an app's Rust, called from script. docs/archive/language-build-log.md, step 8.
     "crates/rux-native",
     "crates/rux-native-macros",
     "crates/rux-bindgen",
-    # Rust generated from the typed IR for release builds: docs/11-next.md, step 9.
+    # Rust generated from the typed IR for release builds: docs/archive/language-build-log.md, step 9.
     "crates/rux-codegen",
     "crates/rux-aot-tests",
 ]

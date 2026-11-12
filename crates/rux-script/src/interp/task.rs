@@ -1,6 +1,6 @@
 //! Running `async fn`s: tasks that stop at an `await` and go on later.
 //!
-//! Step 6 of `docs/11-next.md`. A call to an `async fn` that does not await
+//! Step 6 of `docs/archive/language-build-log.md`. A call to an `async fn` that does not await
 //! it starts a [`Task`]: its body runs at once, from its [`Flat`] ops, until
 //! it finishes or reaches an `await` of something not answered yet. Then the
 //! task is kept, with its place and its frames, and the caller goes on. When

@@ -115,7 +115,7 @@ pub struct Export {
 }
 
 /// One import, in either spelling. `use` and `import` mean the same
-/// (`docs/11-next.md`, "Modules"):
+/// (`docs/07-script.md`, "Modules"):
 ///
 /// | `use` | `import` | [`Imported`] |
 /// |---|---|---|
@@ -219,7 +219,7 @@ pub struct Expr {
 
 /// An expression's identity within one parse: a script, a handler or a
 /// binding each number their own from 0. What the type checker records its
-/// findings against, so the typed IR (step 4 of `docs/11-next.md`) can be
+/// findings against, so the typed IR (step 4 of `docs/archive/language-build-log.md`) can be
 /// built from the tree and the record without re-deriving either. A span is
 /// not enough: `(a)` and `a` share one, and so do an `if` and the statement
 /// it is the value of.

@@ -114,7 +114,7 @@ fn the_use_statement_is_coloured() {
 }
 
 /// Both spellings of an import, a type import's `type`, and `export`
-/// (`docs/11-next.md`, "Modules").
+/// (`docs/07-script.md`, "Modules").
 #[test]
 fn imports_and_exports_are_coloured() {
     let mut g = grammar();

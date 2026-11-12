@@ -5,7 +5,7 @@ checker has worked out every type, with every name resolved and every
 conversion written in. Rux's interpreter runs it, and Rust generation for
 release builds reads it. It also holds the type language the checker uses.
 
-This is step 4 of the move off rhai described in `docs/11-next.md`. It
+This is step 4 of the move off rhai described in `docs/archive/language-build-log.md`. It
 depends on nothing else in the workspace, and on no rhai.
 
 ## Internal to Rux

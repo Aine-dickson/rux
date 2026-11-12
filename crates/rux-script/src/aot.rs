@@ -1,4 +1,4 @@
-//! Compiled functions: step 9 of `docs/11-next.md`.
+//! Compiled functions: step 9 of `docs/archive/language-build-log.md`.
 //!
 //! A release build writes Rust for a file's functions (`rux-codegen`) and
 //! registers it here under a hash of the exact text it was generated from.

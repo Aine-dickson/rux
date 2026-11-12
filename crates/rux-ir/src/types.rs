@@ -3,7 +3,7 @@
 //! Rux's parser reads an annotation in a script into its AST, and the checker
 //! turns it into a [`Type`] by printing it back and parsing that here. A
 //! `prop`'s type and an imported type arrive here as text. The grammar is the
-//! one in `docs/10-types.md`, and `rux-syntax` accepts the same shapes: a test
+//! one in `docs/07-script.md`, and `rux-syntax` accepts the same shapes: a test
 //! in `rux-script`, which has both, runs one list of types through the two.
 //!
 //! Here rather than in `rux-script` so the typed IR can use the same types
@@ -283,7 +283,7 @@ impl Type {
 
 /// `Result<T, E>`, which every file knows: a value kept on purpose where an
 /// error is an answer, read with the narrowing that already exists
-/// (`if r.ok { r.value } else { r.error }`). See `docs/11-next.md`, "Result".
+/// (`if r.ok { r.value } else { r.error }`). See `docs/07-script.md`, "Result".
 pub fn result_decl() -> (Vec<String>, Type) {
     let field = |name: &str, ty: Type| Field { name: name.into(), optional: false, ty };
     let body = Type::Union(vec![
@@ -637,7 +637,7 @@ fn named(name: &str) -> Result<Type, String> {
     Ok(match name {
         "float" => Type::Float,
         "int" => Type::Int,
-        // Retired in step 3 of `docs/11-next.md`, when `int` stopped being a
+        // Retired in step 3 of `docs/archive/language-build-log.md`, when `int` stopped being a
         // kind of it.
         "number" => {
             return Err("there is no type `number` now: a whole number is an `int`, and any \
@@ -647,7 +647,7 @@ fn named(name: &str) -> Result<Type, String> {
         "string" => Type::String,
         "bool" => Type::Bool,
         "void" => Type::Void,
-        // `null` was its name until step 3 of `docs/11-next.md`.
+        // `null` was its name until step 3 of `docs/archive/language-build-log.md`.
         "none" | "null" => Type::Null,
         "any" => Type::Any,
         "Array" | "Option" | "Map" | "Set" | "Result" => {

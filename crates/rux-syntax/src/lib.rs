@@ -1,6 +1,6 @@
 //! Rux's own parser for its script language.
 //!
-//! `docs/11-next.md` is the plan this belongs to: Rux's parser, then its type
+//! `docs/07-script.md` is the plan this belongs to: Rux's parser, then its type
 //! checker, a typed IR and an interpreter, replacing the rhai fork piece by
 //! piece. This crate is step 2, the parser. It accepts exactly the language
 //! the fork accepts today and builds the same structure, which is proved in

@@ -38,7 +38,7 @@ app is watching.
   that does not fit, an `@event` the runtime never dispatches and a value on a
   valueless directive are all definitely wrong, so `rux check` exits non-zero
   for them. The window still runs the app: blanking it over a typo mid-edit
-  would be worse than useless. Type findings are described in [Types](https://github.com/Aine-dickson/rux/blob/main/docs/10-types.md);
+  would be worse than useless. Type findings are described in [Types](/reference/script/#types);
   every page and every component is checked in its own file and scope, and a
   script that does not parse fails its load at its line.
 

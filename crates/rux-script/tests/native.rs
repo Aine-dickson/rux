@@ -1,4 +1,4 @@
-//! Native modules from script: step 8 of `docs/11-next.md`. The Rust here is
+//! Native modules from script: step 8 of `docs/archive/language-build-log.md`. The Rust here is
 //! written as an app's `native/` crate writes it, with `#[rux::export]`, and
 //! installed as the generated registration installs it.
 
@@ -213,7 +213,7 @@ fn an_async_method_s_rust_error_is_caught_with_its_kind() {
 }
 
 /// A Rust struct comes back a record in the order its fields are declared
-/// (step 10.5.4 of `docs/11-next.md`), as a Rux record type's does.
+/// (step 10.5.4 of `docs/archive/language-build-log.md`), as a Rux record type's does.
 #[test]
 fn a_rust_struct_keeps_its_declared_order() {
     let mut e = engine("fn here(): string { let s = shop.spot(); `${s} ${keys(s)} ${s.x}` }

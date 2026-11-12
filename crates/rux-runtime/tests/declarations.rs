@@ -1,6 +1,6 @@
 //! The declarations only a document or component script holds (`use`,
 //! `prop`, `computed`, `effect`, `mounted`, `unmounted`), found by Rux's own
-//! parser rather than line by line. See `docs/11-next.md`, step 2.
+//! parser rather than line by line. See `docs/archive/language-build-log.md`, step 2.
 
 use rux_layout::Node;
 use rux_runtime::Document;

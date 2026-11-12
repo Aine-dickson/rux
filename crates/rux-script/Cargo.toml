@@ -11,12 +11,12 @@ categories = ["gui"]
 
 [dependencies]
 rux-reactive.workspace = true
-# Rux's own parser: every script is read by it. See docs/11-next.md, step 2.
+# Rux's own parser: every script is read by it. See docs/archive/language-build-log.md, step 2.
 rux-syntax.workspace = true
 # The typed IR and the type language the checker shares with it: step 4 of
-# docs/11-next.md. `types` is re-exported from here as it always was.
+# docs/archive/language-build-log.md. `types` is re-exported from here as it always was.
 rux-ir.workspace = true
-# Native modules: the boundary value and the registry. docs/11-next.md, step 8.
+# Native modules: the boundary value and the registry. docs/archive/language-build-log.md, step 8.
 rux-native.workspace = true
 # `now()`'s clock: `std::time::Instant` on native, the browser's on the web,
 # where `Instant` panics. The shell already depends on it.

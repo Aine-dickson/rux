@@ -1,6 +1,6 @@
 //! The type checker: reads a script as Rux's parser gives it, annotations
-//! and all, and reports what does not fit. `docs/10-types.md` is the design,
-//! and `docs/11-next.md` step 3 the plan this belongs to.
+//! and all, and reports what does not fit. `docs/07-script.md` is the design,
+//! and `docs/archive/language-build-log.md` step 3 the plan this belongs to.
 //!
 //! Nothing here runs the program. Types are erased, so the checker's only
 //! output is findings: an error where a program contradicts its own
@@ -84,7 +84,7 @@ pub struct Context {
     /// Names some caller has in scope when it calls a function: an `r-for`'s
     /// variable, a handler's own `let`s. Under the fork a plain call runs in
     /// its caller's scope, so a function can read these, and a typed one may
-    /// not: see `docs/10-types.md`, "A typed function cannot read its caller's
+    /// not: see `docs/07-script.md`, "A typed function cannot read its caller's
     /// locals".
     pub caller_names: std::collections::HashSet<String>,
     /// The template of the file being checked. See [`Tpl`].
@@ -103,7 +103,7 @@ pub struct Context {
 }
 
 /// What the checker worked out a name, a field or a function to be, for an
-/// editor's hover and completion. See `docs/10-types.md`, "Editor".
+/// editor's hover and completion. See `docs/07-script.md`, "Editor".
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Seen {
     /// A line of the script, or of the file when [`Seen::template`] is set.
@@ -132,7 +132,7 @@ pub struct Seen {
 
 /// The type an unannotated parameter was handed at every call the checker
 /// saw, for the editor's quick-fix. Never used to check anything: decision 11
-/// in `docs/10-types.md` is that a parameter is not inferred from its calls.
+/// in `docs/07-script.md` is that a parameter is not inferred from its calls.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Guess {
     /// The script line the function is written on.
@@ -150,7 +150,7 @@ pub struct Table {
 }
 
 /// What the checker settled about each expression of one parse, for the
-/// typed IR (step 4 of `docs/11-next.md`). Keyed by [`ExprId`]'s number,
+/// typed IR (step 4 of `docs/archive/language-build-log.md`). Keyed by [`ExprId`]'s number,
 /// except [`Types::decl`], which is keyed by where the name is written.
 #[derive(Clone, Debug, Default)]
 pub struct Types {
@@ -347,7 +347,7 @@ struct Checker<'a> {
     /// AW-044). That body is checked again once the whole top level is in.
     premature: bool,
     /// The script's top-level `let`s without `signal`: values, never written
-    /// (`docs/11-next.md`, "`signal`, `let`").
+    /// (`docs/07-script.md`, "`signal`, `let`").
     plain_lets: HashSet<String>,
     /// The declared result of each function being checked, innermost last,
     /// with the function's name; `None` for one whose result is inferred.
@@ -1082,7 +1082,7 @@ impl<'a> Checker<'a> {
     }
 
     /// `null` and `()` where `none` is meant: an error since step 5 of
-    /// `docs/11-next.md` (a warning from step 3.2 until then). Both still
+    /// `docs/archive/language-build-log.md` (a warning from step 3.2 until then). Both still
     /// run as `none`, and `rux fmt` rewrites them. Anything else at `pos`
     /// says nothing.
     fn old_spelling(&mut self, pos: Pos) {
@@ -4061,7 +4061,7 @@ fn path_step(prefix: String, e: &Expr) -> Option<String> {
     }
 }
 
-/// What `host::name` is told: step 8 of `docs/11-next.md` retired it.
+/// What `host::name` is told: step 8 of `docs/archive/language-build-log.md` retired it.
 fn retired_host(name: &str) -> String {
     format!(
         "`host::` is retired: Rust is reached through a native module. Export the function with \
@@ -4196,7 +4196,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 
 /// The expressions of `script` that [`Types::of`] says nothing about, as their
 /// line in `src` and their text. What the typed IR cannot be built from until
-/// it is empty: see step 4 of `docs/11-next.md`.
+/// it is empty: see step 4 of `docs/archive/language-build-log.md`.
 pub fn untyped(script: &Script, src: &str, types: &Types) -> Vec<(usize, String)> {
     let lines = LineIndex::new(src);
     let mut out = Vec::new();
@@ -4345,7 +4345,7 @@ mod tests {
         assert!(errors("let n: int = 3; let m: int = -2; let x: float = n;").is_empty());
     }
 
-    /// `int` and `float`, step 3 of `docs/11-next.md`.
+    /// `int` and `float`, step 3 of `docs/archive/language-build-log.md`.
     #[test]
     fn an_int_is_whole_and_widens_to_a_float() {
         // A whole-number literal is an `int`, and so is what it starts.
@@ -4379,7 +4379,7 @@ mod tests {
         one_error("let n: number = 1;", "there is no type `number` now");
     }
 
-    /// Generics, step 3.4 of `docs/11-next.md`.
+    /// Generics, step 3.4 of `docs/archive/language-build-log.md`.
     #[test]
     fn a_generic_function_takes_its_types_from_its_arguments() {
         let src = format!(
@@ -4438,7 +4438,7 @@ mod tests {
         assert!(f.iter().any(|f| f.message.contains("where `string` is expected")), "{f:?}");
     }
 
-    /// `Result`, `void` and `is`, step 3.5 of `docs/11-next.md`.
+    /// `Result`, `void` and `is`, step 3.5 of `docs/archive/language-build-log.md`.
     #[test]
     fn a_result_is_read_by_its_ok() {
         let age = "fn parseAge(s: string): Result<int, string> {\n\
@@ -5071,7 +5071,7 @@ let n = [1].len();");
         assert!(f.iter().any(|f| f.message.contains("writes `float` into `n`")), "{f:?}");
     }
 
-    /// `async fn` and `await`, step 6 of `docs/11-next.md`.
+    /// `async fn` and `await`, step 6 of `docs/archive/language-build-log.md`.
     #[test]
     fn await_is_for_an_async_fn_and_what_it_waits_for() {
         let lib = "type User = { name: string };\n\

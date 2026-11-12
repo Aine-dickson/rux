@@ -5,7 +5,7 @@ binding and an `@tap` handler. It turns source text into a Rux AST, with a
 span on every node, and says what is wrong with text that is not Rux, in Rux's
 words.
 
-This is step 2 of the move off rhai described in `docs/11-next.md`. Until
+This is step 2 of the move off rhai described in `docs/archive/language-build-log.md`. Until
 Rux's own interpreter replaces rhai, the script tier still runs through the
 fork in `rux-rhai`; this parser is the front door that decides what is valid,
 and its AST is what the type checker moves onto next.

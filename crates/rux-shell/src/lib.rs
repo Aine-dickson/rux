@@ -12247,7 +12247,7 @@ pub fn start_web_app(
             Document::from_source("<template><screen></screen></template>").expect("empty document")
         }
     };
-    // A release build's compiled script (step 9 of docs/11-next.md) is
+    // A release build's compiled script (step 9 of docs/archive/language-build-log.md) is
     // otherwise invisible by design; a browser has no `RUX_AOT_REPORT`, so
     // the page says it once, beside the canvas line.
     let compiled = document.compiled_functions();

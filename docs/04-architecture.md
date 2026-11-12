@@ -157,6 +157,47 @@ Two tiers, one boundary. See the [decision](./01-rationale.md#two-tier-logic-scr
 - **Boundary rules.** Script reaches native code only through the modules the app registers; an unknown name is a diagnostic. Values cross as `Any` and are converted by `FromRux` and `IntoRux`, which throw instead of wrapping on overflow. See [Native code](./07-script.md#native-code).
 - **Threading.** Script runs on one thread. An `async` export's future runs where `rux_native::spawn` runs it, its answer is queued, and the shell is woken to resume the script's `await` on the script thread, so the render loop never stalls and script never races.
 
+### The script pipeline
+
+```text
+.rux ──▶ Rux parser ──▶ type checker ──▶ typed Rux IR ─┬─▶ Rux interpreter
+                                                        │     dev, hot reload,
+                                                        │     playground, sandbox
+                                                        └─▶ Rust code ──▶ rustc
+                                                              release: native + wasm
+```
+
+- **A typed IR** (`rux-ir`) sits between the checker and every backend. The
+  language's meaning is defined once, there.
+- **The interpreter** (`rux-script`) is Rux's own and runs the IR in
+  development, in hot reload, in the playground and for anything untrusted.
+  No other script engine is involved.
+- **A release build compiles functions to Rust** (`rux-codegen`). Compiled code
+  runs inside the interpreter, function by function: the interpreter still
+  loads every file, and where a function has compiled code, keyed by a hash of
+  the exact source it was generated from, it calls that instead of walking the
+  tree. A function the generator cannot compile is interpreted, so a file is
+  never all or nothing. Reactivity, tasks, components and hot reload are the
+  interpreter's in both modes, and the step budget counts the same way.
+- **Compiled:** functions (including closure bodies, `try`, `switch`, `?.`
+  chains, field and index writes, callbacks written in line and `setInterval`
+  starts), with typed `i64`/`f64`/`bool` bodies for number-only functions and
+  records read by slot. **Interpreted:** the pieces in a template (bindings and
+  handlers) and `async fn` bodies. Pieces measured at under 0.2% of a frame, so
+  they stay interpreted.
+- **The web** compiles the same Rust to wasm.
+- **Values at the seam** are the interpreter's `V`. Only a local the IR types
+  as `int`, `float` or `bool` is a plain Rust value inside one function.
+- The generated code carries no `unsafe`, and every integer conversion at the
+  native boundary is checked.
+- **Compiled code never replaces the interpreter's meaning.** Both engines are
+  held to the same value, state and failure on every script the project has, by
+  the differential tests in `crates/rux-aot-tests`.
+
+The language itself, its grammar, types and rules, is in [Script](./07-script.md).
+The diary of how it was built, step by step, is the
+[language build log](./archive/language-build-log.md).
+
 ## Hot-reload
 
 The feature that drove the whole [runtime-document decision](./01-rationale.md#runtime-documents-over-compile-time-components).

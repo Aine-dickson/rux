@@ -1,7 +1,7 @@
 # rux-native
 
 Rust code a [Rux](https://ruxlang.dev) app calls from script. Step 8 of
-`docs/11-next.md`.
+`docs/archive/language-build-log.md`.
 
 An app keeps its Rust in a `native/` crate beside `rux.toml`, and depends on
 this crate under the name `rux`:

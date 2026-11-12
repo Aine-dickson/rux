@@ -338,7 +338,7 @@ pub struct TextEngine {
     /// What [`draw`](Self::draw) has shaped, aligned, by the same key plus
     /// the alignment. Every text was shaped again each frame to be drawn,
     /// 900 of them in a 300-row list, which was most of the scene's time
-    /// (docs/11-next.md, track (g)). Cleared as `measured` is, and started
+    /// (docs/archive/language-build-log.md, track (g)). Cleared as `measured` is, and started
     /// over past [`SHAPED_CAP`].
     shaped: HashMap<MeasureKey, Layout<RunId>>,
     /// Where the parts of a paragraph with runs landed, by the same key as
@@ -365,7 +365,7 @@ const SHAPED_CAP: usize = 2048;
 /// Generic over its strings so a lookup borrows them: the caches hold
 /// `Key<String>` and are asked with a `Key<&str>`, through [`AsKey`]. A
 /// lookup used to copy the text into a new `String` first, 6 600 times a
-/// frame in a 300-row list (docs/11-next.md, track (g)).
+/// frame in a 300-row list (docs/archive/language-build-log.md, track (g)).
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct Key<S, R, L> {
     text: S,

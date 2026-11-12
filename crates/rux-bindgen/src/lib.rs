@@ -1,5 +1,5 @@
 //! What a Rux app's native Rust exports, read from its source: step 8 of
-//! `docs/11-next.md`.
+//! `docs/archive/language-build-log.md`.
 //!
 //! Two readers share this crate. The `#[rux::export]` macro reads one item
 //! at a time and needs its Rux signature to describe it at run time; the CLI

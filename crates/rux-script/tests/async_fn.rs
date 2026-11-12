@@ -1,4 +1,4 @@
-//! `async fn` and `await`: step 6 of `docs/11-next.md`.
+//! `async fn` and `await`: step 6 of `docs/archive/language-build-log.md`.
 //!
 //! What a script awaits is an `async` native function (step 8). Each test
 //! registers its own under a name of its own, since the registry is

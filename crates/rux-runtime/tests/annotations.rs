@@ -1,5 +1,5 @@
 //! Type annotations, parsed and erased: the first step of the type system in
-//! `docs/10-types.md`. Every form an author can write is accepted, a document
+//! `docs/archive/language-build-log.md`. Every form an author can write is accepted, a document
 //! runs the same with its annotations as without them, and the places that are
 //! read outside the fork (`prop`, `computed`, `use`) take them too.
 
@@ -207,7 +207,7 @@ fn a_malformed_annotation_in_a_script_is_placed() {
         <script>\nlet a = 1;\nlet n: = 2;\n</script>";
     let dir = project(&[("app.rux", app)]);
     let Err(err) = Document::load_checked(dir.join("app.rux")) else { panic!("loaded") };
-    // Rux's parser says it now (docs/11-next.md, step 2), in its own words.
+    // Rux's parser says it now (docs/archive/language-build-log.md, step 2), in its own words.
     assert!(err.to_string().contains("expecting a type after `:`"), "{err}");
     assert_eq!(err.line, Some(4), "{err}");
 }

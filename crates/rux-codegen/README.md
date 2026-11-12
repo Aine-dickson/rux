@@ -1,7 +1,7 @@
 # rux-codegen
 
 Rust generated from a [Rux](https://ruxlang.dev) file's typed IR, for release
-builds: step 9 of `docs/11-next.md`. Each function becomes a Rust function
+builds: step 9 of `docs/archive/language-build-log.md`. Each function becomes a Rust function
 that runs inside Rux's interpreter through `rux_script::aot`, and any
 statement it cannot compile yet is handed back to the interpreter.
 

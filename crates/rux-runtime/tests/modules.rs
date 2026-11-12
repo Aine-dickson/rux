@@ -1,4 +1,4 @@
-//! Script modules and stores, from files: step 7 of `docs/11-next.md`,
+//! Script modules and stores, from files: step 7 of `docs/archive/language-build-log.md`,
 //! "Modules". A `.rux` file with no `<template>` is a module; it is loaded
 //! once per document, so its top-level signals are one store every importer
 //! shares.

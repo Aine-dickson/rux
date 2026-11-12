@@ -1,4 +1,4 @@
-//! Script modules linked into a document: step 7 of `docs/11-next.md`,
+//! Script modules linked into a document: step 7 of `docs/archive/language-build-log.md`,
 //! "Modules". What the runtime does with files is in `rux-runtime`'s
 //! `tests/modules.rs`; this is the engine's half, with the files handed in.
 
@@ -120,7 +120,7 @@ fn a_problem_in_a_module_is_its_own() {
     assert!(found[0].1.iter().any(|f| f.is_error), "{found:?}");
 }
 
-/// `loop { }` runs until a `break` (decided 2026-09-27, `docs/11-next.md`,
+/// `loop { }` runs until a `break` (decided 2026-09-27, `docs/07-script.md`,
 /// "Open for the owner"). Here because it was decided with the modules step.
 #[test]
 fn a_loop_runs_until_it_breaks() {

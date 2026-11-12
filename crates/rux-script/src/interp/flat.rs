@@ -1,7 +1,7 @@
 //! An `async fn`'s body, in a form that can stop at an `await` and go on
 //! later.
 //!
-//! Step 6 of `docs/11-next.md`. The tree walker keeps its place on Rust's own
+//! Step 6 of `docs/archive/language-build-log.md`. The tree walker keeps its place on Rust's own
 //! stack, so it cannot leave a function half run. An `async fn` is therefore
 //! run from a list of [`Op`]s instead, whose place is a number: stopping is
 //! keeping that number and the frame, and going on is starting from it again.

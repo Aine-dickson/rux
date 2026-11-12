@@ -1,6 +1,6 @@
 //! Source text to tokens.
 //!
-//! Step 2 of `docs/11-next.md` accepts exactly the language the rhai fork
+//! Step 2 of `docs/archive/language-build-log.md` accepts exactly the language the rhai fork
 //! accepts, so this follows the fork's tokenizer (`crates/rux-rhai/src/
 //! tokenizer.rs`) rule for rule, quirks included: a `""` inside a string is one
 //! quote, `1.)` is the float `1.0`, and `-1` is one token only where a minus

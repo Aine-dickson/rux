@@ -19,7 +19,7 @@ pub enum Phase {
     /// time it is seen.
     Parse,
     /// Rux's AST lowered to the typed IR: a file when it loads, and each
-    /// binding or handler the first time it runs (`docs/11-next.md`, steps 4
+    /// binding or handler the first time it runs (`docs/archive/language-build-log.md`, steps 4
     /// and 5).
     Lower,
     /// The IR run by Rux's interpreter.

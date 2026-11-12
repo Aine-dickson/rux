@@ -52,7 +52,7 @@ pub struct Options {
     pub paths: Vec<PathBuf>,
     pub json: bool,
     /// Print the types the checker worked out beside the diagnostics, which
-    /// makes the JSON an object rather than an array. See `docs/10-types.md`,
+    /// makes the JSON an object rather than an array. See `docs/07-script.md`,
     /// "Editor".
     pub types: bool,
     /// Treat warnings as failures, which is what CI wants and what keeps

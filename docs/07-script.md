@@ -1,15 +1,40 @@
 # The script language
 
-What goes inside `<script>`, and what a `{{ }}` binding or an `@tap` attribute
-may contain.
+What goes inside `<script>`, in a script-only module, and in a `{{ }}` binding or
+an `@tap` attribute. This document is the reference for all of it: the grammar,
+the types, the modules and the native boundary, and the calls the runtime gives a
+script (windows, keys, files, sounds, settings, the clipboard, the tree).
+[As Built](./05-as-built.md) is the wider tour of everything else, and where the
+two overlap they agree.
 
-Rux's script runs on **Rux's own interpreter**: a script is read by Rux's
-parser, checked, lowered to a typed IR and run. A release build compiles the
-entry document's functions to Rust. This document is the reference for the
-language; [The Rux language](./11-next.md) is its design.
+Rux parses, checks and runs its own script: a parser (`rux-syntax`), a checker
+and interpreter (`rux-script`) and a typed IR (`rux-ir`), with Rust code
+generation for release builds (`rux-codegen`). [Architecture](./04-architecture.md)
+says how they fit together.
 
-Where this document and [As Built](./05-as-built.md) overlap, they agree; As
-Built is the wider tour of the whole language, this is the script half in depth.
+A rule in this reference that the parser, checker or interpreter does not
+enforce carries the mark **Not built**, and says what happens instead. Every rule
+without the mark runs.
+
+## Principles
+
+1. **Rux owns the language; Rust is the substrate.** Rux types are the contract a
+   Rux author sees. Rust types are how the compiler represents them. A Rux author
+   never needs ownership, lifetimes, traits or `Arc`.
+2. **Borrow famous syntax, exactly, and only where it earns its place.**
+   `async`/`await`, `try`/`catch`, `<T>`, `import`, `reduce(fn, init)` are taken
+   as the world already knows them. Rux is not "JavaScript compiled to Rust": it
+   keeps `signal`, `let`, `mounted { }` and its template language.
+3. **One way to say a thing.** Where two spellings would mean the same, one is
+   chosen. The named exceptions are `use`/`import`, `T[]`/`Array<T>`,
+   `T?`/`Option<T>` and `{ [string]: T }`/`Map<string, T>`. The spellings of the
+   old engine (rhai, which Rux ran on until 2026-09-26) are retired, listed under
+   [Retired names](#retired-names); a few still parse beside the chosen one
+   (`|x| …` closures, `===`, `#{ }`), and each is marked **Not built** where it
+   appears.
+4. **The boundary to Rust is typed and costs nothing at run time.**
+5. **Types are checked, not erased.** Every expression has a type the compiler
+   knows, and the same meaning in the interpreter and in a compiled build.
 
 ## The three places script runs
 
@@ -30,6 +55,808 @@ mistake rather than a feature.
 A **handler is a statement**, and may be several. It can write state, call
 functions, navigate, and read the tree.
 
+Both are read by the same grammar as `<script>`: a binding as one expression and a
+handler as a statement list, with `event` bound.
+
+## Lexical structure
+
+### Comments and whitespace
+
+`// to the end of the line` and `/* a block */`. Whitespace and newlines
+separate tokens and mean nothing else. A statement ends with `;`, which may be
+left off before a `}` and at the end of a handler or a binding.
+
+### Names
+
+A name is a letter or `_` followed by letters, digits and `_`. Names are case
+sensitive.
+
+- **A declared type's name starts with a capital letter.** The built-in types
+  are lower case, so the two never collide.
+- **Everything else is camelCase by convention**: `pathFor`, `parseInt`,
+  `toFloat`. The snake_case names inherited from the old engine are retired: see
+  [Retired names](#retired-names).
+
+### Keywords
+
+Reserved everywhere:
+
+```text
+as async await break catch const continue do else export false fn for if
+import in let loop none private return switch throw true try until while _
+```
+
+Reserved only at the start of a top-level statement, so they stay usable as
+ordinary names elsewhere (`let type = 1;` works):
+
+```text
+type signal computed effect mounted unmounted prop
+```
+
+Words held back or answered with the Rux spelling cannot be names either:
+`use is match yield var new this null nil void`, and the built-in functions
+`print debug eval call curry Fn`. `null`, `()`, `var`,
+`new`, `nil` and `this` are errors that say what to write instead (`none`,
+`let`, a literal or a function that returns one). `class`, `interface` and
+`function` are plain syntax errors, not answered by name. **Not built:** a
+message for those three.
+
+A keyword is an ordinary field name after a dot (`m.for`). As a map key it is
+written as a string, `{ "for": 1 }`. Words other languages reserve (`default`,
+`case`, `static`, `spawn`, `module`, `with`) are free.
+
+`print`, `debug`, `eval`, `call`, `curry` and `Fn` are built-in functions: they can
+be called, not declared. `use` and `is` are a statement and an operator that already
+work; `match` and `yield` are held for the language.
+
+### Literals
+
+| Literal | Type |
+|---|---|
+| `0`, `42`, `1_000` | `int` |
+| `0.5`, `1.0`, `2e3`, `1_000.5` | `float` |
+| `0x1F`, `0b101` | `int` |
+| `"text"` | `string` |
+| `'x'` | `string` of one character |
+| `` `a ${x} b` `` | `string` |
+| `true`, `false` | `bool` |
+| `none` | `T?` for whatever `T` is expected |
+| `[1, 2]` | `int[]` |
+| `[...a, x]` | a new array: `a`'s items, then `x` |
+| `{ id: 1, name: "ada" }` | a record |
+
+**Single quotes hold exactly one character**, and `'ab'` is an error that says
+to use double quotes. A handler inside a double-quoted attribute therefore
+cannot hold text: name a function and call it from the attribute.
+
+```rux
+<!-- wrong: '#note' is more than one character in single quotes -->
+<button @tap="query('#note')[0].focus()">
+
+<!-- right -->
+<button @tap="focusNote()">
+```
+
+**Not built:** `'text'` as a string of any length. There is no character type.
+
+Escapes in strings: `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, `` \` ``, `\$`, `\xHH`,
+`\uHHHH` and `\UHHHHHHHH` (fixed width, no braces). A backtick string decodes
+the same escapes. Spreading anything but an array or a string in an array
+literal is an error.
+
+**A number literal has no suffix** and no leading `+`. `-1` is the unary minus
+applied to `1`.
+
+### Map and record literals
+
+`{ key: value }`, with a name or a string as the key (`{ "x-y": 1 }`), and `{}`
+for an empty map. A `{` whose first thing is not `key:` is a block, as after
+`if`. No shorthand (`{ a }`) and no spread in a map or record.
+
+```rux
+let row = { id: 1, name: "ada" };      // a map
+let total = { let t = 0; t + 1 };      // a block, whose value is 1
+rows.map(r => { id: r.id });           // returns a map; JS needs ({ … }) here
+let noop = () => {};                   // an empty body, not a map
+```
+
+`#{ … }`, the old engine's spelling, still parses and `rux fmt` rewrites it to
+`{`. **Not built:** refusing it.
+
+## Types
+
+The type system for Rux script: what an annotation says, what the checker does
+with it, and what it costs at run time. Functions, state and
+[templates](#templates) are checked against it; the checker runs in `rux check`, the
+dev overlay and the editor.
+
+### Type annotations
+
+```rux
+<script>
+  type Filter = "all" | "open" | "done";
+  type Task = { id: int, title: string, done: bool, note?: string };
+
+  let tasks: Task[] = signal([]);
+  let filter: Filter = signal("all");
+
+  fn visible(): Task[] {
+    switch filter {
+      "all"  => tasks,
+      "open" => tasks.filter(t => !t.done),
+      "done" => tasks.filter(t => t.done),
+    }
+  }
+
+  fn add(title: string) {
+    tasks = tasks + [{ id: tasks.length, title: title, done: false }];
+  }
+</script>
+```
+
+Three things decide almost everything else:
+
+1. **Annotations are TypeScript's**: `name: T` after a name, `): T` after a
+   parameter list.
+2. **Types are erased.** An annotation costs nothing when the program runs. The
+   exceptions are the **boundaries**, where a value arrives from somewhere the
+   checker cannot see: a prop passed on a tag, and any value tested with
+   `x is T`. Those are checked at run time, in release builds too.
+3. **A program with no annotations still runs exactly as before.** What the
+   checker cannot infer becomes `any` and is reported as a warning, never an
+   error. A name that starts with a value takes that value's type, though, so
+   an unannotated program can still contradict itself: a signal that starts
+   as `0` and is later set to `none` is an error, and the message gives the
+   fix, `let x: int? = signal(0)`.
+
+### Where an annotation goes
+
+| Form | Example |
+|---|---|
+| A `let` or `const` | `let count: int = 0;` |
+| A signal | `let filter: Filter = signal("all");` |
+| A computed | `computed total: float = items.length * price;` |
+| A function parameter | `fn add(title: string) { … }` |
+| A function's result | `fn label(t: Task): string { … }` |
+| An arrow's parameter | `let add = (a: float, b: float) => a + b;` |
+| A prop | `prop label: string;`, `prop price: float = 1;` |
+| A named type | `type Filter = "all" \| "open" \| "done";` |
+
+**On a signal, the annotation describes the value**, not a wrapper around it.
+Signals read as plain values everywhere, so `filter` above is a `Filter`, and
+`filter = "open"` is checked as an assignment of a `Filter`. There is no
+`Signal<T>` for an author to write.
+
+**A declared type's name starts with a capital letter.** `Task`, `Filter`,
+`RowState`. The built-in types are all lower case, so the two can never
+collide, and an import can tell a type from a component by its spelling (see
+[Sharing types between files](#sharing-types-between-files)).
+
+### The types
+
+| Type | Holds |
+|---|---|
+| `int` | A 64-bit signed integer |
+| `float` | A 64-bit float |
+| `string` | Text |
+| `bool` | `true` or `false` |
+| `void` | The result of a function that returns nothing |
+| `any` | Anything. A union with `any` in it is `any` |
+| `"all"` | Exactly that string |
+| `T[]`, `Array<T>` | An array of `T`; two spellings of one type |
+| `{ id: int, title: string }` | A record |
+| `{ note?: string }` | A record whose `note` may be absent |
+| `{ [string]: T }`, `Map<string, T>` | A map from text to `T`; two spellings of one type |
+| `T?`, `Option<T>` | `T` or `none`; two spellings of one type |
+| `Result<T, E>` | A value or an error, kept on purpose; see [Result](#result) |
+| `A \| B` | Either |
+| `(Task, int) => bool` | A function value |
+| `Error` | What `catch` binds: `{ message: string, kind: string }` |
+| `Task`, `Page<T>` | A declared or imported type, which may take parameters |
+
+**A record and a dictionary are both written with braces**, and so are map
+values (`{ a: 1 }`). The difference is the square brackets:
+`{ [string]: bool }` is a dictionary, and anything else in braces is a record.
+A record type is structural: any map with the right fields is one, whatever it
+was built as. An object **literal** with a field its target type does not have
+is an error, because that field is almost always a misspelling of one it does
+have.
+
+**A type or a function may take type parameters** (see [Declaring](#declaring)): `type Page<T> = {
+items: T[], next: string? };`, used as `Page<Task>`, and
+`fn first<T>(items: T[]): T? { items?[0] }`. A call never names them: they are
+what the arguments make them, so `first(tasks)` is a `Task?`, and a closure
+handed over after the list it works on gets that list's element type
+(`pluck(tasks, t => t.id)`). Inside the function a type parameter is a type
+nothing is known about: its value can be passed on, stored and compared, and
+reading a field of it, adding to it or testing it with `is` is an error. A
+generic type named without its arguments, or with the wrong number, is an
+error, and so is one given arguments it does not take.
+
+**`void`** is what a function declared `: void` returns: its last statement is not a
+result, `return x;` in it is an error, and its call is nothing to use. A callback
+typed `(T) => void` takes a function that returns anything.
+
+`number` is not a type: it is an error naming `int` and `float`, and `rux fmt`
+rewrites it to `float`.
+
+**Not built:** `Set<T>` (there is no `Set` function either), and `Map<K, V>`
+with keys other than `string`; each is an error that says so.
+
+Not in the language, and errors if written: number and boolean literal types,
+intersections (`A & B`), tuples, anything class-shaped, `interface`, explicit
+type arguments at a call, `extends` constraints, conditional and mapped types.
+
+### Declaring a type
+
+`type Name = …;` at the top level of `<script>` or of a module, before or after
+its first use. It declares nothing at run time, and `type` is a word only at the
+start of a statement followed by a name and `=`, so `let type = 1;` is an ordinary
+`let`. A type may take parameters:
+
+```rux
+type Page<T> = { items: T[], next: string? };
+type Loaded<T> = { state: "loading" } | { state: "done", value: T };
+```
+
+A union may begin with `|` so a long one lines up.
+
+### Types every file can name
+
+These need no `use` and no declaration:
+
+| Type | Is |
+|---|---|
+| `File` | A file the person chose: `{ name: string, size: int, type: string, url: string, path: string? }`. What `<input type="file">` binds (`File?`, or `File[]` with `multiple`), and what `pickFile` (`File?`) and `pickFiles` (`File[]`) give. `path` is the desktop's alone. `file.text()` is an async method giving the contents as a `string` |
+| `Sound` | What `loadSound(src)` gives. Opaque: its methods and properties are used, its inside is not seen |
+| `TapEvent`, `DragEvent`, `SwipeEvent`, `KeyEvent`, `SelectEvent`, `InputEvent` | What `event` is in the handlers of that name; see [Templates](#templates). Annotate a function's parameter with one to call it from a handler |
+| `TextMark` | One range of a field's `:marks`: `{ start: int, end: int, class: string }` |
+
+[What an event hands you](#what-an-event-hands-you) lists the fields of each event. A file's own `type` of the same name takes the place of these.
+
+**A type from Rust is declared by the app's `native/` crate.** A struct marked `#[rux::export]` is a record type, and a `#[rux::resource]` is opaque: only a value of that same resource fits it. Both are read from the Rust source, so `rux check` and the editor know them without a build; `use type native::shop::Product;` brings one in. A native function's parameters and result are checked against its Rust signature (`Option<T>` is `T?`, `Vec<T>` is `T[]`, every integer an `int`). The `Clone` the signal and channel exports ask of `T` is Rust's, and is covered with them in [Signals from Rust](#signals-from-rust). `settings.get(key)` gives `any?`.
+
+### Numbers
+
+- **An integer literal is an `int`; a literal with a point or an exponent is a
+  `float`.**
+- **An `int` widens to a `float`** wherever a `float` is expected, and when the
+  two meet in arithmetic: `1 + 0.5` is a `float`. A `float` never narrows to an
+  `int` by itself; that takes a conversion.
+- **`/` always gives a `float`**: `7 / 2` is `3.5`. `intDiv(7, 2)` is `3`,
+  truncating toward zero.
+- `+`, `-`, `*` and `%` of two `int`s are an `int`; with a `float` on either
+  side they are a `float`. `**` is power, and of two `int`s is an `int`: exact,
+  or an `overflow` failure, never a rounded `float`. A negative power of an
+  `int` fails when it runs; one written out (`2 ** -1`) is a checker error that
+  says to make the base a `float` (`2.0 ** -1`).
+- **`int` arithmetic that overflows throws** an `Error` with `kind`
+  `"overflow"`, in the interpreter and in a compiled build alike. `intDiv(x, 0)`
+  and `x % 0` on `int`s throw an `Error` with `kind` `"error"`.
+- **`float` keeps IEEE behaviour**: `1.0 / 0` is `Infinity`, `0.0 / 0` is `NaN`,
+  and both display under those names.
+- **Converting:** `x.toFloat()` on an `int`; `x.trunc()`, `x.round()`,
+  `x.floor()`, `x.ceil()` on a `float` give an `int`.
+  **Not built:** failing for `NaN`, an infinity or a value out of range; they do
+  not throw.
+- **Text to a number:** `parseInt(s): int?` and `parseFloat(s): float?` read a
+  leading number as JavaScript's do and give `none` where JavaScript gives
+  `NaN`. `Number(s)` still exists and follows JavaScript (`NaN` for text it
+  cannot read); `isNaN(x)` asks of a `float`; `String(x)` goes the other way.
+- **An index is an `int`.** A `float` index is an error with `.trunc()` as the
+  fix.
+
+An unannotated `let n = signal(0);` holds an `int`, so `n = n / 2` is an error.
+The fix is to say what it is: `let n: float = signal(0);`.
+
+The runtime still holds one kind of number at the tree: a value that goes out to
+it and comes back (a component's state, an `r-for` row, `event`) comes back a
+`float` holding the same number.
+
+### The empty value
+
+**`none`**, not `null`. `T?` is the short spelling of `Option<T>`.
+
+- `?.` and `?[` read through a value that may be `none`.
+- `??` gives the right side when the left is `none`.
+- Narrowing by `x != none`, `if x`, an early return, `r-if`.
+- A prop declared `T?` that the tag passed nothing to is `none`.
+
+There is no `undefined`. `none` is a literal, not a variable: it cannot be
+shadowed, and nothing can subscribe to it. `null` and `()` are checker errors
+that name `none`; they still run as `none`, and `rux fmt` rewrites them.
+
+### Checked, not erased
+
+Every expression has a type the checker knows, and the interpreter and the
+compiled build both rely on it. Annotations are erased when the program runs;
+the type checking is done by `rux check`, the dev overlay and the editor.
+
+- **A name whose type cannot be worked out is `any`, with a warning.** Writing
+  `: any` opts out. **Not built:** making it an error in a release build.
+- **`any` is the one dynamic type.** Reading a field that is not there, or
+  calling what is not a function, fails when it runs. **Not built:** checking
+  an `any` where it is assigned to a typed name or passed to a typed
+  parameter; it is accepted unchecked. `x is T` is the way to ask without
+  failing.
+
+### Inference
+
+Most names need no annotation, because what they start as says what they are.
+
+| Written | Inferred |
+|---|---|
+| `signal(0)`, `42` | `int` |
+| `signal(0.0)`, `1.5` | `float` |
+| `signal("")`, `"all"` | `string`: a literal widens, as in TypeScript |
+| `true` | `bool` |
+| `[1, 2]` | `int[]` |
+| `{ id: 1, name: "ada" }` | `{ id: int, name: string }` |
+| `items.length`, `x.trunc()` | `int` |
+| `parseInt(s)`, `parseFloat(s)` | `int?`, `float?`: text that is no number gives `none` |
+| `tasks.filter(t => t.done)` | `Task[]` when `tasks` is a `Task[]` |
+| a call to a function | what that function returns |
+
+A string literal stays a literal type only where something asks for one: an
+annotation, a field of an annotated record, or a comparison against a literal
+union. `let f = signal("all")` is a `string`; `let f: Filter = signal("all")`
+is a `Filter`.
+
+**What cannot be inferred becomes `any`, with a warning** naming the place and
+suggesting the annotation. The common cases:
+
+- `signal([])`, which says nothing about what the array will hold. This is
+  the one that matters most: without an annotation, a `task` inside a later
+  `filter` has no completions, because nothing knows what `tasks` holds.
+- `signal(none)` or `signal({})`.
+- A parameter with no annotation.
+- A value from `JSON.parse`, or from a component's `@name` event.
+
+`any` is never an error on its own. It turns checking off for that value and
+everything computed from it, which is exactly what an unannotated program had
+before, and the warning is how the gap gets found.
+
+**A closure's parameters come from where it is used.** In
+`tasks.filter(t => t.done)`, `t` is a `Task` because `filter` on a `Task[]`
+calls its argument with one. No annotation is needed, and none is expected. The
+built-in methods (`map`, `filter`, `find`, `reduce`, `forEach`, `every`,
+`findIndex`, `sort`) all hand their callbacks typed arguments this way. An
+arrow that is not an argument, `let add = (a, b) => a + b`, has no context and
+needs its parameters annotated.
+
+### Optional fields and `?.`
+
+A field written `note?: string` may be absent, and **it must always be read
+with `?.`**. A plain `t.note` is an error:
+
+```rux
+{{ t.note }}              <!-- error: `note` may be absent; read it as t?.note -->
+{{ t?.note ?? "none" }}   <!-- a string -->
+```
+
+This is the reason Rux has `?.` at all. Strict property access is on for every
+document, so reading a field that is not there raises, and `?.` is how a
+program says "absent is a legitimate answer here". The checker knows which
+fields those are and holds every read to it. `t?.note` has the type
+`string?`.
+
+**Narrowing relaxes it.** Inside a region where the field is known to be
+present, a plain read is allowed, because the region would not be running
+otherwise:
+
+```rux
+if t?.note != none {
+  summary = t.note;       // allowed: this block only runs when it is there
+}
+```
+
+The same holds after `"note" in t`, after an early return on its absence, and
+inside an `r-if` that tested it. Outside such a region, `?.` is still required.
+
+**So is a value that may be `none`.** `sel.title` on a `sel: Task?` raises
+when `sel` is `none`, so it is an error unless something has ruled `none` out:
+`if sel != none`, an early `return` when it is, an `r-if` that tested it, or
+reading it as `sel?.title`, which is a `string?`.
+
+**A dictionary is read the same way.** Any key of a `{ [string]: T }` may be
+missing, and a missing key raises exactly as a missing field does, so
+`m[k]` is an error unless `k in m` has been established. `m?[k]` reads it as a
+`T?`: `?[` guards a missing key, and an index past the end of a
+list, as `?.` guards a missing property. `m.k` is held to the same rule,
+and read as `m?.k`. The loop variable of `for k in keys(m)` is known to be in
+`m`.
+
+A record indexed by a literal union needs none of this when every member is a
+field: with `labels: { all: string, open: string, done: string }` and
+`f: Filter`, `labels[f]` is a `string`.
+
+### Unions and narrowing
+
+A union is written with `|`, and may begin with one so a long union lines up:
+
+```rux
+type Load =
+  | { state: "idle" }
+  | { state: "loading", since: float }
+  | { state: "failed", reason: string }
+  | { state: "done", rows: Task[] };
+```
+
+A field that every member has with a different literal type, `state` above, is
+a **discriminant**. Testing it narrows the whole value.
+
+A union is only as useful as what can be done with it, so these narrow the type
+of a name for the rest of the region they guard:
+
+| Form | Narrows |
+|---|---|
+| `x == "open"` | `x` to `"open"`, and `x != "open"` removes it |
+| `x != none` | `x` to everything but `none` |
+| `if x` | `x` without `none` inside the block. The `else` learns nothing about a `string?` or `int?`, since `""` and `0` are falsy too |
+| `load.state == "done"` | `load` to the member whose `state` is `"done"` |
+| `"note" in t` | `t` to the members where `note` is present, and `t.note` to present |
+| `x is Task` | `x` to `Task`, checked at run time (see [`is`, and props at run time](#is-and-props-at-run-time)) |
+| an early `return` | the rest of the function, to whatever the guard excluded |
+| `switch` | each arm, to the case it matched |
+
+In a template, `r-if`, `r-elif` and `r-else` narrow the subtree under them the
+same way, so inside `<view r-if="load.state == &quot;done&quot;">` a binding
+may read `load.rows`.
+
+**Comparing against a literal a union does not contain is an error.** With
+`filter: Filter`, `filter == "al"` can never be true, and it is almost always a
+typo for `"all"`. The same goes for any comparison between types with nothing
+in common, such as a `string` and an `int`.
+
+**A fact about a signal does not outlive a call that writes it.** After
+`if load.state == "done" { refresh(); … }`, `load` is back to the whole union
+if `refresh` writes `load`, because it may no longer be `"done"`. The checker
+knows which functions write which signals, since a function's writes are in
+its body; a function that calls one that writes counts as writing too. An
+`await` ends every narrowing of a signal the same way, since anything may have
+run while it waited. A local that nothing else can write keeps its narrowing
+across both.
+
+### `switch` is checked for every case
+
+A `switch` on a union-typed value with no `_` arm must name every member, and
+an error lists the ones it leaves out:
+
+```rux
+switch filter {
+  "all"  => tasks,
+  "open" => tasks.filter(t => !t.done),
+}
+// error: this switch does not handle "done"
+```
+
+That is what makes adding `"archived"` to `Filter` safe: every `switch` that
+must now handle it says so. A `_` arm opts out, deliberately. A `switch` on a
+discriminant narrows the value in each arm, so `switch load.state { "done" =>
+load.rows.length, … }` is allowed.
+
+Arms take `a | b` alternatives, ranges and an `if` guard, and an arm may be a block:
+`"done" => { … }`. `match` is only a reserved word.
+
+### `is`, and props at run time
+
+Types are erased, so a value from outside is whatever it turns out to be. A
+value from `JSON.parse`, from `settings.get` (`any?`), or from a component's
+`@name` event is `any` until something says otherwise. A native function and
+an `async fn` give the type their signature declares.
+
+**`x is T` checks it at run time, and narrows.**
+
+```rux
+let raw = settings.get("settings");
+if raw is Settings {
+  settings = raw;           // a Settings from here on
+} else {
+  print("settings file is not the expected shape");
+}
+```
+
+`is` walks the value against the type: every required field present and of the
+right type, every array element, every union member tried in turn. A field the
+type does not mention is allowed, and an optional field may be `none`. A
+number is an `int` when it is whole. It answers `true` or `false` and never
+raises. A name that is no type is an error from the checker, and at run time
+fits nothing.
+
+`is` binds as `<` does, on both sides, so `a + b is int` tests the sum,
+`x is T && y` is `(x is T) && y`, and `a == b is int` is `a == (b is int)`. Where it held, `x` is a `T`; in the `else`, a union loses the
+members that are all `T`, so `if v is string { … } else { v.n }` reads the
+record's field. The compiler generates a validator only
+for types that appear on the right of an `is` and for props, so a program pays
+for exactly the checks it asks for.
+
+Assigning an `any` to an annotated name is allowed without a check, since
+checking there would put a cost on every assignment. `is` is where the author
+says the check is worth paying for.
+
+### Result
+
+`Result<T, E>` is for a value an author keeps on purpose, where an error is an
+answer rather than an exception. It is a union with a discriminant, so it is
+read with the narrowing that already exists and needs no pattern syntax:
+
+```rux
+// Result<T, E> is { ok: true, value: T } | { ok: false, error: E }
+fn parseAge(s: string): Result<int, string> {
+  let n = parseInt(s);
+  if n == none { return Err("not a number"); }
+  if n < 0     { return Err("negative"); }
+  Ok(n)
+}
+
+let r = parseAge(input);
+if r.ok { age = r.value; } else { problem = r.error; }
+```
+
+`Ok(v)` and `Err(e)` build one. `r.unwrap()` gives the value, or throws an
+`Error` with `kind` `"unwrap"` whose message carries the error.
+
+### Sharing types between files
+
+A type declared in one file is used in another with `use type`, or
+`import type`, which means the same:
+
+```rux
+use type types::{Task, Filter};
+import type { Task, Filter } from "./types";
+```
+
+`use type types::Task` names the `type Task` declared in `types.rux`, found
+the way a component import is: beside the file first, then at the project
+root. The word `type` is what makes it a type import: `use components::task`
+imports the component in `components/task.rux`, and
+`use type components::task::Row` imports the type `Row` declared in that file.
+Without `type`, a capitalised name (`use types::Task;`) still loads, with a
+warning, and `rux fmt` rewrites it.
+
+**The declaration is marked `export`**: `export type Task = { … };`. A type
+the file does not export is a warning at the import (`rux fmt` adds the
+`export`).
+
+A file with a `<script>` and no `<template>` is a module, so a file used only
+for its types is an ordinary one: it holds `export type` declarations and
+nothing else. `rux check` checks it like any other. `use type` imports
+only types; a module's functions and signals are imported with `use`, as
+described under [Modules](#modules).
+
+`use Task;`, with no file in front of the type, is an error that says where
+the type has to come from.
+
+### What is an error and what is a warning
+
+**Errors**, which make `rux check` exit 1: a value that does not fit where it
+goes, including a value that does not fit what a name started as, a missing or misspelled field, a plain read of an optional field outside
+a narrowed region, an impossible comparison, a `switch` that misses a case, a
+typed function reading a caller's local, an annotation naming no type, `null`
+or `()` written for `none`, `number` written for a type, and a wrong prop at
+a tag.
+
+**Warnings**, which do not: a name that became `any` because nothing could be
+inferred, including every unannotated parameter and a prop with neither a
+type nor a default; a type imported without `type` or not marked `export`.
+`rux check --deny-warnings` exits 1 on warnings as well.
+
+That line is deliberate. An untyped program is not wrong, and a warning is how
+it is told where checking stops; a typed program that contradicts itself is
+wrong, and says so.
+
+## Statements and expressions
+
+### Precedence
+
+Tightest first.
+
+| Level | Operators | Associates |
+|---|---|---|
+| 1 | calls `f()`, `.x`, `?.x`, `[i]`, `?[i]` | left |
+| 2 | unary `!`, `-`, `+`, and `await` | right |
+| 3 | `**` | right |
+| 4 | `*`, `/`, `%` | left |
+| 5 | `+`, `-` | left |
+| 6 | `..`, `..=` | left |
+| 7 | `??` | left |
+| 8 | `<`, `<=`, `>`, `>=`, `is` | left |
+| 9 | `in` | left |
+| 10 | `==`, `!=` | left |
+| 11 | `&&` | left |
+| 12 | `\|\|` | left |
+| 13 | `=>` | right |
+
+Two things differ from JavaScript: **`??` binds tighter than a comparison**, so
+`a ?? 0 == 1` is `(a ?? 0) == 1`, and **`in` binds looser than one**, so
+`a < b in c` is `(a < b) in c`.
+
+**Assignment is a statement**, not an operator: `a = b = c` is an error. `=`,
+`+=`, `-=`, `*=`, `/=`, `%=`, and `x++`/`x--` in statement position only. The
+target is a name, a field (`a.b`), or an index (`a[i]`), to any depth.
+
+`==` compares values structurally: two records are equal when their fields are,
+whatever order they were written in. `===` and `!==` are accepted and mean what
+`==` and `!=` mean. **Not built:** removing them.
+
+The bitwise operators `&`, `|`, `^`, `<<`, `>>` parse and are not part of Rux:
+a handler or binding using one is refused at load, and elsewhere the result is
+not meaningful. `|x| body` closures are the old engine's spelling and still
+work; arrows are the form to write. **Not built:** refusing either `|x|` or
+`===`.
+
+There is **no `?:` ternary**: `if` is an expression, `if a { b } else { c }`.
+
+### Truthiness
+
+JavaScript's rules. Falsy: `false`, `0`, `0.0`, `NaN`, `""`, `none`. Everything
+else is truthy, **including an empty array and an empty map**, so
+`r-if="items"` means "items exists", and `r-if="items.length"` is what was
+meant. **Not built:** a checker warning on a condition whose type is an array
+or a map.
+
+### Blocks have values
+
+A block's value is its last expression when that expression has no `;` after
+it. That is how a function returns without `return`, and how a `switch` arm or
+an `if` produces a value:
+
+```rux
+fn label(t: Task): string { t.title }
+let size = if wide { 24 } else { 16 };
+```
+
+### Control flow
+
+`if … { } else if … { } else { }`, `while cond { }`, `loop { }` (until a
+`break`), `for x in c { }`, `for (x, i) in c { }` (item and index),
+`for i in 0..n { }` and `0..=n`, `break`, `continue`, `return`, `return value`.
+There is no C-style `for`. `do { } while`, `do { } until` and `break value`
+parse and are not part of Rux: a handler or binding holding one is refused at
+load with "is not part of Rux", and a `<script>` body or function holding one
+is not refused and does nothing useful.
+
+`for x in c` iterates an array, a range, a string's characters (as
+one-character strings), and a map's keys through `keys(m)`. No iterable
+protocol is visible to authors. `r-for="(item, i) in list"` binds the index in
+a template.
+
+### Errors: `try`, `catch`, `throw`
+
+```rux
+fn save() {
+  try {
+    native::store::write(draft);
+    status = "saved";
+  } catch e {
+    status = "could not save: " + e.message;
+  }
+}
+```
+
+- **`catch e` binds the error.** An error raised by the language, a native
+  `Err`, a failed `await`, an `int` overflow or `r.unwrap()` arrives as an
+  `Error`, `{ message: string, kind: string }`. `catch { }` without a name is
+  allowed.
+- **`throw` takes a value.** `throw` of a record with a `message` field
+  (`throw { message: "empty title", kind: "input" }`, or `throw e` to rethrow)
+  arrives as that record. **Not built:** `throw "empty title"` arriving as an
+  `Error` with `kind` `"error"`; a thrown string is caught as that string, so
+  `e.message` on it fails although the checker types `e` as an `Error`.
+- **`kind`** is `"error"` for failures the language raises, `"overflow"` for
+  `int` overflow, `"unwrap"` for `r.unwrap()` on an error, `"type"` for a
+  write to a field a declared record does not have, `"panic"` for a panic in
+  native code, and the Rust error type's name for a native `Err`.
+- There is no `finally`.
+- **An error nothing catches** is reported to the dev overlay and `rux check`
+  with the file and line. The handler stops there; its writes before the error
+  stay.
+
+## Functions
+
+A function sees the scope it was written in, and can read and write it.
+
+```rux
+let level = signal(82);
+
+fn drain() { level-- }          // writes the signal, the screen follows
+fn is_low() { level < 20 }      // reads it
+```
+
+`@tap="drain()"` is a handler like any other and the write is tracked.
+
+**A method call on a function of the file is that function called with the
+receiver first**: `thing.helper(a)` is `helper(thing, a)`. It is tried after
+the language's own methods (`items.push(x)`) and a native value's.
+
+**A function sees its own file's names**: the file's signals, functions and
+props, what the file imports, and, in a component, the instance's state. Not
+a caller's local, and not another file's: a component's functions cannot see
+the document's, and the document's cannot see a component's. Pass a name in
+instead: `@tap="pick(item)"` and `fn pick(item: Task)`. State two files share
+lives in a store both import ([Modules](#modules)). See
+[A typed function cannot read its caller's locals](#a-typed-function-cannot-read-its-callers-locals).
+
+### Declaring
+
+```rux
+fn label(t: Task): string { t.title }
+fn first<T>(items: T[]): T? { items?[0] }
+fn refresh() { load = native::tasks::load(); }
+```
+
+- **The result type is written `: T`** and may be left off, in which case it
+  is inferred from the body. It must be written on a function that calls
+  itself, directly or through another.
+- **Parameters are never inferred from calls.** A parameter's type comes from its
+  annotation or it is `any`, with a warning. Inferring it from call sites would make
+  a function's meaning change with who calls it, and one new call somewhere else
+  could break a function that nobody touched. The editor's quick-fix writes in the
+  type the calls agree on, and the author reads it before keeping it.
+- **Type parameters are always inferred** at the call, from the arguments.
+  `first<User>(x)` is not a call form.
+- A generic function is compiled once per type it is used with.
+- Two functions of one name are not checked for: the later wins. **Not
+  built:** refusing a repeated name, and refusing a `fn` that shares a name
+  with a variable (the `fn` wins).
+
+**A function is typed when every parameter is annotated**, and a function with no
+parameters is typed, since it has none left unannotated. A typed function's body is
+checked against its parameters, and its calls against its signature:
+
+```rux
+fn label(t: Task): string { t.title }       // typed
+fn refresh() { load = settings.get("load"); } // typed: no parameters
+fn old(x) { x + 1 }                          // untyped: `x` is any, and warned
+```
+
+A function type, `(Task) => bool`, is written only where a function is a value: a
+parameter that takes a callback, a field that holds one, or a `let` that holds an
+arrow.
+
+### A typed function cannot read its caller's locals
+
+A name read from the caller cannot be typed: the same name would have a
+different type, or no type, depending on the caller, and nothing at the
+definition says which.
+
+**So a typed function sees only its own parameters and locals, the document's
+signals, computeds and functions, and its component's props and state.** A name
+from a caller is an error in a typed function. Writing a signal is unaffected,
+because signals are not the caller's locals: `fn drain() { level-- }` works as
+it always did.
+
+An untyped function can still read a name it does not declare from the handler
+or component that ran it (a row's `r-for` variable, the handler's own `let`, a
+component's state), which is looked up when it runs. A `let` of a *function*
+in between is not reached. Because a function with no parameters is typed,
+this rule reaches functions that were never touched by an annotation.
+
+A caller's local is any name the function cannot see itself that something
+could have in scope when it calls: an `r-for`'s variable, a handler's own
+`let`, or a `let`, parameter or loop variable of another function. The fix the
+error suggests is the one that makes the function honest, passing the name in:
+
+```text
+app.rux:4: error: `pick` reads `item`, which only whoever calls it has. A function whose parameters are all typed, or that has none, sees its own names and the document's, not its caller's: pass `item` in as a parameter
+```
+
+### Arrows and closures
+
+`x => …`, `() => …`, `(x) => …`, `(a, b) => …`, and `(a: int, b: int): int => …`
+with types. An arrow in a variable is called like a function.
+
+**A closure copies the local variables it uses.** It reads the value a local
+had when the closure was made, and a write to it changes only the closure's own
+copy. A closure does write a signal or the document's state:
+`items.forEach(i => total += i.price)` adds to `total` when `total` is a
+signal. **Not built:** sharing a local variable between a closure and the
+function around it.
+
+**Anything heavy belongs in Rust**, reached as a native module
+([Native code](#native-code)). Script describes what the UI does; it is not
+where work gets done.
+
 ## State
 
 `signal(v)` declares a reactive value. A binding that reads one *is* a
@@ -42,7 +869,12 @@ let items = signal(["a", "b"]);
 
 `signal()` is identity: it returns what it was given, and its job is to mark the
 declaration. `signal(82)` holds an `int` and `signal(82.0)` a `float`; see
-[Values](#values).
+[Numbers](#numbers).
+
+**A top-level `let` without `signal` is a value that is never written.** Writing one,
+or a field or element of one, is a checker error that suggests `signal(…)`.
+`const x = 1;` declares a name that cannot be assigned, at the top level or in a
+function. A `let` inside a function, handler or block is an ordinary local.
 
 **`computed name = expr;`** declares derived state, readable anywhere a signal
 is. Refreshing is one pass in declaration order, so a computed may read one
@@ -74,7 +906,7 @@ prop price: float = 1;
 ```
 
 A prop may carry a type, as any declaration may: see
-[Type annotations](#type-annotations).
+[Type annotations](#type-annotations), and [Props](#props) for how a tag is held to it.
 
 ## Lifecycle
 
@@ -146,6 +978,738 @@ out of its way to get right:
 
 When the app closes, every component still on screen runs its `unmounted`,
 deepest first, and then the document runs its own.
+
+## Intervals
+
+`setInterval(ms) { … }` runs a block on a period and hands back a handle.
+`clearInterval(handle)` stops it.
+
+```rux
+<script>
+  let seconds = signal(0);
+  let timer = signal(0);
+
+  mounted {
+    timer = setInterval(1000) {
+      seconds++;
+      if seconds >= 5 { clearInterval(timer); }
+    }
+  }
+</script>
+```
+
+The handle is why this is a call and not a declaration like `effect { }`: a timer
+that cannot be stopped on a condition cannot be used, and unlike a hook, an
+interval has something to hand back. Clearing a handle that names nothing is
+harmless, so restarting needs no guard.
+
+**An interval belongs to whoever started it.** Started inside a component, it
+belongs to that instance and stops when the instance goes, with nothing to
+remember to clean up: a timer outliving its component would run a body against
+state nobody can reach. Started at document level it lives as long as the
+document. Starting one from `unmounted` warns, since there is no longer an
+instance for it to belong to.
+
+A period has to be more than zero, and a running interval is one of the clocks
+the window wakes for. Nothing is running between ticks, so an app whose timers
+are all stopped goes back to using no CPU at all.
+
+The block is a block, not a callback. A function value called later writes to its
+own captured copies and cannot move a signal, which for an interval would defeat
+the purpose; the body is carried as text and run exactly as a handler is, the
+same as `@tap` and the lifecycle hooks.
+
+## Templates
+
+The template language, the `r-*` directives, events and CSS are described in
+[As Built](./05-as-built.md). This is how script meets them: what the checker
+holds each part to.
+
+A template is checked against the script it binds to.
+
+- **`r-for`** gives its loop variable the element type: in
+  `r-for="t in visible()"`, `t` is a `Task`. `r-for="(t, i) in visible()"`
+  also binds the index `i`, an `int`. An `r-if` on the same element is read
+  per row, with both names in scope.
+- **`r-if`, `r-elif` and `r-else`** narrow the subtree under them, as in
+  [Unions and narrowing](#unions-and-narrowing).
+- **A binding** (`{{ }}`, `:class`, `:style`, any bound attribute) is checked as
+  an expression. A bound attribute of a built-in element is checked against
+  what that attribute takes: `:disabled` (on `<input>` and `<button>`),
+  `:readonly` and `:required` (on `<input>`) a `bool`; `:controls`,
+  `:autoplay`, `:loop` and `:muted` on `<audio>` and `<video>` a `bool`;
+  `:options` a `string[]`, `:marks` a `TextMark[]`, `:src` (on `<image>`,
+  `<audio>` and `<video>`), `:poster`, `:d` and `:to` a `string`,
+  `:style` a `string` or a `{ [string]: any }`, and `:r-transition` a
+  `float?`, the progress of a swap or nothing.
+- **A `:class` map** is a `{ [string]: bool }`; a value that is not a `bool`
+  is an error, which catches `{ active: item }` meant as `{ active: item.on }`.
+  `:class` also takes a `string` or a `string[]`.
+- **`r-model` must name something of the input's value type**: `string` for
+  text, password, textarea, search and date; `float` for number and slider,
+  which may also write into an `int`; `bool` for checkbox and switch. A select shows its target as text and
+  writes one of its options, so a `Filter` may be bound to one. A radio
+  writes its `value`, so its target must take that string. A file input
+  writes a `File?`, or a `File[]` with `multiple`.
+- **`event` in a handler has the type of that event.** Every gesture's
+  (`@tap`, `@press`, `@release`, `@longpress`, `@drag`, `@swipe`) has
+  `x`, `y`, `pageX`, `pageY`, `width`, `height` and `touches`. `@drag` adds
+  `phase`, `"start" | "move" | "end"`, and the four distances, `totalX`,
+  `totalY`, `moveX` and `moveY`; `@swipe` adds those distances and
+  `direction`, `"left" | "right" | "up" | "down"`. The seven drag-and-drop
+  events (`@dragstart`, `@dragmove`, `@dragenter`, `@dragover`, `@dragleave`,
+  `@drop`, `@dragend`) hand over a `DropEvent`: the pointer fields, and
+  `data: any`, `group: string?`, `index: int`, `before: any`, `dropped: bool`,
+  `grabX` and `grabY`. `@key` hands over a
+  `KeyEvent`. A field's `@select` hands over a `SelectEvent` (`value`,
+  `start`, `end`, `caret`). A text field's `@input` hands over an
+  `InputEvent`: `value`, and `kind`, the sort of edit, one of `"type"`,
+  `"paste"`, `"cut"`, `"undo"`, `"redo"`, `"insert"`, `"drop"` or
+  `"autofill"`. A field's `@change`, `@focus` and `@blur` hand over
+  `event.value`: a `float` from a number field bound with `r-model`, `any`
+  from a checkbox, switch or slider, a `File` (or `File[]` with `multiple`)
+  from a file input, and text from the others. An `<audio>` or `<video>`
+  hears `@play`, `@pause`, `@ended` and `@timeupdate` with `currentTime` and
+  `duration`, `@loadedmetadata` with `duration`, `videoWidth` and
+  `videoHeight`, and `@error` with `kind` and `message`; an `<image>` hears
+  `@load` with `width` and `height`, and `@error` with `message`. A
+  component's `@name` hands over whatever it emits, which is `any`.
+- **A form's `event.values` is a record of its fields**, under each field's
+  `name`, or the name of what it binds when it has none. The fields are in the
+  markup, so `event.values.email` reads plainly and `event.values.emial` is an
+  error. A field under an `r-if` or an `r-for` may be missing, or may be
+  several, so it is optional and `any`; a form holding a component, which may
+  hold fields of its own, has a `{ [string]: any }` instead. `@invalid`'s
+  `event.errors` is a `{ [string]: string }`, because it holds only the fields
+  that failed, and is read with `?.`.
+- **Props are checked at the tag**, against the component's declaration: a
+  missing required prop, an unknown attribute, and a value of the wrong type
+  are each an error. A plain attribute passes its text, so
+  `kind="big"` is checked as the string `"big"`.
+
+A finding in a template is on the template's line and names where it is:
+
+```text
+app.rux:9: error: `:disabled` on <button>: this is `int`, where `bool` is expected
+app.rux:10: error: `r-model`: the field writes `float` into `name`, which holds `string`
+```
+
+**What is checked is the file being checked.** A document's template is
+checked with the document; a component's template is checked when the
+component is the file, with its props typed as it declares them.
+
+## Props
+
+```rux
+prop label: string;
+prop price: float = 1;
+prop kind: "primary" | "quiet" = "quiet";
+```
+
+A prop's annotation is its contract with every tag that uses the component.
+With a default and no annotation, the default's type is inferred, as for a
+`let`. With neither, the prop is `any` and warned.
+
+A plain attribute, `label="Save"`, passes a `string`, so a `float` prop must be
+bound: `:price="3"`. Passing text to it is an error at the tag.
+
+**Props are also checked when the program runs, in release builds as well as
+in development.** A prop is a boundary: its value can come from a route
+parameter, from another file checked separately, or from a value the checker
+saw as `any`. A prop whose value does not fit its declared type is reported
+with the tag and the prop named, and the component is built without it: the
+prop takes its default if it has one, and is otherwise left out, as a
+required prop the tag forgot is. The check is a comparison against the
+declared type, parsed once per component and run when the tag is built, not on
+every read:
+
+```text
+app.rux:12: error: `<stat>` was given the text "lots" for `:value`, which is not the `float` `prop value` takes, so it is built without it, and it takes its default
+```
+
+**A route parameter is text, and becomes what its prop takes.** For
+`<route path="/task/:id" view="detail" />` and `prop id: int;`, the path
+`/task/42` passes the number `42`. The same holds for `float`, `bool` and a
+literal union; a segment that cannot be one (`/task/abc` for an `int`) is a
+prop that does not fit, left out and reported.
+
+A `none` passed to a prop arrives as `none`, so `prop task: Task? = none`
+reads `task?.title` safely whether the tag passed nothing or passed `none`.
+
+## Async
+
+Work that takes a while (a request, a file, a database) happens in Rust, and a
+page waits for it in an `async fn`:
+
+```rux
+<script>
+  use native::people;
+  use type native::people::User;
+  let status = signal("idle");
+
+  async fn load(id: int) {
+    status = "loading...";
+    let user: User = await people.lookup(id);
+    status = `${user.name}, ${user.age}`;
+  }
+</script>
+
+<button @tap="load(3)">Load</button>
+```
+
+- **A handler calls an `async fn`; it never awaits.** `@tap="load(3)"` starts
+  `load` and returns at once. What `load` writes before its `await` renders
+  with the tap; what it writes after renders when the answer comes, with no
+  input and without the window waking for anything else in between.
+- **`await` is only written inside an `async fn`**, and only in front of a
+  call to another `async fn` or to an `async` native function. It may sit anywhere an
+  expression can, `total += await price(id)` included, but not inside a
+  closure, which is not `async`.
+- **The result type is the value awaited**: `async fn price(id: int): float`
+  gives a `float` to `await price(1)`. A call without `await` gives a
+  **handle** (an `int`, as `setInterval`'s is), since nothing has come back
+  yet: keep it to [cancel](#cancelling) the call.
+- **An `async fn` may call another with `await`** and gets its result. Calling one
+  without `await` from inside an `async fn` starts it alongside and does not wait.
+- **Everything between two `await`s runs without interruption.** There is one
+  thread of script. A signal can change under a function only at an `await`,
+  so whatever a condition established about a signal before one is not known
+  after it, and the checker says so.
+- **A failed `await` throws** where it is, and `try`/`catch` takes it. One
+  nothing catches is reported as a failing handler is, naming the function and
+  the line of the `await`.
+- **An `async fn` belongs to whoever started it**, as an interval does. Started
+  in a component, it stops at its `await` when the instance goes, and the
+  answer that comes later writes nothing. A document reloaded or left drops its
+  own the same way.
+- **A binding or a `computed` cannot start one**, since either runs again on
+  every change. A handler, `mounted` and an `effect` can. What the function
+  reads is never a dependency: an `effect` that starts one is subscribed to
+  what the effect itself read.
+
+### Cancelling
+
+**`cancel(handle)` stops an `async fn`** that was started without `await`,
+as `clearInterval(handle)` stops an interval. It stops at the `await` it is
+waiting at, nothing after that runs, and the Rust future it waits on is
+dropped (see the end of this section). A timeout is an interval that cancels:
+
+```rux
+let job = signal(0);
+let timer = signal(0);
+
+async fn send(url: string) {
+  status = "sending";
+  res = await http.send(url);
+  status = "done";
+  clearInterval(timer);
+}
+
+fn onSend() {
+  job = send(url);
+  timer = setInterval(10000) {
+    cancel(job);
+    status = "timed out";
+    clearInterval(timer);
+  }
+}
+
+fn onCancel() {
+  cancel(job);
+  clearInterval(timer);
+  status = "cancelled";
+}
+```
+
+- **The handle names one run.** Starting `send` again gives a new one; a
+  `cancel` of the old one stops only the old run.
+- **One already finished, already cancelled, or `0`, is ignored**: cancelling
+  twice, or after the answer came, is ordinary rather than a mistake.
+- **A run may cancel itself** with its own handle; it stops at its next
+  `await`.
+- **Every `await` in the run stops with it**, an `async fn` it awaited
+  included: there is one run, and it is cancelled whole.
+- A file with a `fn cancel(x)` of its own keeps it; the built-in is then out
+  of reach in that file.
+
+What a page awaits is an `async fn` in the app's Rust, exported to Rux
+([Native code](#native-code)):
+
+```rust
+#[rux::export]
+pub async fn lookup(id: u32) -> Result<User, LookupError> {
+    // …; an Err is thrown at the `await`, with the error type's name as `kind`
+}
+```
+
+Its future runs off the UI thread: on a thread of
+its own by default, or on the app's own runtime once it hands one over with
+`rux::set_spawner`. There is no `Future` or `Promise` value on the Rux side,
+only the handle a start gives, and no `fetch` or `delay` built in.
+
+**When the run is cancelled, or the component that started it goes, the
+future is dropped** where it waits, which is how a Rust future is cancelled: a request it was making goes
+no further, and a socket or file it held is closed by its own `Drop`. Nothing
+answers, and nothing runs after the `await`. A call that blocks its thread
+inside the future (a blocking HTTP client, `std::thread::sleep`) cannot be
+reached there, and finishes first; write it with an async client, or check a
+flag of its own between steps.
+
+## Modules
+
+A `.rux` file with no `<template>` is a **module**: functions, types and state
+for other files to import. It is written as a `<script>` alone, or as bare
+script with no tags at all.
+
+```rux
+// stores/cart.rux
+export type Item = { name: string, qty: int };
+
+export let items: Item[] = signal([]);
+
+export fn add(name: string) {
+  items.push({ name: name, qty: 1 });
+}
+
+export fn count(): int { items.length }
+```
+
+```rux
+<script>
+  use stores::cart;                     // the whole module, as `cart`
+  use stores::cart::{add as put};       // one name it exports
+  use type stores::cart::Item;          // a type, marked with `type`
+</script>
+```
+
+`import` is the same statement spelled the other way: `import cart from
+"./stores/cart";`, `import { add as put } from "./stores/cart";`, `import type {
+Item } from "./stores/cart";`. A module is found the way a component is, beside
+the importing file, then from the project root, and `rux fmt` writes every
+import one way when `rux.toml` asks, `[fmt] imports = "use"` or `"import"`.
+
+- **`export` is what another file sees.** `export fn`, `export async fn`,
+  `export type` and `export let`; the rest is the module's own. Importing a
+  name it does not export is an error that lists what it does.
+- **A module is loaded once per document**, however many files import it, and
+  its top level runs then, before the document's, each module after the ones
+  it imports. Two modules that import each other in a circle are refused.
+- **Its top-level signals are a store.** Every file that imports it reads the
+  same `cart.items`, and a binding that reads it follows it, whether in the
+  document or in any component instance.
+- **Only the module changes its state.** `cart.items = []` or
+  `cart.items.push(x)` in another file is an error: write the change as a
+  function the module exports, and call it, `cart.add("tea")`. A store's rules
+  live in one place that way.
+- **An imported name is the import everywhere in the file**, so declaring it
+  again is an error; `as` renames the import instead.
+- A module holds no `computed`, `effect`, lifecycle block or `prop`, which
+  belong to a component or a document; an exported function can work out what
+  a `computed` would.
+- An `async fn` a module exports belongs to the document when it runs: it
+  writes only the module's state, which outlives any component that called it.
+
+**A component's names are its own.** Its template, handlers, functions,
+`computed`s, `effect`s and lifecycle blocks see its state, its props, what it
+imports and what the runtime provides every file (`route`, `params`, `query`),
+and not the document's signals or functions. Two components may each declare a
+`fn` of one name. What a page and the app share is a store:
+
+```rux
+<!-- pages/home.rux -->
+<template>
+  <view r-for="t in todo.tasks"><text>{{ t.label }}</text></view>
+</template>
+<script>
+  use stores::todo;
+</script>
+```
+
+### Import rules
+
+`use` and `import` are both accepted and mean the same. A name alone imports the
+**whole file**: a component's tag, or a module's namespace (`cart.add(p)`). **Braces
+pick what the file exports**, in both spellings. Without braces the last segment of a
+`use` is always the file: `use utils::money::format` looks for
+`utils/money/format.rux`.
+
+```rux
+use components::card;                    // a whole file, under its name
+import card from "./components/card";
+
+use stores::cart as basket;              // a whole file, renamed
+import basket from "./stores/cart";
+
+use utils::money::{format, tax as t};    // names the file exports
+import { format, tax as t } from "./utils/money";
+
+use type types::{Task, Page};            // types
+import type { Task, Page } from "./types";
+```
+
+**A type is imported with `type`**, never told by its capital letter. A type keeps its
+name, so `as` on a type import is an error, and a type imported without `type` loads
+with a warning that `rux fmt` fixes. The string after `from` is the `use` path with
+`/`: an optional `./`, names, an optional `.rux`. A file is found beside the importing
+file first, then at the project root. There is no `super::`, and no `..` or `.` in a
+path. Imports and `export` belong at the top level of a file's script; a handler or a
+binding cannot hold one.
+
+A types file is a module that exports only types: a type imported that the module does
+not export is a warning, and `rux fmt` adds the `export`. **Not built:** a factory that
+gives each importer its own copy of a store (the "scoped" half).
+
+`export let` has both meanings: `export let items = signal([])` shares state that only
+the module's exported functions change, and `export let RATE = 0.2` shares a constant.
+
+### Values move by copy
+
+Arrays, maps and records are **values**: `let b = a; b.push(1);` leaves `a` as
+it was, and a record handed to a function is that function's own copy. This is
+the rule JavaScript does not have, and it is what makes a signal's writes
+visible: the only way to change state is to write to its name, directly or
+through a field or an index, and every such write is tracked. The compiled
+build keeps the same meaning with shared, copy-on-write storage, so a copy that
+is never written costs nothing.
+
+A **resource** from native code (see [Native code](#native-code)) is the one
+thing passed by handle rather than by copy.
+
+## Native code
+
+An app's Rust lives in a `native/` crate beside `rux.toml`, an ordinary
+library depending on `rux-native` under the name `rux`. What Rux may call is
+marked `#[rux::export]`; each `pub mod` is a module Rux imports as
+`native::name` (the crate root is `native` itself; every module on the way must be
+`pub`). Both module spellings take it: `use native::database;` and
+`import { database } from "native/database";`. A type is `use type native::shop::Product;`.
+
+```rust
+// native/src/shop.rs, with `pub mod shop;` in native/src/lib.rs
+#[rux::export]
+pub struct Product { pub id: u32, pub name: String, pub price: f64 }
+
+#[rux::export]
+impl Product {
+    pub fn with_tax(&self, rate: f64) -> f64 { self.price * (1.0 + rate) }
+}
+
+#[rux::resource]
+pub struct Till { cents: Mutex<i64> }
+
+#[rux::export]
+impl Till {
+    pub fn ring(&self, p: Product) -> Result<u32, TillError> { … }
+    pub async fn settle(&self) -> Result<String, TillError> { … }
+}
+
+#[rux::export]
+pub fn open_till() -> Till { … }
+```
+
+```rux
+<script>
+  use native::shop;
+  use type native::shop::Product;
+
+  let till = shop.openTill();
+  fn add(p: Product) { count = till.ring(p); }
+</script>
+```
+
+- **Names become camelCase** (`open_till` is `openTill`); `#[rux(name = "…")]`
+  gives another, `#[rux(skip)]` keeps a `pub fn` out.
+- **A struct marked `#[rux::export]` is a value**: a record type of the same
+  name, every field `pub`, copied across whole. **A `#[rux::resource]` is
+  opaque**: Rux holds it, keeps it in state, passes it back and calls its
+  methods, and never sees inside. Its methods take `&self`, since Rux may hold
+  it in several places; a change goes through a lock inside it.
+- **A native value's method is its own, whatever the script names.**
+  `studio.save()` calls the resource's `save` even beside a `<script>`'s
+  `fn save()`, which a plain `save()` still calls. An app's actions and its
+  resource's methods are naturally the same words.
+- **A resource may have properties**, read as `value.name` and, when
+  writable, written as `value.name = x` (or `+=`), each through Rust: a
+  getter and a setter, never a copy. What reads one, a `{{ }}` binding or an
+  `effect`, reads it again whenever Rust says something moved
+  (`rux::notify()`), so `{{ sound.currentTime }}` follows a playing sound.
+  `?.` on one that is `none` is `none`. Writing a read-only one is an error
+  that says so. A module written by hand declares them with
+  `Module::property`; `#[rux::export]` does not make them yet.
+- **What crosses:** `bool`; every Rust integer type as `int`, and one that does not fit
+  throws `kind` `"overflow"` rather than wrapping; `f32` and `f64` as `float`;
+  `String` and `&str` as `string`; `Option<T>` as `T?`; `Vec<T>` and `&[T]` as `T[]`;
+  `HashMap` and `BTreeMap<String, T>` as `Map<string, T>`; `()` as `void`. A function
+  returning `Result<T, E>` appears as returning `T`, and its `Err` is thrown as an
+  `Error` whose `message` is `e.to_string()` and whose `kind` names the Rust error
+  type. A type with no Rux meaning in an exported signature is a compile error at the
+  export, saying why, never dropped silently.
+- **`rux::Any` is the boundary value** (`None`, `Bool`, `Int`, `Float`, `Str`, `Array`,
+  `Map`, `Resource`); a Rust function taking or giving it is typed `any`.
+- **`#[rux::init]`** marks one function run once before the first document loads,
+  for setting a spawner or opening a pool.
+- **There is no way to call unexported Rust on a Rux value.** A missing capability is
+  written as a small exported Rust function.
+- **A resource is dropped** when the last Rux value holding it is. It is
+  `Send + Sync + 'static`, held in an `Arc`, and equal to another only when it is the
+  same resource.
+- **An `async` export is awaited**, from an `async fn`; calling one without
+  `await` is an error.
+- **A panic in a native call is thrown** as an `Error` of `kind` `"panic"`,
+  not a crash (except on the web, which aborts).
+- **`rux check` and the editor read the Rust source**, not a build, so a typo
+  in a native name or a wrong argument type is reported in seconds. A check
+  never runs the app's Rust: a native call made while a document is checked
+  answers the empty value of its type. **`rux run` compiles the crate in**, and
+  builds and restarts the window whenever something under `native/` changes;
+  `.rux` files still hot reload. `rux native` prints what Rux sees.
+- **A debug build runs Rux optimised.** Everything the app depends on is
+  compiled at `opt-level = 2`, and only the `native/` crate as written, for a
+  debugger. A debug window scrolls as fast as a release one (a list of 1,000
+  rows scrolls about 7.5 times faster than unoptimised); the price is the first
+  build, which takes several minutes once.
+
+### Signals from Rust
+
+**A `#[rux::export] pub static` of type `rux::Signal<T>` is a value Rust sets
+and Rux follows.** Script reads it like a module's signal, and whatever read it
+updates when Rust sets it, from any thread. Nothing else wakes the window:
+
+```rust
+// native/src/sim.rs
+#[rux::export]
+#[derive(Clone)]
+pub struct Frame {
+    pub tick: u32,
+}
+
+#[rux::export]
+pub static FRAME: rux::Signal<Frame> = rux::Signal::new();
+
+fn on_step(frame: Frame) {
+    FRAME.set(frame);   // any thread
+}
+```
+
+```rux
+<script>
+  use native::sim;
+</script>
+<text>{{ sim.frame?.tick ?? 0 }}</text>
+```
+
+- **Its name follows the `static`'s**, lowercased and camelCased (`FRAME` is
+  `frame`, `SAVE_STATE` is `saveState`), or `#[rux(name = "…")]`. Its type is
+  `T?`: it holds `none` until Rust first sets it.
+- **What it holds is `Clone`.** Every read copies the value out to Rux, so
+  `T` needs `#[derive(Clone)]`, and the compiler's error says so at the
+  `static`.
+- **Only Rust writes it.** Assigning to `sim.frame` in script is an error
+  that says so; to change it from script, export a function that sets it.
+- **The latest value wins.** `set` stores the value and wakes the window, and
+  the document reads what is there when it next settles: a simulation setting
+  a frame five hundred times between two paints is drawn once, with the
+  newest. A status works the same way, and an `effect` reading it runs when it
+  changes. For values that must each arrive, use a
+  [channel](#channels-from-rust).
+- **A handler reads what the Rust it called just set.** After every call into
+  Rust, and when an `await` on one comes back, the signals are read again if
+  anything set one. So `studio.newProject(); if mava.view.dirty { … }` tests
+  the view the call left, not the one from before it. Between two calls into
+  Rust the value holds still: a set made on another thread in the meantime is
+  read at the next call, or when the document next settles.
+- `get`, `clear` and `update` are there too. A check does not run the app's
+  Rust, so a signal read while a document is checked holds `none`.
+
+### Channels from Rust
+
+**A `#[rux::export] pub static` of type `rux::Channel<T>` delivers every
+value Rust pushes, in order**: a socket's messages, a log, a benchmark's
+samples, where a signal would keep only the newest.
+
+```rust
+// native/src/feed.rs
+#[rux::export]
+pub static EVENTS: rux::Channel<Event> = rux::Channel::new();
+
+fn on_message(event: Event) {
+    EVENTS.push(event);   // any thread; `extend` pushes several
+}
+```
+
+```rux
+<script>
+  use native::feed;
+  let log: Event[] = signal([]);
+
+  effect {
+    for e in feed.events { log.push(e); }
+  }
+</script>
+```
+
+- **Script reads it as a list, `T[]`, of what was pushed since the document
+  last looked**, which is once a frame. An `effect` that reads it runs once for
+  each list with anything in it, so every value reaches it exactly once, and a
+  burst of a thousand is one update rather than a thousand.
+- **Read it in an `effect`** to keep what arrives. Between arrivals it still
+  holds the last list, so a binding shows the latest batch; the batch before it
+  is gone.
+- A check does not run the app's Rust, so a channel read while a document is
+  checked is the empty list.
+
+A program that runs the shell itself registers a module with
+`rux_runtime::native::Module`, which is what the attribute generates.
+
+### The interface
+
+Exports are read from the Rust **source** (with `syn`, in `rux-bindgen`), not from a
+build, so the checker, `rux check` and the editor have them within a second of saving
+the Rust, without waiting for `cargo`. There is no interface file. `rux native` prints
+the interface in Rux syntax:
+
+```text
+// native::shop
+export type Product = { id: int, name: string, price: float, note?: string };
+export fn catalogue(): Product[];
+export type Till;  // a resource: opaque to Rux
+export fn openTill(): Till;
+//   Product.withTax(rate: float): float
+//   Till.ring(p: Product): int
+//   Till.settle(): string  (async)
+```
+
+`rux check` never builds or runs the app's Rust. `rux run` builds the `native/` crate
+into the app and rebuilds and restarts the window when a file under `native/src`
+changes. The generated wrapper crate is named `rux-app-<name>`. An async export's
+future runs off the UI thread, by default on a thread of its own; an app with its own
+runtime installs it once with `rux::set_spawner`. **Not built:** async exports on the
+web (no threads). The `native/` crate is never embedded in a build, and a build
+honours `CARGO_TARGET_DIR`.
+
+## Built-in methods
+
+The methods of Rux's built-in types are Rux's. Rust's are never inherited, so a Rust
+release cannot change what `Array` offers. The names are JavaScript's, with
+JavaScript's answers:
+
+- **Arrays:** `map`, `filter`, `reduce`, `forEach`, `find`, `findIndex`,
+  `findLast`, `findLastIndex`, `some`, `every`, `includes`, `indexOf`,
+  `lastIndexOf`, `at`, `slice`, `concat`, `flat`, `flatMap`, `join`,
+  `toReversed`, `toSorted`, and the ones that change the array: `push`, `pop`,
+  `shift`, `unshift`, `splice`, `sort`, `reverse`, `fill`. Also
+  `insert(i, x)`, `remove(i)`, `truncate(n)` and `clear()`.
+- **Strings:** `split`, `charAt`, `at`, `repeat`, `startsWith`, `endsWith`,
+  `includes`, `indexOf`, `lastIndexOf`, `slice`, `substring`, `trim`,
+  `trimStart`, `trimEnd`, `padStart`, `padEnd`, `replace`, `replaceAll`,
+  `toLowerCase`, `toUpperCase`.
+- **Numbers:** `toFixed`, so `(1.4123).toFixed(1)` is `"1.4"`.
+- **`Math`, `JSON`, `Object` and `Array`**, as namespaces: `Math.max`,
+  `Math.min`, `Math.floor`, `Math.ceil`, `Math.round`, `Math.trunc`,
+  `Math.abs`, `Math.sign`, `Math.sqrt`, `Math.pow`, `Math.log` and the rest,
+  with `Math.PI` and `Math.E`; `JSON.stringify(v)`, `JSON.stringify(v, none,
+  2)` indented, and `JSON.parse(text)`; `Object.keys`, `Object.values` and
+  `Object.entries`; `Array.from` and `Array.isArray`. A file that declares a
+  `Math` of its own keeps it.
+- **`Date`, as functions on a time**: `Date.now()` is the wall clock, an
+  `int` of milliseconds since 1970 as JavaScript's is, and each of the rest
+  takes such a time and reads it in the computer's own time zone.
+  `Date.time(ms)` is `"14:02"` and `Date.date(ms)` is `"30 Oct 2026"`;
+  `Date.hours`, `Date.minutes`, `Date.seconds`, `Date.day` (of the month),
+  `Date.month` (**1 to 12**, where JavaScript's `getMonth` counts from 0),
+  `Date.year` and `Date.weekday` (0 for Sunday to 6, as `getDay`) are `int`s.
+  How long ago is arithmetic: `intDiv(Date.now() - sentAt, 60000)` minutes.
+  There is no `Date` value and no `new`: a time is its milliseconds.
+
+A string's methods **return** a new string and leave their receiver alone, as
+JavaScript's do: `name.replace("-", " ")` replaces the first `-` and gives the
+result back. `rux check` says so where a statement throws the new value away:
+`s.replace("a", "b");` is answered with "write `s = s.replace("a", "b")`". An
+array's `sort`, `reverse` and `fill` change the array, as JavaScript's do, and
+also give it back; `toSorted` and `toReversed` leave it alone.
+
+**A map** (`Map<string, T>`, also `{ [string]: T }`) has `m[k]` (read with `?[` unless
+`k in m` is known), `k in m`, `keys(m)`, `values(m)`, `m.set(k, v)`, which adds a key
+(`m[k] = v` writes only a key that is there), and `m.remove(k)`. It keeps its keys
+sorted. **Not built:** `m.size`, `m.delete(k)`, and `Set<T>` with `Set([a, b])`,
+`s.has(x)`, `s.add(x)`, `s.delete(x)` and `s.size`.
+
+**Spread in an array**, as JavaScript's: `[...a, x]` is `a`'s items and
+then `x`, `[...a, ...b]` both in order, and `[..."hi"]` the characters. It
+makes a new array and leaves `a` alone. Spreading anything but an array or a
+string is an error.
+
+Not there: spread in a map or record, `{ ...o, a: 1 }`, and in a call's
+arguments, `f(...xs)`; `Math.random`; and a `Date` value with methods (`Date.now()`
+and the functions above take its place).
+
+`forEach` is called with `(item, index)` and falls back to `(item)`, and
+`sort((a, b) => a - b)` sorts by the comparison and **returns** the sorted
+array.
+
+**Text to a number**, under JavaScript's names and with its answers:
+`Number("2")` is 2, `Number("")` is 0, `Number("12px")` is `NaN`;
+`parseInt("42px")` is 42 and `parseFloat("12.5px")` is 12.5, reading only what
+leads. Where JavaScript's parsers say `NaN`, these say `none`: `parseInt` gives
+an `int?` and `parseFloat` a `float?`, so `parseInt(s) ?? 0` is the usual way
+to read one. `isNaN(x)` asks of a `float`. `String(x)` goes the other way. A
+route parameter is always text, so this is how `/task/:id` meets a list whose
+ids are numbers: `tasks.find(t => t.id == parseInt(params.id))`.
+
+**`now()` is a clock**: milliseconds, as a `float`, on a clock that only goes
+forward. Only the difference between two reads means anything, so it times
+things rather than telling the time (`Date.now()` does that):
+
+```rux
+fn send() {
+  let started = now();
+  // …
+  took = now() - started;
+}
+```
+
+**`.length` is a property.** Arrays and strings only: JavaScript has
+no `length` on a plain object, and inventing one for maps would be making up a
+rule rather than matching a known one. Use `keys(m).length` and `values(m)` for maps.
+
+**A record keeps its fields in the order its type declares them.** `${item}`,
+`{{ item }}`, `keys(item)` and `values(item)` go in that order, as JavaScript,
+Dart and Kotlin show an object, and a `{ }` that no type describes keeps the
+order it was written in. A map (`{ [string]: T }`) keeps its keys sorted, and
+gains a key with `m.set("k", v)`: `m["k"] = v` writes a key that is already
+there, and says so when it is not. An
+optional field never given reads as `none` (`bob.pet`, on a `User` made
+without a `pet`), and a field its type marks optional is left out where the
+record is shown or walked while it holds `none`, so `${bob}` is `name: bob`.
+Writing a field a declared record type does not have is an error the checker
+reports; reached anyway, through `any`, it throws with `kind` `"type"`. Two
+records are equal when their fields are, whatever order they were written in.
+
+### Retired names
+
+Rux ran on a fork of rhai until 2026-09-26 and kept some of rhai's spellings
+beside JavaScript's. They are gone: `rux check` reports each one as an error
+that says what to write, and a program that reaches one anyway fails with the
+same sentence. A file's own `fn` of the same name is unaffected.
+
+| Retired | Write |
+|---|---|
+| `x.len()`, `x.is_empty()` | `x.length`, `x.length == 0`; on a map, `keys(m).length` |
+| `x.contains(y)` | `x.includes(y)`; on a map, `keys(m).includes(k)` |
+| `a.append(x)`, `a.index_of(x)`, `a.extract(i, n)` | `a.push(x)` (or `a.push(...)` for each item of an array), `a.indexOf(x)`, `a.slice(i, i + n)` |
+| `a.retain(f)`, `a.drain(f)`, `a.dedup()` | assign a `filter` of the array back to it |
+| `s.to_upper()`, `s.to_lower()`, `s.make_upper()`, `s.make_lower()` | `s.toUpperCase()`, `s.toLowerCase()`, or assign one back |
+| `s.starts_with(x)`, `s.ends_with(x)` | `s.startsWith(x)`, `s.endsWith(x)` |
+| `s.sub_string(i, n)`, `s.chars()`, `s.pad(n, f)` | `s.substring(i, i + n)`, `s.split("")`, assign `s.padEnd(n, f)` back |
+| `x.to_string()`, a free `to_string(x)` | `String(x)` |
+| `x.to_int()`, `x.ceiling()`, `x.to_float()`, `x.is_nan()` | `x.trunc()`, `x.ceil()`, `x.toFloat()`, `isNaN(x)` |
+| `parse_int(s)`, `to_int(s)`, `parse_float(s)`, `to_float(s)` | `parseInt(s)`, `parseFloat(s)`: these give `none`, not an error, for text that is not a number |
+| `abs`, `sqrt`, `min`, `max`, `sin`, `cos`, `tan`, `atan`, `atan2`, `exp`, `ln`, `log10`, `floor`, `ceil`, `round`, `trunc` as free functions, and `x.abs()`, `x.sqrt()`, `x.min(y)`, `x.max(y)` | `Math.abs(x)` and the rest of `Math`; `x.floor()`, `x.ceil()`, `x.round()` and `x.trunc()` stay as methods |
+| `log(x)` (base 10) | `Math.log10(x)`; `Math.log` is the natural logarithm |
+| `type_of(x)` | `x is string` |
+| `is_def_var(n)`, `is_def_fn(n)` | nothing: an undeclared name is an error at check time |
+| `range(a, b)` | `a..b` |
+| `path_for(...)` | `pathFor(...)` |
 
 ## Closing the app
 
@@ -647,262 +2211,6 @@ returns: `fn marks(src: string): TextMark[]`.
 
 `rux check` names the one to write when a parameter is left without a type.
 
-## Intervals
-
-`setInterval(ms) { … }` runs a block on a period and hands back a handle.
-`clearInterval(handle)` stops it.
-
-```rux
-<script>
-  let seconds = signal(0);
-  let timer = signal(0);
-
-  mounted {
-    timer = setInterval(1000) {
-      seconds++;
-      if seconds >= 5 { clearInterval(timer); }
-    }
-  }
-</script>
-```
-
-The handle is why this is a call and not a declaration like `effect { }`: a timer
-that cannot be stopped on a condition cannot be used, and unlike a hook, an
-interval has something to hand back. Clearing a handle that names nothing is
-harmless, so restarting needs no guard.
-
-**An interval belongs to whoever started it.** Started inside a component, it
-belongs to that instance and stops when the instance goes, with nothing to
-remember to clean up: a timer outliving its component would run a body against
-state nobody can reach. Started at document level it lives as long as the
-document. Starting one from `unmounted` warns, since there is no longer an
-instance for it to belong to.
-
-A period has to be more than zero, and a running interval is one of the clocks
-the window wakes for. Nothing is running between ticks, so an app whose timers
-are all stopped goes back to using no CPU at all.
-
-The block is a block, not a callback. A function value called later writes to its
-own captured copies and cannot move a signal, which for an interval would defeat
-the purpose; the body is carried as text and run exactly as a handler is, the
-same as `@tap` and the lifecycle hooks.
-
-## Functions
-
-A function sees the scope it was written in, and can read and write it.
-
-```rux
-let level = signal(82);
-
-fn drain() { level-- }          // writes the signal, the screen follows
-fn is_low() { level < 20 }      // reads it
-```
-
-`@tap="drain()"` is a handler like any other and the write is tracked.
-
-**A method call on a function of the file is that function called with the
-receiver first**: `thing.helper(a)` is `helper(thing, a)`. It is tried after
-the language's own methods (`items.push(x)`) and a native value's.
-
-**A function sees its own file's names**: the file's signals, functions and
-props, what the file imports, and, in a component, the instance's state. Not
-a caller's local, and not another file's: a component's functions cannot see
-the document's, and the document's cannot see a component's. Pass a name in
-instead: `@tap="pick(item)"` and `fn pick(item: Task)`. State two files share
-lives in a store both import ([Modules](#modules)). See
-[Types](./10-types.md#a-typed-function-cannot-read-its-callers-locals).
-
-**Anything heavy belongs in Rust**, reached as a native module
-([Native code](#native-code)). Script describes what the UI does; it is not
-where work gets done.
-
-## Modules
-
-A `.rux` file with no `<template>` is a **module**: functions, types and state
-for other files to import. It is written as a `<script>` alone, or as bare
-script with no tags at all.
-
-```rux
-// stores/cart.rux
-export type Item = { name: string, qty: int };
-
-export let items: Item[] = signal([]);
-
-export fn add(name: string) {
-  items.push({ name: name, qty: 1 });
-}
-
-export fn count(): int { items.length }
-```
-
-```rux
-<script>
-  use stores::cart;                     // the whole module, as `cart`
-  use stores::cart::{add as put};       // one name it exports
-  use type stores::cart::Item;          // a type, marked with `type`
-</script>
-```
-
-`import` is the same statement spelled the other way: `import cart from
-"./stores/cart";`, `import { add as put } from "./stores/cart";`, `import type {
-Item } from "./stores/cart";`. A module is found the way a component is, beside
-the importing file, then from the project root, and `rux fmt` writes every
-import one way when `rux.toml` asks, `[fmt] imports = "use"` or `"import"`.
-
-- **`export` is what another file sees.** `export fn`, `export async fn`,
-  `export type` and `export let`; the rest is the module's own. Importing a
-  name it does not export is an error that lists what it does.
-- **A module is loaded once per document**, however many files import it, and
-  its top level runs then, before the document's, each module after the ones
-  it imports. Two modules that import each other in a circle are refused.
-- **Its top-level signals are a store.** Every file that imports it reads the
-  same `cart.items`, and a binding that reads it follows it, whether in the
-  document or in any component instance.
-- **Only the module changes its state.** `cart.items = []` or
-  `cart.items.push(x)` in another file is an error: write the change as a
-  function the module exports, and call it, `cart.add("tea")`. A store's rules
-  live in one place that way.
-- **An imported name is the import everywhere in the file**, so declaring it
-  again is an error; `as` renames the import instead.
-- A module holds no `computed`, `effect`, lifecycle block or `prop`, which
-  belong to a component or a document; an exported function can work out what
-  a `computed` would.
-- An `async fn` a module exports belongs to the document when it runs: it
-  writes only the module's state, which outlives any component that called it.
-
-**A component's names are its own.** Its template, handlers, functions,
-`computed`s, `effect`s and lifecycle blocks see its state, its props, what it
-imports and what the runtime provides every file (`route`, `params`, `query`),
-and not the document's signals or functions. Two components may each declare a
-`fn` of one name. What a page and the app share is a store:
-
-```rux
-<!-- pages/home.rux -->
-<template>
-  <view r-for="t in todo.tasks"><text>{{ t.label }}</text></view>
-</template>
-<script>
-  use stores::todo;
-</script>
-```
-
-## Async
-
-Work that takes a while (a request, a file, a database) happens in Rust, and a
-page waits for it in an `async fn`:
-
-```rux
-<script>
-  use native::people;
-  use type native::people::User;
-  let status = signal("idle");
-
-  async fn load(id: int) {
-    status = "loading...";
-    let user: User = await people.lookup(id);
-    status = `${user.name}, ${user.age}`;
-  }
-</script>
-
-<button @tap="load(3)">Load</button>
-```
-
-- **A handler calls an `async fn`; it never awaits.** `@tap="load(3)"` starts
-  `load` and returns at once. What `load` writes before its `await` renders
-  with the tap; what it writes after renders when the answer comes, with no
-  input and without the window waking for anything else in between.
-- **`await` is only written inside an `async fn`**, and only in front of a
-  call to another `async fn` or to an `async` native function. It may sit anywhere an
-  expression can, `total += await price(id)` included, but not inside a
-  closure, which is not `async`.
-- **The result type is the value awaited**: `async fn price(id: int): float`
-  gives a `float` to `await price(1)`. A call without `await` gives a
-  **handle** (an `int`, as `setInterval`'s is), since nothing has come back
-  yet: keep it to [cancel](#cancelling) the call.
-- **Everything between two `await`s runs without interruption.** There is one
-  thread of script. A signal can change under a function only at an `await`,
-  so whatever a condition established about a signal before one is not known
-  after it, and the checker says so.
-- **A failed `await` throws** where it is, and `try`/`catch` takes it. One
-  nothing catches is reported as a failing handler is, naming the function and
-  the line of the `await`.
-- **An `async fn` belongs to whoever started it**, as an interval does. Started
-  in a component, it stops at its `await` when the instance goes, and the
-  answer that comes later writes nothing. A document reloaded or left drops its
-  own the same way.
-- **A binding or a `computed` cannot start one**, since either runs again on
-  every change. A handler, `mounted` and an `effect` can. What the function
-  reads is never a dependency: an `effect` that starts one is subscribed to
-  what the effect itself read.
-
-### Cancelling
-
-**`cancel(handle)` stops an `async fn`** that was started without `await`,
-as `clearInterval(handle)` stops an interval. It stops at the `await` it is
-waiting at, nothing after that runs, and the Rust future it waits on is
-dropped (see the end of this section). A timeout is an interval that cancels:
-
-```rux
-let job = signal(0);
-let timer = signal(0);
-
-async fn send(url: string) {
-  status = "sending";
-  res = await http.send(url);
-  status = "done";
-  clearInterval(timer);
-}
-
-fn onSend() {
-  job = send(url);
-  timer = setInterval(10000) {
-    cancel(job);
-    status = "timed out";
-    clearInterval(timer);
-  }
-}
-
-fn onCancel() {
-  cancel(job);
-  clearInterval(timer);
-  status = "cancelled";
-}
-```
-
-- **The handle names one run.** Starting `send` again gives a new one; a
-  `cancel` of the old one stops only the old run.
-- **One already finished, already cancelled, or `0`, is ignored**: cancelling
-  twice, or after the answer came, is ordinary rather than a mistake.
-- **A run may cancel itself** with its own handle; it stops at its next
-  `await`.
-- **Every `await` in the run stops with it**, an `async fn` it awaited
-  included: there is one run, and it is cancelled whole.
-- A file with a `fn cancel(x)` of its own keeps it; the built-in is then out
-  of reach in that file.
-
-What a page awaits is an `async fn` in the app's Rust, exported to Rux
-([Native code](#native-code)):
-
-```rust
-#[rux::export]
-pub async fn lookup(id: u32) -> Result<User, LookupError> {
-    // …; an Err is thrown at the `await`, with the error type's name as `kind`
-}
-```
-
-Its future runs off the UI thread: on a thread of
-its own by default, or on the app's own runtime once it hands one over with
-`rux::set_spawner`. There is no `Future` or `Promise` value on the Rux side,
-only the handle a start gives, and no `fetch` or `delay` built in.
-
-**When the run is cancelled, or the component that started it goes, the
-future is dropped** where it waits, which is how a Rust future is cancelled: a request it was making goes
-no further, and a socket or file it held is closed by its own `Drop`. Nothing
-answers, and nothing runs after the `await`. A call that blocks its thread
-inside the future (a blocking HTTP client, `std::thread::sleep`) cannot be
-reached there, and finishes first; write it with an async client, or check a
-flag of its own between steps.
-
 ## File dialogs
 
 **`pickFile`, `pickFiles` and `pickSaveFile` ask the person for a file**, with
@@ -1074,497 +2382,6 @@ async fn pasteUrl() {
 - A file with a `clipboard` of its own keeps it; the built-in is then
   `use native::rux::clipboard;`.
 
-## Native code
-
-An app's Rust lives in a `native/` crate beside `rux.toml`, an ordinary
-library depending on `rux-native` under the name `rux`. What Rux may call is
-marked `#[rux::export]`; each `pub mod` is a module Rux imports as
-`native::name` (the crate root is `native` itself):
-
-```rust
-// native/src/shop.rs, with `pub mod shop;` in native/src/lib.rs
-#[rux::export]
-pub struct Product { pub id: u32, pub name: String, pub price: f64 }
-
-#[rux::export]
-impl Product {
-    pub fn with_tax(&self, rate: f64) -> f64 { self.price * (1.0 + rate) }
-}
-
-#[rux::resource]
-pub struct Till { cents: Mutex<i64> }
-
-#[rux::export]
-impl Till {
-    pub fn ring(&self, p: Product) -> Result<u32, TillError> { … }
-    pub async fn settle(&self) -> Result<String, TillError> { … }
-}
-
-#[rux::export]
-pub fn open_till() -> Till { … }
-```
-
-```rux
-<script>
-  use native::shop;
-  use type native::shop::Product;
-
-  let till = shop.openTill();
-  fn add(p: Product) { count = till.ring(p); }
-</script>
-```
-
-- **Names become camelCase** (`open_till` is `openTill`); `#[rux(name = "…")]`
-  gives another, `#[rux(skip)]` keeps a `pub fn` out.
-- **A struct marked `#[rux::export]` is a value**: a record type of the same
-  name, every field `pub`, copied across whole. **A `#[rux::resource]` is
-  opaque**: Rux holds it, keeps it in state, passes it back and calls its
-  methods, and never sees inside. Its methods take `&self`, since Rux may hold
-  it in several places; a change goes through a lock inside it.
-- **A native value's method is its own, whatever the script names.**
-  `studio.save()` calls the resource's `save` even beside a `<script>`'s
-  `fn save()`, which a plain `save()` still calls. An app's actions and its
-  resource's methods are naturally the same words.
-- **A resource may have properties**, read as `value.name` and, when
-  writable, written as `value.name = x` (or `+=`), each through Rust: a
-  getter and a setter, never a copy. What reads one, a `{{ }}` binding or an
-  `effect`, reads it again whenever Rust says something moved
-  (`rux::notify()`), so `{{ sound.currentTime }}` follows a playing sound.
-  `?.` on one that is `none` is `none`. Writing a read-only one is an error
-  that says so. A module written by hand declares them with
-  `Module::property`; `#[rux::export]` does not make them yet.
-- **Types cross as `docs/11-next.md` lists them**: every integer is an `int`,
-  and one that does not fit throws `kind` `"overflow"` rather than wrapping;
-  `Option<T>` is `T?`; `Vec<T>` is `T[]`; a `Result`'s `Err` is thrown. A type
-  with no Rux meaning is a compile error at the export, saying why.
-- **An `async` export is awaited**, from an `async fn`; calling one without
-  `await` is an error.
-- **A panic in a native call is thrown** as an `Error` of `kind` `"panic"`,
-  not a crash (except on the web, which aborts).
-- **`rux check` and the editor read the Rust source**, not a build, so a typo
-  in a native name or a wrong argument type is reported in seconds. A check
-  never runs the app's Rust: a native call made while a document is checked
-  answers the empty value of its type. **`rux run` compiles the crate in**, and
-  builds and restarts the window whenever something under `native/` changes;
-  `.rux` files still hot reload. `rux native` prints what Rux sees.
-- **A debug build runs Rux optimised.** Everything the app depends on is
-  compiled at `opt-level = 2`, and only the `native/` crate as written, for a
-  debugger. A debug window scrolls as fast as a release one (a list of 1,000
-  rows scrolls about 7.5 times faster than unoptimised); the price is the first
-  build, which takes several minutes once.
-
-### Signals from Rust
-
-**A `#[rux::export] pub static` of type `rux::Signal<T>` is a value Rust sets
-and Rux follows.** Script reads it like a module's signal, and whatever read it
-updates when Rust sets it, from any thread. Nothing else wakes the window:
-
-```rust
-// native/src/sim.rs
-#[rux::export]
-#[derive(Clone)]
-pub struct Frame {
-    pub tick: u32,
-}
-
-#[rux::export]
-pub static FRAME: rux::Signal<Frame> = rux::Signal::new();
-
-fn on_step(frame: Frame) {
-    FRAME.set(frame);   // any thread
-}
-```
-
-```rux
-<script>
-  use native::sim;
-</script>
-<text>{{ sim.frame?.tick ?? 0 }}</text>
-```
-
-- **Its name follows the `static`'s**, lowercased and camelCased (`FRAME` is
-  `frame`, `SAVE_STATE` is `saveState`), or `#[rux(name = "…")]`. Its type is
-  `T?`: it holds `none` until Rust first sets it.
-- **What it holds is `Clone`.** Every read copies the value out to Rux, so
-  `T` needs `#[derive(Clone)]`, and the compiler's error says so at the
-  `static`.
-- **Only Rust writes it.** Assigning to `sim.frame` in script is an error
-  that says so; to change it from script, export a function that sets it.
-- **The latest value wins.** `set` stores the value and wakes the window, and
-  the document reads what is there when it next settles: a simulation setting
-  a frame five hundred times between two paints is drawn once, with the
-  newest. A status works the same way, and an `effect` reading it runs when it
-  changes. For values that must each arrive, use a
-  [channel](#channels-from-rust).
-- **A handler reads what the Rust it called just set.** After every call into
-  Rust, and when an `await` on one comes back, the signals are read again if
-  anything set one. So `studio.newProject(); if mava.view.dirty { … }` tests
-  the view the call left, not the one from before it. Between two calls into
-  Rust the value holds still: a set made on another thread in the meantime is
-  read at the next call, or when the document next settles.
-- `get`, `clear` and `update` are there too. A check does not run the app's
-  Rust, so a signal read while a document is checked holds `none`.
-
-### Channels from Rust
-
-**A `#[rux::export] pub static` of type `rux::Channel<T>` delivers every
-value Rust pushes, in order**: a socket's messages, a log, a benchmark's
-samples, where a signal would keep only the newest.
-
-```rust
-// native/src/feed.rs
-#[rux::export]
-pub static EVENTS: rux::Channel<Event> = rux::Channel::new();
-
-fn on_message(event: Event) {
-    EVENTS.push(event);   // any thread; `extend` pushes several
-}
-```
-
-```rux
-<script>
-  use native::feed;
-  let log: Event[] = signal([]);
-
-  effect {
-    for e in feed.events { log.push(e); }
-  }
-</script>
-```
-
-- **Script reads it as a list, `T[]`, of what was pushed since the document
-  last looked**, which is once a frame. An `effect` that reads it runs once for
-  each list with anything in it, so every value reaches it exactly once, and a
-  burst of a thousand is one update rather than a thousand.
-- **Read it in an `effect`** to keep what arrives. Between arrivals it still
-  holds the last list, so a binding shows the latest batch; the batch before it
-  is gone.
-- A check does not run the app's Rust, so a channel read while a document is
-  checked is the empty list.
-
-A program that runs the shell itself registers a module with
-`rux_runtime::native::Module`, which is what the attribute generates.
-
-## Type annotations
-
-Rux script takes TypeScript's annotations. They are checked by `rux check`,
-the dev overlay and the editor, and erased before anything runs, so a program
-with them runs exactly as it would with them deleted:
-
-```rux
-type Filter = "all" | "open" | "done";
-type Task = { id: int, title: string, done: bool, note?: string };
-
-let tasks: Task[] = signal([]);
-let filter: Filter = signal("all");
-computed left: int = tasks.filter(t => !t.done).length;
-
-fn label(t: Task, n: int): string { `${n}. ${t.title}` }
-let add = (a: float, b: float) => a + b;
-
-type Page<T> = { items: T[], next: string? };
-fn first<T>(items: T[]): T? { items?[0] }
-```
-
-A type or a function may take type parameters, as `Page<T>` and `first<T>`
-do. A call never names them; they are what its arguments make them, so
-`first(tasks)` is a `Task?`. `Array<T>`, `Option<T>` and `Map<string, T>` are
-the long spellings of `T[]`, `T?` and `{ [string]: T }`.
-
-A function that returns nothing may say so with `: void`. For an error that is
-an answer rather than a failure, a function returns a `Result<T, E>`, built
-with `Ok(value)` or `Err(error)` and read by its `ok`:
-
-```rux
-fn parseAge(s: string): Result<int, string> {
-  let n = parseInt(s);
-  if n == none { return Err("not a number"); }
-  Ok(n)
-}
-
-let r = parseAge(text);
-if r.ok { age = r.value; } else { problem = r.error; }
-```
-
-`r.unwrap()` gives the value, or throws the error.
-
-In a component, `prop label: string;` and `prop price: float = 1;`. A type
-declared in one file is used in another with `use type types::Task;` (or
-`import type { Task } from "./types";`), which names the `type Task` in
-`types.rux`; the word `type` is what tells a type import from a component's. A file holding only a
-`<script>` of `type` declarations is a types file, and `rux` will not run it.
-
-`type` is a keyword only at the start of a statement followed by a name, its
-type parameters if any, and `=`, so `let type = 1;` still works. An annotation that is not a type is a
-syntax error at the place it goes wrong.
-
-**What is checked so far** is a file's `<script>` and its template. In the
-script, every `let` against its
-annotation or its starting value, every call against the function's
-parameters, every result against a declared `): T`, fields read and written
-against their record, and a closure handed to `filter` or `map` against the
-list's element type. An optional field (`note?: string`), and a field of a
-value that may be `none` (`sel: Task?`), must be read with `?.`, and a
-dictionary's keys with `?.` or `?[`, except where a check has
-already ruled out their absence: inside `if t?.note != none`, after
-`"note" in t`, after an early `return`, in the arms of a `switch`, and under
-an `r-if` that tested it. A
-`switch` on a literal union with no `_` arm must handle every member, and a
-comparison that can never be true is an error. A name nothing can type
-(`signal([])`, a parameter with no annotation) is a warning and is not checked
-further; a contradiction is an error:
-
-```text
-app.rux:9: error: "al" is not `Filter`, which is one of "all", "open", "done"; did you mean "all"?
-app.rux:14: error: `/` always makes a `float`, where `int` is expected; `intDiv(a, b)` divides to an `int`
-app.rux:16: warning: `x` has no type, so what `old` is given there is not checked. Annotate it: `fn old(x: T)`
-```
-
-In the template, an `r-for` variable is one element of its list, and every
-`{{ }}`, bound attribute and handler is checked as an expression: a bound
-attribute against what it takes (`:disabled` a `bool`, a `:class` map's
-values `bool`s), a handler with `event` typed by what sends it
-(`event.direction` in `@swipe` is one of four strings, a form's
-`event.values` a record of its fields), `r-model` against its field's value
-type, and a prop against its declaration, at the tag:
-
-```text
-app.rux:21: error: `kind` on <btn>: "big" is not `"primary" | "quiet"`, which is one of "primary", "quiet"
-```
-
-### `is`, and props at run time
-
-Annotations are erased, so a value from outside (an `any`, a native function
-typed `rux::Any`) is whatever it turns out to be. **`x is T`** asks, and
-answers `true` or `false` without raising. Inside the check `x` is a `T`:
-
-```rux
-let raw = settings.read();   // a native function giving `any`
-if raw is Settings {
-  settings = raw;
-}
-```
-
-Every required field must be there with its type, every element and every
-union member is tried, an extra field is allowed, and a whole number is an
-`int`. `is` binds as `<` does, on both sides: `a + b is int`, `(x is T) && y`,
-and `a == b is int` is `a == (b is int)`.
-
-**Props are checked as the component is built**, in release builds too,
-since a value from a route or an `any` never met the checker. One that does
-not fit is reported with the tag and prop named, and the component is built
-without it: the prop's default stands in, or it is left out. A route
-parameter is text and becomes what its prop takes, so `prop id: int` on
-`/task/:id` gets the number `42` from `/task/42`, and `/task/abc` is reported.
-
-[Types](./10-types.md) is the full reference for the type system.
-
-## Values
-
-**A number is an `int` or a `float`.** A literal without a point or an
-exponent is an `int` (`42`), and one with either is a `float` (`42.0`, `2e3`).
-An `int` goes wherever a `float` is wanted, and `1 + 0.5` is a `float`; a
-`float` becomes an `int` only by asking, with `x.trunc()`, `x.round()`,
-`x.floor()` or `x.ceil()`, and an `int` says `n.toFloat()` for the other way.
-`+`, `-`, `*` and `%` of two `int`s make an `int`. **`/` always makes a
-`float`**, so `10 / 3` is `3.333…`; `intDiv(10, 3)` is `3`, cutting toward
-zero. A list is indexed by an `int`. So `let n = signal(0)` holds an `int`, and
-`n = n / 2` is an error whose fix is to say which: `let n: float = signal(0)`,
-or `intDiv(n, 2)`. There is no `number` type; `rux fmt` rewrites it to
-`float`.
-
-The checker keeps the two apart, and so does the interpreter: an `int` is a
-whole 64-bit number and `int` arithmetic that goes past its limits is an error,
-not a wrapped or rounded answer. The runtime still holds one kind of number, so
-a value that goes out to the tree and comes back (a component's state, an
-`r-for` row, `event`) comes back a `float` holding the same number. Division by
-zero of `float`s gives `Infinity` or `NaN` as in JavaScript, and those display
-under those names.
-
-Strings are double-quoted. **Single quotes hold one character**, which is a
-string of one character (`'x' == "x"`), so `'#note'` is a syntax error. This is
-the most common thing to trip over. A selector or any other text needs `"…"`.
-Inside a `@tap="…"` attribute there is no room for double quotes, which is the
-practical reason to name a handler and call it:
-
-```rux
-<!-- wrong: '#note' is more than one character in single quotes -->
-<button @tap="query('#note')[0].focus()">
-
-<!-- right -->
-<button @tap="focus_note()">
-```
-
-Object literals are **`{ key: value }`**, as in JavaScript. A key can be a name
-or a string (`{ "x-y": 1 }`), and `{}` is an empty map. A `{` whose first thing is
-not `key:` is a block, as it is after `if`:
-
-```rux
-let row = { id: 1, name: "ada" };      // a map
-let total = { let t = 0; t + 1 };      // a block, whose value is 1
-rows.map(r => { id: r.id });           // returns a map; JS needs ({ … }) here
-let noop = () => {};                   // an empty body, not a map
-```
-
-Two things JavaScript has that this does not: shorthand (`{ a, b }` for
-`{ a: a, b: b }`) and spread in a map (`{ ...o, a: 1 }`). `#{ key: value }` is
-read as a map too, and `rux fmt` rewrites it to `{`.
-
-`none` is the empty value. It is a literal rather than a variable, so it cannot
-be shadowed and nothing can subscribe to it. `none` is a keyword, so it cannot
-name anything. `null` and `()` are errors that say to write `none`, and `rux
-fmt` rewrites both.
-
-### Truthiness
-
-**JavaScript's rules exactly.** Falsy: `0`, `NaN`, `""`, `none`. Everything
-else is truthy, **including an empty array and an empty map**.
-
-```rux
-r-if="items"           <!-- "items exists", NOT "there are items" -->
-r-if="items.length"    <!-- what you meant -->
-```
-
-## Operators
-
-| Operator | Notes |
-|---|---|
-| `===` / `!==` | Mean what `==` / `!=` mean. Both spellings are the strict comparison; there is no loose `==` to choose between |
-| `x++` / `x--` | Statement position only, desugared to `+= 1` / `-= 1` |
-| `?.` | Guards an absent base **and a missing property** |
-| `?[` | Guards an absent base, **a missing key and an index past the end** |
-| `??` | The value on the right when the left is absent |
-| `=>` | Arrow functions, in all four shapes: `x =>`, `() =>`, `(x) =>`, `(a, b) =>` |
-
-An arrow kept in a variable is called like a function, as in JavaScript:
-`let add = (a, b) => a + b;` then `add(2, 3)`. It sees and writes what is
-around it, like any closure. A `fn` of the same name wins over the variable.
-
-`?.`, `?[` and `??` are not conveniences. Rux turns on strict property access
-for every document, so a typo like `user.nmae` raises instead of quietly
-evaluating to nothing, and a missing key read with `[` raises the same way.
-These are the way to say "absent is a legitimate answer here":
-
-```rux
-{{ user?.nickname ?? "none" }}
-```
-
-## Built-in methods
-
-JavaScript's names, with JavaScript's answers:
-
-- **Arrays:** `map`, `filter`, `reduce`, `forEach`, `find`, `findIndex`,
-  `findLast`, `findLastIndex`, `some`, `every`, `includes`, `indexOf`,
-  `lastIndexOf`, `at`, `slice`, `concat`, `flat`, `flatMap`, `join`,
-  `toReversed`, `toSorted`, and the ones that change the array: `push`, `pop`,
-  `shift`, `unshift`, `splice`, `sort`, `reverse`, `fill`. Also
-  `insert(i, x)`, `remove(i)`, `truncate(n)` and `clear()`.
-- **Strings:** `split`, `charAt`, `at`, `repeat`, `startsWith`, `endsWith`,
-  `includes`, `indexOf`, `lastIndexOf`, `slice`, `substring`, `trim`,
-  `trimStart`, `trimEnd`, `padStart`, `padEnd`, `replace`, `replaceAll`,
-  `toLowerCase`, `toUpperCase`.
-- **Numbers:** `toFixed`, so `(1.4123).toFixed(1)` is `"1.4"`.
-- **`Math`, `JSON`, `Object` and `Array`**, as namespaces: `Math.max`,
-  `Math.min`, `Math.floor`, `Math.ceil`, `Math.round`, `Math.trunc`,
-  `Math.abs`, `Math.sign`, `Math.sqrt`, `Math.pow`, `Math.log` and the rest,
-  with `Math.PI` and `Math.E`; `JSON.stringify(v)`, `JSON.stringify(v, none,
-  2)` indented, and `JSON.parse(text)`; `Object.keys`, `Object.values` and
-  `Object.entries`; `Array.from` and `Array.isArray`. A file that declares a
-  `Math` of its own keeps it.
-- **`Date`, as functions on a time**: `Date.now()` is the wall clock, an
-  `int` of milliseconds since 1970 as JavaScript's is, and each of the rest
-  takes such a time and reads it in the computer's own time zone.
-  `Date.time(ms)` is `"14:02"` and `Date.date(ms)` is `"30 Oct 2026"`;
-  `Date.hours`, `Date.minutes`, `Date.seconds`, `Date.day` (of the month),
-  `Date.month` (**1 to 12**, where JavaScript's `getMonth` counts from 0),
-  `Date.year` and `Date.weekday` (0 for Sunday to 6, as `getDay`) are `int`s.
-  How long ago is arithmetic: `intDiv(Date.now() - sentAt, 60000)` minutes.
-  There is no `Date` value and no `new`: a time is its milliseconds.
-
-A string's methods **return** a new string and leave their receiver alone, as
-JavaScript's do: `name.replace("-", " ")` replaces the first `-` and gives the
-result back. `rux check` says so where a statement throws the new value away:
-`s.replace("a", "b");` is answered with "write `s = s.replace("a", "b")`". An
-array's `sort`, `reverse` and `fill` change the array, as JavaScript's do, and
-also give it back; `toSorted` and `toReversed` leave it alone.
-
-**Spread in an array**, as JavaScript's: `[...a, x]` is `a`'s items and
-then `x`, `[...a, ...b]` both in order, and `[..."hi"]` the characters. It
-makes a new array and leaves `a` alone. Spreading anything but an array or a
-string is an error.
-
-Not there: spread in a map or record, `{ ...o, a: 1 }`, and in a call's
-arguments, `f(...xs)`; `Math.random`; and a `Date` value with methods (`Date.now()`
-and the functions above take its place).
-
-`forEach` is called with `(item, index)` and falls back to `(item)`, and
-`sort((a, b) => a - b)` sorts by the comparison and **returns** the sorted
-array.
-
-**Text to a number**, under JavaScript's names and with its answers:
-`Number("2")` is 2, `Number("")` is 0, `Number("12px")` is `NaN`;
-`parseInt("42px")` is 42 and `parseFloat("12.5px")` is 12.5, reading only what
-leads. Where JavaScript's parsers say `NaN`, these say `none`: `parseInt` gives
-an `int?` and `parseFloat` a `float?`, so `parseInt(s) ?? 0` is the usual way
-to read one. `isNaN(x)` asks of a `float`. `String(x)` goes the other way. A
-route parameter is always text, so this is how `/task/:id` meets a list whose
-ids are numbers: `tasks.find(t => t.id == parseInt(params.id))`.
-
-**`now()` is a clock**: milliseconds, as a `float`, on a clock that only goes
-forward. Only the difference between two reads means anything, so it times
-things rather than telling the time (`Date.now()` does that):
-
-```rux
-fn send() {
-  let started = now();
-  // …
-  took = now() - started;
-}
-```
-
-**`.length` is a property.** Arrays and strings only: JavaScript has
-no `length` on a plain object, and inventing one for maps would be making up a
-rule rather than matching a known one. Use `keys(m).length` and `values(m)` for maps.
-
-**A record keeps its fields in the order its type declares them.** `${item}`,
-`{{ item }}`, `keys(item)` and `values(item)` go in that order, as JavaScript,
-Dart and Kotlin show an object, and a `{ }` that no type describes keeps the
-order it was written in. A map (`{ [string]: T }`) keeps its keys sorted, and
-gains a key with `m.set("k", v)`: `m["k"] = v` writes a key that is already
-there, and says so when it is not. An
-optional field never given reads as `none` (`bob.pet`, on a `User` made
-without a `pet`), and a field its type marks optional is left out where the
-record is shown or walked while it holds `none`, so `${bob}` is `name: bob`.
-Writing a field a declared record type does not have is an error the checker
-reports; reached anyway, through `any`, it throws with `kind` `"type"`. Two
-records are equal when their fields are, whatever order they were written in.
-
-### Retired names
-
-Rux ran on a fork of rhai until 2026-09-26 and kept some of rhai's spellings
-beside JavaScript's. They are gone: `rux check` reports each one as an error
-that says what to write, and a program that reaches one anyway fails with the
-same sentence. A file's own `fn` of the same name is unaffected.
-
-| Retired | Write |
-|---|---|
-| `x.len()`, `x.is_empty()` | `x.length`, `x.length == 0`; on a map, `keys(m).length` |
-| `x.contains(y)` | `x.includes(y)`; on a map, `keys(m).includes(k)` |
-| `a.append(x)`, `a.index_of(x)`, `a.extract(i, n)` | `a.push(x)` (or `a.push(...)` for each item of an array), `a.indexOf(x)`, `a.slice(i, i + n)` |
-| `a.retain(f)`, `a.drain(f)`, `a.dedup()` | assign a `filter` of the array back to it |
-| `s.to_upper()`, `s.to_lower()`, `s.make_upper()`, `s.make_lower()` | `s.toUpperCase()`, `s.toLowerCase()`, or assign one back |
-| `s.starts_with(x)`, `s.ends_with(x)` | `s.startsWith(x)`, `s.endsWith(x)` |
-| `s.sub_string(i, n)`, `s.chars()`, `s.pad(n, f)` | `s.substring(i, i + n)`, `s.split("")`, assign `s.padEnd(n, f)` back |
-| `x.to_string()`, a free `to_string(x)` | `String(x)` |
-| `x.to_int()`, `x.ceiling()`, `x.to_float()`, `x.is_nan()` | `x.trunc()`, `x.ceil()`, `x.toFloat()`, `isNaN(x)` |
-| `parse_int(s)`, `to_int(s)`, `parse_float(s)`, `to_float(s)` | `parseInt(s)`, `parseFloat(s)`: these give `none`, not an error, for text that is not a number |
-| `abs`, `sqrt`, `min`, `max`, `sin`, `cos`, `tan`, `atan`, `atan2`, `exp`, `ln`, `log10`, `floor`, `ceil`, `round`, `trunc` as free functions, and `x.abs()`, `x.sqrt()`, `x.min(y)`, `x.max(y)` | `Math.abs(x)` and the rest of `Math`; `x.floor()`, `x.ceil()`, `x.round()` and `x.trunc()` stay as methods |
-| `log(x)` (base 10) | `Math.log10(x)`; `Math.log` is the natural logarithm |
-| `type_of(x)` | `x is string` |
-| `is_def_var(n)`, `is_def_fn(n)` | nothing: an undeclared name is an error at check time |
-| `range(a, b)` | `a..b` |
-| `path_for(...)` | `pathFor(...)` |
-
 ## Talking to the outside
 
 | Call | Does |
@@ -1713,35 +2530,8 @@ and a reserved word all say what they mean in this language's vocabulary.
 `print` output is kept apart from warnings. A leftover `print` is not something
 wrong with the document and must not fail a build.
 
-## Reserved words
-
-These cannot name a variable, a function or a parameter. A map key that is
-one is written as a string, `{ "for": 1 }`.
-
-```text
-as async await break catch const continue do else export false fn for if
-import in let loop none private return switch throw true try until while _
-```
-
-These are not keywords, and are still not names. `use` and `is` are a
-statement and an operator that already work; `match` and `yield` are held for
-the language. `this` is reserved. `null`, `nil`, `var` and `new` are other
-languages' spellings, and their error says what Rux writes instead (`none`
-for `null`, which `rux fmt` writes).
-`void` is a type. `print`, `debug`, `eval`, `call`, `curry` and `Fn` are
-built-in functions: they can be called, not declared.
-
-```text
-use is match yield null nil this var new void
-print debug eval call curry Fn
-```
-
-`signal`, `computed`, `effect`, `mounted`, `unmounted` and `prop` mean
-something only at the start of a top-level statement, so `let effect = 1;`
-inside a function is an ordinary name.
-
-Everything else is a name, including words other languages reserve:
-`default`, `case`, `static`, `spawn`, `module` and `with` are all free.
+An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
+[Errors: `try`, `catch`, `throw`](#errors-try-catch-throw).
 
 ## Deliberately absent
 
@@ -1756,19 +2546,73 @@ Everything else is a name, including words other languages reserve:
   which is the whole battery story on a phone. What Rux has instead is
   [`setInterval(ms) { … }`](#intervals): a block, owned by the component
   instance that started it and stopped when that instance goes.
-- **Bare `{ }` object literals.** See above.
+
+## Security
+
+- **Compiled app code has full trust**, as any compiled application does.
+- **The interpreter is the sandbox** for anything untrusted: the playground and
+  documents fetched at run time. A script that never finishes is stopped at a
+  step budget, in the interpreter and in compiled code alike.
+- **Native code is reached only through an import.** The playground and
+  `rux check` have no native code, and a resource handle cannot be forged from
+  script.
+- **Not built:** a native module declaring the platform permissions it needs,
+  and an Android manifest generated from those declarations.
 
 ## If you know JavaScript
 
 The things most likely to surprise, in the order they usually do:
 
-1. **`'x'` holds one character**, and `'ab'` is a syntax error.
-2. **Object literals have no shorthand**: `{ a: a }`, never `{ a }`.
-3. **`.length` on arrays and strings only**, not on objects.
-4. `let` declares state only at the top level of `<script>`; `signal()` marks it.
-5. **`/` always makes a `float`**: `10 / 3` is `3.333…`, and `intDiv(10, 3)`
-   is `3`.
-6. `x++` is a statement, so `let a = x++` is not a thing.
-7. There is no `undefined` distinct from `none`.
-8. **A handler cannot `await`.** It calls an `async fn`, which does, and
-   there is no `Promise` to `.then`.
+1. **`int` and `float` are different types.** `/` always makes a `float`:
+   `10 / 3` is `3.333…`, and `intDiv(10, 3)` is `3`.
+2. **`'x'` holds one character**, and `'ab'` is a syntax error. Text is `"…"`.
+3. **Arrays and records are values.** Assigning one copies it.
+4. **`none`**, not `null` or `undefined`; there is no `undefined` distinct from `none`.
+5. **`let` at the top level without `signal` cannot be written.** `const` is a local
+   that cannot be assigned. `let` declares state only at the top level of `<script>`.
+6. **No object shorthand or spread in a map**: `{ a: a }`, never `{ a }`. Spread works
+   in an array.
+7. **`.length` on arrays and strings only**, not on objects; a map has `keys(m)` and
+   `values(m)`.
+8. **`x++` is a statement**, so `let a = x++` is not a thing.
+9. **`if` is an expression**, and there is no `?:`.
+10. **A handler cannot `await`.** It calls an `async fn`, which does, and there is no
+    `Promise` to `.then`.
+11. **A closure copies the local variables it uses.** It writes a signal, not a local
+    of the function around it.
+
+## Editor and checking
+
+The extension shows the checker's errors and warnings from this reference as
+diagnostics on their lines, when a file is opened and saved. The types exist
+only in the checker, so the editor does not work them out. It asks for them: `rux check --format json --types` prints an object instead of
+the usual array, with the diagnostics beside two lists.
+
+- `types`: every name read, field read, `let`, parameter and function call the
+  checker gave a type, with its file, line, column, the type as written
+  (`Task?`, or a function's signature), whether it may be `none`, and the
+  fields a `.` after it may read.
+- `guesses`: for each unannotated parameter, the type its calls hand it, when
+  every call hands it something known.
+
+The extension already runs `rux check` when a file is opened and saved, so it
+asks for the table on the same run and keeps it per file. There is no language
+server and no second process.
+
+- **Hover** shows `name: Type` above what hover already said, and a function's
+  signature on a call.
+- **Completion** after `x.` offers the fields of `x`'s record. Choosing an
+  optional field, or any field of a value that may be `none`, turns the `.` into
+  `?.`, so the line written is one the checker accepts.
+- **The quick-fix** on "`s` has no type" writes `: T` after the parameter, `T`
+  being its guess. Checking never uses a guess (see [Functions](#functions));
+  this only writes an annotation the author then reads.
+
+Every answer is as old as the last save. Entries are matched by name and line,
+not by exact position, so an edit moves them only as far as the lines moved,
+and a name that is no longer on its line gets no type rather than a wrong one.
+Only the file being checked has a table: a page checked through its app, or a
+component a document uses, is answered when it is the file opened and saved.
+
+An older `rux` refuses `--types` as an unknown option. The extension then asks
+again without it, keeps the diagnostics, and stops asking for the session.

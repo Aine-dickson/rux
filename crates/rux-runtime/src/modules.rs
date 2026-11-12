@@ -1,4 +1,4 @@
-//! Script modules on disk: step 7 of `docs/11-next.md`, "Modules".
+//! Script modules on disk: step 7 of `docs/archive/language-build-log.md`, "Modules".
 //!
 //! A `.rux` file with no `<template>` is a module: a `<script>` alone, or
 //! bare script with no tags. It holds functions, types and state for other

@@ -1,4 +1,4 @@
-//! Records as slots (step 10, track (c) of `docs/11-next.md`): what an author
+//! Records as slots (step 10, track (c) of `docs/archive/language-build-log.md`): what an author
 //! sees of a record, held to the owner's three decisions. A record shows and
 //! walks its fields in the order its type declares them; an optional field
 //! never given reads as `none` and is left out while it holds `none`; a write

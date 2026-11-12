@@ -1,4 +1,4 @@
-//! Typed bodies: step 10, tracks (a) and (b) of `docs/11-next.md`.
+//! Typed bodies: step 10, tracks (a) and (b) of `docs/archive/language-build-log.md`.
 //!
 //! A function whose parameters, locals and result are all `int`, `float` or
 //! `bool`, and whose body does only what those can (arithmetic, comparison,

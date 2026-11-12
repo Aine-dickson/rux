@@ -1,6 +1,6 @@
 //! Rux's interpreter: runs the typed IR.
 //!
-//! Step 5 of `docs/11-next.md`. A file is checked and lowered to a
+//! Step 5 of `docs/archive/language-build-log.md`. A file is checked and lowered to a
 //! [`Unit`] once, when it loads; what the runtime hands in afterwards (a
 //! binding, a handler, an effect's body, a component's script) is lowered
 //! against that unit when it is first run, and kept. See
@@ -33,7 +33,7 @@ use crate::MAX_OPERATIONS;
 
 /// How deep calls may nest before the run is stopped, so a function that
 /// calls itself forever is an error and not a crash. Since step 10.4 of
-/// `docs/11-next.md` (smaller frames, 2026-09-28) a release build's calls
+/// `docs/archive/language-build-log.md` (smaller frames, 2026-09-28) a release build's calls
 /// take about 1.0 KB of Rust's stack interpreted, 1.2 KB compiled and 0.26
 /// KB typed, and 1.6 KB for an interpreted call from inside an expression
 /// (`tests/stack.rs`), so [`STACK_BUDGET`] holds about 495 of the largest;
@@ -168,7 +168,7 @@ pub struct Interp {
     /// code that creates one.
     closure_codes: HashMap<u32, Vec<Rc<ir::Closure>>>,
     /// The unit's compiled functions, when a build registered them for its
-    /// exact text: step 9 of `docs/11-next.md`, and [`crate::aot`].
+    /// exact text: step 9 of `docs/archive/language-build-log.md`, and [`crate::aot`].
     aot: HashMap<u32, (u32, bool, crate::aot::Body)>,
     /// Compiled closure bodies, by the address of the code they were
     /// compiled from: a closure runs compiled however it was created, by

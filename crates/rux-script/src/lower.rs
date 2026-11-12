@@ -1,6 +1,6 @@
 //! A checked script, lowered to the typed IR.
 //!
-//! Step 4.2 of `docs/11-next.md`. The input is a file's whole script as Rux's
+//! Step 4.2 of `docs/archive/language-build-log.md`. The input is a file's whole script as Rux's
 //! parser reads it (its `computed`, `prop` and lifecycle declarations
 //! included), and the [`Record`] the checker kept while checking it. The
 //! output is a [`Unit`], which `rux_ir::verify` holds to the IR's rules.

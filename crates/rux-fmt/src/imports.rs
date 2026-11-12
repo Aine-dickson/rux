@@ -1,6 +1,6 @@
 //! Imports in one spelling.
 //!
-//! `use` and `import` mean the same (`docs/11-next.md`, "Modules"), and a
+//! `use` and `import` mean the same (`docs/07-script.md`, "Modules"), and a
 //! project may pick one in `rux.toml`:
 //!
 //! ```toml

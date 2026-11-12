@@ -1,6 +1,6 @@
 //! Tokens to the Rux AST.
 //!
-//! Step 2 of `docs/11-next.md`: this accepts exactly what the rhai fork
+//! Step 2 of `docs/archive/language-build-log.md`: this accepts exactly what the rhai fork
 //! accepts, and gives the same structure (the differential test in
 //! `rux-script` compares the two over every script in the repository). The
 //! functions below follow the fork's `parser.rs` one for one, and are named
@@ -1035,7 +1035,7 @@ impl<'t> Parser<'t> {
     /// ends the expression. `is` binds as `<` does on both sides, so
     /// `a == b is int` is `a == (b is int)`; the fork gave it no precedence
     /// after a right-hand side, and read that as `(a == b) is int` (step 3.5
-    /// of `docs/11-next.md`). The fork never parses `is` now: it is handed
+    /// of `docs/archive/language-build-log.md`). The fork never parses `is` now: it is handed
     /// `__is(x, "T")`.
     fn precedence(&self, tok: &Tok) -> PResult<Option<u8>> {
         Ok(Some(match tok {
@@ -1202,7 +1202,7 @@ impl<'t> Parser<'t> {
             Tok::Punct("[") => self.array_literal()?,
             Tok::Punct("#{") => self.map_literal(true)?,
             // `none`, and `null`, its spelling until step 3 of
-            // `docs/11-next.md`, which still reads the same.
+            // `docs/archive/language-build-log.md`, which still reads the same.
             Tok::Kw("none") => {
                 self.bump();
                 Expr { id: self.next_id(), kind: ExprKind::Null, span: start }

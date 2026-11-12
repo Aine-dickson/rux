@@ -588,7 +588,7 @@ function toDiagnostic(vscode, document, d) {
  *
  * The guess is the type the function's calls hand that parameter, as `rux check
  * --types` reported it at the last save. Checking never uses it: a parameter's
- * type is only ever what is written (decision 11 in `docs/10-types.md`), and
+ * type is only ever what is written (decision 11 in `docs/07-script.md`), and
  * this is a way of writing it.
  */
 function paramFixes(vscode, document, context) {

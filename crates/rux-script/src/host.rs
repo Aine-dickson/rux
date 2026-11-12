@@ -1,6 +1,6 @@
 //! How the answer to an awaited native call comes back.
 //!
-//! Step 6 of `docs/11-next.md` built this for `host::` functions; step 8
+//! Step 6 of `docs/archive/language-build-log.md` built this for `host::` functions; step 8
 //! made those native modules (`crate::native`). An `await` of an `async`
 //! native export starts its future where `rux_native::spawn` runs futures,
 //! with a [`Completer`] for its answer. The completer can be used from any

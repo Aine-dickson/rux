@@ -1,6 +1,6 @@
 //! What Rux's interpreter costs on the work a document's script does: a
 //! binding over a long list, a handler, a function that calls itself, a
-//! loop. Step 5 of `docs/11-next.md` benchmarks the interpreter from its
+//! loop. Step 5 of `docs/archive/language-build-log.md` benchmarks the interpreter from its
 //! first commit; the runtime-level numbers are the `RUX_PROFILE` runs in
 //! `rux-harness/script-cost/`.
 //!
@@ -81,7 +81,7 @@ fn the_interpreter_through_the_engine_and_directly() {
 }
 
 /// What an `async fn` costs to start, stop at an `await` and go on (step 6
-/// of `docs/11-next.md`): a thousand tasks, each answered at once by the
+/// of `docs/archive/language-build-log.md`): a thousand tasks, each answered at once by the
 /// host, then each resumed. Compared with the same body as an ordinary
 /// function, which is what the stopping and going on add.
 #[test]
@@ -136,7 +136,7 @@ fn an_async_fn_started_stopped_and_resumed() {
     println!("async fn resume   {going_on:>8.2} µs (answer taken, rest run)");
 }
 
-/// A store against the document's own state (step 7 of `docs/11-next.md`):
+/// A store against the document's own state (step 7 of `docs/archive/language-build-log.md`):
 /// the same handler and binding, once on the document's signal and function,
 /// once through a module linked in. Linking happens when text is first
 /// compiled, so a run of either should cost the same.
@@ -176,7 +176,7 @@ fn a_store_against_the_documents_own_state() {
     }
 }
 
-/// What calling Rust costs (step 8 of `docs/11-next.md`): a synchronous
+/// What calling Rust costs (step 8 of `docs/archive/language-build-log.md`): a synchronous
 /// native function, and a native record's method, against the same work
 /// written as a script `fn`. The difference is the boundary: arguments into
 /// `rux_native::Any`, the registry's code, and the answer back.

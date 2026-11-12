@@ -1,6 +1,6 @@
 //! What Rux's parser costs, over every `<script>` in `examples/`.
 //!
-//! Until step 5 of `docs/11-next.md` removed the fork, this timed Rux's parse
+//! Until step 5 of `docs/archive/language-build-log.md` removed the fork, this timed Rux's parse
 //! against the fork's compile, since every script was read by both. The last
 //! such run (step 3.0, 098d7b3) had Rux's parse at 26% to 28% of the fork's
 //! compile in a release build.

@@ -38,7 +38,7 @@ pub enum V {
     Range(i64, i64),
     Fn(Rc<Closure>),
     Element(Rc<ElementHandle>),
-    /// A native resource, held for Rust: step 8 of `docs/11-next.md`.
+    /// A native resource, held for Rust: step 8 of `docs/archive/language-build-log.md`.
     Native(Rc<rux_native::Handle>),
 }
 
@@ -87,7 +87,7 @@ pub struct Closure {
     pub code: Rc<ir::Closure>,
     pub captured: Vec<V>,
     /// Its body compiled, when a build compiled it (step 9 of
-    /// `docs/11-next.md`): found once, when the closure is made, so a call
+    /// `docs/archive/language-build-log.md`): found once, when the closure is made, so a call
     /// looks nothing up.
     pub compiled: Option<Compiled>,
 }

@@ -4,7 +4,7 @@
 //! - `#{ a: 1 }` becomes `{ a: 1 }`, below.
 //! - `null` becomes `none`, and so does `()` where it is a value (`signal(())`,
 //!   `x = ()`), not a call's empty parentheses or an arrow's: step 3 of
-//!   `docs/11-next.md`. Both old spellings still read as `none`, with a
+//!   `docs/archive/language-build-log.md`. Both old spellings still read as `none`, with a
 //!   warning, so nothing breaks if this pass never runs.
 //!
 //! On maps:
@@ -97,7 +97,7 @@ fn is_bare_module(text: &str) -> bool {
 }
 
 /// A types file's script with `export` before each `type`: a module shares
-/// only what it exports (`docs/11-next.md`, step 7), and the types files
+/// only what it exports (`docs/archive/language-build-log.md`, step 7), and the types files
 /// written before that rule export nothing. Only a script that declares
 /// types and imports and nothing else is a types file; any other module
 /// may keep a type to itself, and is left alone.
@@ -316,7 +316,7 @@ fn code(src: &str) -> String {
 }
 
 /// Where `number` is written as a type in `src`, by byte offset. It became
-/// `float`, which holds every value it did, in step 3 of `docs/11-next.md`. A
+/// `float`, which holds every value it did, in step 3 of `docs/archive/language-build-log.md`. A
 /// value named `number` (`{ n: number }` is a map, not a record type) is left
 /// alone, which is why this asks Rux's parser rather than looking at what
 /// comes before the word. Script that does not parse keeps its `number`s.
