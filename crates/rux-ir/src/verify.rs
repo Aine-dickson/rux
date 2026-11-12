@@ -290,7 +290,10 @@ impl<'u> Verifier<'u> {
                     self.problem(Some(e), "an `await` outside an `async fn`'s own body".into());
                 }
                 match &call.kind {
-                    ExprKind::Call { callee: callee @ (Callee::Fn(_) | Callee::Native(_)), args } => {
+                    // `Dyn` is a function found where it runs: another file's
+                    // `async fn`, `await session.signOut()`. The checker held
+                    // it to being `async`; the unit cannot see into it.
+                    ExprKind::Call { callee: callee @ (Callee::Fn(_) | Callee::Native(_) | Callee::Dyn(_)), args } => {
                         self.call(call, callee, args, true);
                     }
                     _ => {

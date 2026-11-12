@@ -1258,6 +1258,13 @@ struct Slot<'a> {
     children: &'a [&'a Element],
     locals: &'a Locals,
     rules: &'a [Rule],
+    /// The caller's namespace, so a tag in the content means what the
+    /// caller's `use` says (UD-009).
+    namespace: &'a str,
+    /// The caller's file, for what the content reports.
+    file: &'a Option<std::path::PathBuf>,
+    /// The instance the caller is in, `None` at document level.
+    instance: Option<&'a str>,
 }
 
 /// What a `<router-view />` deeper in a route's view still has to render.
@@ -5411,7 +5418,7 @@ const HONORED_PROPERTIES: &[&str] = &[
     "scrollbar-width", "scrollbar-color",
     "outline", "outline-color", "outline-offset", "outline-style", "outline-width",
     // Flex / grid
-    "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction",
+    "flex", "flex-grow", "flex-shrink", "flex-basis", "flex-wrap", "flex-direction", "flex-flow",
     "justify-content", "align-items", "align-self", "justify-self", "justify-items",
     "align-content", "row-gap", "column-gap", "place-items", "place-content", "place-self",
     "grid-template-columns", "grid-template-rows", "grid-template-areas", "grid-template",
@@ -6672,6 +6679,21 @@ fn expand_shorthand(k: &str, v: &str) -> Option<Vec<(&'static str, String)>> {
             vec![(align, part(0)), (justify, second)]
         }
         "font" => return expand_font(v),
+        // `flex-flow: <direction> || <wrap>`, either order, and the one left
+        // out back to its initial value, as CSS has it. Lightning CSS (so
+        // Tailwind's `--minify`) writes it whenever a rule sets both. A value
+        // that is not those keywords, a `var()`, is left whole.
+        "flex-flow" => {
+            let (mut direction, mut wrap) = ("row".to_string(), "nowrap".to_string());
+            for p in &parts {
+                match p.trim().to_ascii_lowercase().as_str() {
+                    d @ ("row" | "row-reverse" | "column" | "column-reverse") => direction = d.to_string(),
+                    w @ ("nowrap" | "wrap" | "wrap-reverse") => wrap = w.to_string(),
+                    _ => return None,
+                }
+            }
+            vec![("flex-direction", direction), ("flex-wrap", wrap)]
+        }
         _ => return None,
     })
 }
@@ -9985,7 +10007,16 @@ fn expand_component(
     // content. It stays in the caller's rules and the caller's scope: the
     // component decides *where* it goes, not what it means.
     let supplied = element_children(el);
-    let slot = Slot { children: &supplied, locals: parent_locals, rules: caller_rules };
+    let caller_namespace = CURRENT_FILE.with(|c| c.borrow().clone());
+    let caller_file = IN_FILE.with(|c| c.borrow().clone());
+    let slot = Slot {
+        children: &supplied,
+        locals: parent_locals,
+        rules: caller_rules,
+        namespace: &caller_namespace,
+        file: &caller_file,
+        instance: caller,
+    };
 
     // This instance's own state. Created the first time it is expanded, by
     // running the component's script in a scope of its own, and kept across
@@ -10033,9 +10064,8 @@ fn expand_component(
     // From here down the lines being reported are the *component's* lines, so
     // the file has to change with them. Only from here: the props above were
     // written on the caller's element, in the caller's file, and belong to it.
-    // Slot content is the caller's too, but it is built through this subtree,
-    // so it is attributed to the component. That is a smaller error than the
-    // one being fixed and closing it needs a position on the slot's nodes.
+    // Slot content is the caller's too: built through this subtree, it puts
+    // the caller's file and namespace back where it lands. See `Slot`.
     // And from here down the *tags* are the component's too: `<task>` inside it
     // means whatever its own `use` says, which is not necessarily what the same
     // word means in the file that called it.
@@ -10911,6 +10941,37 @@ fn build_children(
     outlet: Option<Outlet>,
     row: Option<&str>,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
+    build_children_from(
+        elements, rules, comps, ancestors, inherited, engine, locals, path, tpl_path, reg, state, instances, swaps,
+        instance, slot, outlet, row, None,
+    )
+}
+
+/// [`build_children`], for `elements` that land among a parent's children
+/// from index `first` on: a `<slot>`'s content, which needs its `r-if`
+/// chains and `r-for`s as much as any other markup does (UD-009). `None` is
+/// a parent's own children, counted from 0.
+#[allow(clippy::too_many_arguments)]
+fn build_children_from(
+    elements: &[&Element],
+    rules: &[Rule],
+    comps: &Components,
+    ancestors: &mut Vec<AncNode>,
+    inherited: &Inherited,
+    engine: &mut Engine,
+    locals: &Locals,
+    path: &[usize],
+    tpl_path: &[usize],
+    reg: &mut BindingRegistry,
+    state: &InteractionState,
+    instances: &mut Instances,
+    swaps: &mut Swaps,
+    instance: Option<&str>,
+    slot: Option<Slot>,
+    outlet: Option<Outlet>,
+    row: Option<&str>,
+    first: Option<usize>,
+) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
     // Signals read by structural directives at this level, returned so the parent
     // can register itself as reconcilable.
@@ -10921,8 +10982,11 @@ fn build_children(
     let mut prev: Vec<ElemDesc> = Vec::new();
     // `:last-child` and the rest that count from the end need to know how
     // many children there will be before the first is built and styled, so
-    // they are counted first, only when a rule here asks.
-    let from_end = rules.iter().chain(slot.iter().flat_map(|s| s.rules)).any(Rule::reads_total);
+    // they are counted first, only when a rule here asks. A slot's content
+    // was counted with the parent's children it lands among.
+    let from_end =
+        first.is_none() && rules.iter().chain(slot.iter().flat_map(|s| s.rules)).any(Rule::reads_total);
+    let first = first.unwrap_or(0);
     if from_end {
         let total = count_rendered(elements, engine, locals, slot, outlet);
         if let Some(parent) = ancestors.last_mut() {
@@ -10936,7 +11000,7 @@ fn build_children(
     // The tree path to the child about to be pushed, its index is its position in
     // `out`. The template path uses the element's index `ti`, shared by r-for items.
     let child_path = |out: &Vec<LayoutNode>| -> Vec<usize> {
-        path.iter().copied().chain(std::iter::once(out.len())).collect()
+        path.iter().copied().chain(std::iter::once(first + out.len())).collect()
     };
     let child_tpl = |ti: usize| -> Vec<usize> {
         tpl_path.iter().copied().chain(std::iter::once(ti)).collect()
@@ -10967,20 +11031,24 @@ fn build_children(
             let filled = slot.filter(|s| !s.children.is_empty());
             match filled {
                 Some(s) => {
-                    for (si, child) in s.children.iter().enumerate() {
-                        let cp = child_path(&out);
-                        let mut ctp = ctp.clone();
-                        ctp.push(si);
-                        // The caller's rules and the caller's scope: this markup
-                        // was written out there, and reads what is in scope out
-                        // there. `slot: None` inside, since a component's own
-                        // `<slot>` is not a place to put the outer one's content.
-                        out.push(build_node(
-                            child, s.rules, comps, ancestors, &prev, inherited, engine, s.locals,
-                            &cp, &ctp, reg, state, instances, swaps, instance, None, None, row, None,
-                        ));
-                        prev.push(ElemDesc::of(child));
-                    }
+                    // The caller's rules and the caller's scope: this markup
+                    // was written out there, and reads what is in scope out
+                    // there. Its tags are the caller's imports, it runs in the
+                    // caller's instance, and its `r-if`s and `r-for`s are read
+                    // as anywhere else (UD-009). `slot: None` inside, since a
+                    // component's own `<slot>` is not a place to put the outer
+                    // one's content.
+                    let (nodes, deps) = in_file(s.file.clone(), || {
+                        in_namespace(s.namespace, || {
+                            build_children_from(
+                                s.children, s.rules, comps, ancestors, inherited, engine, s.locals, path, &ctp,
+                                reg, state, instances, swaps, s.instance, None, None, row, Some(out.len()),
+                            )
+                        })
+                    });
+                    structural_deps.extend(deps);
+                    out.extend(nodes);
+                    prev.extend(s.children.iter().map(|c| ElemDesc::of(c)));
                 }
                 None => {
                     // Nothing supplied: the slot's own children are the default,
@@ -11486,7 +11554,7 @@ fn count_rendered(
         if el.tag == "slot" {
             in_chain = false;
             n += match slot.filter(|s| !s.children.is_empty()) {
-                Some(s) => s.children.len(),
+                Some(s) => count_rendered(s.children, engine, s.locals, None, None),
                 None => element_children(el).len(),
             };
         } else if el.tag == "router-view" {
@@ -17140,6 +17208,27 @@ mod tests {
         assert_eq!(st.shrink, 0.0);
         assert!(st.wrap);
         assert_eq!(st.opacity, 0.45);
+    }
+
+    /// `flex-flow`, as Lightning CSS writes it for Tailwind's `--minify`
+    /// (Urbandrop's small notes): both longhands, either order, the one left
+    /// out back to its initial value, and a later longhand still winning.
+    #[test]
+    fn flex_flow_sets_direction_and_wrap() {
+        let flow = |decls: &[(&str, &str)]| {
+            let mut p = HashMap::new();
+            for (k, v) in decls {
+                super::declare(&mut p, k, v);
+            }
+            let st = interpret(&p);
+            (st.axis == super::Axis::Column, st.wrap)
+        };
+        assert_eq!(flow(&[("flex-flow", "row wrap")]), (false, true));
+        assert_eq!(flow(&[("flex-flow", "wrap column")]), (true, true));
+        assert_eq!(flow(&[("flex-flow", "column")]), (true, false));
+        assert_eq!(flow(&[("flex-wrap", "wrap"), ("flex-flow", "column")]), (true, false), "resets wrap");
+        assert_eq!(flow(&[("flex-flow", "column wrap"), ("flex-wrap", "nowrap")]), (true, false));
+        assert!(super::HONORED_PROPERTIES.contains(&"flex-flow"));
     }
 
     #[test]

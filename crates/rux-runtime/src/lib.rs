@@ -2597,7 +2597,17 @@ impl Document {
 
         // Resolve `use module::component;` imports relative to this file.
         let base = path.parent().unwrap_or_else(|| Path::new("."));
-        MEDIA_BASE.with(|b| *b.borrow_mut() = base.to_path_buf());
+        // What `<image src>` and `url()` resolve against: the folder of the
+        // document that runs, so a page or component, which only ever runs
+        // inside its app, reads `assets/x.png` from the app's folder even
+        // when `rux check` reads it on its own.
+        let media_base = MAY_HAVE_CALLER
+            .with(std::cell::Cell::get)
+            .then(|| project_entry(path))
+            .flatten()
+            .and_then(|entry| entry.parent().map(Path::to_path_buf))
+            .unwrap_or_else(|| base.to_path_buf());
+        MEDIA_BASE.with(|b| *b.borrow_mut() = media_base.clone());
         resolve_style_includes(&mut sfc, base, path)?;
         let (main_script, imports) = extract_imports(&sfc.script);
         // A module opened on its own (by `rux check`) is checked as the
@@ -2705,12 +2715,22 @@ impl Document {
                         };
                         let text = rux_script::native::type_text(item);
                         let declared = vec![(type_name.clone(), text)];
+                        // The module's other types come too, as they do for a
+                        // file's: a struct's fields may be of them, and a value
+                        // is checked against a prop's type field by field, so
+                        // `VehicleView { record: Record }` needs `Record`.
+                        let others = rux_script::native::types(&module)
+                            .into_iter()
+                            .filter(|(n, _, _)| n != type_name);
                         if let Some(m) = module_files.get_mut(&job.owner) {
                             m.types.extend(declared);
                         } else if job.owner == DOCUMENT_NAMESPACE {
                             imported_types.extend(declared);
+                            support_types.extend(others);
                         } else {
-                            component_types.entry(job.owner.clone()).or_default().extend(declared);
+                            let types = component_types.entry(job.owner.clone()).or_default();
+                            types.extend(declared);
+                            types.extend(others.map(|(n, t, _)| (n, t)));
                         }
                         continue;
                     }
@@ -3056,7 +3076,13 @@ impl Document {
         }
         for (key, types) in &component_types {
             if let Some(component) = components.get_mut(key) {
-                component.types.extend(types.iter().cloned());
+                // A type the component declares itself keeps its meaning over
+                // one that came in beside an import.
+                for (name, text) in types {
+                    if !component.types.iter().any(|(n, _)| n == name) {
+                        component.types.push((name.clone(), text.clone()));
+                    }
+                }
             }
         }
 
@@ -3119,7 +3145,7 @@ impl Document {
         // already build a list alone. See `Document::reconcile_lists`.
         let mut rows = rux_style::RowCache::new();
         rows.after_whole_build(Environment::sane());
-        resolve_images(&mut root, base);
+        resolve_images(&mut root, &media_base);
         let built = collect_warnings();
         // Before the warnings are drained below, so a handler that cannot
         // compile is reported by `rux check` and by the overlay alike.
@@ -3209,7 +3235,7 @@ impl Document {
             components,
             namespaces,
             engine,
-            base: base.to_path_buf(),
+            base: media_base,
             focus: None,
             draft: None,
             registry,
@@ -5435,7 +5461,16 @@ impl Document {
             // component offers events and a caller takes the ones it wants.
             let Some(body) = listener else { continue };
             let caller = self.instances[key].caller.clone();
+            // The listener is the caller's code, so what it starts (an `async
+            // fn`, an interval) is the caller's and goes on in the caller's
+            // scope. Claimed on each side of it: what this handler started
+            // first, for this instance, then what the listener started.
+            // Claimed only afterwards, by whoever dispatched this handler, a
+            // caller's task woke up after a native `await` in the emitting
+            // component, where none of the caller's names are (UD-010).
+            self.apply_timer_requests(Some(key));
             fired |= self.dispatch_handler(&body, caller.as_deref(), depth + 1, payload.as_ref());
+            self.apply_timer_requests(caller.as_deref());
         }
 
         if !changed.is_empty() {
@@ -5759,8 +5794,17 @@ impl Document {
                 }
                 let mut locals = instance.state.clone();
                 locals.extend(instance.props.iter().cloned());
+                // An `async fn` the effect starts is this instance's. What
+                // was started before it is set aside for its own owner, so
+                // neither is filed under whoever happens to claim next: a
+                // task nobody owns is never resumed, and one filed under the
+                // wrong instance goes on in its scope (UD-012).
+                let earlier = self.engine.take_started_tasks();
                 let (after, wrote, mut reads) =
                     self.engine.run_scoped_effect(&effect.body, &locals);
+                let started = self.engine.take_started_tasks();
+                self.own_tasks(started, Some(&key));
+                self.engine.put_back_started_tasks(earlier);
                 // Of the names in scope, only the instance's own state is
                 // something that can move under it; a prop moves with the
                 // caller's signals, which the effect read as well.
@@ -5838,15 +5882,22 @@ impl Document {
     /// outliving the component that started it would go on running a body
     /// against state nobody can see, which is the shape of every leak this kind
     /// of API has ever had.
-    fn apply_timer_requests(&mut self, instance: Option<&str>) {
-        // Tasks an `async fn` call started go the same way: to whoever ran
-        // the code that started them. See `docs/07-script.md`, "Async".
-        for id in self.engine.take_started_tasks() {
+    /// Give started tasks to `instance`, which ran the code that started
+    /// them, so each goes on in its scope.
+    fn own_tasks(&mut self, started: Vec<u64>, instance: Option<&str>) {
+        for id in started {
             // A module's function writes only the module's state, which lives
             // as long as the document: so does the task.
             let owner = if self.engine.task_is_a_modules(id) { None } else { instance.map(str::to_string) };
             self.tasks.push((id, owner));
         }
+    }
+
+    fn apply_timer_requests(&mut self, instance: Option<&str>) {
+        // Tasks an `async fn` call started go the same way: to whoever ran
+        // the code that started them. See `docs/07-script.md`, "Async".
+        let started = self.engine.take_started_tasks();
+        self.own_tasks(started, instance);
         // The script `fn`s native calls were just given are the engine's now.
         self.engine.claim_callbacks();
         // And any the code just ran cancelled are gone.

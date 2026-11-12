@@ -122,7 +122,7 @@ Built against `rux 0.9.0-dev` from `build/v0.9`.
 - **Does not reproduce:** a minimal `rux run app.rux` with a store `export async fn later() { text = "done"; }` (no native call inside) awaited from the document's `mounted` runs fine. So the trigger seems to be the store's `async fn` awaiting a native function, or the built binary rather than `rux run`; not narrowed further.
 - **Expected:** either it runs (the docs say an exported `async fn` may be awaited from another file's `async fn`), or `rux check` refuses it with the same message, never a panic at load.
 - **Urbandrop meanwhile:** awaits the native function directly in the page (`await api.signOut()`) and starts store refreshes without awaiting them.
-- **Status:** open.
+- **Status:** fixed 2026-11-12 on `build/v0.9`, Not native code: any `await` of another file's `async fn` broke a debug-build IR rule (the panic is debug-only, so the release `rux run` never showed it). Test: `a_modules_async_fn_awaited_from_the_documents_async_fn_loads` in `crates/rux-runtime/tests/modules.rs`.
 
 ## UD-009 Slot content is resolved in the component, not the caller
 
@@ -132,7 +132,7 @@ Built against `rux 0.9.0-dev` from `build/v0.9`.
   2. With those imports added to `record-card` as a test, the slot's `r-if='editKind == "owner"'` (`editKind` a page signal, `""` at the time) showed the editor as if true. (The `:vehicles` type error seen at the same time is UD-011 and happens without a slot too.)
 - **Reproduction:** a page with `let open = signal(false);` and `<card-like><view r-if="open"><other-component /></view></card-like>` where `card-like` has a `<slot />` and does not import `other-component`.
 - **Urbandrop meanwhile:** `record-card` has a `flat` mode and the page puts the card and its editor side by side inside one `card` box, so the screen looks the same without a slot.
-- **Status:** open.
+- **Status:** fixed 2026-11-12 on `build/v0.9`, Two causes: slot content took its tags from the component's imports, and its `r-if`/`r-elif`/`r-else`/`r-for` were not read at all. It now builds in the caller's file, imports and instance, and a tap in it moves the caller's state. Tests: `crates/rux-runtime/tests/slot_scope.rs`.
 
 ## UD-010 An `async fn` started by a component's event loses the caller's scope after a native `await`
 
@@ -142,7 +142,7 @@ Built against `rux 0.9.0-dev` from `build/v0.9`.
 - **Same file, works:** a page's `async fn` started from a plain `<button @tap>` (Become fleet: `await fleetApi.saveOwner(...)`, then page functions) completes correctly.
 - **Impact:** every save from the shared form components on the Fleet tab (owner payout details, add or edit vehicle, add or edit rider) reaches the server but leaves the screen stuck until the tab is reopened. The apply wizard's last step reaches the server and the app moves on because the session change replaces the page.
 - **Urbandrop meanwhile:** nothing; waiting for the fix.
-- **Status:** open.
+- **Status:** fixed 2026-11-12 on `build/v0.9`, A task a listener started was filed under the emitting component, so it went on in that component's scope once a native call made it wait. It is now the caller's. Test: `crates/rux-runtime/tests/async_listeners.rs`.
 
 ## UD-011 A list of native records is refused by a prop typed with that record
 
@@ -151,7 +151,7 @@ Built against `rux 0.9.0-dev` from `build/v0.9`.
 - **Expected:** a `Vec<VehicleView>` from Rust is a `VehicleView[]` (as `rux check` already agrees).
 - **Impact:** the rider form's "Vehicle used" choice is missing when adding or editing a rider.
 - **Urbandrop meanwhile:** nothing; waiting for the fix.
-- **Status:** open.
+- **Status:** fixed 2026-11-12 on `build/v0.9`, A component's `use type native::…` brought in only the named type, so a struct with fields of the module's other types (`Record`, `VehicleForm`) never fitted at run time. The module's other types now come too. Test: `crates/rux-runtime/tests/native_props.rs`.
 
 ## UD-012 An `async fn` started by an `effect` while the page is built stops at its native `await`
 
@@ -172,8 +172,16 @@ Built against `rux 0.9.0-dev` from `build/v0.9`.
   during that await, which reruns the page's effect and starts `load()`. Then `verify()` stayed on "Checking..."
   and `load()` reported `async fn load failed: error is not defined` from its `catch` after the `await`, as in UD-010.
   On the booking page, the same component's errors after the `await` were not shown either.
+- **Also on Android (2026-11-12, `rux_test` emulator, debug APK), and with no effect starting anything:** on the
+  booking's You step the page's only effects are synchronous (the name prefill, and `session.keep` in `app.rux`). The
+  `sign-in` component's `verify()` awaited `api.verifyCode`, the server signed the account in (account and phone
+  saved, code consumed), and the component stayed on "Checking..." while the page never switched to the signed-in
+  form. After a relaunch the kept token signs in and everything works. So the trigger looks like Rust setting a
+  signal (`api.session`, from the Tokio thread) that the page reads while a component's `async fn` is awaiting the
+  native call that sets it.
 - **Impact:** after signing in on My orders, the list appears only on the next visit (the app loads from `mounted`).
-- **Status:** open.
+  Signing in during a booking leaves the step stuck until the app is restarted.
+- **Status:** partly fixed 2026-11-12 on `build/v0.9`. The `effect` cases: an `effect`'s tasks were never given an owner. Run as the page was made, with no `mounted` to claim them, the task was owned by nobody and its answer was dropped; run again by another instance's code (the sign-in case), it was filed under that instance and went on in its scope. Each effect run now owns what it starts. Test: `an_effects_async_fn_started_as_the_page_is_made_goes_on_after_its_await` in `crates/rux-runtime/tests/async_listeners.rs`. **Still open: the Android case.** Its shape (a component's `async fn` awaiting a native call that sets a native signal the page reads) passes on the desktop after the fix (`a_native_signal_set_during_a_components_await_reaches_the_page_and_the_task_goes_on`), so it has to be tried again on the emulator with a CLI built from this tree.
 
 ## UD-013 Date and time inputs
 
@@ -240,11 +248,13 @@ Built against `rux 0.9.0-dev` from `build/v0.9`.
   value, so `??` does not cover a missing map key; `"code" in query` does.
 - (2026-11-12) A text's trailing space is dropped: `<text>Pickup time </text><text>(optional)</text>` in a row
   reads "Pickup time(optional)". HTML keeps one space there.
+- (2026-11-12, Android emulator) Hiding the keyboard with its own hide key after typing in a field turned the whole
+  window white for a few seconds before the page came back as it was. The partner app saw the same once.
 - (2026-11-12) On the desktop, the mouse wheel over a row that scrolls only sideways (`overflow-x: auto`) does not
   scroll the page around it; a browser passes the vertical wheel on.
 
-- `rux check` resolves `<image src>` in a page differently depending on how it reaches the file: from `app.rux`'s routes it reads `assets/x.png` against the app folder, and for the page "read on its own" against `pages/` (`cannot read image .\pages\assets/urban_logo.png`). The runtime uses the app folder. One of the two messages is always printed.
+- `rux check` resolves `<image src>` in a page differently depending on how it reaches the file: from `app.rux`'s routes it reads `assets/x.png` against the app folder, and for the page "read on its own" against `pages/` (`cannot read image .\pages\assets/urban_logo.png`). The runtime uses the app folder. One of the two messages is always printed. **Fixed 2026-11-12**: a file something uses reads its images from the app's folder in `rux check` too.
 - A tab with `box-shadow: inset 0 3px 0 <colour>` seems to show a faint vertical line at its left edge on Windows (seen in the partner app's tab bar, not yet checked closely).
 - `<input autocapitalize>` is not an attribute Rux knows. The web form uses `autocapitalize="characters"` for number plates so the phone keyboard opens in capitals; the app uppercases in Rust meanwhile. Worth adding with the other keyboard hints (`inputmode`, `enterkeyhint`).
-- `flex-flow` (the shorthand for `flex-direction` and `flex-wrap`) is not a property Rux knows. Tailwind's `--minify` (Lightning CSS) writes it on its own whenever a rule sets both longhands, so a Tailwind app that wraps a row gets the warning and loses the wrap. Supporting the shorthand fixes every minified stylesheet at once.
+- `flex-flow` (the shorthand for `flex-direction` and `flex-wrap`) is not a property Rux knows. Tailwind's `--minify` (Lightning CSS) writes it on its own whenever a rule sets both longhands, so a Tailwind app that wraps a row gets the warning and loses the wrap. Supporting the shorthand fixes every minified stylesheet at once. **Fixed 2026-11-12**.
 - A bare boolean attribute on a component tag (`<driver-fields strict with_name />`) does not pass `true` to `prop strict = false;`; the prop keeps its default, silently, and `rux check` says nothing. On elements a bare `disabled` means on, as in HTML, so the same reading on component tags (or an error) would be expected. The app writes `:strict="true"` meanwhile.

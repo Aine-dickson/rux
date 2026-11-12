@@ -2443,6 +2443,13 @@ impl Engine {
         self.ir.take_started()
     }
 
+    /// Put back tasks [`Engine::take_started_tasks`] gave, so that code run
+    /// in between (an `effect`, which is its own instance's) can be given its
+    /// own tasks and these still go to whoever started them.
+    pub fn put_back_started_tasks(&mut self, ids: Vec<u64>) {
+        self.ir.put_back_started(ids);
+    }
+
     /// Whether task `id` runs a script module's function. A module's state
     /// outlives any component, so such a task belongs to the document, not
     /// to the instance whose handler started it (`docs/07-script.md`,

@@ -19,7 +19,7 @@ display (block|flex|grid|inline|none; inline-flex is flex, inline-grid grid,
                        table) warns and is block)
 flex-direction, justify-content, align-items, gap, row-gap, column-gap
 align-self, justify-self, justify-items, align-content
-flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand)
+flex-grow, flex-shrink, flex-basis, flex-wrap, flex (shorthand), flex-flow (shorthand)
 grid-template-columns, grid-template-rows   (repeat(), [names], minmax(), fit-content())
 grid-template-areas, grid-template, grid-area
 grid-column, grid-column-start, grid-column-end

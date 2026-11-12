@@ -197,3 +197,18 @@ fn a_type_a_module_does_not_export_is_imported_with_a_warning() {
     assert_eq!(p.len(), 1, "{p:?}");
     assert!(p[0].contains("does not export `Task`") && p[0].contains("export type Task"), "{p:?}");
 }
+
+/// Urbandrop's UD-008: a module's `async fn` awaited from the document's own
+/// `async fn` is a call the lowering cannot see into, and a debug build
+/// panicked at load because the IR's rules refused an `await` of it.
+#[test]
+fn a_modules_async_fn_awaited_from_the_documents_async_fn_loads() {
+    let store = "<script>\n  export let text = signal(\"\");\n  export async fn later() { text = \"done\"; }\n</script>";
+    let app = "<template><screen><text>{{ session.text }}</text></screen></template>\n\
+<script>\nuse stores::session;\nasync fn leave() { await session.later(); }\nmounted { leave(); }\n</script>";
+    let dir = project(&[("app.rux", app), ("stores/session.rux", store)]);
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let errors: Vec<String> =
+        doc.diagnostics().warnings.iter().filter(|w| w.is_error()).map(|w| w.message.clone()).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+}

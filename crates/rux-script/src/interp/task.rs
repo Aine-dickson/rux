@@ -425,6 +425,13 @@ impl Interp {
         std::mem::take(&mut self.started)
     }
 
+    /// Put back tasks [`Interp::take_started`] gave, ahead of any started
+    /// since, for whoever ran the code that started them to take.
+    pub fn put_back_started(&mut self, mut ids: Vec<u64>) {
+        ids.append(&mut self.started);
+        self.started = ids;
+    }
+
     /// The name of the function task `id` started, while it waits.
     pub fn task_name(&self, id: u64) -> Option<&str> {
         self.tasks.get(&id).map(|t| t.name.as_str())

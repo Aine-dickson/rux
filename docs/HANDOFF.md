@@ -51,6 +51,16 @@ of [the roadmap](./06-roadmap.md)); what is left is listed there.
 
 ## Known issues and open work
 
+- **Urbandrop field report, `docs/field-reports/urbandrop.md`.** 2026-11-12: the bugs UD-008 to UD-011 and UD-012's
+  `effect` cases are fixed, each with a test that failed first (`crates/rux-runtime/tests/`: `modules.rs`, `slot_scope.rs`,
+  `async_listeners.rs`, `native_props.rs`), plus the small notes `flex-flow` and the image path in `rux check`
+  (`image_base.rs`). All 144 suites pass (`cargo test --workspace -j 2`). Not yet driven in the Urbandrop app (the CLI
+  on the PATH is not reinstalled); UD-012's Android sign-in case is open until it is tried on the emulator. **Owner to decide:** a bare boolean attribute on a component tag (`true`, or an
+  error), and `autocapitalize`. **Open features, each an Opus plan the owner approves:** UD-001 to UD-007 and UD-013 to
+  UD-016 (native errors with a code, location, background work and notifications, file bytes to Rust, opening other
+  apps, maps, secret storage, date-time input, scroll position, sharing code between apps, print or PDF). The owner's
+  rule: Urbandrop does not work around these; Rux builds them.
+
 - Still open in v0.9: physics (springs), live regions, pinch and rotate, the
   `rux doctor` device survey (those two need a phone), `hyphens: auto`, video on
   macOS and Linux.
