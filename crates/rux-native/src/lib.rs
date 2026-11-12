@@ -15,6 +15,7 @@
 //! with [`Module`], which is what the attributes generate.
 
 mod exec;
+pub mod permissions;
 pub mod registry;
 mod signal;
 mod value;

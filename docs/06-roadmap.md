@@ -99,9 +99,11 @@ images. Open:
 2. **A capability model for native code.** Compiled app code has full trust.
    The interpreter is the sandbox for anything untrusted (the playground,
    fetched or over-the-air documents), with step and memory limits and no
-   native access unless granted. A native module declaring the platform
-   permissions it needs, from which the Android manifest is generated, is not
-   built; it waits for the first mobile API that needs one. The default an
+   native access unless granted. The platform-permission half is built: an
+   app declares what it asks for in `rux.toml`'s `[permissions]`, with a
+   reason for each, the Android manifest is written from it, and script asks
+   at run time with `permissions` (and the app's Rust with `rux::permissions`).
+   Nothing is inferred. What is not built is the sandbox half: the default an
    unmarked file gets is a 1.0 question, because it is the promise being
    frozen.
 3. **Whatever else "the outside world" turns out to mean** once the above is

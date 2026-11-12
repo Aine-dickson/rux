@@ -3530,6 +3530,28 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | `color` written on an `<icon>` | `.pink { color: #f38ba8 }` on `<icon class="pink">` in a routed page, `rux run`, tap About | a pink heart, not the text colour | pass (Windows; it drew white before the fix) |
 | MS-014: `<icon>` in a dev build with a native crate | `rux build`, run `dist/ico.exe`, click About | the heart is drawn; the build says it embeds all 5148 icons | pass (Windows; the build took 10 minutes cold) |
 
+## Permissions, 2026-11-12
+
+| Case | Where | Result |
+|---|---|---|
+| `[permissions]` declaring location (with `background`), notifications, camera | emulator (Android 15), read with `dumpsys package` | The installed app lists exactly `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION`, `POST_NOTIFICATIONS`, `CAMERA` and `INTERNET` (a dev build). No `RECORD_AUDIO`: nothing is added that was not declared |
+| A reason containing `--` | emulator | The manifest links and installs: the `--` is written as `- -` in the comment, which XML would otherwise refuse |
+| `permissions.status` before anything was asked | emulator | `"unasked"` for notifications and camera |
+| `permissions.status("microphone")`, not declared | emulator | Throws `undeclared`, and the message is the table to add, `[permissions.microphone]` with a `why` |
+| `request("location")`, refused twice with "Don't allow" | emulator, `pm clear` first | The system dialog (precise or approximate) shows; the answers are `"denied"`, then `"blocked"`; a third `request` answers `"blocked"` at once and shows no dialog |
+| `openSettings()` from a blocked permission | emulator | The app's page in the system settings opens |
+| `request("location")` with "While using the app" | emulator | `"granted"` |
+| `request("location-background")` with `"location"` not granted | emulator | Throws `order`, saying to request `"location"` first |
+| `request("location-background")` after `"location"` is granted | emulator | Android 15 sends the person to the app's location permission page, not a dialog. Choosing "Allow all the time" and going back resolves the call with `"granted"` |
+| `request("notifications")` | emulator | The system dialog, then `"granted"` |
+| `request("camera")` | emulator | The system dialog, which names taking pictures and recording video |
+| A file input with `capture="environment"` while `camera` is declared and not granted | emulator, `pm clear` first | The camera dialog shows first. "Don't allow" opens the document picker instead. Asked again and allowed, the camera app opens. Without this, declaring `camera` would have broken a capture input that worked |
+| **Found by driving** | emulator | Tapping the probe while its dialog was on screen dismissed the dialog, and two dismissals made the permission `"blocked"` with no dialog ever shown to the person. That is Android's rule, not a Rux fault, and it is why `"blocked"` cannot be told from "refused for good" except by what the system will still show |
+| `permissions` on the desktop | `cargo test` only | `"granted"` for a declared name, `openSettings` throws `unsupported`. **Not driven in a window** |
+| `permissions` on the web | **not done** | Throws `unsupported`; a backend is still to be written |
+| `rux::permissions` from the app's Rust | `cargo test` only | Without a shell every call fails with `unavailable`. **Not driven on a device**: no probe app has native code calling it yet |
+| An address, or an HTTP crate, in `native/` | `cargo test` | `INTERNET` is asked for in a release build. Before, only `.rux` and `.css` files were read |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

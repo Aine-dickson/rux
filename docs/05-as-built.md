@@ -94,6 +94,8 @@ than an update).
 | `[app] scheme` | a custom URL scheme: `myapp://settings` opens the app on `/settings` |
 | `[app] link-hosts` | https domains whose links open the app on their path (Android; a build writes an `assetlinks.json` beside the APK) |
 | `[signing] keystore`, `alias` | the key a release is signed with; the passwords come from `RUX_KEYSTORE_PASSWORD` and `RUX_KEY_PASSWORD` (which falls back to the first), never from the file |
+| `[permissions.<name>] why` | what the app asks the platform for, one table each, `why` required: `location` (also `background = true`, or `approximate = true`), `notifications`, `camera`, `microphone`. Written into the Android manifest under that reason; nothing is inferred. `permissions` in script asks for what is declared (see `07-script`) |
+| `[permissions] network`, `android` | `network = true` asks for `INTERNET` whatever the build finds (it already looks in the documents and in `native/`); `android = ["android.permission.NAME"]` lists platform names Rux has no word for |
 | `[window] width`, `height`, `min-width`, `min-height`, `maximized`, `decorations`, `title-bar` | the desktop window, in logical pixels, every key optional; the title is `name`; `decorations = false` drops the frame; `title-bar = "overlay"` keeps it and lets the page into the title row beside the window buttons (see `app-region` and the `window` module in `07-script`) |
 | `[dev] watch` | commands kept running beside `rux run` (a Tailwind watcher, say) |
 | `[build] before` | commands run to completion before a build and before `rux run` opens the window |

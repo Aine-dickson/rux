@@ -137,33 +137,45 @@ fn name_arg(call: &str, args: Vec<Any>) -> Result<String, Error> {
     }
 }
 
-/// Install the calls for every document this process loads.
+async fn status_of(name: String) -> Result<String, Error> {
+    let which = resolve(&name)?;
+    Ok(backend::status(&which).await?.to_string())
+}
+
+async fn request_of(name: String) -> Result<String, Error> {
+    let which = resolve(&name)?;
+    Ok(backend::request(&which).await?.to_string())
+}
+
+fn why_of(name: &str) -> Result<String, Error> {
+    resolve(name)?;
+    let d = DECLARED.lock().unwrap_or_else(|e| e.into_inner());
+    // A platform name has no reason of its own: nothing was said.
+    Ok(d.entries.iter().find(|e| e.name == name).map(|e| e.why.clone()).unwrap_or_default())
+}
+
+/// Install the calls for every document this process loads, and the same four
+/// for the app's own Rust (`rux::permissions`).
 pub(crate) fn install_permissions() {
+    rux_runtime::native::permissions::set_backend(rux_runtime::native::permissions::Backend {
+        status: |name| Box::pin(status_of(name)),
+        request: |name| Box::pin(request_of(name)),
+        why: why_of,
+        open_settings: backend::open_settings,
+    });
     let interface = rux_runtime::builtins::permissions_interface();
     let mut calls = HashMap::new();
     calls.insert(
         "status".to_string(),
-        Call::future(|args: Vec<Any>| async move {
-            let which = resolve(&name_arg("status", args)?)?;
-            Ok(Any::Str(backend::status(&which).await?.to_string()))
-        }),
+        Call::future(|args: Vec<Any>| async move { Ok(Any::Str(status_of(name_arg("status", args)?).await?)) }),
     );
     calls.insert(
         "request".to_string(),
-        Call::future(|args: Vec<Any>| async move {
-            let which = resolve(&name_arg("request", args)?)?;
-            Ok(Any::Str(backend::request(&which).await?.to_string()))
-        }),
+        Call::future(|args: Vec<Any>| async move { Ok(Any::Str(request_of(name_arg("request", args)?).await?)) }),
     );
     calls.insert(
         "why".to_string(),
-        Call::sync(|args: Vec<Any>| {
-            let name = name_arg("why", args)?;
-            resolve(&name)?;
-            let d = DECLARED.lock().unwrap_or_else(|e| e.into_inner());
-            // A platform name has no reason of its own: nothing was said.
-            Ok(Any::Str(d.entries.iter().find(|e| e.name == name).map(|e| e.why.clone()).unwrap_or_default()))
-        }),
+        Call::sync(|args: Vec<Any>| Ok(Any::Str(why_of(&name_arg("why", args)?)?))),
     );
     calls.insert("openSettings".to_string(), Call::sync(|_args: Vec<Any>| backend::open_settings().map(|()| Any::None)));
     let _ = install(Module { interface, calls });

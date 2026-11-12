@@ -715,6 +715,45 @@ public class RuxActivity extends NativeActivity {
     /** Where "this permission has been asked for" is kept; see {@link #ruxPermissionAsked}. */
     private static final String PERMISSIONS_PREFS = "dev.ruxlang.shell.permissions";
 
+    /** The code the camera is asked for under, ahead of a capture. */
+    private static final int REQUEST_CAMERA = 0x5259;
+
+    /** The capture waiting on the camera permission: mime types, multiple, capture. */
+    private Object[] pendingCapture;
+
+    /**
+     * Whether a capture must ask for the camera first. Android refuses the
+     * system camera to an app that lists the camera permission in its manifest
+     * and has not been given it, where an app that never listed it is let
+     * through: so declaring {@code [permissions.camera]} would otherwise break
+     * a file input's {@code capture} that worked before.
+     */
+    private boolean cameraGrantNeeded(String[] types) {
+        String family = types.length == 0 ? "" : types[0];
+        if (!family.startsWith("image/") && !family.startsWith("video/")) {
+            return false;
+        }
+        if (ruxPermissionGranted("android.permission.CAMERA")) {
+            return false;
+        }
+        try {
+            String[] listed =
+                    getPackageManager()
+                            .getPackageInfo(getPackageName(), PackageManager.GET_PERMISSIONS)
+                            .requestedPermissions;
+            if (listed != null) {
+                for (String name : listed) {
+                    if (name.equals("android.permission.CAMERA")) {
+                        return true;
+                    }
+                }
+            }
+        } catch (PackageManager.NameNotFoundException e) {
+            // Not installed under its own name: nothing to ask about.
+        }
+        return false;
+    }
+
     /** A permission request finished; Rust then asks for the status again. */
     private static native void nativePermissionsDone();
 
@@ -802,6 +841,13 @@ public class RuxActivity extends NativeActivity {
         super.onRequestPermissionsResult(request, names, results);
         if (request == REQUEST_PERMISSIONS) {
             nativePermissionsDone();
+        } else if (request == REQUEST_CAMERA && pendingCapture != null) {
+            Object[] capture = pendingCapture;
+            pendingCapture = null;
+            boolean allowed = results.length > 0 && results[0] == PackageManager.PERMISSION_GRANTED;
+            // Refused: the picker opens instead, as it does when no camera app
+            // is there, so the person can still choose a photo.
+            ruxPickFiles((String) capture[0], (Boolean) capture[1], allowed ? (String) capture[2] : "");
         }
     }
 
@@ -827,8 +873,22 @@ public class RuxActivity extends NativeActivity {
                 () -> {
                     final String[] types =
                             mimeTypes.isEmpty() ? new String[0] : mimeTypes.split(",");
-                    if (capture != null && !capture.isEmpty() && startCapture(types, capture)) {
-                        return;
+                    if (capture != null && !capture.isEmpty()) {
+                        if (cameraGrantNeeded(types)) {
+                            // Asked first, and the capture goes on from the answer:
+                            // see onRequestPermissionsResult.
+                            pendingCapture = new Object[] {mimeTypes, multiple, capture};
+                            getSharedPreferences(PERMISSIONS_PREFS, MODE_PRIVATE)
+                                    .edit()
+                                    .putBoolean("android.permission.CAMERA", true)
+                                    .apply();
+                            requestPermissions(
+                                    new String[] {"android.permission.CAMERA"}, REQUEST_CAMERA);
+                            return;
+                        }
+                        if (startCapture(types, capture)) {
+                            return;
+                        }
                     }
                     Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
                     intent.addCategory(Intent.CATEGORY_OPENABLE);

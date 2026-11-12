@@ -2386,6 +2386,70 @@ async fn pasteUrl() {
 - A file with a `clipboard` of its own keeps it; the built-in is then
   `use native::rux::clipboard;`.
 
+## Permissions
+
+The platform lets an app use the location, the camera, notifications and the
+microphone only when the person allows it. An app says which it will ask for in
+`rux.toml`, once, with the reason; the script then asks at the moment it needs
+one.
+
+```toml
+[permissions.location]
+why = "Shows the customer where the rider is"
+background = true          # also while the app is not on screen
+
+[permissions.notifications]
+why = "Tells you when a new job arrives"
+```
+
+```rux
+async fn startShift() {
+  let state = await permissions.request("location");
+  if state == "blocked" {
+    permissions.openSettings();
+  } else if state == "denied" {
+    notice = permissions.why("location");
+  }
+}
+```
+
+**`await permissions.status(name)`** and **`await permissions.request(name)`**
+give one of:
+
+| Answer | Means |
+|---|---|
+| `"granted"` | allowed |
+| `"limited"` | a rough position, where a precise one was asked for |
+| `"unasked"` | never asked; `request` will show the system's dialog |
+| `"denied"` | refused, and the system will ask again |
+| `"blocked"` | refused for good: only the app's page in the system settings changes it |
+
+- **The names** are `"location"`, `"location-background"`, `"notifications"`,
+  `"camera"` and `"microphone"`, and any platform name listed under
+  `android = [...]` in `rux.toml`. **`"location-background"` is a second step**:
+  Android asks for it only once `"location"` is granted, and `request` throws
+  `order` before then. Declare it with `background = true` under
+  `[permissions.location]`.
+- **A name `rux.toml` does not declare throws `undeclared`**, naming the table
+  to add. Nothing is requested that was not written there, and the manifest is
+  written from the same table.
+- **`request` on a permission that is granted or blocked answers at once**; the
+  system shows no dialog for either. Only one dialog is open at a time, and
+  asking while one is open throws `busy`.
+- **`permissions.why(name)`** gives the sentence from `rux.toml`, for explaining
+  after a refusal. Rux draws no dialog of its own.
+- **`permissions.openSettings()`** opens this app's page in the system settings,
+  the only place a blocked permission changes. It throws `unsupported` on the
+  desktop and the web.
+- **Targets.** Android asks the system. On the desktop there is nothing to ask,
+  so a declared name is `"granted"`. The web is not done yet and throws
+  `unsupported`.
+- **A file input's `capture` asks for the camera first** when the app declares
+  `camera`: Android refuses its camera to an app that lists the permission and
+  has not been given it. If the person refuses, the picker opens instead.
+- A file with a `permissions` of its own keeps it; the built-in is then
+  `use native::rux::permissions;`.
+
 ## Talking to the outside
 
 | Call | Does |
