@@ -14,7 +14,7 @@
 //! with the offset eased to zero.
 
 use std::collections::{HashMap, HashSet};
-use std::time::{Duration, Instant};
+use web_time::{Duration, Instant};
 
 use rux_layout::{AnimProp, Easing, Node};
 

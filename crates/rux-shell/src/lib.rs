@@ -4190,6 +4190,13 @@ impl App {
     /// Whether the window's content extends into the title row, beside the
     /// system's own buttons (`title-bar = "overlay"`). Only where the shell can
     /// do it: Windows and macOS, in a real window.
+    #[cfg(target_arch = "wasm32")]
+    fn overlay_active(&self) -> bool {
+        false
+    }
+
+    /// See the wasm32 twin above.
+    #[cfg(not(target_arch = "wasm32"))]
     fn overlay_active(&self) -> bool {
         self.window_settings.title_overlay
             && !self.window_settings.frameless
@@ -8629,7 +8636,13 @@ impl App {
         // would use the previous frame's geometry, so it sat one edit behind
         // whenever an edit moved the field it covers.
         #[cfg(target_arch = "wasm32")]
-        self.position_web_ime();
+        {
+            // The render guards borrow fields of `self`; end them first.
+            drop(context_guard);
+            drop(images_guard);
+            drop(text_guard);
+            self.position_web_ime();
+        }
     }
 }
 
