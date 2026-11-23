@@ -752,6 +752,10 @@ struct ResizeDrag {
 /// How long the wheel stays still before a scroller that snaps comes to rest
 /// on its snap point: a run of notches is one scroll, not several.
 const WHEEL_SETTLE: Duration = Duration::from_millis(150);
+
+/// How long a scroller must stay still, with nothing coasting or gliding it,
+/// before `@scrollend` runs.
+const SCROLL_REST: Duration = Duration::from_millis(100);
 /// How near, as a share of the view, a snap point must be for `proximity`
 /// to take the scroll to it. CSS leaves it to the browser.
 const SNAP_NEAR: f32 = 0.3;
@@ -2186,6 +2190,10 @@ struct App {
     /// A scroller that snaps, and when the wheel last moved it: it comes to
     /// rest once the wheel has been still for [`WHEEL_SETTLE`].
     wheel_snap: Option<(usize, Instant)>,
+    /// For `@scroll` and `@scrollend`: the offset last reported for each
+    /// scroller that has either, by its path, and when it last moved if it is
+    /// yet to be reported at rest.
+    scroll_seen: HashMap<Vec<usize>, (Offset, Option<Instant>)>,
     /// Where the finger last was during a touch drag, in logical px.
     touch: Option<(f32, f32)>,
     /// Recent finger positions with the time each arrived, for the lift
@@ -2529,6 +2537,7 @@ impl App {
             bar_paging: None,
             wheel_latch: None,
             wheel_snap: None,
+            scroll_seen: HashMap::new(),
             gesture: None,
             gesture_deadline: None,
             secondary: None,
@@ -4903,6 +4912,58 @@ impl App {
             self.request_redraw();
         }
         self.adopt_element_requests();
+    }
+
+    /// Run `@scroll` for each scroller that has moved since it was last
+    /// reported (once, however far it went), and `@scrollend` for each that has
+    /// since stayed still for [`SCROLL_REST`] with nothing coasting or gliding.
+    /// Called every tick; a scroller with neither handler costs a look at its node.
+    fn report_scrolls(&mut self) {
+        fn node_at<'a>(root: &'a rux_layout::Node, path: &[usize]) -> Option<&'a rux_layout::Node> {
+            path.iter().try_fold(root, |n, i| n.children.get(*i))
+        }
+        let coasting = self.fling.is_some() || !self.glides.is_empty() || self.wheel_snap.is_some();
+        let now = Instant::now();
+        let mut due: Vec<(String, Option<String>, Offset, Offset)> = Vec::new();
+        let mut seen = std::mem::take(&mut self.scroll_seen);
+        let mut live: Vec<Vec<usize>> = Vec::new();
+        for r in &self.scrolls {
+            if r.path.is_empty() {
+                continue;
+            }
+            let Some(node) = node_at(&self.document.root, &r.path) else { continue };
+            let Some(events) = node.scroll_events() else { continue };
+            let here = self.offsets.get(r.id).copied().unwrap_or_default();
+            let key = r.path.to_vec();
+            live.push(key.clone());
+            let entry = seen.entry(key).or_insert((here, None));
+            if entry.0 != here {
+                entry.0 = here;
+                entry.1 = Some(now);
+                if let Some(h) = &events.scroll {
+                    due.push((h.clone(), node.instance.clone(), here, r.max));
+                }
+            } else if entry.1.is_some_and(|at| now.duration_since(at) >= SCROLL_REST) && !coasting {
+                entry.1 = None;
+                if let Some(h) = &events.end {
+                    due.push((h.clone(), node.instance.clone(), here, r.max));
+                }
+            }
+        }
+        seen.retain(|k, _| live.contains(k));
+        self.scroll_seen = seen;
+        for (body, instance, at, max) in due {
+            let event = rux_reactive::Value::Map(vec![
+                ("scrollLeft".to_string(), rux_reactive::Value::Number(f64::from(at.x))),
+                ("scrollTop".to_string(), rux_reactive::Value::Number(f64::from(at.y))),
+                ("maxLeft".to_string(), rux_reactive::Value::Number(f64::from(max.x))),
+                ("maxTop".to_string(), rux_reactive::Value::Number(f64::from(max.y))),
+            ]);
+            if self.document.apply_handler_with_event(&body, instance.as_deref(), &event) {
+                self.request_redraw();
+            }
+            self.adopt_element_requests();
+        }
     }
 
     /// A press in a frameless window that belongs to the window rather than
@@ -9990,6 +10051,9 @@ impl App {
             }
         }
 
+        // `@scroll` and `@scrollend`.
+        self.report_scrolls();
+
         // An entering element has now been painted wearing `:enter-from`, so it
         // can let go of it and the animator has somewhere to walk from. This
         // happens *here*, after the frame, rather than in `render` beside the
@@ -10045,6 +10109,7 @@ impl App {
             self.gesture_deadline,
             fling,
             self.wheel_snap.map(|(_, at)| at + WHEEL_SETTLE),
+            self.scroll_seen.values().filter_map(|(_, moved)| moved.map(|at| at + SCROLL_REST)).min(),
             bars,
         ]
         .into_iter()
@@ -15410,6 +15475,7 @@ mod tests {
     /// A 200x200 box holding 500px-tall content: it scrolls down, not sideways.
     fn tall() -> ScrollRegion {
         ScrollRegion {
+            path: Default::default(),
             transform: None,
             alpha: 1.0,
             id: 0,
@@ -15782,6 +15848,7 @@ mod bar_tests {
 
     fn region(bar: Scrollbar) -> ScrollRegion {
         ScrollRegion {
+            path: Default::default(),
             transform: None,
             alpha: 1.0,
             id: 0,

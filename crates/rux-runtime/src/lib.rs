@@ -460,6 +460,7 @@ pub struct ScrollRequest {
 const EVENT_NAMES: &[&str] = &[
     "tap", "press", "release", "longpress", "swipe", "drag", "contextmenu", "doubletap",
     "dragstart", "dragmove", "dragenter", "dragover", "dragleave", "drop", "dragend",
+    "scroll", "scrollend",
 ];
 
 /// The events only an `<input>` has, on top of [`EVENT_NAMES`]: what happens to
@@ -1158,6 +1159,7 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
         "dragstart" | "dragmove" | "dragenter" | "dragover" | "dragleave" | "drop" | "dragend" => {
             "DropEvent".to_string()
         }
+        "scroll" | "scrollend" => "ScrollEvent".to_string(),
         "swipe" => "SwipeEvent".to_string(),
         // Where the caret and the selection are, in characters of the value.
         "select" if el.tag == "input" => "SelectEvent".to_string(),

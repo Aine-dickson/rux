@@ -219,6 +219,9 @@ pub fn event_types() -> Vec<(&'static str, String)> {
                 "{{ {POINTER_FIELDS}, data: any, group: string?, index: int, before: any, dropped: bool,                  grabX: float, grabY: float }}"
             ),
         ),
+        // A scroller's `@scroll` and `@scrollend`: where it is scrolled to and
+        // how far it can go, in logical pixels (Urbandrop's UD-014).
+        ("ScrollEvent", "{ scrollLeft: float, scrollTop: float, maxLeft: float, maxTop: float }".to_string()),
         (
             "SwipeEvent",
             format!("{{ {POINTER_FIELDS}, {TRAVEL_FIELDS}, direction: \"left\" | \"right\" | \"up\" | \"down\" }}"),

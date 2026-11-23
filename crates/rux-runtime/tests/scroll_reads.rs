@@ -117,3 +117,22 @@ fn scroll_to_with_an_option_it_does_not_have_says_so() {
     let warned = rux_runtime::take_warnings();
     assert!(warned.iter().any(|w| w.message.contains("no option `fast`")), "{warned:?}");
 }
+
+#[test]
+fn scroll_and_scrollend_are_kept_on_the_node_with_a_typed_event() {
+    let doc = Document::from_source(
+        "<template><screen>\
+           <view class=\"list\" @scroll=\"n = event.scrollTop\" @scrollend=\"done = event.maxTop\">\
+             <view class=\"row\"><text>one</text></view>\
+           </view>\
+         </screen></template>\n\
+         <style>\n.list { max-height: 50px; overflow-y: auto; }\n</style>\n\
+         <script>\nlet n = signal(0.0);\nlet done = signal(0.0);\n</script>",
+    )
+    .expect("loads");
+    let list = &doc.root.children[0];
+    let events = list.scroll_events().expect("the list's handlers are kept");
+    assert_eq!(events.scroll.as_deref(), Some("n = event.scrollTop"));
+    assert_eq!(events.end.as_deref(), Some("done = event.maxTop"));
+    assert!(rux_runtime::take_warnings().is_empty(), "no complaint about the new events");
+}

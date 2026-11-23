@@ -7627,6 +7627,20 @@ fn attach_dnd(
             node.style.rare_mut().dnd = Some(dnd);
         }
     }
+    attach_scroll_events(node, el, handler_locals(locals, instance, instances));
+}
+
+/// `@scroll` and `@scrollend`, kept on the node for the shell to run when the
+/// scroller it is moves and when it rests.
+fn attach_scroll_events(node: &mut LayoutNode, el: &Element, baked: &[(String, Value)]) {
+    if !rux_parser::is_element(&el.tag) {
+        return;
+    }
+    let read = |name: &str| el.attr(name).map(|h| bind_locals(h, baked));
+    let events = rux_layout::ScrollEvents { scroll: read("@scroll"), end: read("@scrollend") };
+    if events != rux_layout::ScrollEvents::default() {
+        node.style.rare_mut().scroll_events = Some(Box::new(events));
+    }
 }
 
 /// `:dragging` and `:drag-over`. `:dragging` is matched by the element's

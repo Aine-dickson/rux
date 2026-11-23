@@ -1286,6 +1286,15 @@ pub enum Rad {
     Pct(f32),
 }
 
+/// `@scroll` and `@scrollend` on a box: what to run when a scroller moves, and
+/// when it has come to rest. Layout ignores it; the shell finds it by the
+/// node's path, through [`ScrollRegion::path`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ScrollEvents {
+    pub scroll: Option<String>,
+    pub end: Option<String>,
+}
+
 /// The style properties hardly any box sets, kept behind one pointer on
 /// [`Style`] so each costs a box nothing until it is written (watchlist #41).
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -1298,6 +1307,8 @@ pub struct Rare {
     /// What the element is to dragging and dropping. Layout ignores it; the
     /// shell finds it by the node's path. See [`Dnd`].
     pub dnd: Option<Box<Dnd>>,
+    /// `@scroll` and `@scrollend`.
+    pub scroll_events: Option<Box<ScrollEvents>>,
     /// `app-region`: whether a press here drags the desktop window. Only an
     /// app with its own title bar sets it.
     pub app_region: AppRegion,
@@ -3091,6 +3102,11 @@ impl Node {
         self.style.rare.as_ref().and_then(|r| r.dnd.as_deref())
     }
 
+    /// What `@scroll` and `@scrollend` run on this element, if it has either.
+    pub fn scroll_events(&self) -> Option<&ScrollEvents> {
+        self.style.rare.as_ref().and_then(|r| r.scroll_events.as_deref())
+    }
+
     pub fn new(style: Style) -> Self {
         Self {
             style,
@@ -3585,6 +3601,9 @@ pub struct ResizeRegion {
 /// as long as the tree's shape is, which is what the shell keys offsets by.
 #[derive(Clone, Debug)]
 pub struct ScrollRegion {
+    /// The box's child-index path, which is how the shell finds its node (for
+    /// `@scroll`) and a script's `el.scrollLeft` finds this region.
+    pub path: std::sync::Arc<[usize]>,
     /// The accumulated `transform` in force where this box sits, and the
     /// accumulated `opacity`.
     ///
@@ -7245,6 +7264,7 @@ fn collect(
         let max = scroll_max(layout, &at);
         shift = offsets.get(sid).copied().unwrap_or_default().clamp_to(max);
         walk.scrolls[sid] = Some(ScrollRegion {
+            path: at.path.map(|i| b.paths[i as usize].1.clone()).unwrap_or_else(|| std::sync::Arc::from(Vec::new())),
             transform: child_xform,
             alpha: child_dim,
             id: sid,
@@ -8756,6 +8776,7 @@ mod reveal_tests {
     /// A 300px-tall scroller holding 900px of content, scrolled to the top.
     fn thread() -> Vec<ScrollRegion> {
         vec![ScrollRegion {
+            path: Default::default(),
             transform: None,
             alpha: 1.0,
             id: 0,
@@ -8826,6 +8847,7 @@ mod reveal_tests {
     fn the_innermost_scroller_wins() {
         let mut scrolls = thread();
         scrolls.push(ScrollRegion {
+            path: Default::default(),
             transform: None,
             alpha: 1.0,
             id: 1,
