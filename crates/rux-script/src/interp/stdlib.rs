@@ -35,7 +35,7 @@ pub const METHODS: &[&str] = &[
     "includes", "indexOf", "slice", "splice", "join", "get", "trim",
     "toUpperCase", "toLowerCase", "startsWith", "endsWith", "repeat", "charAt", "substring", "split", "replace",
     "trunc", "floor", "ceil", "round", "toFloat",
-    "keys", "values", "unwrap", "focus", "scrollIntoView", "scrollBy", "tap", "play", "pause",
+    "keys", "values", "unwrap", "focus", "scrollIntoView", "scrollBy", "scrollTo", "tap", "play", "pause",
     "setSelectionRange", "insertText", "clearHistory", "call", "set",
     "concat", "flat", "flatMap", "findLast", "findLastIndex", "lastIndexOf", "at", "fill", "toReversed", "toSorted",
     "unshift", "replaceAll", "padStart", "padEnd", "trimStart", "trimEnd", "toFixed",
@@ -192,6 +192,38 @@ fn scroll_by(path: Vec<usize>, argv: &[V]) -> R<Option<V>> {
     Ok(Some(V::None))
 }
 
+/// `el.scrollTo(x, y)` and `el.scrollTo(x, y, { smooth: true })`: queue the
+/// action. A function of its own, not inlined, for the reason above.
+#[inline(never)]
+fn scroll_to(path: Vec<usize>, argv: &[V]) -> R<Option<V>> {
+    let at = |v: &V| match v {
+        V::Int(i) => Some(*i as f32),
+        V::Float(f) if f.is_finite() => Some(*f as f32),
+        _ => None,
+    };
+    let (Some(x), Some(y)) = (at(&argv[0]), at(&argv[1])) else {
+        return fail("scrollTo takes two numbers and, if you like, options: `el.scrollTo(x, y, { smooth: true })`");
+    };
+    // An object literal is a record; a map built by code is a map.
+    let options: Vec<(String, V)> = match argv.get(2) {
+        None | Some(V::None) => Vec::new(),
+        Some(V::Map(m)) => m.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
+        Some(V::Rec(r)) => r.entries().map(|(k, v)| (k.to_string(), v.clone())).collect(),
+        Some(other) => return fail(format!("scrollTo takes its options as a map, not a {}", other.type_name())),
+    };
+    let mut smooth = false;
+    for (key, value) in &options {
+        match (key.as_str(), value) {
+            ("smooth", V::Bool(b)) => smooth = *b,
+            ("smooth", V::None) => {}
+            ("smooth", other) => return fail(format!("`smooth` is true or false, not a {}", other.type_name())),
+            (other, _) => return fail(format!("scrollTo has no option `{other}`. Its only option is `smooth`")),
+        }
+    }
+    crate::ELEMENT_ACTIONS.with(|a| a.borrow_mut().push(ElementAction::ScrollTo(path, x, y, smooth)));
+    Ok(Some(V::None))
+}
+
 /// A whole-number answer where the type says `int`: an `int` in stays one.
 fn whole_of(v: &V, f: impl Fn(f64) -> f64) -> R<V> {
     match v {
@@ -219,6 +251,27 @@ pub(super) fn element_field(el: &ElementHandle, name: &str) -> R<V> {
         "y" => dim(|b| b.y),
         "width" => dim(|b| b.width),
         "height" => dim(|b| b.height),
+        // A box that does not scroll reads as not scrolled, with its own size
+        // as its content's, as in a browser. No box at all reads `none`.
+        "scrollLeft" | "scrollTop" | "scrollWidth" | "scrollHeight" | "clientWidth" | "clientHeight" => {
+            let Some(b) = b else { return Ok(V::None) };
+            let f = el.facts.scroll.unwrap_or(crate::ScrollFacts {
+                left: 0.0,
+                top: 0.0,
+                width: b.width,
+                height: b.height,
+                client_width: b.width,
+                client_height: b.height,
+            });
+            V::Float(f64::from(match name {
+                "scrollLeft" => f.left,
+                "scrollTop" => f.top,
+                "scrollWidth" => f.width,
+                "scrollHeight" => f.height,
+                "clientWidth" => f.client_width,
+                _ => f.client_height,
+            }))
+        }
         "selection" => match el.facts.selection {
             Some((start, end, caret)) => V::Map(Rc::new(
                 [("start", start), ("end", end), ("caret", caret)]
@@ -1050,6 +1103,7 @@ impl Interp {
                     // locals, and this function's frame is the one `rux check`
                     // overflowed on (watchlist #41).
                     ("scrollBy", 2) => return scroll_by(path, argv),
+                    ("scrollTo", 2) | ("scrollTo", 3) => return scroll_to(path, argv),
                     ("tap", 0) => ElementAction::Tap(path),
                     ("play", 0) => ElementAction::Play(path),
                     ("pause", 0) => ElementAction::Pause(path),

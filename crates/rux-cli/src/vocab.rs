@@ -596,6 +596,12 @@ const ELEMENT_PROPERTIES: &[Entry] = &[
     Entry { name: "y", detail: "top edge, in pixels", doc: "See `x`: one frame stale, absent before the first layout." },
     Entry { name: "width", detail: "width, in pixels", doc: "See `x`: one frame stale, absent before the first layout." },
     Entry { name: "height", detail: "height, in pixels", doc: "See `x`: one frame stale, absent before the first layout." },
+    Entry { name: "scrollLeft", detail: "how far a scroller is scrolled from its left, in pixels", doc: "On a box that scrolls; `0` on any other. From the frame on screen, so one frame stale, like `x`. A scroller in a right-to-left box counts from its start. Absent when the box has no frame yet." },
+    Entry { name: "scrollTop", detail: "how far a scroller is scrolled from its top, in pixels", doc: "See `scrollLeft`." },
+    Entry { name: "scrollWidth", detail: "the width of a scroller's content, in pixels", doc: "The most `scrollLeft` can reach, plus `clientWidth`. On a box that does not scroll, its own width. See `scrollLeft` for the lag." },
+    Entry { name: "scrollHeight", detail: "the height of a scroller's content, in pixels", doc: "See `scrollWidth`." },
+    Entry { name: "clientWidth", detail: "the width of a scroller's visible part, in pixels", doc: "Its own width on a box that does not scroll. See `scrollLeft` for the lag." },
+    Entry { name: "clientHeight", detail: "the height of a scroller's visible part, in pixels", doc: "See `clientWidth`." },
     Entry { name: "selection", detail: "a text field's selection, `{ start, end, caret }`", doc: "In characters, as strings index. Where it is while the field has focus, and where it was left after, so a button tapped beside the field still reads it. `none` for anything else, and for a field that has not had focus." },
 ];
 
@@ -603,6 +609,7 @@ const ELEMENT_PROPERTIES: &[Entry] = &[
 const ELEMENT_METHODS: &[Entry] = &[
     Entry { name: "focus", detail: "focus()", doc: "Give this element keyboard focus. Recorded and applied **after the handler finishes**, so a handler that focuses something and then changes state does not race its own tree." },
     Entry { name: "scrollBy", detail: "scrollBy(dx, dy)", doc: "Scroll this box by `dx` and `dy` logical pixels, clamped to what it can scroll. On an element that does not scroll, the box it is in. Applied after the handler, like the rest: the way to scroll a list from `@dragmove` when the pointer nears its edge." },
+    Entry { name: "scrollTo", detail: "scrollTo(x, y) / scrollTo(x, y, { smooth: true })", doc: "Scroll this box to `x` and `y` logical pixels from its start, clamped to what it can scroll. `{ smooth: true }` glides there instead of jumping. On an element that does not scroll, the box it is in. Applied after the handler, like the rest: how an arrow goes to a card by its index, `el.scrollTo(index * card.width, 0)`." },
     Entry { name: "scrollIntoView", detail: "scrollIntoView()", doc: "Scroll whichever box scrolls until this element is visible. Applied after the handler, like the rest." },
     Entry { name: "tap", detail: "tap()", doc: "Tap this element as though a finger had. This is how a `mounted` hook drives the document, and how most of the lifecycle was verified." },
     Entry { name: "setSelectionRange", detail: "setSelectionRange(start, end)", doc: "Select characters `start` to `end` of a text field, the caret at `end`, and give it focus. Equal numbers put the caret there." },

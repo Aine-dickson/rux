@@ -160,6 +160,23 @@ pub struct ElementFacts {
     /// and where it was left after. `None` for anything else, and for a field
     /// that has not had focus.
     pub selection: Option<(usize, usize, usize)>,
+    /// How far this box is scrolled, when it is a scroller. `None` for any
+    /// other box, which reads as not scrolled.
+    pub scroll: Option<ScrollFacts>,
+}
+
+/// A scroller's state as the last frame left it: where it is scrolled to, how
+/// big its content is, and how much of it shows.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ScrollFacts {
+    pub left: f32,
+    pub top: f32,
+    /// The content's size: what `scrollWidth` and `scrollHeight` read.
+    pub width: f32,
+    pub height: f32,
+    /// The visible part: `clientWidth` and `clientHeight`.
+    pub client_width: f32,
+    pub client_height: f32,
 }
 
 /// A laid-out box in absolute window pixels.
@@ -1313,6 +1330,9 @@ pub enum ElementAction {
     /// Scroll this element, which is the scroller, by `(dx, dy)` logical px.
     /// An element that does not scroll scrolls the one it is in.
     ScrollBy(Vec<usize>, f32, f32),
+    /// Scroll this element, which is the scroller, to `(x, y)` logical px from
+    /// its start; `true` glides there instead of jumping.
+    ScrollTo(Vec<usize>, f32, f32, bool),
     /// Press this element as a finger would.
     ///
     /// Deliberately the *whole* gesture rather than "run its `@tap` body": a
@@ -3819,6 +3839,7 @@ mod tests {
                     classes: vec!["card".into()],
                     bounds: Some(ElementBox { x: 4.0, y: 8.0, width: 120.0, height: 40.0 }),
                     selection: None,
+                    scroll: None,
                 },
                 ElementFacts {
                     path: vec![0, 1],
@@ -3828,6 +3849,7 @@ mod tests {
                     // Stands for a node with no box: hidden, or never laid out.
                     bounds: None,
                     selection: None,
+                    scroll: None,
                 },
             ]),
             "!" => None, // stands for a selector that does not parse

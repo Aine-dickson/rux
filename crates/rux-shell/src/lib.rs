@@ -8117,6 +8117,25 @@ impl App {
         // these are the boxes currently on screen, which is what a script
         // asking "where is this" means.
         document.set_metrics(layout.metrics.clone());
+        document.set_scroll_regions(
+            layout
+                .scrolls
+                .iter()
+                .map(|r| {
+                    let off = offsets.get(r.id).copied().unwrap_or_default();
+                    rux_runtime::ScrollSnapshot {
+                        x: r.x,
+                        y: r.y,
+                        width: r.width,
+                        height: r.height,
+                        left: off.x,
+                        top: off.y,
+                        content_width: r.content_width,
+                        content_height: r.content_height,
+                    }
+                })
+                .collect(),
+        );
 
         // What autofill would see if it asked now. Kept ready, because the
         // question arrives on Android's main thread and must be answered
@@ -8131,7 +8150,8 @@ impl App {
         let mut revealed = false;
         // `scrollBy(dx, dy)`: the element is the scroller. One that does not
         // scroll hands it to the scroller it is in, as a wheel over it would.
-        for (path, dx, dy) in document.take_scrolls() {
+        for request in document.take_scrolls() {
+            let rux_runtime::ScrollRequest { path, x, y, by, smooth } = request;
             let Some(m) = layout.metrics.iter().find(|e| *e.path == path[..]) else { continue };
             let same = |r: &rux_layout::ScrollRegion| {
                 (r.x - m.x).abs() < 0.5 && (r.y - m.y).abs() < 0.5 && (r.width - m.width).abs() < 0.5
@@ -8143,9 +8163,21 @@ impl App {
                 .or_else(|| m.scroll.and_then(|id| layout.scrolls.get(id)));
             let Some(region) = region else { continue };
             if let Some(off) = offsets.get_mut(region.id) {
-                off.x += dx;
-                off.y += dy;
+                let before = *off;
+                if by {
+                    off.x += x;
+                    off.y += y;
+                } else {
+                    off.x = x;
+                    off.y = y;
+                }
                 *off = off.clamp_to(region.max);
+                // `scrollTo(x, y, { smooth: true })` glides there.
+                if smooth && !by {
+                    let to = *off;
+                    *off = before;
+                    App::glide(glides, region.id, before, to);
+                }
                 revealed = true;
             }
         }

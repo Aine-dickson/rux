@@ -415,8 +415,40 @@ thread_local! {
     /// [`Document`]: it is held by value on `rux check`'s recursion, whose
     /// debug-build stack is spent (watchlist #41), and a request is made and
     /// taken within one frame.
-    static PENDING_SCROLLS: std::cell::RefCell<Vec<(Vec<usize>, f32, f32)>> =
+    static PENDING_SCROLLS: std::cell::RefCell<Vec<ScrollRequest>> =
         const { std::cell::RefCell::new(Vec::new()) };
+    /// Where each scroller stood in the last frame, with the box it is, for
+    /// `el.scrollLeft` and the rest. The shell's offsets, handed over each
+    /// frame; not a field of [`Document`], for the reason above.
+    static SCROLL_REGIONS: std::cell::RefCell<Vec<(rux_script::ElementBox, rux_script::ScrollFacts)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// One scroller as the shell saw it: its box, how far it is scrolled, and how
+/// big its content is.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct ScrollSnapshot {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+    pub left: f32,
+    pub top: f32,
+    pub content_width: f32,
+    pub content_height: f32,
+}
+
+/// A `scrollBy` or `scrollTo` a handler asked for, for the shell to apply.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScrollRequest {
+    /// The element, which is the scroller (or sits in one).
+    pub path: Vec<usize>,
+    /// `by` is how far to move; otherwise where to go.
+    pub x: f32,
+    pub y: f32,
+    pub by: bool,
+    /// Glide there rather than jump (`scrollTo` with `smooth: true`).
+    pub smooth: bool,
 }
 
 /// The events the runtime actually dispatches, without the `@`.
@@ -5060,6 +5092,7 @@ impl Document {
         // and the alternative is laying out in the middle of a tap that is
         // about to change what the layout depends on.
         let metrics = self.metrics.clone();
+        let regions = SCROLL_REGIONS.with(|r| r.borrow().clone());
         std::sync::Arc::new(move |selector: &str| {
             let found = index.query(selector)?;
             // By path, once: finding each match's box by a scan of every
@@ -5080,6 +5113,16 @@ impl Document {
                             }
                         }),
                         selection: selections.get(&m.path).copied(),
+                        scroll: by_path.get(&m.path[..]).and_then(|e| {
+                            // The scroller whose box this is: the same rect
+                            // the shell's `scrollBy` finds it by.
+                            regions.iter().find(|(b, _)| {
+                                (b.x - e.x).abs() < 0.5
+                                    && (b.y - e.y).abs() < 0.5
+                                    && (b.width - e.width).abs() < 0.5
+                                    && (b.height - e.height).abs() < 0.5
+                            })
+                        }).map(|(_, f)| *f),
                         path: m.path,
                         tag: m.tag,
                         id: m.id,
@@ -5099,6 +5142,29 @@ impl Document {
         self.metrics = metrics;
     }
 
+    /// Record where each scroller is scrolled to: its box and its state.
+    /// Called by the shell each frame, beside [`Document::set_metrics`].
+    pub fn set_scroll_regions(&mut self, regions: Vec<ScrollSnapshot>) {
+        SCROLL_REGIONS.with(|r| {
+            *r.borrow_mut() = regions
+                .into_iter()
+                .map(|s| {
+                    (
+                        rux_script::ElementBox { x: s.x, y: s.y, width: s.width, height: s.height },
+                        rux_script::ScrollFacts {
+                            left: s.left,
+                            top: s.top,
+                            width: s.content_width,
+                            height: s.content_height,
+                            client_width: s.width,
+                            client_height: s.height,
+                        },
+                    )
+                })
+                .collect();
+        });
+    }
+
     /// Take the `scrollIntoView` requests the last handler made.
     ///
     /// The shell's, because the scroll offsets are the shell's. Focus and blur
@@ -5109,7 +5175,7 @@ impl Document {
 
     /// Take the `scrollBy` requests the last handler made: the element's path
     /// and how far to scroll it.
-    pub fn take_scrolls(&mut self) -> Vec<(Vec<usize>, f32, f32)> {
+    pub fn take_scrolls(&mut self) -> Vec<ScrollRequest> {
         PENDING_SCROLLS.with(|p| std::mem::take(&mut *p.borrow_mut()))
     }
 
@@ -5270,7 +5336,11 @@ impl Document {
                     acted = true;
                 }
                 rux_script::ElementAction::ScrollBy(path, dx, dy) => {
-                    PENDING_SCROLLS.with(|p| p.borrow_mut().push((path, dx, dy)));
+                    PENDING_SCROLLS.with(|p| p.borrow_mut().push(ScrollRequest { path, x: dx, y: dy, by: true, smooth: false }));
+                    acted = true;
+                }
+                rux_script::ElementAction::ScrollTo(path, x, y, smooth) => {
+                    PENDING_SCROLLS.with(|p| p.borrow_mut().push(ScrollRequest { path, x, y, by: false, smooth }));
                     acted = true;
                 }
                 // Handed to the shell rather than run here. Running the
