@@ -169,6 +169,33 @@ pub fn undeclared_notifications(text: &str, declared: &Declared) -> Vec<(usize, 
     out
 }
 
+/// `(line, message)` for each `location.current` / `location.watch` call (or
+/// `location::current` / `location::watch` in the app's Rust) in `text` when
+/// `rux.toml` has no `[permissions.location]`; `undeclared` is the message
+/// that says what to add, from [`Permissions::undeclared`].
+pub fn undeclared_location(text: &str, undeclared: Option<&str>) -> Vec<(usize, String)> {
+    let Some(why) = undeclared else { return Vec::new() };
+    let mut out = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        for prefix in ["location.current", "location.watch", "location::current", "location::watch"] {
+            let mut from = 0;
+            while let Some(at) = line[from..].find(prefix) {
+                let start = from + at;
+                from = start + prefix.len();
+                // `window.location.watch(...)` and `my_location::current` are not ours.
+                let before = line[..start].chars().next_back();
+                if before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':') {
+                    continue;
+                }
+                if line[from..].trim_start().starts_with('(') {
+                    out.push((index + 1, format!("{prefix}: {why}")));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The `.rs` files under `native/src`, for the calls an app's Rust makes.
 pub fn native_sources(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
@@ -251,5 +278,25 @@ mod tests {
         assert!(undeclared_notifications("notifications.post({ channel: name })", &d).is_empty());
         assert!(undeclared_notifications("notifications.post({ channel: \"jobs\" }); background.start({ channel: \"jobs\" });", &d).is_empty());
         assert!(undeclared_notifications("xnotifications.post({ channel: \"x\" })", &d).is_empty());
+    }
+    #[test]
+    fn a_location_call_without_the_permission_declared_is_found() {
+        let none = declared("");
+        let found = undeclared_location(
+            "let f = await location.current({});
+location.watch({ intervalMs: 1 });
+window.location.watch(x);
+location::current(Options::new()).await?;
+",
+            none.undeclared("location").as_deref(),
+        );
+        assert_eq!(found.iter().map(|f| f.0).collect::<Vec<_>>(), [1, 2, 4], "{found:?}");
+        assert!(found[0].1.contains("[permissions.location]"), "{}", found[0].1);
+        let with = declared("
+[permissions.location]
+why = \"x\"
+");
+        assert!(undeclared_location("location.current({})", with.undeclared("location").as_deref()).is_empty());
+        assert!(undeclared_location("let location = 3; location.position", none.undeclared("location").as_deref()).is_empty());
     }
 }

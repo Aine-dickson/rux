@@ -2605,6 +2605,54 @@ background.stop();
   `active` follows them: the process runs anyway, and closing the main window
   still quits. On the web they throw `unsupported`.
 
+## Location
+
+Where the device is: one fix, or a watch that keeps reporting. It needs
+`[permissions.location]` in `rux.toml` and the person's consent
+(`permissions.request("location")`, from a tap).
+
+```rux
+let fix = await location.current({ accuracy: "high", timeoutMs: 10000 });
+// fix: { lat, lng, accuracyM, at, isMock }   (at: milliseconds since the epoch)
+
+location.watch({ intervalMs: 15000, distanceM: 0, accuracy: "high" });
+location.stop();
+{{ location.position?.lat }}    // a signal: the newest fix, `none` before one
+{{ location.watching }}         // a signal: true while a watch runs
+```
+
+- **`current`** gives one fix. Options: `accuracy` (`"high"`, GPS, the default, or
+  `"balanced"`, cell and Wi-Fi) and `timeoutMs` (30 000). **`watch`** takes
+  `accuracy`, `intervalMs` (the shortest wait between fixes, 5 000) and
+  `distanceM` (the shortest move between them, 0). Calling it again replaces
+  the watch. `stop` ends it, and stopping what is not running is not an error.
+- **Errors, by `kind`.** `undeclared` (no `[permissions.location]`),
+  `permission` (not allowed: ask first), `disabled` (location is switched off
+  in the system; open its settings), `timeout`, `option` (a wrong or unknown
+  option) and `unsupported` (the desktop has no location yet).
+- **An approximate-only grant gives `balanced` fixes**, whatever `accuracy`
+  asked for, and `accuracyM` says how coarse they are.
+- **A watch ends with the app, unless a service keeps the process.** Android
+  throttles a background app's location, so a rider who is "on shift" starts a
+  [`background`](#background-work) service of type `location` (with
+  `[permissions.location] background = true`) beside the watch.
+- **The app's Rust hears every fix, with no page on screen**:
+  `rux::location::on_fix(|fix| ...)` runs per fix on the thread that delivers
+  it (keep it short; hand a request to your own thread), `watch(Options::new()
+  .interval_ms(15_000))?`, `stop()`, `position()`, `watching()` and `current(
+  Options::new()).await?` are the same calls. Script reads `location.position`,
+  which holds only the newest.
+- **`{{ location.position }}` in markup needs the page's script to mention
+  `location.` once** (a call is enough), as `background` does. A file with a
+  `location` of its own (a `prop location`, a `let location`) keeps it.
+- **Targets.** Android uses the platform's own `LocationManager`, not Google's
+  fused provider (no Play Services; a little more battery). The web uses
+  `navigator.geolocation`: the browser asks the person itself, takes no
+  `intervalMs` or `distanceM`, and reports `isMock` as `false`. The desktop
+  throws `unsupported`.
+- **Not built yet:** opening the system's location settings, the battery
+  optimisation exemption, Google's fused provider, and a desktop backend.
+
 ## Talking to the outside
 
 | Call | Does |

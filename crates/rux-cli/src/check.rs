@@ -242,7 +242,8 @@ fn undeclared_permissions(files: &[PathBuf]) -> Vec<Diagnostic> {
         };
         let found = crate::permission_check::undeclared_uses(&text, &manifest.permissions)
             .into_iter()
-            .chain(crate::permission_check::undeclared_notifications(&text, &declared));
+            .chain(crate::permission_check::undeclared_notifications(&text, &declared))
+            .chain(crate::permission_check::undeclared_location(&text, manifest.permissions.undeclared("location").as_deref()));
         for (line, message) in found {
             out.push(Diagnostic { file: file.clone(), line: Some(line), column: None, severity: Severity::Warning, message });
         }
