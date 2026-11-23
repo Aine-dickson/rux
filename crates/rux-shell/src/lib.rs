@@ -10234,6 +10234,18 @@ impl Shell {
         event_loop.exit();
     }
 
+    /// `app.state`: the app is in the back when every one of its windows is
+    /// minimized. A window another window covers still counts as in front: it
+    /// is drawn, and a poll that slows down for it would be guessing.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn report_visible(&self) {
+        let visible = self
+            .windows
+            .values()
+            .any(|app| app.state.as_ref().is_some_and(|s| s.window.is_minimized() != Some(true)));
+        rux_runtime::native::app::set_visible(visible);
+    }
+
     /// What every handler ends with: each window reads the native signals and
     /// the shared stores again, and redraws if either moved. A store written
     /// in one window is how another one finds out.
@@ -10346,8 +10358,14 @@ impl ApplicationHandler<RuxEvent> for Shell {
             true => self.windows.get_mut(&id),
             false => self.parked.as_mut(),
         };
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        let may_hide = matches!(event, WindowEvent::Occluded(_) | WindowEvent::Resized(_));
         if let Some(app) = app {
             window_module::as_window(Some(id), || app.window_event(event_loop, id, event));
+        }
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        if may_hide {
+            self.report_visible();
         }
         #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
         self.serve(event_loop);
@@ -12549,12 +12567,43 @@ impl DeviceProfile {
 /// `mounted` hook, a top-level read) keeps the one it resolved: the web
 /// loaded first, and its `pickFile` in a `mounted` answered `none` from
 /// then on. Again later is harmless: the same code again.
+fn install_app_module() {
+    use rux_runtime::native::{install, Any, Call, Module};
+    let mut calls = std::collections::HashMap::new();
+    calls.insert("state".to_string(), Call::sync(|_args: Vec<Any>| rux_runtime::native::app::STATE.__read()));
+    let _ = install(Module { interface: rux_runtime::builtins::app_interface(), calls });
+    // A window exists before the shell can say otherwise, and the first
+    // report fills the signal. The platform's own reports follow.
+    rux_runtime::native::app::set_visible(true);
+    #[cfg(target_arch = "wasm32")]
+    watch_tab_visibility();
+}
+
+/// A browser tab is in the back when the page is hidden: another tab, a
+/// minimized window, a locked screen.
+#[cfg(target_arch = "wasm32")]
+fn watch_tab_visibility() {
+    let report = wasm_bindgen::closure::Closure::<dyn FnMut(bool)>::new(|visible: bool| {
+        rux_runtime::native::app::set_visible(visible);
+    });
+    let hook = js_sys::Function::new_with_args(
+        "report",
+        "const now = () => report(document.visibilityState !== 'hidden');
+         document.addEventListener('visibilitychange', now);
+         now();",
+    );
+    let _ = hook.call1(&wasm_bindgen::JsValue::NULL, report.as_ref());
+    // Lives as long as the page does.
+    report.forget();
+}
+
 fn install_rux_modules() {
     dialogs::install_builtins();
     settings::install_settings();
     clipboard::install_clipboard();
     permissions::install_permissions();
     window_module::install_window();
+    install_app_module();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading
@@ -13030,6 +13079,23 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeLink<'frame>(
         Ok::<(), jni::errors::Error>(())
     })
     .resolve::<jni::errors::LogErrorAndDefault>();
+}
+
+/// The activity came to the front (`true`) or went to the back (`false`):
+/// Android's `onStart` and `onStop`. A service can keep the process alive
+/// through the second, which is why script and the app's Rust are told.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeVisible<'frame>(
+    _env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    visible: jni::sys::jboolean,
+) {
+    rux_runtime::native::app::set_visible(visible);
 }
 
 /// The route a link names, query included, or `None` when it is not a URL.

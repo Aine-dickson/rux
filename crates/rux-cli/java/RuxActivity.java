@@ -103,6 +103,21 @@ public class RuxActivity extends NativeActivity {
      */
     private static native void nativeLink(String uri);
 
+    /** The activity is in front (true) or has gone to the back (false). */
+    private static native void nativeVisible(boolean visible);
+
+    @Override
+    protected void onStart() {
+        super.onStart();
+        nativeVisible(true);
+    }
+
+    @Override
+    protected void onStop() {
+        super.onStop();
+        nativeVisible(false);
+    }
+
     @Override
     protected void onCreate(Bundle state) {
         loadNativeLibrary();

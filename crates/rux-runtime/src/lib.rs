@@ -75,8 +75,8 @@ pub use rux_native as native;
 /// interface, which a shell installs with code behind it.
 pub mod builtins {
     pub use rux_script::native::{
-        builtin_interface, clipboard_interface, permissions_interface, set_media, settings_interface,
-        window_interface, BUILTIN_FNS, BUILTIN_MODULE, CLIPBOARD_MODULE, PERMISSIONS_MODULE, SETTINGS_MODULE,
+        app_interface, builtin_interface, clipboard_interface, permissions_interface, set_media, settings_interface,
+        window_interface, APP_MODULE, BUILTIN_FNS, BUILTIN_MODULE, CLIPBOARD_MODULE, PERMISSIONS_MODULE, SETTINGS_MODULE,
         WINDOW_MODULE,
     };
 }
@@ -7390,6 +7390,7 @@ fn native_module_of(file: &str) -> Option<String> {
         || module == rux_script::native::CLIPBOARD_MODULE
         || module == rux_script::native::WINDOW_MODULE
         || module == rux_script::native::PERMISSIONS_MODULE
+        || module == rux_script::native::APP_MODULE
     {
         rux_script::native::ensure_builtins();
     }

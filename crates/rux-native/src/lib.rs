@@ -14,6 +14,7 @@
 //! A Rust program that runs the shell itself can register a module by hand
 //! with [`Module`], which is what the attributes generate.
 
+pub mod app;
 mod exec;
 pub mod permissions;
 pub mod registry;

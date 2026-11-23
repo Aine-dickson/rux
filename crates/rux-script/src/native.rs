@@ -301,6 +301,23 @@ pub const PERMISSIONS_MODULE: &str = "native/rux/permissions";
 /// The name a script reaches [`PERMISSIONS_MODULE`] by without importing it.
 pub const PERMISSIONS_NAME: &str = "permissions";
 
+/// The module behind `app.state`: whether the app is on screen.
+pub const APP_MODULE: &str = "native/rux/app";
+
+/// The name a script reaches [`APP_MODULE`] by without importing it.
+pub const APP_NAME: &str = "app";
+
+/// The app module's interface: `state` is a signal, `"foreground"` while the
+/// app is on screen and `"background"` while it is not (Android's `onStop`, a
+/// hidden browser tab, every desktop window minimized).
+pub fn app_interface() -> rux_native::Interface {
+    use rux_native::Item;
+    rux_native::Interface {
+        path: "rux::app".into(),
+        items: vec![Item { name: "state".into(), kind: ItemKind::Signal("string".into()) }],
+    }
+}
+
 /// The permissions module's interface. A name is `"location"`,
 /// `"location-background"` (the separate step Android asks for after the first),
 /// `"notifications"`, `"camera"` or `"microphone"`; the answer is `"granted"`,
@@ -401,6 +418,9 @@ pub fn ensure_builtins() {
     if registry::interface(PERMISSIONS_MODULE).is_none() {
         let _ = registry::declare(permissions_interface());
     }
+    if registry::interface(APP_MODULE).is_none() {
+        let _ = registry::declare(app_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -416,6 +436,7 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         (CLIPBOARD_NAME, CLIPBOARD_MODULE),
         (WINDOW_NAME, WINDOW_MODULE),
         (PERMISSIONS_NAME, PERMISSIONS_MODULE),
+        (APP_NAME, APP_MODULE),
     ] {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
@@ -423,9 +444,10 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         let own = ["let ", "fn ", "const "].iter().any(|d| code.contains(&format!("{d}{name}")))
             || code.contains(&format!("{name} ="))
             || aliases.iter().any(|a| a.local == name);
-        // `window` is read in markup (`{{ window.maximized }}`), which this
-        // scan of the script cannot see, so it is always there to be read.
-        if (uses || name == WINDOW_NAME) && !own {
+        // `window` and `app` are read in markup (`{{ window.maximized }}`,
+        // `{{ app.state }}`), which this scan of the script cannot see, so
+        // they are always there to be read.
+        if (uses || name == WINDOW_NAME || name == APP_NAME) && !own {
             out.push(crate::link::Alias {
                 local: name.to_string(),
                 target: crate::link::Target::Module(module.to_string()),

@@ -3553,6 +3553,15 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | `rux::permissions` from the app's Rust | `cargo test` only | Without a shell every call fails with `unavailable`. **Not driven on a device**: no probe app has native code calling it yet |
 | An address, or an HTTP crate, in `native/` | `cargo test` | `INTERNET` is asked for in a release build. Before, only `.rux` and `.css` files were read |
 
+## App state, 2026-11-23
+
+| Case | Where | Result |
+|---|---|---|
+| `{{ app.state }}` and an `effect` logging each value, no import | Windows 11, `rux run`, probe `rux-harness퀃` | Reads `foreground` at start. After `window.minimize()` and a restore the log is `foreground background foreground` |
+| `app.state` on the web | `cargo check --target wasm32-unknown-unknown` only | A `visibilitychange` listener reports it. **Not driven in a browser** |
+| `app.state` on Android | not built or run | `onStart` and `onStop` call `nativeVisible`. **Written, not compiled**: the Java and the JNI function have not been through an NDK build here |
+| A window covered by another | not driven | Counts as in front by design (only minimizing hides) |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

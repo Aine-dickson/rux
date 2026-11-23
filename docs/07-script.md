@@ -2458,6 +2458,30 @@ give one of:
 - A file with a `permissions` of its own keeps it; the built-in is then
   `use native::rux::permissions;`.
 
+## App state
+
+`app.state` is `"foreground"` while the app is on screen and `"background"` while
+it is not. A signal, so `{{ app.state }}` and an `effect` that reads it follow it.
+Nothing to import; a file with an `app` of its own keeps it.
+
+```rux
+let slow = computed(() => app.state == "background");
+```
+
+- **When it is `"background"`.** Android: the activity stopped (Home, another
+  app, the screen off). Web: the tab is hidden (`document.visibilityState`).
+  Desktop: every window is minimized; a window that another covers still counts
+  as in front, since it is drawn.
+- **The app's Rust reads the same value**, from any thread: `rux::app::state()`
+  gives the same two words, and `rux::app::on_change(|state| ...)` runs a
+  closure on each change (on the UI thread, so hand real work on). A poll in
+  the app's Rust can slow down when nobody is looking.
+- **It is `"foreground"` from the start**, and saying the same thing twice
+  changes nothing.
+- Leaving the front does not stop the app's Rust. What keeps work going once the
+  app is gone from the screen is background work (not built yet: UD-003, steps 3
+  and 4 of its plan).
+
 ## Talking to the outside
 
 | Call | Does |
