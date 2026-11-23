@@ -106,6 +106,26 @@ public class RuxActivity extends NativeActivity {
     /** The activity is in front (true) or has gone to the back (false). */
     private static native void nativeVisible(boolean visible);
 
+    /**
+     * The activity is being destroyed: ask the Rux loop to end.
+     *
+     * <p><b>Before {@code super.onDestroy()}, which is the call that blocks.</b>
+     * {@code NativeActivity} answers {@code onDestroy} by waiting, on the
+     * process's main thread, for {@code android_main} to return, and the Rux
+     * loop only returns when it is told to. Told here, it returns, and the
+     * wait ends. Left out, an activity Android destroys while the app runs
+     * (the system reclaiming it, a launch that clears the task) wedges the
+     * process: "Activity destroy timeout", then a splash screen that never
+     * ends.
+     */
+    private static native void nativeDestroyed();
+
+    @Override
+    protected void onDestroy() {
+        nativeDestroyed();
+        super.onDestroy();
+    }
+
     @Override
     protected void onStart() {
         super.onStart();

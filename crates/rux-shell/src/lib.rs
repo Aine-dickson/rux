@@ -234,6 +234,11 @@ enum RuxEvent {
     /// into a route by [`link_route`].
     #[cfg(target_os = "android")]
     AndroidLink(String),
+    /// Android is destroying the activity, whatever the reason (the system
+    /// took it, another launch cleared the task). See
+    /// [`Java_dev_ruxlang_shell_RuxActivity_nativeDestroyed`].
+    #[cfg(target_os = "android")]
+    AndroidDestroyed,
     /// Assistive technology asked us something (it attached, it wants the
     /// tree, it moved focus). Delivered through the same proxy as hot-reload.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
@@ -9185,6 +9190,14 @@ impl ApplicationHandler<RuxEvent> for App {
                 }
             }
 
+            // The activity is going, and Android's main thread now waits for
+            // this loop to end: close without asking.
+            #[cfg(target_os = "android")]
+            RuxEvent::AndroidDestroyed => {
+                android_log("the activity is being destroyed: closing");
+                self.close_now(_event_loop);
+            }
+
             #[cfg(target_arch = "wasm32")]
             RuxEvent::WebRoute(index) => self.apply_web_route(index),
 
@@ -13099,6 +13112,37 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeVisible<'frame>(
     visible: jni::sys::jboolean,
 ) {
     rux_runtime::native::app::set_visible(visible);
+}
+
+/// The activity is being destroyed (`onDestroy`), and the main thread is about
+/// to wait for this loop to end.
+///
+/// **Without this the process wedges.** `android-activity` answers `onDestroy`
+/// by telling the loop and then *blocking Android's main thread until
+/// `android_main` returns*, and winit 0.30 ignores that message. So an activity
+/// that Android destroys while the loop runs on (the system took it back, or a
+/// launch cleared its task) left the main thread stuck for good: the system
+/// logged "Activity destroy timeout", and the next launch sat on the splash
+/// screen. A Back press never hit it, because Back ends the loop itself first.
+/// Here the loop is asked to end, with every `unmounted` run as a close does.
+///
+/// A loop that has already ended has no proxy left that works, and the send
+/// fails harmlessly.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeDestroyed<'frame>(
+    _env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+) {
+    if let Ok(proxy) = PROXY.lock() {
+        if let Some(proxy) = proxy.as_ref() {
+            let _ = proxy.send_event(RuxEvent::AndroidDestroyed);
+        }
+    }
 }
 
 /// The route a link names, query included, or `None` when it is not a URL.

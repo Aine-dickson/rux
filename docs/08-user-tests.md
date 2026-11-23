@@ -3589,6 +3589,17 @@ Emulator `rux_test` (Android 15, 1080x2400), probe `rux-harness\ud003-and`, a de
 | The same with the app's process killed (`am kill`; the notification stays posted) | A new process starts on `/jobs/42`, the notification's route |
 | **Not driven** | A notification's small icon (the probe has no launcher icon, so Android's fallback `info` icon shows), sound and vibration on a phone, Android 12 and below (`areNotificationsEnabled`), "Don't allow" followed by a post, a notification from the app's Rust with no page on screen, a tap with `route` empty |
 
+## An activity Android destroys while the app runs, 2026-11-23
+
+Emulator `rux_test`, probe `rux-harness\ud003-and`. The wedge was reproduced first with a throwaway debug hook that called `finish()` from `onNewIntent` (removed), then the fix was driven with a real system-style destroy: `am start --activity-clear-task`.
+
+| Case | Result |
+|---|---|
+| Before the fix: the activity destroyed while the loop runs | The log says "Activity destroy timeout" after 10 s, the process lives on, and relaunching it sits on the system splash screen for good. The main thread is blocked in `onDestroy`, waiting for `android_main` to return, and winit ignores the destroy message that would end it |
+| After: `am start --activity-clear-task` on a running app | `onDestroy` asks the loop to end, the log says "the activity is being destroyed: closing", the process exits cleanly, no timeout. **That launch itself is lost**: the new activity was starting in the process that was ending, so the person lands on the launcher |
+| Back, then a launch | Unchanged: the process ends, the next launch is a cold start on the first page |
+| **Not driven** | A destroy while a background service holds the process (the next step) |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
