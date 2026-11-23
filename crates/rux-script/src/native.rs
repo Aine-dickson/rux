@@ -318,6 +318,36 @@ pub fn app_interface() -> rux_native::Interface {
     }
 }
 
+/// The module behind `background.start`, `background.stop` and
+/// `background.active`: the service that keeps the app's Rust running while it
+/// is not on screen.
+pub const BACKGROUND_MODULE: &str = "native/rux/background";
+
+/// The name a script reaches [`BACKGROUND_MODULE`] by without importing it.
+pub const BACKGROUND_NAME: &str = "background";
+
+/// The background module's interface. `start` takes `{ channel, title, text,
+/// route }`, the permanent notification; `active` is a signal.
+pub fn background_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str, params: &[(&str, &str)]| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            result: "void".into(),
+            is_async: false,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux::background".into(),
+        items: vec![
+            f("start", &[("options", "any")]),
+            f("stop", &[]),
+            Item { name: "active".into(), kind: ItemKind::Signal("bool".into()) },
+        ],
+    }
+}
+
 /// The module behind `notifications.post`, `notifications.cancel` and
 /// `notifications.cancelAll`: local notifications on a channel `rux.toml`
 /// declared.
@@ -451,6 +481,9 @@ pub fn ensure_builtins() {
     if registry::interface(NOTIFICATIONS_MODULE).is_none() {
         let _ = registry::declare(notifications_interface());
     }
+    if registry::interface(BACKGROUND_MODULE).is_none() {
+        let _ = registry::declare(background_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -468,11 +501,12 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         (PERMISSIONS_NAME, PERMISSIONS_MODULE),
         (APP_NAME, APP_MODULE),
         (NOTIFICATIONS_NAME, NOTIFICATIONS_MODULE),
+        (BACKGROUND_NAME, BACKGROUND_MODULE),
     ] {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
         });
-        let own = ["let ", "fn ", "const "].iter().any(|d| code.contains(&format!("{d}{name}")))
+        let own = ["let ", "fn ", "const ", "prop "].iter().any(|d| code.contains(&format!("{d}{name}")))
             || code.contains(&format!("{name} ="))
             || aliases.iter().any(|a| a.local == name);
         // `window` and `app` are read in markup (`{{ window.maximized }}`,

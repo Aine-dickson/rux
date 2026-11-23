@@ -3600,6 +3600,23 @@ Emulator `rux_test`, probe `rux-harness\ud003-and`. The wedge was reproduced fir
 | Back, then a launch | Unchanged: the process ends, the next launch is a cold start on the first page |
 | **Not driven** | A destroy while a background service holds the process (the next step) |
 
+## Background service on Android, 2026-11-23
+
+Emulator `rux_test` (Android 15), probe `rux-harness\ud003-and` with `[background] types = ["dataSync"]`, read with `dumpsys activity services`, `dumpsys notification` and screenshots.
+
+| Case | Result |
+|---|---|
+| `background.start` before notifications were allowed | Throws `permission`, saying to ask from a tap first |
+| `background.start` after allowing | `isForeground=true foregroundId=1 types=0x1` (dataSync), the notification "On shift / Looking for jobs" on channel `shift` (importance 2) under Silent, and `{{ background.active }}` turns `true` |
+| Back with the service running | The process keeps its pid, the launcher is on top, the service is still foreground |
+| Tapping the service's notification with the app in the back | The app returns in the same process on `/board` |
+| `background.stop` | The service and its notification are gone, `active` is `false` |
+| Swiping the app from Recents with the service running | The process and the service both end (`stopWithTask`) |
+| A launch that clears the task while the service runs, before the fix | The new activity's `android_main` panics with `RecreationAttempt` and finishes, the service lives on, and the person lands on the launcher with no way to open the app's screen |
+| The same, with the restart | Log "a second activity in this process: restarting it", the old process dies, Android starts a new one into the app on the first page; the service is gone and `active` is `false` |
+| The restart with a link (`am start --activity-clear-task -a VIEW -d rux-notification:///jobs/77`) | The new process opens on `/jobs/77` |
+| **Not driven** | `background.start` from the back (needs an app thread), `types = ["location"]` without location allowed (`permission`), `keep-awake`, `onTimeout` (Android 15, six hours), the app's Rust calling `rux::background`, a real phone under Doze and vendor killers |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

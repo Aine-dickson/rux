@@ -138,6 +138,26 @@ public class RuxActivity extends NativeActivity {
         nativeVisible(false);
     }
 
+    /**
+     * Whether an activity was ever built in this process. A second one means
+     * the first was destroyed while the process lived on (a background service
+     * kept it, or the system took the activity), and **this process cannot
+     * draw a second screen**: winit builds one event loop per process and
+     * refuses another (`RecreationAttempt`). So the process ends and Android
+     * starts the app again in a fresh one, which can.
+     */
+    private static boolean created;
+
+    @Override
+    protected void attachBaseContext(Context base) {
+        if (created) {
+            android.util.Log.w("rux", "a second activity in this process: restarting it");
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }
+        created = true;
+        super.attachBaseContext(base);
+    }
+
     @Override
     protected void onCreate(Bundle state) {
         loadNativeLibrary();
@@ -1383,9 +1403,9 @@ public class RuxActivity extends NativeActivity {
      * {@code id TAB name TAB importance}. Idempotent: Android keeps what the
      * person changed in settings, and ignores a repeat.
      */
-    private void ruxEnsureChannels(String spec) {
+    static void ensureChannels(Context ctx, String spec) {
         android.app.NotificationManager nm =
-                (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                (android.app.NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE);
         for (String line : spec.split("\n")) {
             String[] part = line.split("\t");
             if (part.length < 3) {
@@ -1410,49 +1430,61 @@ public class RuxActivity extends NativeActivity {
     }
 
     /**
+     * A notification on {@code channel}, whose tap opens the app on
+     * {@code route} (a link to that route, which {@link #link} turns into a
+     * navigation), or just brings the app forward when {@code route} is empty.
+     * Used by both a posted notification and the background service's
+     * permanent one, and by neither with an activity in hand: it needs only a
+     * {@link Context}.
+     */
+    static android.app.Notification buildNotice(
+            Context ctx, int request, String channel, String title, String text, String route, boolean ongoing) {
+        Intent open;
+        if (route.isEmpty()) {
+            open = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+        } else {
+            open = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("rux-notification://" + route));
+            open.setClass(ctx, RuxActivity.class);
+        }
+        if (open == null) {
+            throw new IllegalStateException("this app has no launcher activity to open");
+        }
+        open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        // The request code is part of the PendingIntent's identity: two
+        // notifications must not share one, or the second's route would
+        // replace the first's.
+        android.app.PendingIntent tap =
+                android.app.PendingIntent.getActivity(
+                        ctx,
+                        request,
+                        open,
+                        android.app.PendingIntent.FLAG_IMMUTABLE
+                                | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+        int icon = ctx.getApplicationInfo().icon;
+        android.app.Notification.Builder builder =
+                new android.app.Notification.Builder(ctx, channel)
+                        .setSmallIcon(icon != 0 ? icon : android.R.drawable.ic_dialog_info)
+                        .setContentTitle(title)
+                        .setContentIntent(tap)
+                        .setOngoing(ongoing)
+                        .setAutoCancel(!ongoing);
+        if (!text.isEmpty()) {
+            builder.setContentText(text);
+            builder.setStyle(new android.app.Notification.BigTextStyle().bigText(text));
+        }
+        return builder.build();
+    }
+
+    /**
      * Show the notification called {@code tag} on {@code channel}, or replace
-     * the one with that tag. A tap opens the app on {@code route} (a link to
-     * that route, which {@link #link} turns into a navigation), or just brings
-     * the app forward when {@code route} is empty. Returns {@code null}, or why
-     * it could not.
+     * the one with that tag. Returns {@code null}, or why it could not.
      */
     String ruxNotify(String channels, String tag, String channel, String title, String text, String route) {
         try {
-            ruxEnsureChannels(channels);
-            Intent open;
-            if (route.isEmpty()) {
-                open = getPackageManager().getLaunchIntentForPackage(getPackageName());
-            } else {
-                open = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("rux-notification://" + route));
-                open.setClass(this, RuxActivity.class);
-            }
-            if (open == null) {
-                return "this app has no launcher activity to open";
-            }
-            open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-            // The tag is part of the request code's identity: two notifications
-            // must not share one PendingIntent, or the second's route would
-            // replace the first's.
-            android.app.PendingIntent tap =
-                    android.app.PendingIntent.getActivity(
-                            this,
-                            tag.hashCode(),
-                            open,
-                            android.app.PendingIntent.FLAG_IMMUTABLE
-                                    | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
-            int icon = getApplicationInfo().icon;
-            android.app.Notification.Builder builder =
-                    new android.app.Notification.Builder(this, channel)
-                            .setSmallIcon(icon != 0 ? icon : android.R.drawable.ic_dialog_info)
-                            .setContentTitle(title)
-                            .setContentIntent(tap)
-                            .setAutoCancel(true);
-            if (!text.isEmpty()) {
-                builder.setContentText(text);
-                builder.setStyle(new android.app.Notification.BigTextStyle().bigText(text));
-            }
-            ((android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE))
-                    .notify(tag, 0, builder.build());
+            Context ctx = getApplicationContext();
+            ensureChannels(ctx, channels);
+            ((android.app.NotificationManager) ctx.getSystemService(Context.NOTIFICATION_SERVICE))
+                    .notify(tag, 0, buildNotice(ctx, tag.hashCode(), channel, title, text, route, false));
             return null;
         } catch (RuntimeException e) {
             android.util.Log.w("rux", "notification failed", e);
@@ -1464,7 +1496,7 @@ public class RuxActivity extends NativeActivity {
     void ruxCancelNotification(String tag) {
         try {
             android.app.NotificationManager nm =
-                    (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+                    (android.app.NotificationManager) getApplicationContext().getSystemService(Context.NOTIFICATION_SERVICE);
             if (tag == null) {
                 nm.cancelAll();
             } else {
@@ -1473,6 +1505,172 @@ public class RuxActivity extends NativeActivity {
         } catch (RuntimeException e) {
             android.util.Log.w("rux", "cancelling a notification failed", e);
         }
+    }
+
+    // ---- Background work ---------------------------------------------------
+    //
+    // A foreground service: what lets the app's Rust go on running while the
+    // app is not on screen. It lives in this process, so the app's threads
+    // and statics are the same ones the screen used. The service and the
+    // activity are two things Android can end separately, and the Rust side
+    // is told when the service starts and stops.
+
+    /** The service is running (true) or has stopped (false). */
+    static native void nativeBackgroundActive(boolean active);
+
+    /** The foreground service type each word of {@code rux.toml}'s {@code types} names. */
+    private static int serviceType(String word) {
+        switch (word) {
+            case "location":
+                return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION;
+            case "dataSync":
+                return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC;
+            case "mediaPlayback":
+                return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+            case "connectedDevice":
+                return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE;
+            case "remoteMessaging":
+                return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING;
+            case "camera":
+                return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA;
+            case "microphone":
+                return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE;
+            case "health":
+                return android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_HEALTH;
+            default:
+                return 0;
+        }
+    }
+
+    /** The service {@code rux.toml}'s {@code [background]} declares. */
+    public static class Background extends android.app.Service {
+        /** The permanent notification's id: the one thing the service owns. */
+        private static final int NOTICE = 1;
+
+        private android.os.PowerManager.WakeLock wake;
+
+        @Override
+        public android.os.IBinder onBind(Intent intent) {
+            return null;
+        }
+
+        @Override
+        public void onCreate() {
+            super.onCreate();
+            nativeBackgroundActive(true);
+        }
+
+        @Override
+        public int onStartCommand(Intent intent, int flags, int startId) {
+            try {
+                if (intent == null) {
+                    // Android restarting it with nothing to say: there is no shift.
+                    stopSelf();
+                    return START_NOT_STICKY;
+                }
+                ensureChannels(this, intent.getStringExtra("channels"));
+                android.app.Notification notice =
+                        buildNotice(
+                                this,
+                                NOTICE,
+                                intent.getStringExtra("channel"),
+                                intent.getStringExtra("title"),
+                                intent.getStringExtra("text"),
+                                intent.getStringExtra("route"),
+                                true);
+                if (Build.VERSION.SDK_INT >= 29) {
+                    int mask = 0;
+                    for (String word : intent.getStringExtra("types").split(",")) {
+                        mask |= serviceType(word);
+                    }
+                    startForeground(NOTICE, notice, mask);
+                } else {
+                    startForeground(NOTICE, notice);
+                }
+                if (intent.getBooleanExtra("keepAwake", false) && wake == null) {
+                    android.os.PowerManager pm =
+                            (android.os.PowerManager) getSystemService(Context.POWER_SERVICE);
+                    wake = pm.newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "rux:background");
+                    wake.acquire();
+                }
+            } catch (RuntimeException e) {
+                // Thrown here, on the main thread and after the start call has
+                // returned, it would end the app. Say why in the log and stop.
+                android.util.Log.e("rux", "the background service could not start", e);
+                stopSelf();
+            }
+            return START_NOT_STICKY;
+        }
+
+        /** Android 15 ends a service of a limited type (data sync) after its time. */
+        public void onTimeout(int startId, int fgsType) {
+            android.util.Log.w("rux", "the background service ran out of its time: stopping");
+            stopSelf();
+        }
+
+        @Override
+        public void onDestroy() {
+            if (wake != null && wake.isHeld()) {
+                wake.release();
+            }
+            wake = null;
+            nativeBackgroundActive(false);
+            super.onDestroy();
+        }
+    }
+
+    /**
+     * Start the service, or update its notification when it is running.
+     * Returns {@code null}, or {@code kind: why}: {@code background} when
+     * Android will not start one from the back (12 and later), {@code
+     * permission} when the platform refuses it for a permission, {@code
+     * service} for anything else.
+     */
+    String ruxBackgroundStart(
+            String channels,
+            String channel,
+            String title,
+            String text,
+            String route,
+            String types,
+            boolean keepAwake) {
+        try {
+            Context ctx = getApplicationContext();
+            Intent start = new Intent(ctx, Background.class);
+            start.putExtra("channels", channels);
+            start.putExtra("channel", channel);
+            start.putExtra("title", title);
+            start.putExtra("text", text);
+            start.putExtra("route", route);
+            start.putExtra("types", types);
+            start.putExtra("keepAwake", keepAwake);
+            ctx.startForegroundService(start);
+            return null;
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "starting the background service failed", e);
+            String kind = "service";
+            if (e.getClass().getName().endsWith("ForegroundServiceStartNotAllowedException")) {
+                kind = "background";
+            } else if (e instanceof SecurityException) {
+                kind = "permission";
+            }
+            return kind + ": " + e.getMessage();
+        }
+    }
+
+    /** Stop the service. Nothing running is not an error. */
+    void ruxBackgroundStop() {
+        try {
+            Context ctx = getApplicationContext();
+            ctx.stopService(new Intent(ctx, Background.class));
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "stopping the background service failed", e);
+        }
+    }
+
+    /** Send the app's task to the back, as Home would: the screen goes, the process stays. */
+    void ruxMoveToBack() {
+        runOnUiThread(() -> moveTaskToBack(true));
     }
 
     /**

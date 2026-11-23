@@ -15,6 +15,7 @@
 //! with [`Module`], which is what the attributes generate.
 
 pub mod app;
+pub mod background;
 mod exec;
 pub mod notifications;
 pub mod permissions;

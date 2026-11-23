@@ -2531,6 +2531,70 @@ notifications.cancelAll();
   icon), sound or vibration choices beyond the channel's `importance`, action
   buttons, and push from a server.
 
+## Background work
+
+What lets the app's Rust go on running while the app is not on screen: a rider
+"on shift" keeps getting new jobs, and the app's own thread posts a
+[notification](#notifications) when one comes. On Android it is a **foreground
+service**, which Android shows as a permanent notification the person can see and
+tap.
+
+```toml
+[permissions.notifications]
+why = "Tells you when a new job arrives"
+
+[channels.shift]
+name = "On shift"
+importance = "low"          # it stays up, so keep it quiet
+
+[background]
+types = ["location"]        # what the service is for; Android refuses one that does not say
+keep-awake = true           # optional: hold the processor awake with the screen off
+```
+
+```rux
+background.start({ channel: "shift", title: "On shift", text: "Looking for jobs", route: "/board" });
+background.stop();
+{{ background.active }}     // a signal: true while the service runs
+```
+
+- **`start` is checked in this order.** `[background]` is declared, else
+  `undeclared`. The channel is declared, else `undeclared`.
+  `[permissions.notifications]` is declared, else `undeclared`. Then on Android:
+  notifications are allowed, else `permission`; and for a `location`, `camera`
+  or `microphone` type, that permission is allowed too, else `permission`
+  (Android 14 refuses the service otherwise). Starting while it runs updates the
+  notification.
+- **Android 12 and later start a service only while the app is in front**, so
+  call `start` from a tap. From the back it throws `background`.
+- **`types`** are `location`, `dataSync`, `mediaPlayback`, `connectedDevice`,
+  `remoteMessaging`, `camera`, `microphone` and `health`. The type a service
+  declares is the type it is held to: Android 15 ends a `dataSync` service after
+  six hours in a day (`background.active` then turns `false`), a `location` one
+  has no such limit.
+- **Back goes to the back.** While the service runs, Back at the root sends the
+  app to the back, as Home does, instead of closing it, so the screen and the
+  service stay one process. The notification's tap opens the app on its `route`.
+- **The service ends with the process, and so does the shift.** Swiping the app
+  away from Recents stops it. So does a launch that finds the app's screen gone
+  while the service lived on (Android took the activity back, or `close()` was
+  called on shift): this process cannot draw a second screen, so it ends, and
+  Android starts the app again in a fresh one with the intent it was opened
+  with (a tapped notification's route survives). **After a restart
+  `background.active` is `false`: keep "on shift" in the app's own saved state
+  (`settings`) and call `start` again when the app opens.**
+- **`{{ background.active }}` in markup needs the page's script to mention
+  `background` once** (a call is enough), as the name is linked from the
+  script; or write `use native::rux::background;`. A file with a `background` of
+  its own (a `prop background`, a `let background`) keeps it.
+- **The app's Rust** has the same calls: `rux::background::start(Options::new(
+  "shift", "On shift").text("Looking for jobs").route("/board"))?`, `stop()`,
+  `active()` and `on_change(|active| ...)`. Poll on your own thread while
+  `active()`.
+- **Targets.** Android is built. On the desktop `start` and `stop` succeed and
+  `active` follows them: the process runs anyway, and closing the main window
+  still quits. On the web they throw `unsupported`.
+
 ## Talking to the outside
 
 | Call | Does |

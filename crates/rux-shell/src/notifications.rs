@@ -128,7 +128,7 @@ pub(crate) fn background() -> Option<Background> {
 
 /// The channels as the platform is told them, one `id TAB name TAB importance`
 /// per line.
-fn channel_spec() -> String {
+pub(crate) fn channel_spec() -> String {
     channels().iter().map(|c| format!("{}\t{}\t{}", c.id, c.name, c.importance.word())).collect::<Vec<_>>().join("\n")
 }
 
@@ -293,6 +293,11 @@ mod platform {
     }
 }
 
+/// The declared tables are the process's, and tests in other modules set them
+/// too (`background.rs`): a test that sets or reads them holds this.
+#[cfg(test)]
+pub(crate) static TABLE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,6 +350,7 @@ mod tests {
     /// would overwrite each other's.
     #[test]
     fn what_was_declared_is_what_is_read_back_and_what_a_post_is_held_to() {
+        let _table = TABLE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         set_channels(&[("jobs", "New jobs", "high"), ("shift", "On shift", "low"), ("odd", "Odd", "whatever")]);
         set_background(&["location", "dataSync"], true);
 

@@ -93,6 +93,16 @@ reference half does not wait: `docs/05-as-built.md` describes the tip.
 | Declaring `camera` changes what a file input's `capture` does | Android refuses its camera app to an app that lists the camera permission and has not been given it, and lets an app that never listed it straight through. So declaring `[permissions.camera]` would have broken a `capture` input that worked, and the input now asks first. If the person refuses, the picker opens instead | `05-as-built` file inputs | open |
 | An app whose HTTP calls are all in `native/` Rust once had no `INTERNET` in a release | The build looked for an address in `.rux` and `.css` files only. It now also reads `native/` (an address, or a dependency such as `reqwest`); an app whose connections it still cannot see says `network = true` | `05-as-built` | closed |
 
+### Background work (2026-11-23)
+
+| Trap | What actually happens, and why it is right | Destination | Status |
+|---|---|---|---|
+| The shift is over after the app was reopened | The service lives in the app's process, and the screen cannot be drawn twice in one process (winit builds one event loop). When Android takes the activity back while the service runs, or `close()` is called on shift, the next launch ends the process and starts a fresh one: `background.active` is `false` there. Keep "on shift" in `settings` and call `background.start` again when the app opens | `07-script` "Background work" | documented |
+| Swiping the app from Recents stops the service | The task and the process go with it (`stopWithTask`). A service that survives a swipe needs its own process, which Rux does not build | `07-script` "Background work" | documented |
+| `background.start` throws `background` | Android 12 and later start a foreground service only while the app is in front. Start it from a tap, not from a timer or a thread | `07-script` "Background work" | documented |
+| A `dataSync` shift stops after six hours | Android 15 limits that service type to six hours in a day. A rider's shift that shares a position is a `location` service, which has no limit | `07-script` "Background work" | documented |
+| `{{ background.active }}` is undefined in a page | The name is linked from the script, and a template-only mention is not seen. Mention `background` in the page's script once, or write `use native::rux::background;` | `07-script` "Background work" | documented |
+
 ### From writing the `rux new` template (2026-09-17)
 
 Every row here was met while writing the scaffold as a real app and driving it,

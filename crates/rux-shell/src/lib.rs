@@ -28,6 +28,7 @@
 
 mod dialogs;
 /// `<audio>` and `<video>`: what each element plays, and its events.
+mod background;
 mod media;
 mod notifications;
 mod image_events;
@@ -9638,6 +9639,16 @@ impl ApplicationHandler<RuxEvent> for App {
                     // the splash screen.
                     if let Key::Named(NamedKey::BrowserBack) = event.logical_key {
                         if !self.on_back() {
+                            // **With a background service running, Back is
+                            // Home**: closing would end the screen and leave
+                            // the service with no way back to one (winit builds
+                            // only one event loop a process), so the task goes
+                            // to the back and the screen stays alive.
+                            #[cfg(target_os = "android")]
+                            if rux_runtime::native::background::active() {
+                                android_move_to_back();
+                                return;
+                            }
                             self.close_requested(event_loop);
                         }
                         return;
@@ -12589,7 +12600,9 @@ fn install_app_module() {
     let _ = install(Module { interface: rux_runtime::builtins::app_interface(), calls });
     // A window exists before the shell can say otherwise, and the first
     // report fills the signal. The platform's own reports follow.
-    rux_runtime::native::app::set_visible(true);
+    if rux_runtime::native::app::STATE.get().is_none() {
+        rux_runtime::native::app::set_visible(true);
+    }
     #[cfg(target_arch = "wasm32")]
     watch_tab_visibility();
 }
@@ -12620,6 +12633,7 @@ fn install_rux_modules() {
     window_module::install_window();
     install_app_module();
     notifications::install_notifications();
+    background::install_background();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading
@@ -13971,6 +13985,91 @@ pub(crate) fn android_notify(
     .map_err(|e| format!("could not reach Android: {e}"))?
 }
 
+/// Start the background service, or update its notification (see
+/// `RuxActivity.ruxBackgroundStart`). `Err` carries `kind: why`.
+#[cfg(target_os = "android")]
+pub(crate) fn android_background_start(
+    channels: &str,
+    channel: &str,
+    title: &str,
+    text: &str,
+    route: &str,
+    types: &str,
+    keep_awake: bool,
+) -> Result<(), String> {
+    let Ok(activity) = ACTIVITY.lock() else { return Err("service: the app has no activity".into()) };
+    let Some(activity) = activity.as_ref() else { return Err("service: the app has no activity yet".into()) };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        let strings = [channels, channel, title, text, route, types]
+            .iter()
+            .map(|s| env.new_string(s))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut args: Vec<jni::JValue> = strings.iter().map(|s| jni::JValue::Object(s)).collect();
+        args.push(jni::JValue::Bool(keep_awake));
+        let why = env
+            .call_method(
+                activity,
+                jni::jni_str!("ruxBackgroundStart"),
+                jni::jni_sig!(
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Z)Ljava/lang/String;"
+                ),
+                &args,
+            )?
+            .l()?;
+        if why.is_null() {
+            return Ok::<_, jni::errors::Error>(Ok(()));
+        }
+        let why = env.cast_local::<jni::objects::JString>(why)?;
+        Ok(Err(why.try_to_string(env)?))
+    })
+    .map_err(|e| format!("service: could not reach Android: {e}"))?
+}
+
+/// Stop the background service.
+#[cfg(target_os = "android")]
+pub(crate) fn android_background_stop() {
+    android_call_activity(jni::jni_str!("ruxBackgroundStop"));
+}
+
+/// Send the app's task to the back, as Home would.
+#[cfg(target_os = "android")]
+pub(crate) fn android_move_to_back() {
+    android_call_activity(jni::jni_str!("ruxMoveToBack"));
+}
+
+/// Call a no-argument, no-result method of the activity.
+#[cfg(target_os = "android")]
+fn android_call_activity(name: &jni::strings::JNIStr) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        env.call_method(activity, name, jni::jni_sig!("()V"), &[])?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// The service started or stopped. Called from Java's service on Android's
+/// main thread.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeBackgroundActive<'frame>(
+    _env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    active: jni::sys::jboolean,
+) {
+    rux_runtime::native::background::set_active(active);
+}
+
 /// Take a notification away by its tag, or every one for `None`.
 #[cfg(target_os = "android")]
 pub(crate) fn android_cancel_notification(tag: Option<&str>) {
@@ -14803,10 +14902,19 @@ fn run_android_with(
     // launch a cold start, which is the only kind that works.
     //
     // After `run_app`, so everything the loop owns has already been dropped.
+    //
+    // **Unless the background service is running**: ending the process would
+    // end the shift with it. The screen is gone and cannot come back in this
+    // process (winit builds one event loop), so the service and the app's
+    // threads carry on, and a later launch starts a fresh process.
     // The activity is finished by `android-activity` when `android_main`
     // returns, and it does not get the chance here; Android tears down an
     // activity whose process is gone, which is the same outcome by a shorter
     // road.
+    if rux_runtime::native::background::active() {
+        android_log("the screen is gone and the background service runs on");
+        return;
+    }
     std::process::exit(0);
 }
 
