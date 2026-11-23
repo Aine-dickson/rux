@@ -78,6 +78,8 @@ accesskit_winit = "0.33.2"
 # by way of winit and arboard, so it costs a feature flag and no build time.
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = ["Win32_UI_WindowsAndMessaging", "Win32_Globalization", "Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_HiDpi", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }
+# Toasts: WinRT's notification classes, which `windows-sys` has no bindings for.
+windows = { version = "0.62", features = ["UI_Notifications", "Data_Xml_Dom", "Foundation", "Win32_UI_Shell", "Win32_System_Registry", "Win32_Foundation"] }
 
 # Android reaches winit through `android-activity`, which is why an Android app
 # is a cdylib exporting `android_main` rather than a binary with a `fn main`.

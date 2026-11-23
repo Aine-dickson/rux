@@ -457,6 +457,7 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
         Some(m) => {
             // Where `settings.set` keeps this app's values.
             rux_shell::set_app_id(&m.id);
+            rux_shell::set_app_name(&m.name);
             let entries: Vec<_> = m
                 .permissions
                 .entries

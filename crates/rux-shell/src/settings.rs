@@ -22,6 +22,22 @@ use std::sync::Mutex;
 use rux_runtime::native::{install, Any, Call, Error, Module};
 
 static APP_ID: Mutex<Option<String>> = Mutex::new(None);
+static APP_NAME: Mutex<Option<String>> = Mutex::new(None);
+
+/// What the app is called (`[app] name`), where the system names it to the
+/// person: a Windows toast's header. Set beside [`set_app_id`].
+pub fn set_app_name(name: &str) {
+    let mut slot = APP_NAME.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.is_none() && !name.trim().is_empty() {
+        *slot = Some(name.trim().to_string());
+    }
+}
+
+/// The app's name, or its id when none was set.
+#[cfg(windows)]
+pub(crate) fn app_name() -> String {
+    APP_NAME.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(app_id)
+}
 
 /// Which app this process is, for where its settings live: the `[app] id` of
 /// its `rux.toml`. Set before the first document loads; the first one wins.
@@ -40,7 +56,7 @@ pub(crate) fn app_id_or(fallback: &str) -> String {
     app_id()
 }
 
-fn app_id() -> String {
+pub(crate) fn app_id() -> String {
     APP_ID.lock().unwrap_or_else(|e| e.into_inner()).clone().unwrap_or_else(|| "rux".to_string())
 }
 

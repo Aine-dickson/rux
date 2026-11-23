@@ -13,9 +13,8 @@
 //! `[permissions.notifications]` is declared, and that the person has allowed
 //! notifications (`permission`), then hands the notice to the platform.
 //!
-//! The platforms: Android and the web are built here; Windows is built after
-//! them (UD-003 step 6) and, like macOS and Linux until then, throws
-//! `unsupported`.
+//! The platforms: Android, the web and Windows are built here; macOS and
+//! Linux throw `unsupported`.
 
 // The background table is read by the service built on it (UD-003 step 4), and
 // the importance's loudness by the web and Windows backends (steps 5 and 6).
@@ -366,12 +365,137 @@ mod platform {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
+/// Windows toasts, through WinRT. An unpackaged app has to have an
+/// AppUserModelID registered under `HKCU\Software\Classes\AppUserModelId`
+/// before a toast shows (its `DisplayName` is the toast's header), and the
+/// process has to name itself with it. Both are done at the first post. A tap
+/// is heard while the process runs; after it quits a click does nothing.
+#[cfg(windows)]
+mod platform {
+    use super::*;
+    use std::collections::HashMap;
+    use windows::core::{HSTRING, PCWSTR};
+    use windows::Data::Xml::Dom::XmlDocument;
+    use windows::Foundation::TypedEventHandler;
+    use windows::UI::Notifications::{ToastNotification, ToastNotificationManager};
+
+    /// What the shell does with a tapped toast's route, set by the loop.
+    static TAP: Mutex<Option<Box<dyn Fn(String) + Send + Sync>>> = Mutex::new(None);
+    /// The channel each live toast was posted on: removing one by tag needs its group.
+    static GROUPS: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
+    static READY: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+
+    pub(crate) fn set_tap(tap: impl Fn(String) + Send + Sync + 'static) {
+        *TAP.lock().unwrap_or_else(|e| e.into_inner()) = Some(Box::new(tap));
+    }
+
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+
+    fn register() -> Result<(), String> {
+        use windows::Win32::System::Registry::{RegSetKeyValueW, HKEY_CURRENT_USER, REG_SZ};
+        use windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+        let id = crate::settings::app_id();
+        let name = crate::settings::app_name();
+        let key = wide(&format!("Software\\Classes\\AppUserModelId\\{id}"));
+        let value = wide(&name);
+        let status = unsafe {
+            RegSetKeyValueW(
+                HKEY_CURRENT_USER,
+                PCWSTR(key.as_ptr()),
+                windows::core::w!("DisplayName"),
+                REG_SZ.0,
+                Some(value.as_ptr().cast()),
+                (value.len() * 2) as u32,
+            )
+        };
+        if status.0 != 0 {
+            return Err(format!("could not register the app with Windows (error {})", status.0));
+        }
+        unsafe { SetCurrentProcessExplicitAppUserModelID(PCWSTR(wide(&id).as_ptr())) }.map_err(|e| e.message())
+    }
+
+    fn ready() -> Result<(), Error> {
+        READY
+            .get_or_init(register)
+            .clone()
+            .map_err(|why| Error::new("notification", format!("Windows would not show it: {why}")))
+    }
+
+    fn escape(text: &str) -> String {
+        text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;")
+    }
+
+    fn fail(e: windows::core::Error) -> Error {
+        Error::new("notification", format!("Windows would not show it: {}", e.message()))
+    }
+
+    pub(super) fn post(notice: &Notice, channel: &Channel) -> Result<(), Error> {
+        ready()?;
+        let silent = if channel.importance.audible() { "" } else { "<audio silent=\"true\"/>" };
+        let xml = format!(
+            "<toast><visual><binding template=\"ToastGeneric\"><text>{}</text><text>{}</text></binding></visual>{silent}</toast>",
+            escape(&notice.title),
+            escape(&notice.text),
+        );
+        let doc = XmlDocument::new().map_err(fail)?;
+        doc.LoadXml(&HSTRING::from(xml)).map_err(fail)?;
+        let toast = ToastNotification::CreateToastNotification(&doc).map_err(fail)?;
+        toast.SetTag(&HSTRING::from(&notice.id)).map_err(fail)?;
+        toast.SetGroup(&HSTRING::from(&notice.channel)).map_err(fail)?;
+        if channel.importance == Importance::Min {
+            toast.SetSuppressPopup(true).map_err(fail)?;
+        }
+        if let Some(route) = notice.route.clone() {
+            toast
+                .Activated(&TypedEventHandler::new(move |_, _| {
+                    if let Some(tap) = TAP.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+                        tap(route.clone());
+                    }
+                    Ok(())
+                }))
+                .map_err(fail)?;
+        }
+        let notifier = ToastNotificationManager::CreateToastNotifierWithId(&HSTRING::from(crate::settings::app_id())).map_err(fail)?;
+        notifier.Show(&toast).map_err(fail)?;
+        GROUPS.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(notice.id.clone(), notice.channel.clone());
+        Ok(())
+    }
+
+    pub(super) fn cancel(id: &str) -> Result<(), Error> {
+        let group = GROUPS.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|g| g.remove(id));
+        if let Some(group) = group {
+            let history = ToastNotificationManager::History().map_err(fail)?;
+            let _ = history.RemoveGroupedTagWithId(
+                &HSTRING::from(id),
+                &HSTRING::from(group),
+                &HSTRING::from(crate::settings::app_id()),
+            );
+        }
+        Ok(())
+    }
+
+    pub(super) fn cancel_all() -> Result<(), Error> {
+        GROUPS.lock().unwrap_or_else(|e| e.into_inner()).take();
+        let history = ToastNotificationManager::History().map_err(fail)?;
+        let _ = history.ClearWithId(&HSTRING::from(crate::settings::app_id()));
+        Ok(())
+    }
+}
+
+/// Run `tap` with a tapped toast's route, from a thread of Windows' own.
+#[cfg(windows)]
+pub(crate) fn on_tap(tap: impl Fn(String) + Send + Sync + 'static) {
+    platform::set_tap(tap);
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32", windows)))]
 mod platform {
     use super::*;
 
     fn unsupported() -> Error {
-        Error::new("unsupported", "this platform cannot show notifications yet: Android and the web can")
+        Error::new("unsupported", "this platform cannot show notifications yet: Android, the web and Windows can")
     }
 
     pub(super) fn post(_notice: &Notice, _channel: &Channel) -> Result<(), Error> {

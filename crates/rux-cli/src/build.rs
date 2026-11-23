@@ -1104,6 +1104,7 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
     // Which app this is, for where `settings.set` keeps its values. First, so
     // nothing the app runs at start can read another app's.
     main = with_registration(&main, &format!("    rux_shell::set_app_id({});\n", literal(&manifest.id)));
+    main = with_registration(&main, &format!("    rux_shell::set_app_name({});\n", literal(&manifest.name)));
     // What `[permissions]` declared, for `permissions.request` to hold a script to.
     main = with_registration(&main, &permissions_registration(&manifest));
     main = with_registration(&main, &notifications_registration(&manifest));

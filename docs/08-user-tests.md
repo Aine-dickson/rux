@@ -3632,6 +3632,21 @@ Edge over CDP, probe `rux-harness퀃-web` (a real `rux build --target web` bundl
 | `notifications.cancel(id)` and `cancelAll()` | The named one closes, then none are left |
 | **Not driven** | The OS toast itself and its sound (headless-style capture), a phone browser (Chrome on Android throws from `new Notification` without a service worker, which the call reports as `unsupported`), Safari and Firefox, a tap after the page was reloaded (the notification is gone with it) |
 
+## Notifications on Windows, 2026-11-23
+
+Windows 11, probe `rux-harness퀃-win` run with `target/debug/rux run`, driven with the mouse and read by full-screen screenshots (`act.ps1`, `tap.ps1`). `rux run` registers the dev app's id under `HKCU\Software\Classes\AppUserModelId` at the first post, with the `[app] name` as its header.
+
+| Case | Result |
+|---|---|
+| `notifications.post` on a `high` channel | A toast headed `ud003-web` (the app's name) with the title and text, shown bottom right |
+| The same on a `low` channel | Posted without error and silent (`<audio silent>`); its toast was not told apart from the loud one by eye, the sound was not heard |
+| A channel `rux.toml` does not declare | Throws `undeclared`, naming the channels it declares |
+| Tapping the toast with `route: "/jobs/41"` | The window's `route` reads `/jobs/41` |
+| The same with the window minimized | The window comes back (restored and in front) on the route |
+| `notifications.cancel(id)` while the toast shows | The toast goes |
+| `notifications.cancelAll()` while a toast shows | The toast goes |
+| **Not driven** | A tap after the app quit (does nothing, recorded), `min` importance (`SuppressPopup`, action center only), the Action Center list, a packaged or installed build (only `rux run` was driven), the toast's sound, macOS and Linux (`unsupported`) |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

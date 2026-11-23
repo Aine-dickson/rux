@@ -53,7 +53,7 @@ mod window_module;
 
 pub use notifications::{set_background, set_channels};
 pub use permissions::set_permissions;
-pub use settings::set_app_id;
+pub use settings::{set_app_id, set_app_name};
 use std::collections::HashMap;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -239,6 +239,11 @@ enum RuxEvent {
     /// link that reached a running app.
     #[cfg(target_arch = "wasm32")]
     WebLink(String),
+    /// A toast the app posted was tapped (Windows): its route. The main
+    /// window comes forward and the route is pushed, as a link to a running
+    /// app is on Android.
+    #[cfg(windows)]
+    NoticeTapped(String),
     /// Android is destroying the activity, whatever the reason (the system
     /// took it, another launch cleared the task). See
     /// [`Java_dev_ruxlang_shell_RuxActivity_nativeDestroyed`].
@@ -9252,6 +9257,9 @@ impl ApplicationHandler<RuxEvent> for App {
                 }
             }
 
+            // Handled by the shell, which owns the windows.
+            #[cfg(windows)]
+            RuxEvent::NoticeTapped(_) => return,
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             RuxEvent::Access(event) => {
                 match event.window_event {
@@ -10342,6 +10350,21 @@ impl ApplicationHandler<RuxEvent> for Shell {
                         let id = app.state.as_ref().map(|s| s.window.id());
                         window_module::as_window(id, || app.user_event(event_loop, RuxEvent::PickedFiles { files }));
                     }
+                }
+            }
+            #[cfg(windows)]
+            RuxEvent::NoticeTapped(route) => {
+                if let Some(app) = self.main_app() {
+                    let id = app.state.as_ref().map(|s| s.window.id());
+                    if let Some(state) = app.state.as_ref() {
+                        state.window.set_minimized(false);
+                        state.window.focus_window();
+                    }
+                    window_module::as_window(id, || {
+                        if app.document.open_link(&route, true) {
+                            app.request_redraw();
+                        }
+                    });
                 }
             }
             // Assistive technology names its window.
@@ -12699,6 +12722,13 @@ fn wake_on_answers(event_loop: &EventLoop<RuxEvent>) {
         let proxy = proxy.clone();
         video::set_frame_wake(move || {
             let _ = proxy.send_event(RuxEvent::VideoFrame);
+        });
+    }
+    #[cfg(windows)]
+    {
+        let proxy = proxy.clone();
+        notifications::on_tap(move |route| {
+            let _ = proxy.send_event(RuxEvent::NoticeTapped(route));
         });
     }
     rux_runtime::host::set_waker(move || {
