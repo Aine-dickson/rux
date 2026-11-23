@@ -465,6 +465,14 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
                 .collect();
             let android: Vec<&str> = m.permissions.android.iter().map(String::as_str).collect();
             rux_shell::set_permissions(&entries, &android);
+            let channels: Vec<_> =
+                m.channels.iter().map(|c| (c.id.as_str(), c.name.as_str(), c.importance.word())).collect();
+            rux_shell::set_channels(&channels);
+            let (types, keep_awake) = match &m.background {
+                Some(b) => (b.types.iter().map(String::as_str).collect::<Vec<_>>(), b.keep_awake),
+                None => (Vec::new(), false),
+            };
+            rux_shell::set_background(&types, keep_awake);
             m.window_settings()
         }
         None => rux_shell::WindowSettings::default(),

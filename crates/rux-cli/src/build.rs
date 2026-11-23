@@ -183,6 +183,27 @@ fn permissions_registration(manifest: &Manifest) -> String {
     format!("    rux_shell::set_permissions(&[{}], &[{}]);\n", entries.join(", "), android.join(", "))
 }
 
+/// The calls that hand the shell what `[channels]` and `[background]`
+/// declared. Always written, empty tables included, so an app that declared
+/// nothing is one whose `notifications.post` throws `undeclared`.
+fn notifications_registration(manifest: &Manifest) -> String {
+    let channels: Vec<String> = manifest
+        .channels
+        .iter()
+        .map(|c| format!("({}, {}, {})", literal(&c.id), literal(&c.name), literal(c.importance.word())))
+        .collect();
+    let (types, keep_awake) = match &manifest.background {
+        Some(b) => (b.types.iter().map(|t| literal(t)).collect::<Vec<_>>(), b.keep_awake),
+        None => (Vec::new(), false),
+    };
+    format!(
+        "    rux_shell::set_channels(&[{}]);\n    rux_shell::set_background(&[{}], {});\n",
+        channels.join(", "),
+        types.join(", "),
+        keep_awake
+    )
+}
+
 fn literal(text: &str) -> String {
     let mut out = String::with_capacity(text.len() + 2);
     out.push('"');
@@ -1085,6 +1106,7 @@ pub fn run(options: Options) -> Result<PathBuf, String> {
     main = with_registration(&main, &format!("    rux_shell::set_app_id({});\n", literal(&manifest.id)));
     // What `[permissions]` declared, for `permissions.request` to hold a script to.
     main = with_registration(&main, &permissions_registration(&manifest));
+    main = with_registration(&main, &notifications_registration(&manifest));
     // A release build's script, compiled (step 9 of docs/archive/language-build-log.md).
     let _ = std::fs::remove_file(work.join("src").join("rux_aot.rs"));
     if options.release {
@@ -1357,6 +1379,27 @@ mod tests {
         );
     }
 
+    #[test]
+    fn the_declared_channels_and_service_reach_the_wrapper_even_when_there_are_none() {
+        assert_eq!(
+            notifications_registration(&manifest()),
+            "    rux_shell::set_channels(&[]);\n    rux_shell::set_background(&[], false);\n"
+        );
+        let mut m = manifest();
+        m.channels = vec![crate::manifest::Channel {
+            id: "jobs".into(),
+            name: "New \"jobs\"".into(),
+            importance: crate::manifest::Importance::High,
+        }];
+        m.background =
+            Some(crate::manifest::Background { types: vec!["location".into(), "dataSync".into()], keep_awake: true });
+        assert_eq!(
+            notifications_registration(&m),
+            "    rux_shell::set_channels(&[(\"jobs\", \"New \\\"jobs\\\"\", \"high\")]);\n    \
+             rux_shell::set_background(&[\"location\", \"dataSync\"], true);\n"
+        );
+    }
+
     fn manifest() -> Manifest {
         Manifest {
             root: PathBuf::from("."),
@@ -1370,6 +1413,8 @@ mod tests {
             link_hosts: Vec::new(),
             window: Default::default(),
             permissions: Default::default(),
+            channels: Vec::new(),
+            background: None,
             dev_watch: Vec::new(),
             build_before: Vec::new(),
         }

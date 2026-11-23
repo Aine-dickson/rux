@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use crate::android::{Abi, Toolchain, MIN_API};
-use crate::manifest::{Manifest, Permissions};
+use crate::manifest::{Background, Manifest, Permissions, SERVICE_TYPES};
 
 /// The API level the app declares it was built against.
 ///
@@ -560,7 +560,7 @@ fn native_uses_network(root: &Path) -> bool {
 /// Precise location asks for the coarse permission too: Android 12 lets the
 /// person choose "approximate" in the dialog and refuses an app that did not
 /// declare both.
-fn permission_lines(permissions: &Permissions, internet: bool) -> String {
+fn permission_lines(permissions: &Permissions, background: Option<&Background>, internet: bool) -> String {
     let mut seen: Vec<String> = Vec::new();
     if internet {
         seen.push("android.permission.INTERNET".into());
@@ -610,7 +610,39 @@ fn permission_lines(permissions: &Permissions, internet: bool) -> String {
     for raw in &permissions.android {
         group(None, &[raw.as_str()]);
     }
+    // The service `[background]` asks for: the general permission, one for
+    // each type it declares (Android 14 refuses a service whose type has no
+    // permission), and the wake lock when it holds the processor awake.
+    if let Some(b) = background {
+        let mut names = vec!["android.permission.FOREGROUND_SERVICE".to_string()];
+        for ty in &b.types {
+            if let Some((_, permission)) = SERVICE_TYPES.iter().find(|(name, _)| name == ty) {
+                names.push(format!("android.permission.{permission}"));
+            }
+        }
+        if b.keep_awake {
+            names.push("android.permission.WAKE_LOCK".to_string());
+        }
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        group(Some("Keeps the app running while it is not on screen."), &names);
+    }
     out
+}
+
+/// The `<service>` the app's background work runs in, or nothing when
+/// `[background]` is absent. Declared with the types the author named, since
+/// Android 14 refuses a foreground service that does not say what it is for.
+/// `stopWithTask`: swiping the app away from Recents ends the shift, because
+/// the process goes with it.
+fn service_element(manifest: &Manifest) -> String {
+    let Some(b) = &manifest.background else {
+        return String::new();
+    };
+    format!(
+        "\n        <!-- The foreground service `background.start` runs in. -->\n        <service\n            android:name=\"{}$Background\"\n            android:exported=\"false\"\n            android:stopWithTask=\"true\"\n            android:foregroundServiceType=\"{}\" />",
+        ACTIVITY_CLASS,
+        b.types.join("|")
+    )
 }
 
 fn android_manifest(manifest: &Manifest, dev: bool, network: bool) -> String {
@@ -621,7 +653,7 @@ fn android_manifest(manifest: &Manifest, dev: bool, network: bool) -> String {
     } else {
         ""
     };
-    let internet = format!("{internet}{}", permission_lines(&manifest.permissions, dev || network));
+    let internet = format!("{internet}{}", permission_lines(&manifest.permissions, manifest.background.as_ref(), dev || network));
     // A dev build is debuggable, as Gradle's debug builds are. It is what lets
     // `rux run --device` write hot reload's token into the app's own files with
     // `adb shell run-as`, where no other app can read it.
@@ -665,11 +697,12 @@ fn android_manifest(manifest: &Manifest, dev: bool, network: bool) -> String {
             android:name="{activity}$Files"
             android:authorities="{id}.ruxfiles"
             android:exported="false"
-            android:grantUriPermissions="true" />
+            android:grantUriPermissions="true" />{service}
     </application>
 </manifest>
 "#,
         id = manifest.id,
+        service = service_element(manifest),
         version = manifest.version,
         code = version_code(&manifest.version),
         label = escape(&manifest.name),
@@ -797,6 +830,8 @@ mod tests {
             link_hosts: Vec::new(),
             window: Default::default(),
             permissions: Default::default(),
+            channels: Vec::new(),
+            background: None,
             dev_watch: Vec::new(),
             build_before: Vec::new(),
         }
@@ -969,6 +1004,34 @@ mod tests {
         assert!(!xml.contains("RECORD_AUDIO") && !xml.contains("INTERNET"), "{xml}");
         assert!(xml.contains("<!-- Shows the rider - - live -->"), "a `--` would end the comment: {xml}");
         assert!(xml.contains("<!-- New jobs -->"), "{xml}");
+    }
+
+    /// `[background]` writes the service with its types and the permissions
+    /// Android 14 wants for each, and nothing when it is absent.
+    #[test]
+    fn a_declared_background_writes_the_service_and_its_permissions() {
+        let none = android_manifest(&manifest("Task List"), false, false);
+        assert!(!none.contains("<service") && !none.contains("FOREGROUND_SERVICE"), "{none}");
+
+        let m = declared(
+            "\n[permissions.notifications]\nwhy = \"New jobs\"\n\
+             [permissions.location]\nwhy = \"Shows the rider\"\n\
+             [background]\ntypes = [\"location\", \"dataSync\"]\nkeep-awake = true\n",
+        );
+        let xml = android_manifest(&m, false, false);
+        for name in ["FOREGROUND_SERVICE", "FOREGROUND_SERVICE_LOCATION", "FOREGROUND_SERVICE_DATA_SYNC", "WAKE_LOCK"] {
+            assert!(xml.contains(&format!("android.permission.{name}\"")), "{name} in {xml}");
+        }
+        assert!(xml.contains("android:name=\"dev.ruxlang.shell.RuxActivity$Background\""), "{xml}");
+        assert!(xml.contains("android:foregroundServiceType=\"location|dataSync\""), "{xml}");
+        assert!(xml.contains("android:stopWithTask=\"true\"") && xml.contains("android:exported=\"false\""), "{xml}");
+
+        // No wake lock unless asked for.
+        let calm = declared(
+            "\n[permissions.notifications]\nwhy = \"x\"\n[background]\ntypes = [\"dataSync\"]\n",
+        );
+        let xml = android_manifest(&calm, false, false);
+        assert!(!xml.contains("WAKE_LOCK") && !xml.contains("FOREGROUND_SERVICE_LOCATION"), "{xml}");
     }
 
     #[test]

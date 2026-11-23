@@ -3562,6 +3562,15 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | `app.state` on Android | not built or run | `onStart` and `onStop` call `nativeVisible`. **Written, not compiled**: the Java and the JNI function have not been through an NDK build here |
 | A window covered by another | not driven | Counts as in front by design (only minimizing hides) |
 
+## Channels and background in rux.toml, 2026-11-23
+
+| Case | Where | Result |
+|---|---|---|
+| `[channels.*]` and `[background]` read, written, refused | `cargo test -p ruxlang` | Parsed with their defaults; a channel with no `name`, a bad `importance`, an unknown key, a background with no or an unknown `types`, and a missing `[permissions.notifications]` (or `location`, `camera`, `microphone` for a service of that type) each refused with the table to add |
+| The manifest | `cargo test -p ruxlang` | `[background]` writes `FOREGROUND_SERVICE`, one `FOREGROUND_SERVICE_*` per type, `WAKE_LOCK` only with `keep-awake`, and a `<service>` with `foregroundServiceType` and `stopWithTask`; none of it without `[background]` |
+| The wrapper | `cargo test -p ruxlang` | `set_channels` and `set_background` are written into `main`, empty tables included |
+| **Not run** | | No APK was built with these tables: the `<service>` names `RuxActivity$Background`, which the Java does not have until step 4 |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

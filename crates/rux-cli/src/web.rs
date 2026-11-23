@@ -212,6 +212,8 @@ mod tests {
             link_hosts: Vec::new(),
             window: Default::default(),
             permissions: Default::default(),
+            channels: Vec::new(),
+            background: None,
             dev_watch: Vec::new(),
             build_before: Vec::new(),
         }

@@ -29,6 +29,7 @@
 mod dialogs;
 /// `<audio>` and `<video>`: what each element plays, and its events.
 mod media;
+mod notifications;
 mod image_events;
 #[cfg(not(target_arch = "wasm32"))]
 mod sound;
@@ -49,6 +50,7 @@ mod dnd_session;
 mod slides;
 mod window_module;
 
+pub use notifications::{set_background, set_channels};
 pub use permissions::set_permissions;
 pub use settings::set_app_id;
 use std::collections::HashMap;

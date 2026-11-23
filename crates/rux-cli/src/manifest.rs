@@ -103,6 +103,11 @@ pub struct Manifest {
     pub window: Window,
     /// `[permissions]`: what the app asks the platform for, with the reason.
     pub permissions: Permissions,
+    /// `[channels.<id>]`: the notification channels, in the order written.
+    pub channels: Vec<Channel>,
+    /// `[background]`: the service that keeps the app's Rust running while it
+    /// is not on screen. `None` when the app has no such thing.
+    pub background: Option<Background>,
     /// `[dev] watch`: commands kept running beside `rux run`.
     pub dev_watch: Vec<String>,
     /// `[build] before`: commands run to completion before a build, and before
@@ -179,6 +184,68 @@ impl Permissions {
             )),
         }
     }
+}
+
+/// How loud a notification channel is. Android's four useful levels; the
+/// desktop and the web map them onto what they have (silent or not).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Importance {
+    /// Sound, and pops up on screen.
+    High,
+    /// Sound.
+    Default,
+    /// No sound.
+    Low,
+    /// No sound, and collapsed in the shade.
+    Min,
+}
+
+impl Importance {
+    /// The word written in `rux.toml`, and handed to the shell.
+    pub fn word(self) -> &'static str {
+        match self {
+            Importance::High => "high",
+            Importance::Default => "default",
+            Importance::Low => "low",
+            Importance::Min => "min",
+        }
+    }
+}
+
+/// One `[channels.<id>]` table: a kind of notification the person can tune
+/// (or switch off) on its own in the system settings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Channel {
+    /// The key: what `notifications.post({ channel: "jobs" })` names.
+    pub id: String,
+    /// What the person reads in the system settings, so say what it is.
+    pub name: String,
+    pub importance: Importance,
+}
+
+/// The foreground service types Rux knows, as Android names them, and the
+/// `FOREGROUND_SERVICE_*` permission each needs. Since Android 14 a service
+/// declares what it is for, and the platform refuses one that does not.
+pub const SERVICE_TYPES: [(&str, &str); 8] = [
+    ("location", "FOREGROUND_SERVICE_LOCATION"),
+    ("dataSync", "FOREGROUND_SERVICE_DATA_SYNC"),
+    ("mediaPlayback", "FOREGROUND_SERVICE_MEDIA_PLAYBACK"),
+    ("connectedDevice", "FOREGROUND_SERVICE_CONNECTED_DEVICE"),
+    ("remoteMessaging", "FOREGROUND_SERVICE_REMOTE_MESSAGING"),
+    ("camera", "FOREGROUND_SERVICE_CAMERA"),
+    ("microphone", "FOREGROUND_SERVICE_MICROPHONE"),
+    ("health", "FOREGROUND_SERVICE_HEALTH"),
+];
+
+/// `[background]`: what a running service is for, and whether it holds the
+/// processor awake.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Background {
+    /// Android foreground service types, from [`SERVICE_TYPES`]. At least one.
+    pub types: Vec<String>,
+    /// `keep-awake = true`: hold a partial wake lock while the service runs, so
+    /// the processor keeps working with the screen off.
+    pub keep_awake: bool,
 }
 
 /// `[window]`: the desktop window's opening size, its smallest, and whether
@@ -472,6 +539,18 @@ impl Manifest {
             Some(_) => return Err("[permissions] must be a table".into()),
         };
 
+        let channels = match value.get("channels") {
+            None => Vec::new(),
+            Some(toml::Value::Table(table)) => read_channels(table)?,
+            Some(_) => return Err("[channels] must be a table".into()),
+        };
+        let background = match value.get("background") {
+            None => None,
+            Some(toml::Value::Table(table)) => Some(read_background(table)?),
+            Some(_) => return Err("[background] must be a table".into()),
+        };
+        check_notification_tables(&permissions, &channels, background.as_ref())?;
+
         let dev_watch = read_commands(&value, "dev", "watch")?;
         let build_before = read_commands(&value, "build", "before")?;
 
@@ -487,6 +566,8 @@ impl Manifest {
             link_hosts,
             window,
             permissions,
+            channels,
+            background,
             dev_watch,
             build_before,
         })
@@ -695,6 +776,128 @@ fn check_android_permission(name: &str) -> Result<String, String> {
              full, like `android.permission.READ_CONTACTS`"
         ))
     }
+}
+
+fn read_channels(table: &toml::Table) -> Result<Vec<Channel>, String> {
+    let mut out = Vec::new();
+    for (id, value) in table {
+        let valid = !id.is_empty() && id.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        if !valid {
+            return Err(format!(
+                "[channels.{id}]: a channel's id is letters, digits, `-` and `_`, since script writes it in a call"
+            ));
+        }
+        let toml::Value::Table(t) = value else {
+            return Err(format!(
+                "[channels] `{id}` is a table:\n\n[channels.{id}]\nname = \"What the person sees in settings\"\nimportance = \"default\""
+            ));
+        };
+        for key in t.keys() {
+            if key != "name" && key != "importance" {
+                return Err(format!("[channels.{id}] has no `{key}`. Its keys are `name` and `importance`"));
+            }
+        }
+        let name = match t.get("name") {
+            Some(toml::Value::String(s)) if !s.trim().is_empty() => s.trim().to_string(),
+            Some(toml::Value::String(_)) => return Err(format!("[channels.{id}] `name` is empty")),
+            Some(_) => return Err(format!("[channels.{id}] `name` must be a string")),
+            None => {
+                return Err(format!(
+                    "[channels.{id}] has no `name`. It is what the person reads in the system's notification settings"
+                ))
+            }
+        };
+        let importance = match t.get("importance") {
+            None => Importance::Default,
+            Some(toml::Value::String(s)) => match s.as_str() {
+                "high" => Importance::High,
+                "default" => Importance::Default,
+                "low" => Importance::Low,
+                "min" => Importance::Min,
+                other => {
+                    return Err(format!(
+                        "[channels.{id}] `importance` is `{other}`; it is one of \"high\" (sound, pops up), \"default\" (sound), \"low\" (silent) or \"min\" (silent, collapsed)"
+                    ))
+                }
+            },
+            Some(_) => return Err(format!("[channels.{id}] `importance` must be a string")),
+        };
+        out.push(Channel { id: id.clone(), name, importance });
+    }
+    Ok(out)
+}
+
+fn read_background(table: &toml::Table) -> Result<Background, String> {
+    for key in table.keys() {
+        if key != "types" && key != "keep-awake" {
+            return Err(format!("[background] has no `{key}`. Its keys are `types` and `keep-awake`"));
+        }
+    }
+    let names = SERVICE_TYPES.map(|(n, _)| n).join(", ");
+    let types = match table.get("types") {
+        Some(toml::Value::Array(list)) if !list.is_empty() => {
+            let mut types = Vec::new();
+            for item in list {
+                let toml::Value::String(name) = item else {
+                    return Err("[background] `types` must be a list of strings".into());
+                };
+                if !SERVICE_TYPES.iter().any(|(n, _)| n == name) {
+                    return Err(format!("[background] `types` has `{name}`. The types are {names}"));
+                }
+                if !types.contains(name) {
+                    types.push(name.clone());
+                }
+            }
+            types
+        }
+        Some(toml::Value::Array(_)) | None => {
+            return Err(format!(
+                "[background] needs `types`, what the service is for: `types = [\"location\"]`. Android refuses a service that does not say. The types are {names}"
+            ))
+        }
+        Some(_) => return Err("[background] `types` must be a list of strings".into()),
+    };
+    let keep_awake = match table.get("keep-awake") {
+        None => false,
+        Some(toml::Value::Boolean(b)) => *b,
+        Some(_) => return Err("[background] `keep-awake` must be true or false".into()),
+    };
+    Ok(Background { types, keep_awake })
+}
+
+/// What the notification tables need from `[permissions]`, said at the
+/// manifest rather than when the first post fails: a channel nothing may post
+/// to, and a service whose type the platform will refuse without a permission.
+fn check_notification_tables(
+    permissions: &Permissions,
+    channels: &[Channel],
+    background: Option<&Background>,
+) -> Result<(), String> {
+    let needs_notifications = |what: String| {
+        format!(
+            "{what} needs the notification permission declared:\n\n[permissions.notifications]\nwhy = \"What the person gets from the notifications\""
+        )
+    };
+    if let Some(c) = channels.first() {
+        if permissions.get("notifications").is_none() {
+            return Err(needs_notifications(format!("[channels.{}]", c.id)));
+        }
+    }
+    if let Some(b) = background {
+        if permissions.get("notifications").is_none() {
+            return Err(needs_notifications("[background]".into()));
+        }
+        // A service of this type is refused without the matching runtime
+        // permission, with a security error the person cannot see the cause of.
+        for ty in ["location", "camera", "microphone"] {
+            if b.types.iter().any(|t| t == ty) && permissions.get(ty).is_none() {
+                return Err(format!(
+                    "[background] `types` has `{ty}`, which needs [permissions.{ty}] declared: Android refuses to start the service otherwise"
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn read_window(table: &toml::Table) -> Result<Window, String> {
@@ -976,6 +1179,56 @@ entry = "Cargo.toml"
         assert!(bad("network = \"yes\"").contains("true or false"));
         // Before `[app]`, or it would be a key of that table.
         assert!(parse(&format!("permissions = 3\n{MINIMAL}")).unwrap_err().contains("must be a table"));
+    }
+
+    const NOTIFYING: &str = "[permissions.notifications]\nwhy = \"New jobs\"\n";
+
+    #[test]
+    fn channels_and_background_are_optional_and_read() {
+        let none = parse(MINIMAL).unwrap();
+        assert!(none.channels.is_empty() && none.background.is_none());
+        let text = format!(
+            "{MINIMAL}\n{NOTIFYING}[permissions.location]\nwhy = \"Shows the rider\"\n\
+             [channels.jobs]\nname = \"New jobs\"\nimportance = \"high\"\n\
+             [channels.shift]\nname = \"On shift\"\n\
+             [background]\ntypes = [\"location\", \"dataSync\", \"location\"]\nkeep-awake = true\n"
+        );
+        let m = parse(&text).unwrap();
+        assert_eq!(m.channels.len(), 2);
+        let jobs = m.channels.iter().find(|c| c.id == "jobs").unwrap();
+        assert_eq!((jobs.name.as_str(), jobs.importance), ("New jobs", Importance::High));
+        let shift = m.channels.iter().find(|c| c.id == "shift").unwrap();
+        assert_eq!(shift.importance, Importance::Default, "importance is optional");
+        let b = m.background.unwrap();
+        assert_eq!(b.types, ["location", "dataSync"], "a type written twice is one");
+        assert!(b.keep_awake);
+    }
+
+    #[test]
+    fn channels_and_background_are_refused_in_their_own_words() {
+        let with = |body: &str| parse(&format!("{MINIMAL}\n{body}")).unwrap_err();
+        let notifying = |body: &str| parse(&format!("{MINIMAL}\n{NOTIFYING}{body}")).unwrap_err();
+        // The permission they need.
+        assert!(with("[channels.jobs]\nname = \"x\"").contains("[permissions.notifications]"));
+        assert!(with("[background]\ntypes = [\"dataSync\"]").contains("[permissions.notifications]"));
+        // Channels.
+        assert!(notifying("[channels.jobs]").contains("no `name`"));
+        assert!(notifying("[channels.jobs]\nname = \" \"").contains("`name` is empty"));
+        assert!(notifying("[channels.jobs]\nname = \"x\"\nimportance = \"loud\"").contains("one of"));
+        assert!(notifying("[channels.jobs]\nname = \"x\"\nsound = true").contains("no `sound`"));
+        assert!(notifying("[channels.\"new jobs\"]\nname = \"x\"").contains("letters, digits"));
+        assert!(notifying("[channels]\njobs = 3").contains("is a table"));
+        // Background.
+        assert!(notifying("[background]").contains("needs `types`"));
+        assert!(notifying("[background]\ntypes = []").contains("needs `types`"));
+        assert!(notifying("[background]\ntypes = [\"flying\"]").contains("The types are"));
+        assert!(notifying("[background]\ntypes = [\"dataSync\"]\nforever = true").contains("no `forever`"));
+        assert!(notifying("[background]\ntypes = [\"dataSync\"]\nkeep-awake = 1").contains("true or false"));
+        // A service type that needs a permission of its own.
+        assert!(notifying("[background]\ntypes = [\"location\"]").contains("[permissions.location]"));
+        assert!(notifying("[background]\ntypes = [\"camera\"]").contains("[permissions.camera]"));
+        assert!(parse(&format!("channels = 3
+{MINIMAL}")).unwrap_err().contains("[channels] must be a table"));
     }
 
     #[test]
