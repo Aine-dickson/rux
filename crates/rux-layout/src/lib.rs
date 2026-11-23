@@ -3120,6 +3120,9 @@ pub struct Node {
     pub field: Option<Box<Field>>,
     /// `type="select"`: the bound `:options`, so the shell can open a dropdown.
     pub options: Option<Vec<String>>,
+    /// Labels, disabled rows and a numeric model, for options written as
+    /// `{ value, label, disabled }`.
+    pub option_meta: Option<std::sync::Arc<OptionMeta>>,
     /// `r-show="false"`: laid out (space reserved) but not painted.
     pub hidden: bool,
     /// `id="…"`: a stable identifier a label's `for=` can target.
@@ -3203,6 +3206,7 @@ impl Node {
             kind: InputKind::Text,
             field: None,
             options: None,
+            option_meta: None,
             hidden: false,
             id: None,
             label_for: None,
@@ -3231,6 +3235,7 @@ impl Node {
             kind: InputKind::Text,
             field: None,
             options: None,
+            option_meta: None,
             hidden: false,
             id: None,
             label_for: None,
@@ -3259,6 +3264,7 @@ impl Node {
             kind: InputKind::Text,
             field: None,
             options: None,
+            option_meta: None,
             hidden: false,
             id: None,
             label_for: None,
@@ -3292,6 +3298,7 @@ impl Node {
             kind: InputKind::Text,
             field: None,
             options: None,
+            option_meta: None,
             hidden: false,
             id: None,
             label_for: None,
@@ -4211,6 +4218,28 @@ impl FileRegion {
     }
 }
 
+/// What a select's options carry besides the text the model is compared with:
+/// what each shows, which cannot be picked, and whether the model is a number.
+/// Present only for options written as `{ value, label, disabled }`; plain
+/// text options have none, and are their own labels.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OptionMeta {
+    /// What each option shows, in the order of the options.
+    pub labels: Vec<String>,
+    /// Which cannot be picked.
+    pub disabled: Vec<bool>,
+    /// Every option's value is a number: a pick writes a number to the model.
+    pub numeric: bool,
+}
+
+impl OptionMeta {
+    /// What the option whose value is `value` shows.
+    pub fn label_for(&self, options: &[String], value: &str) -> Option<&str> {
+        let at = options.iter().position(|o| o == value)?;
+        self.labels.get(at).map(String::as_str)
+    }
+}
+
 /// An absolutely-positioned `type="select"`, carrying its bound options so the
 /// shell can open a dropdown and write the chosen value back to `model`.
 #[derive(Clone, Debug)]
@@ -4229,12 +4258,34 @@ pub struct SelectRegion {
     /// [`FocusRegion::instance`]: choosing an option writes the model, and a
     /// write in the wrong scope lands nowhere.
     pub instance: Option<String>,
+    /// The options' values as text: what the model is compared with.
     pub options: Vec<String>,
+    /// Labels, disabled rows and a numeric model, when the options had them.
+    pub meta: Option<std::sync::Arc<OptionMeta>>,
     /// Its attributes; the shell reads `@change` off it. See [`Field`].
     pub field: Field,
 }
 
 impl SelectRegion {
+    /// What option `i` shows.
+    pub fn label(&self, i: usize) -> &str {
+        self.meta
+            .as_ref()
+            .and_then(|m| m.labels.get(i))
+            .or_else(|| self.options.get(i))
+            .map_or("", String::as_str)
+    }
+
+    /// Whether option `i` cannot be picked.
+    pub fn is_disabled(&self, i: usize) -> bool {
+        self.meta.as_ref().is_some_and(|m| m.disabled.get(i).copied().unwrap_or(false))
+    }
+
+    /// Whether a pick writes a number to the model.
+    pub fn numeric(&self) -> bool {
+        self.meta.as_ref().is_some_and(|m| m.numeric)
+    }
+
     pub fn contains(&self, px: f32, py: f32) -> bool {
         px >= self.x && px <= self.x + self.width && py >= self.y && py <= self.y + self.height
     }
@@ -5134,6 +5185,7 @@ struct Bound {
     kind: InputKind,
     field: Field,
     options: Option<Vec<String>>,
+    option_meta: Option<std::sync::Arc<OptionMeta>>,
     /// See [`Node::focus_path`]. Only a select's is ever read.
     focus_path: Option<Vec<usize>>,
 }
@@ -5901,6 +5953,7 @@ fn build(
             kind: node.kind,
             field: node.field().clone(),
             options: node.options.clone(),
+            option_meta: node.option_meta.clone(),
             focus_path: node.focus_path.clone(),
         });
     }
@@ -7874,6 +7927,7 @@ fn node_records(
                 row: bound.row.clone(),
                 instance: bound.instance.clone(),
                 options: options.clone(),
+                meta: bound.option_meta.clone(),
                 field: bound.field.clone(),
             });
             walk.focus_seq.push(at.stack.seq);

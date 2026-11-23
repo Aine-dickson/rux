@@ -3690,6 +3690,28 @@ Three targets, one probe app (`rux-harness\ud005-win`, `ud005-and`, `ud005-web`)
 | Web: a `file:` URL, and `share` | `scheme`; `share` answered through `navigator.share` |
 | **Not driven** | `open` on Android through the probe (its first row sat under the status bar, so the tap did not land: the same call as `dial`), a phone with no dialer or maps app (`notfound`), turn-by-turn actually starting, WhatsApp, `share` to a real target, `gesture` in a browser, macOS and Linux, a call from a background thread, Safari and Firefox |
 
+## A scroller's position, date-time inputs and select options, 2026-11-24
+
+Windows 11 (`rux-harness\ud014-win`, `ud013-win`, `ud013s-win`, `rux run` from `target/debug/rux`) and the emulator `rux_test` (Android 15; `ud013-and`, `ud013s-and`). Read by screenshots, input by `mouse_event`, `SendKeys` and `adb shell input`.
+
+| Case | Result |
+|---|---|
+| A horizontal snap carousel: `el.scrollLeft`, `scrollWidth`, `clientWidth` in a handler | `0`, `1080`, `300` for a 300 px box over five 200 px cards with 20 px gaps |
+| `el.scrollTo(220, 0)` | `scrollLeft` reads 220 after the next frame; `@scroll` ran once, `@scrollend` once |
+| `el.scrollTo(440, 0, { smooth: true })` | It glides: `@scroll` ran about 23 times (once a frame), then `@scrollend` once |
+| Three horizontal wheel notches over the carousel | It moves, snaps back to a snap point, and `@scrollend` ran once for the wheel and its snap together |
+| `scrollTo` with an option it does not have | A warning naming `smooth`; nothing queued |
+| Windows: typing `2026-11-24T9:30` into `type="datetime-local"` | Written as `2026-11-24T09:30` |
+| Windows: typing `9:05` into `type="time"` with `min="08:00"`, then `7:00`, then `8:00` | `09:05`; `7:00` refused, the signal stays `09:05`; `08:00` accepted |
+| Android: a tap on `type="time"`, OK at 8:27 PM with `max="18:00"` | The time dialog; the value is refused and the signal stays empty |
+| Android: the same, AM chosen, OK | `08:27` |
+| Android: a tap on `type="datetime-local"` with `min="2026-11-24T08:00"` | The date dialog with days before the 24th greyed; choosing the 25th and OK opens the time dialog; AM and OK writes `2026-11-25T08:28` |
+| A select with `[{ value: 60, label: `1 hour` }, { value: 120, ... }, { value: 240, label: `4 hours`, disabled: true }, { value: 480, ... }]` bound to a signal holding `60` | The closed field shows `1 hour` while the signal reads 60 |
+| Windows: the dropdown | Labels, "4 hours" dim; a tap on it does nothing and the list stays open; "2 hours" writes the number 120, the field shows `2 hours`, and `@change` ran once with `event.value` 120 |
+| Windows: the arrows from `2 hours`, Down, Down, Enter | Pass over `4 hours` and write 480 |
+| Android: the select dialog | The same four labels with `4 hours` greyed and not tappable (the dialog stays open); `8 hours` writes 480 and shows `8 hours`, one `@change` |
+| **Not driven** | A phone browser's hidden inputs for `datetime-local`, `time` and `<option disabled>` (they run only where `touch_first()`), typing on the web, a touch fling's `@scrollend`, a finger resting mid-drag (`@scrollend` fires after 100 ms still), an RTL scroller's `scrollLeft`, Android 10 and below, a select whose options change while its dropdown is open |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

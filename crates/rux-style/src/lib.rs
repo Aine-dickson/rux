@@ -2878,11 +2878,49 @@ pub fn eval_src_binding(binding: &AttrBinding, engine: &mut Engine) -> String {
     engine.eval_display(&binding.expr, &binding.locals)
 }
 
-/// Recompute a `:options` attribute to the option strings.
-pub fn eval_options_binding(binding: &AttrBinding, engine: &mut Engine) -> Vec<String> {
+/// A select's options: each item is its own text, or a map
+/// `{ value, label, disabled }`. Returns the values as text, which the model is
+/// compared with, and what the maps added: labels, disabled rows, and whether
+/// every value is a number (then a pick writes one).
+pub fn read_options(items: &[Value]) -> (Vec<String>, Option<std::sync::Arc<rux_layout::OptionMeta>>) {
+    let mut values = Vec::with_capacity(items.len());
+    let mut labels = Vec::with_capacity(items.len());
+    let mut disabled = Vec::with_capacity(items.len());
+    let mut maps = 0usize;
+    let mut numbers = 0usize;
+    for item in items {
+        if let Value::Map(fields) = item {
+            maps += 1;
+            let get = |name: &str| fields.iter().find(|(k, _)| k == name).map(|(_, v)| v);
+            let value = get("value");
+            if matches!(value, Some(Value::Number(_))) {
+                numbers += 1;
+            }
+            let text = value.map(Value::to_display).unwrap_or_default();
+            labels.push(get("label").map(Value::to_display).unwrap_or_else(|| text.clone()));
+            disabled.push(matches!(get("disabled"), Some(Value::Bool(true))));
+            values.push(text);
+        } else {
+            let text = item.to_display();
+            labels.push(text.clone());
+            disabled.push(false);
+            values.push(text);
+        }
+    }
+    let meta = (maps > 0).then(|| {
+        std::sync::Arc::new(rux_layout::OptionMeta { labels, disabled, numeric: numbers == items.len() })
+    });
+    (values, meta)
+}
+
+/// Recompute a `:options` attribute to the option values and what they carry.
+pub fn eval_options_binding(
+    binding: &AttrBinding,
+    engine: &mut Engine,
+) -> (Vec<String>, Option<std::sync::Arc<rux_layout::OptionMeta>>) {
     engine
         .eval_value(&binding.expr, &binding.locals)
-        .and_then(|v| v.as_list().map(|items| items.iter().map(Value::to_display).collect()))
+        .and_then(|v| v.as_list().map(read_options))
         .unwrap_or_default()
 }
 
@@ -9547,23 +9585,25 @@ fn build_node_inner(
         }
         // `type="select"`: evaluate the bound `:options` collection to strings so
         // the shell can render a dropdown.
-        let options = (el.attr("type") == Some("select"))
-            .then(|| {
-                el.attr(":options")
-                    .and_then(|e| {
-                        // `:options` rewrites the option list in place on change.
-                        let (v, deps) = engine.eval_value_tracked(e, locals);
-                        reg.options.push(AttrBinding {
-                            path: path.to_vec(),
-                            expr: e.to_string(),
-                            locals: locals.clone(),
-                            deps,
-                        });
-                        v
-                    })
-                    .and_then(|v| v.as_list().map(|items| items.iter().map(Value::to_display).collect()))
-                    .unwrap_or_default()
-            });
+        let (options, option_meta) = match (el.attr("type") == Some("select")).then(|| {
+            el.attr(":options")
+                .and_then(|e| {
+                    // `:options` rewrites the option list in place on change.
+                    let (v, deps) = engine.eval_value_tracked(e, locals);
+                    reg.options.push(AttrBinding {
+                        path: path.to_vec(),
+                        expr: e.to_string(),
+                        locals: locals.clone(),
+                        deps,
+                    });
+                    v
+                })
+                .and_then(|v| v.as_list().map(read_options))
+                .unwrap_or_default()
+        }) {
+            Some((values, meta)) => (Some(values), meta),
+            None => (None, None),
+        };
         let model = el.attr("r-model").map(str::to_string);
         let secret = kind.secret();
         let placeholder = el.attr("placeholder").unwrap_or_default().to_string();
@@ -9630,7 +9670,12 @@ fn build_node_inner(
         } else if secret {
             (mask(&value), color)
         } else {
-            (value, color)
+            // A select shows its chosen option's label, not the value it holds.
+            let label = match (&option_meta, &options) {
+                (Some(meta), Some(all)) => meta.label_for(all, &value).map(str::to_string),
+                _ => None,
+            };
+            (label.unwrap_or(value), color)
         };
         let text_child = LayoutNode::text(
             Style::default(),
@@ -9684,6 +9729,7 @@ fn build_node_inner(
         node.field =
             field_of(el, disabled, readonly, baked, form_part.clone().unwrap_or_default()).boxed();
         node.options = options;
+        node.option_meta = option_meta;
         node.on_tap = on_tap;
         node.gestures = gestures;
         node.hidden = hidden;
@@ -9802,6 +9848,7 @@ fn build_node_inner(
         kind: InputKind::Text,
         field: None,
         options: None,
+        option_meta: None,
         hidden,
         id: el.attr("id").map(str::to_string),
         label_for: el.attr("for").map(str::to_string),

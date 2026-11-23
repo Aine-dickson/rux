@@ -110,6 +110,10 @@ reference half does not wait: `docs/05-as-built.md` describes the tip.
 | `links.open("example.com")` throws `scheme` | A URL needs its scheme written out: `https://example.com`. Only `https`, `http`, `tel`, `sms`, `mailto` and `geo` open, on purpose | `07-script` "Links and other apps" | documented |
 | `links.directions` opens a pin, not turn-by-turn | Only Google Maps starts guidance; any other maps app gets the place. With none installed, the web page opens | `07-script` "Links and other apps" | documented |
 | A `links.dial` button does nothing on a tablet or an emulator without a dialer | The call throws `notfound`; check `links.canOpen("tel:...")` first and show the number as text when it is false | `07-script` "Links and other apps" | documented |
+| A `<select>` bound to a number reads `"60"` | Plain options write text. Write them as `{ value: 60, label: `1 hour` }` and, when every value is a number, a pick writes a number and `@change`'s `event.value` is one | `05-as-built` "select" | documented |
+| `@scroll` fires for every frame of a smooth scroll | It runs at most once a frame while the offset moves, on purpose: a dot following a carousel wants each one. Do real work in `@scrollend`, which runs once after 100 ms still | `07-script` "Reading the tree" | documented |
+| `el.scrollLeft` is the old value straight after `scrollTo` | Scroll reads come from the last frame, as `x` and `width` do. Read it in `@scroll`, or the next handler | `07-script` "Reading the tree" | documented |
+| A time picked on Android is refused | Its date dialog can limit days only, so a time outside `min` or `max` on the first or last day is refused when it arrives and the field keeps what it had. Offer a range whose edge days are whole, or say so in the field's label | `05-as-built` "datetime-local" | documented |
 | `{{ background.active }}` is undefined in a page | The name is linked from the script, and a template-only mention is not seen. Mention `background` in the page's script once, or write `use native::rux::background;` | `07-script` "Background work" | documented |
 
 ### From writing the `rux new` template (2026-09-17)

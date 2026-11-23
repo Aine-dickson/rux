@@ -2344,7 +2344,7 @@ the keystrokes and the value it shows are all addressed by the signal it binds
 
 `<input r-model="sig" placeholder="…">`: tap to focus, type to edit. The `type`
 is one of `text` (the default), `textarea`, `password`, `search`, `number`,
-`date`, `select`, `checkbox`, `switch`, `slider`, `radio` and `file`; `password`
+`date`, `datetime-local`, `time`, `select`, `checkbox`, `switch`, `slider`, `radio` and `file`; `password`
 shows bullets, refuses Copy and Cut and asks a phone's keyboard not to learn
 what is typed, and `search` is a one-line field that puts a Search key on a
 phone. There is a real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,
@@ -2371,6 +2371,14 @@ opens below when every option fits there, else above, else on the side with more
 room, and scrolls inside its panel when it is longer than the window. While it
 is open the wheel scrolls it, the arrows, Home and End move an outlined pick,
 Enter or Space takes it, and Escape or Tab closes it.
+
+**An option can be a map, `{ value, label, disabled }`.** The model holds the
+`value`, the field and the list show the `label` (the value's text when there is
+none), and a `disabled: true` row is drawn dim, skipped by the arrows and takes a
+tap without closing the list. When every `value` is a number, a pick writes a
+number to the model and `@change`'s `event.value` is one too, so a signal that
+holds `60` stays an `int`. A list of plain text is as it was, and a list that
+mixes the two shows the maps' labels and writes text.
 
 **On Android the platform's own picker opens instead**, a Material dialog with
 the current value already selected. A drawn dropdown is the right answer on a
@@ -2468,6 +2476,17 @@ for a range. `accent-color` colours the fill and the thumb; the element's own
 `height` (32 unstyled) is the touch target, and the bar is drawn centred in it.
 A `min`, `max` or `step` that is not a number, or a `max` not above `min`, is an
 error naming the line.
+
+`<input type="datetime-local" r-model="when" min="2026-11-24T08:00" max="2026-12-08T18:00">`
+holds a day and a time as `YYYY-MM-DDTHH:mm` (local time, no seconds, no zone),
+and `<input type="time" r-model="at" min="08:00" max="18:00">` a time as `HH:mm`,
+24-hour, each the format HTML's input holds, or an empty string. On Android a tap
+opens the platform's date dialog and then its time dialog (a time alone for
+`time`); the date dialog offers the days between the date parts of `min` and
+`max`, and a time that falls outside them is refused when it arrives, leaving the
+field as it was. A phone's browser opens its own picker. Elsewhere they are typed
+into like a date: only a whole value inside the range reaches the signal
+(`2026-11-24T9:30` is written back as `2026-11-24T09:30`).
 
 `<input type="date" r-model="due" min="2026-01-01" max="2026-12-31">` holds a
 day as `YYYY-MM-DD`, the format HTML's date input holds, or an empty string.

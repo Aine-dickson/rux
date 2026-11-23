@@ -1368,17 +1368,40 @@ public class RuxActivity extends NativeActivity {
      * rather than nothing, because a shell still waiting for a reply would
      * leave that field unable to open a picker ever again.
      */
-    void ruxOpenSelect(final String[] options, final int selected) {
+    void ruxOpenSelect(final String[] options, final int selected, final boolean[] disabled) {
         runOnUiThread(
                 () -> {
                     if (picker != null) {
                         return;
                     }
                     final boolean[] answered = {false};
+                    // A row that cannot be picked is greyed and takes no tap.
+                    final android.widget.ArrayAdapter<String> rows =
+                            new android.widget.ArrayAdapter<String>(
+                                    this, android.R.layout.select_dialog_singlechoice, options) {
+                                @Override
+                                public boolean areAllItemsEnabled() {
+                                    return false;
+                                }
+
+                                @Override
+                                public boolean isEnabled(int position) {
+                                    return !(position < disabled.length && disabled[position]);
+                                }
+
+                                @Override
+                                public android.view.View getView(
+                                        int position, android.view.View convert, android.view.ViewGroup parent) {
+                                    android.view.View v = super.getView(position, convert, parent);
+                                    v.setEnabled(isEnabled(position));
+                                    v.setAlpha(isEnabled(position) ? 1f : 0.4f);
+                                    return v;
+                                }
+                            };
                     picker =
                             new android.app.AlertDialog.Builder(this)
                                     .setSingleChoiceItems(
-                                            options,
+                                            rows,
                                             selected,
                                             (dialog, which) -> {
                                                 answered[0] = true;

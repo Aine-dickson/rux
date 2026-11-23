@@ -1457,6 +1457,8 @@ fn dropdown_paints(sel: &SelectRegion, panel: &DropPanel, value: &str, pick: Opt
         if y + DROPDOWN_ROW_H < py || y > py + ph {
             continue;
         }
+        // A row that cannot be picked is drawn dim.
+        let ink = if sel.is_disabled(i) { Rgba { a: ink.a * 0.4, ..ink } } else { ink };
         // The keyboard's pick is outlined, so the arrows can be followed.
         if pick == Some(i) {
             out.push(Paint::Rect(PaintRect {
@@ -1504,7 +1506,7 @@ fn dropdown_paints(sel: &SelectRegion, panel: &DropPanel, value: &str, pick: Opt
             width: pw - 24.0,
             height: DROPDOWN_ROW_H,
             content: TextContent {
-                text: option.clone(),
+                text: sel.label(i).to_string(),
                 font_size: 15.0,
                 weight: 400,
                 color: ink,
@@ -2363,7 +2365,7 @@ struct App {
     /// the answer reaches the field that asked, since the tree may have been
     /// rebuilt while the picker was up.
     #[cfg(any(target_os = "android", target_arch = "wasm32"))]
-    pending_select: Option<(String, Option<String>, Option<String>, Vec<String>)>,
+    pending_select: Option<(String, Option<String>, Option<String>, Vec<String>, Option<std::sync::Arc<rux_layout::OptionMeta>>)>,
     /// The `type="date"` a platform date picker is open for: its model, row,
     /// instance and `@change`, held for the same reason as `pending_select`.
     #[cfg(any(target_os = "android", target_arch = "wasm32"))]
@@ -4591,7 +4593,14 @@ impl App {
                 for (i, option) in sel.options.iter().enumerate() {
                     let (rx, ry, rw, rh) = dropdown_row(&panel, i);
                     if inside && fx >= rx && fx <= rx + rw && fy >= ry && fy <= ry + rh {
-                        self.choose_option(&model, row, instance, option, sel.field.on_change);
+                        // A disabled row takes the tap and does nothing: the
+                        // dropdown stays open, as a browser's does.
+                        if sel.is_disabled(i) {
+                            self.open_select = Some((model, row, instance));
+                            self.request_redraw();
+                            return;
+                        }
+                        self.choose_option(&model, row, instance, option, sel.numeric(), sel.field.on_change);
                         self.request_redraw();
                         return;
                     }
@@ -4661,22 +4670,25 @@ impl App {
                 // Cloned out before anything else touches `self`: the search
                 // above borrows `self.selects`, and reading the field's current
                 // value needs the document mutably.
-                let (model, row, instance, options) = (
+                let (model, row, instance, options, meta) = (
                     sel.model.clone(),
                     sel.row.clone(),
                     sel.instance.clone(),
                     sel.options.clone(),
+                    sel.meta.clone(),
                 );
+                let labels: Vec<String> = (0..options.len()).map(|i| sel.label(i).to_string()).collect();
+                let disabled: Vec<bool> = (0..options.len()).map(|i| sel.is_disabled(i)).collect();
                 let chosen = self.document.value_in(&model, row.as_deref(), instance.as_deref());
                 let at = options.iter().position(|o| *o == chosen);
                 #[cfg(target_arch = "wasm32")]
                 let rect = (sel.x, sel.y, sel.width, sel.height);
-                self.pending_select = Some((model, row, instance, options.clone()));
+                self.pending_select = Some((model, row, instance, options.clone(), meta));
                 self.set_focus(None);
                 #[cfg(target_os = "android")]
-                android_open_select(&options, at);
+                android_open_select(&labels, at, &disabled);
                 #[cfg(target_arch = "wasm32")]
-                web_open_select(&options, at, rect);
+                web_open_select(&labels, at, &disabled, rect);
                 return;
             }
             self.open_dropdown((sel.model.clone(), sel.row.clone(), sel.instance.clone()));
@@ -6413,22 +6425,41 @@ impl App {
         if n == 0 {
             return false;
         }
-        let step = |pick: Option<usize>, by: isize| -> usize {
-            match pick {
-                Some(i) => (i as isize + by).clamp(0, n as isize - 1) as usize,
-                None if by < 0 => n - 1,
+        // The arrows pass over rows that cannot be picked.
+        let step = |pick: Option<usize>, by: isize| -> Option<usize> {
+            let mut at = match pick {
+                Some(i) => i as isize + by,
+                None if by < 0 => n as isize - 1,
                 None => 0,
+            };
+            while (0..n as isize).contains(&at) {
+                if !sel.is_disabled(at as usize) {
+                    return Some(at as usize);
+                }
+                at += by;
             }
+            pick
         };
+        let first = (0..n).find(|i| !sel.is_disabled(*i));
+        let last = (0..n).rev().find(|i| !sel.is_disabled(*i));
         match key {
-            Key::Named(NamedKey::ArrowDown) => self.drop_pick = Some(step(self.drop_pick, 1)),
-            Key::Named(NamedKey::ArrowUp) => self.drop_pick = Some(step(self.drop_pick, -1)),
-            Key::Named(NamedKey::Home) => self.drop_pick = Some(0),
-            Key::Named(NamedKey::End) => self.drop_pick = Some(n - 1),
+            Key::Named(NamedKey::ArrowDown) => self.drop_pick = step(self.drop_pick, 1),
+            Key::Named(NamedKey::ArrowUp) => self.drop_pick = step(self.drop_pick, -1),
+            Key::Named(NamedKey::Home) => self.drop_pick = first,
+            Key::Named(NamedKey::End) => self.drop_pick = last,
             Key::Named(NamedKey::Enter | NamedKey::Space) => {
                 self.open_select = None;
-                if let Some(option) = self.drop_pick.and_then(|i| sel.options.get(i)) {
-                    self.choose_option(&sel.model, sel.row.clone(), sel.instance.clone(), option, sel.field.on_change);
+                if let Some(i) = self.drop_pick.filter(|i| !sel.is_disabled(*i)) {
+                    if let Some(option) = sel.options.get(i) {
+                        self.choose_option(
+                            &sel.model,
+                            sel.row.clone(),
+                            sel.instance.clone(),
+                            option,
+                            sel.numeric(),
+                            sel.field.on_change,
+                        );
+                    }
                 }
             }
             Key::Named(NamedKey::Escape | NamedKey::Tab) => self.open_select = None,
@@ -6817,13 +6848,24 @@ impl App {
         row: Option<String>,
         instance: Option<String>,
         option: &str,
+        numeric: bool,
         on_change: Option<String>,
     ) {
         let before = self.document.value_in(model, row.as_deref(), instance.as_deref());
-        self.document.apply_edit_in(model, row.as_deref(), instance.as_deref(), option);
+        // Options written as numbers write a number, and `@change` carries one.
+        let number = numeric.then(|| option.parse::<f64>().ok()).flatten();
+        match number {
+            Some(n) => {
+                self.document.apply_value_in(model, row.as_deref(), instance.as_deref(), &rux_reactive::Value::Number(n))
+            }
+            None => self.document.apply_edit_in(model, row.as_deref(), instance.as_deref(), option),
+        }
         if before != option {
-            let option = rux_reactive::Value::Text(option.to_string());
-            self.queue_field_event_in(on_change.as_deref(), instance, option);
+            let value = match number {
+                Some(n) => rux_reactive::Value::Number(n),
+                None => rux_reactive::Value::Text(option.to_string()),
+            };
+            self.queue_field_event_in(on_change.as_deref(), instance, value);
         }
     }
 
@@ -9108,17 +9150,19 @@ impl ApplicationHandler<RuxEvent> for App {
             // a field nobody was looking at.
             #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             RuxEvent::PickedSelect { index } => {
-                if let Some((model, row, instance, options)) = self.pending_select.take() {
+                if let Some((model, row, instance, options, meta)) = self.pending_select.take() {
                     // `None` is a dismissal, which keeps what the field had.
                     // Out of range would mean Java and Rux disagreed about the
                     // list, which is worth ignoring rather than guessing at.
-                    if let Some(option) = index.and_then(|i| options.get(i)) {
+                    let allowed = index.filter(|i| !meta.as_ref().is_some_and(|m| m.disabled.get(*i).copied().unwrap_or(false)));
+                    if let Some(option) = allowed.and_then(|i| options.get(i)) {
                         let change = self
                             .selects
                             .iter()
                             .find(|s| s.model == model && s.row == row && s.instance == instance)
                             .and_then(|s| s.field.on_change.clone());
-                        self.choose_option(&model, row, instance, option, change);
+                        let numeric = meta.as_ref().is_some_and(|m| m.numeric);
+                        self.choose_option(&model, row, instance, option, numeric, change);
                     }
                     self.request_redraw();
                 }
@@ -9139,7 +9183,7 @@ impl ApplicationHandler<RuxEvent> for App {
                         .filter(|m| max.is_none_or(|hi| *m <= hi))
                     {
                         let text = rux_layout::format_moment(kind, moment);
-                        self.choose_option(&model, row, instance, &text, change);
+                        self.choose_option(&model, row, instance, &text, false, change);
                     }
                     self.request_redraw();
                 }
@@ -11334,7 +11378,7 @@ fn web_show_picker(el: &web_sys::HtmlElement, (x, y, width, height): (f32, f32, 
 /// [`RuxEvent::PickedSelect`]; a dismissal sends nothing, which leaves the
 /// field as it was.
 #[cfg(target_arch = "wasm32")]
-fn web_open_select(options: &[String], selected: Option<usize>, rect: (f32, f32, f32, f32)) {
+fn web_open_select(options: &[String], selected: Option<usize>, disabled: &[bool], rect: (f32, f32, f32, f32)) {
     use wasm_bindgen::JsCast;
 
     let el = WEB_SELECT.with(|c| c.borrow().clone()).or_else(|| {
@@ -11354,9 +11398,12 @@ fn web_open_select(options: &[String], selected: Option<usize>, rect: (f32, f32,
     let Some(el) = el else { return };
     el.set_inner_html("");
     let Some(document) = web_sys::window().and_then(|w| w.document()) else { return };
-    for option in options {
+    for (i, option) in options.iter().enumerate() {
         if let Ok(o) = document.create_element("option") {
             o.set_text_content(Some(option));
+            if disabled.get(i).copied().unwrap_or(false) {
+                let _ = o.set_attribute("disabled", "");
+            }
             let _ = el.append_child(&o);
         }
     }
@@ -13943,7 +13990,7 @@ static FIRST_FRAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 /// calls into the activity: the consequence is a select that does not open, not
 /// a broken app.
 #[cfg(target_os = "android")]
-fn android_open_select(options: &[String], selected: Option<usize>) {
+fn android_open_select(options: &[String], selected: Option<usize>, disabled: &[bool]) {
     let Ok(activity) = ACTIVITY.lock() else { return };
     let Some(activity) = activity.as_ref() else { return };
     let ctx = ndk_context::android_context();
@@ -13959,15 +14006,18 @@ fn android_open_select(options: &[String], selected: Option<usize>) {
             let value = env.new_string(option.as_str())?;
             array.set_element(env, i, &value)?;
         }
+        let mask = env.new_boolean_array(options.len())?;
+        mask.set_region(env, 0, disabled)?;
         env.call_method(
             activity,
             jni::jni_str!("ruxOpenSelect"),
-            jni::jni_sig!("([Ljava/lang/String;I)V"),
+            jni::jni_sig!("([Ljava/lang/String;I[Z)V"),
             &[
                 jni::JValue::Object(&array),
                 // -1 rather than an Option, because this crosses into Java and
                 // a primitive is the honest shape there.
                 jni::JValue::Int(selected.map(|i| i as i32).unwrap_or(-1)),
+                jni::JValue::Object(&mask),
             ],
         )?;
         Ok::<(), jni::errors::Error>(())
@@ -15975,6 +16025,7 @@ mod dropdown_tests {
             row: None,
             instance: None,
             options: (0..options).map(|i| format!("o{i}")).collect(),
+            meta: None,
             field: Default::default(),
         }
     }

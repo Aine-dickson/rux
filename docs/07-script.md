@@ -1038,7 +1038,7 @@ A template is checked against the script it binds to.
   what that attribute takes: `:disabled` (on `<input>` and `<button>`),
   `:readonly` and `:required` (on `<input>`) a `bool`; `:controls`,
   `:autoplay`, `:loop` and `:muted` on `<audio>` and `<video>` a `bool`;
-  `:options` a `string[]`, `:marks` a `TextMark[]`, `:src` (on `<image>`,
+  `:options` a list of text or of `{ value, label, disabled }` maps, `:marks` a `TextMark[]`, `:src` (on `<image>`,
   `<audio>` and `<video>`), `:poster`, `:d` and `:to` a `string`,
   `:style` a `string` or a `{ [string]: any }`, and `:r-transition` a
   `float?`, the progress of a swap or nothing.

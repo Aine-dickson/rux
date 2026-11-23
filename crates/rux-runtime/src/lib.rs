@@ -1169,6 +1169,8 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
             let value = match el.attr("type") {
                 Some("number") if el.attr("r-model").is_some() => "float",
                 Some("checkbox" | "switch" | "slider") => "any",
+                // The value picked: a number when the options' values are.
+                Some("select") => "any",
                 // What was chosen: a file input's `@change` comes only after a pick.
                 Some("file") if el.attr("multiple").is_some() => "File[]",
                 Some("file") => "File",
@@ -1280,7 +1282,8 @@ fn bound_type(tag: &str, name: &str) -> Option<rux_script::types::Type> {
         (_, "r-transition") => "float?",
         ("image" | "audio" | "video", "src") | ("video", "poster") | ("path", "d") => "string",
         ("audio" | "video", "controls" | "autoplay" | "loop" | "muted") => "bool",
-        ("input", "options") => "string[]",
+        // Text, or `{ value, label, disabled }` for a value that is not what it shows.
+        ("input", "options") => "any[]",
         ("input", "marks") => "TextMark[]",
         ("input" | "button", "disabled") | ("input", "readonly" | "required") => "bool",
         _ => return None,
@@ -1298,7 +1301,9 @@ fn model_types(el: &rux_parser::Element) -> (rux_script::types::Type, rux_script
         Some("radio") => (el.attr("value").map_or(Type::String, |v| Type::Literal(v.to_string())), Type::Any),
         // A select writes one of its options, which may be a narrower type
         // than `string`: only what it shows is held to text.
-        Some("select") => (Type::Any, Type::String),
+        // A select shows an option's label, and holds its value, whatever
+        // type that is: only its list is held to being a list.
+        Some("select") => (Type::Any, Type::Any),
         // A file input writes what was picked and shows its name itself.
         Some("file") => (file_model_type(el), Type::Any),
         _ => (Type::String, Type::String),
@@ -3895,8 +3900,14 @@ impl Document {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
-            let (text, color) = rux_style::eval_value_binding(binding, &mut self.engine);
+            let (mut text, color) = rux_style::eval_value_binding(binding, &mut self.engine);
             if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
+                // A select shows its chosen option's label, not the value it holds.
+                if let (Some(meta), Some(options)) = (&node.option_meta, &node.options) {
+                    if let Some(label) = meta.label_for(options, &text) {
+                        text = label.to_string();
+                    }
+                }
                 if let Some(content) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
                     // `:marks` that do not read this value were made for the
                     // text before: what no longer lands on it is dropped, and
@@ -3957,9 +3968,25 @@ impl Document {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
-            let opts = rux_style::eval_options_binding(binding, &mut self.engine);
+            let (opts, meta) = rux_style::eval_options_binding(binding, &mut self.engine);
+            // The shown label may have moved with the list: the select's own
+            // value binding says what it holds now.
+            let held = self
+                .registry
+                .value
+                .iter()
+                .find(|b| b.path == binding.path)
+                .map(|b| rux_style::eval_value_binding(b, &mut self.engine).0);
             if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 node.options = Some(opts);
+                node.option_meta = meta;
+                if let (Some(held), Some(meta), Some(options)) = (held, &node.option_meta, &node.options) {
+                    if let Some(label) = meta.label_for(options, &held) {
+                        if let Some(content) = node.children.first_mut().and_then(|c| c.text.as_mut()) {
+                            content.text = label.to_string();
+                        }
+                    }
+                }
             }
         }
     }
