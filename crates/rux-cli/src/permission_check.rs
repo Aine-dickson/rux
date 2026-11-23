@@ -196,6 +196,51 @@ pub fn undeclared_location(text: &str, undeclared: Option<&str>) -> Vec<(usize, 
     out
 }
 
+/// `(line, message)` for each `links.open("...")`, `links.dial("...")` or
+/// `links.sms("...", ...)` call (or `links::` in the app's Rust) whose first
+/// argument is a literal Rux would refuse when the program runs: a scheme that
+/// does not open, or a phone number with no digits. A value built at run time
+/// is not read, and the call still throws.
+pub fn refused_links(text: &str) -> Vec<(usize, String)> {
+    use rux_runtime::native::links::{check_url, tel_url};
+    let mut out = Vec::new();
+    for (index, line) in text.lines().enumerate() {
+        for (prefix, call) in [
+            ("links.open", "open"),
+            ("links::open", "open"),
+            ("links.dial", "dial"),
+            ("links::dial", "dial"),
+            ("links.sms", "sms"),
+            ("links::sms", "sms"),
+        ] {
+            let mut from = 0;
+            while let Some(at) = line[from..].find(prefix) {
+                let start = from + at;
+                from = start + prefix.len();
+                if line[..start].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.' || c == ':') {
+                    continue;
+                }
+                let Some(args) = line[from..].trim_start().strip_prefix('(') else { continue };
+                let args = args.trim_start();
+                let Some(quote) = args.chars().next().filter(|c| matches!(c, '"' | '\'' | '`')) else { continue };
+                let Some(end) = args[1..].find(quote) else { continue };
+                let literal = &args[1..1 + end];
+                if literal.contains("${") {
+                    continue;
+                }
+                let refused = match call {
+                    "open" => check_url(literal).err(),
+                    _ => tel_url(literal).err(),
+                };
+                if let Some(e) = refused {
+                    out.push((index + 1, format!("{prefix}: {}", e.message)));
+                }
+            }
+        }
+    }
+    out
+}
+
 /// The `.rs` files under `native/src`, for the calls an app's Rust makes.
 pub fn native_sources(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
@@ -298,5 +343,14 @@ why = \"x\"
 ");
         assert!(undeclared_location("location.current({})", with.undeclared("location").as_deref()).is_empty());
         assert!(undeclared_location("let location = 3; location.position", none.undeclared("location").as_deref()).is_empty());
+    }
+    #[test]
+    fn a_link_literal_rux_would_refuse_is_found() {
+        let found = refused_links(
+            "links.open(\"https://example.com\");\nlinks.open(\"file:///etc/passwd\");\nlinks.dial(\"call me\");\nlinks.dial(\"+256 700 000 000\");\nlinks.open(url);\nlinks::sms(\"x\", \"hi\");\nxlinks.open(\"javascript:1\");\n",
+        );
+        assert_eq!(found.iter().map(|f| f.0).collect::<Vec<_>>(), [2, 3, 6], "{found:?}");
+        assert!(found[0].1.contains("is not a scheme Rux opens"), "{}", found[0].1);
+        assert!(found[1].1.contains("a phone number is digits"), "{}", found[1].1);
     }
 }

@@ -2653,6 +2653,60 @@ location.stop();
 - **Not built yet:** opening the system's location settings, the battery
   optimisation exemption, Google's fused provider, and a desktop backend.
 
+## Links and other apps
+
+Hands the person over to another app: the browser, the dialer, the messaging
+app, a maps app, the share sheet. Nothing here needs a permission: the other
+app opens in front, and what happens next (a call, a message) is the person's
+to confirm.
+
+```rux
+links.open("https://example.com/track/42");           // a URL, in the app that handles it
+links.dial("+256 700 000 000");                       // the dialer, number filled in, no call placed
+links.sms("+256700000000", "Your parcel is here");    // the messaging app, text filled in
+links.directions({ lat: 0.33, lng: 32.6, label: "Pickup, Kololo" });
+links.share({ title: "Track your parcel", text: "https://track.example/42" });
+if links.canOpen("tel:+256700000000") { ... }          // whether something would take it
+```
+
+- **Only some schemes open**: `https`, `http`, `tel`, `sms`, `mailto` and
+  `geo`. Anything else (`file:`, `intent:`, `content:`, `javascript:`, a
+  custom scheme) throws `scheme`, because a link that came from a server must
+  never reach an arbitrary intent. A URL needs its scheme written out
+  (`https://example.com`, not `example.com`) and holds no line breaks.
+- **`dial`, `sms` and `directions` build their own URL**, so a number or a
+  label is escaped, not trusted. A number is digits with an optional leading
+  `+`; spaces, dashes, dots and brackets are dropped. Anything else throws
+  `option`. WhatsApp is `links.open("https://wa.me/256700000000?text=Hi")`:
+  it has no call of its own.
+- **`directions` starts turn-by-turn where it can.** Android: Google Maps'
+  navigation when it is installed, else a pin in whichever maps app the person
+  has (`geo:`), else the Google Maps web page. A desktop and a browser open the
+  web page. `lat` is -90 to 90 and `lng` -180 to 180, else `option`.
+- **`share`** needs a `text` (and takes an optional `title`). A desktop has no
+  share sheet and throws `unsupported`; a browser uses `navigator.share` where
+  it has one.
+- **`canOpen(url)`** says whether something on this device would handle a URL,
+  so a button can be hidden. On Android it reads what the manifest's
+  `<queries>` allow (a browser, a dialer, messaging, mail and maps are listed
+  for you). A desktop and a browser cannot ask what is registered and answer
+  `true`; the open itself throws `notfound` where nothing handles it.
+- **Errors, by `kind`.** `scheme`, `option`, `notfound` (nothing on this
+  device handles it), `gesture` (a browser opens another page only from a tap:
+  call it in a tap handler, before any `await`) and `unsupported`.
+- **The app's Rust** has the same calls: `rux::links::open`, `dial`, `sms`,
+  `directions(Directions::new(lat, lng).label("..."))`, `share(Share { title,
+  text })` and `can_open`, from any thread. Android 10 and later refuse to start
+  an activity from an app that is not in front, so a call from a background
+  thread while the app is away shows nothing: post a notification with a route
+  instead.
+- **`rux check` reads the literals.** A `links.open("file:///x")`, or a
+  `links.dial("call me")`, is warned about before the app runs. A URL built at
+  run time is not read, and the call still throws.
+- **Mention `links.` once in the page's script to call it**, as `background` does; a file with a `links` of its own keeps it.
+- **Not built:** choosing which maps app, opening a file or a picked document
+  in another app, placing the call itself (`CALL_PHONE`), and contacts.
+
 ## Talking to the outside
 
 | Call | Does |

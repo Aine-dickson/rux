@@ -3672,6 +3672,24 @@ Edge over CDP, probe `rux-harness\ud002-web` (a real `rux build --target web` bu
 | Location blocked in the browser, then `current` | Throws `permission` |
 | **Not driven** | The browser's own location prompt (the profile answered it), a `timeout`, a phone's browser, Safari and Firefox, a page on plain http (a browser refuses location there, which reports as `permission`), `intervalMs` and `distanceM` (a browser takes neither) |
 
+## Links and other apps, 2026-11-23
+
+Three targets, one probe app (`rux-harness\ud005-win`, `ud005-and`, `ud005-web`), each a dev build from `target/debug/rux`.
+
+| Case | Result |
+|---|---|
+| Windows 11: `links.open("https://example.com/?from=rux")` | The default browser opens that exact URL |
+| Windows: `links.open("file:///C:/Windows/notepad.exe")` | Throws `scheme`, naming the schemes that open |
+| Windows: `links.canOpen("https://x.co")`, `links.share(...)` | `true`; `share` throws `unsupported` |
+| Android emulator (Android 15): `links.dial("+256 (700) 000-000")` | The dialer, with `+256 700 000000` filled in and the call not placed |
+| Android: `links.sms("0700 000 000", "Hi & bye")` | The messaging app opens |
+| Android: `links.directions({ lat, lng, label })` | Google Maps opens (its first-run screen on the emulator) through the navigation intent |
+| Android: `links.share({ text: "hello" })` | The share sheet, "Sharing text", with `hello` |
+| Android: `links.canOpen` for `tel:`, `geo:` and `https:` | `true` for all three (the manifest's `<queries>`) |
+| Edge over CDP, anchor clicks logged: `open`, `dial`, `sms`, `directions` | `https` opens `target=_blank rel="noopener noreferrer"`; `tel:+256700000000`; `sms:0700000000?body=Hi%20%26%20bye`; the Google Maps `dir` URL with the destination |
+| Web: a `file:` URL, and `share` | `scheme`; `share` answered through `navigator.share` |
+| **Not driven** | `open` on Android through the probe (its first row sat under the status bar, so the tap did not land: the same call as `dial`), a phone with no dialer or maps app (`notfound`), turn-by-turn actually starting, WhatsApp, `share` to a real target, `gesture` in a browser, macOS and Linux, a call from a background thread, Safari and Firefox |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

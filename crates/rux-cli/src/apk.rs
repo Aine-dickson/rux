@@ -1127,7 +1127,10 @@ mod tests {
     #[test]
     fn an_app_without_links_has_no_view_filter_and_is_still_single_task() {
         let xml = android_manifest(&manifest("Task List"), false, false);
-        assert!(!xml.contains("android.intent.action.VIEW"), "{xml}");
+        // The `<queries>` list VIEW (what `links.canOpen` can see); the
+        // activity itself takes none.
+        let activity = xml.split("</queries>").nth(1).expect("queries come first");
+        assert!(!activity.contains("android.intent.action.VIEW"), "{xml}");
         // Not only for links: any intent from another app would otherwise
         // build a second activity in this process, and a second EventLoop.
         assert!(xml.contains("android:launchMode=\"singleTask\""), "{xml}");
@@ -1144,7 +1147,8 @@ mod tests {
     #[test]
     fn hosts_share_one_verified_https_filter_apart_from_the_scheme() {
         let xml = android_manifest(&with_links(Some("tasks"), &["example.com", "*.example.org"]), false, false);
-        assert_eq!(xml.matches("android.intent.action.VIEW").count(), 2, "{xml}");
+        let activity = xml.split("</queries>").nth(1).expect("queries come first");
+        assert_eq!(activity.matches("android.intent.action.VIEW").count(), 2, "{xml}");
         let verified = xml.split("android:autoVerify=\"true\"").nth(1).expect("a verified filter");
         let verified = verified.split("</intent-filter>").next().unwrap();
         assert!(verified.contains("android:scheme=\"https\""), "{verified}");

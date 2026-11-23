@@ -106,6 +106,10 @@ reference half does not wait: `docs/05-as-built.md` describes the tip.
 | `location.current` throws `timeout` indoors, or never answers on a bare emulator | A GPS fix can take a minute cold, and the emulator's GPS only reports when it is given a position (`adb emu geo fix`). Allow longer with `timeoutMs`, or ask for `accuracy: "balanced"` where a coarse position will do | `07-script` "Location" | documented |
 | A rider's positions stop when the screen locks | A watch ends with the app unless a service keeps the process, and Android throttles background location. Start a `background` service of type `location` beside the watch | `07-script` "Location" | documented |
 | `location.watch({ intervalMs: 15000 })` reports every second in a browser | A browser takes no interval or distance: it reports as the device does. Keep the newest and post on your own timer | `07-script` "Location" | documented |
+| `links.open` does nothing in a browser | A browser opens another page or app only from a tap: the call throws `gesture` outside one. Call it in the tap's handler, before any `await` | `07-script` "Links and other apps" | documented |
+| `links.open("example.com")` throws `scheme` | A URL needs its scheme written out: `https://example.com`. Only `https`, `http`, `tel`, `sms`, `mailto` and `geo` open, on purpose | `07-script` "Links and other apps" | documented |
+| `links.directions` opens a pin, not turn-by-turn | Only Google Maps starts guidance; any other maps app gets the place. With none installed, the web page opens | `07-script` "Links and other apps" | documented |
+| A `links.dial` button does nothing on a tablet or an emulator without a dialer | The call throws `notfound`; check `links.canOpen("tel:...")` first and show the number as text when it is false | `07-script` "Links and other apps" | documented |
 | `{{ background.active }}` is undefined in a page | The name is linked from the script, and a template-only mention is not seen. Mention `background` in the page's script once, or write `use native::rux::background;` | `07-script` "Background work" | documented |
 
 ### From writing the `rux new` template (2026-09-17)
