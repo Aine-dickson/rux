@@ -1833,6 +1833,65 @@ public class RuxActivity extends NativeActivity {
         }
     }
 
+    // ---- Handing over to other apps ----------------------------------------
+    //
+    // A VIEW intent for the URL, started from the application context with
+    // NEW_TASK, so it works with no activity on screen. Rux has already
+    // checked the scheme (https, http, tel, sms, mailto, geo): nothing here
+    // trusts a string from a script. Each answers {@code null}, or
+    // {@code kind: why}.
+
+    /** Show {@code url} in the app that handles it. */
+    String ruxOpenUrl(String url) {
+        return startLink(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)));
+    }
+
+    /**
+     * Turn-by-turn in Google Maps when it is there, else a pin in whichever
+     * maps app the person has, else the web page.
+     */
+    String ruxDirections(String navUrl, String pinUrl, String webUrl) {
+        Intent nav = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(navUrl)).setPackage("com.google.android.apps.maps");
+        if (startLink(nav) == null) {
+            return null;
+        }
+        if (startLink(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(pinUrl))) == null) {
+            return null;
+        }
+        return startLink(new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(webUrl)));
+    }
+
+    /** The share sheet with {@code text}. */
+    String ruxShare(String title, String text) {
+        Intent send = new Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text);
+        if (!title.isEmpty()) {
+            send.putExtra(Intent.EXTRA_SUBJECT, title);
+        }
+        return startLink(Intent.createChooser(send, title.isEmpty() ? null : title));
+    }
+
+    /** Whether some app would take {@code url} (the manifest's queries say which kinds can be seen). */
+    boolean ruxCanOpen(String url) {
+        try {
+            return new Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)).resolveActivity(getPackageManager()) != null;
+        } catch (RuntimeException e) {
+            return false;
+        }
+    }
+
+    private String startLink(Intent intent) {
+        try {
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getApplicationContext().startActivity(intent);
+            return null;
+        } catch (android.content.ActivityNotFoundException e) {
+            return "notfound: nothing on this phone handles that";
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "opening a link failed", e);
+            return "link: " + e.getMessage();
+        }
+    }
+
     /** Send the app's task to the back, as Home would: the screen goes, the process stays. */
     void ruxMoveToBack() {
         runOnUiThread(() -> moveTaskToBack(true));

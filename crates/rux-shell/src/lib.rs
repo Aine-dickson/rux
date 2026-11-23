@@ -14115,12 +14115,78 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeBackgroundActive
     rux_runtime::native::background::set_active(active);
 }
 
+/// Show a URL in the app that handles it (see `RuxActivity.ruxOpenUrl`).
+/// `Err` carries `kind: why`.
+#[cfg(target_os = "android")]
+pub(crate) fn android_open_url(url: &str) -> Result<(), String> {
+    android_string_call("link", |env, activity| {
+        let url = env.new_string(url)?;
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxOpenUrl"),
+            jni::jni_sig!("(Ljava/lang/String;)Ljava/lang/String;"),
+            &[jni::JValue::Object(&url)],
+        )
+    })
+}
+
+/// Navigate to a place (see `RuxActivity.ruxDirections`).
+#[cfg(target_os = "android")]
+pub(crate) fn android_directions(nav: &str, pin: &str, web: &str) -> Result<(), String> {
+    android_string_call("link", |env, activity| {
+        let strings = [nav, pin, web].iter().map(|s| env.new_string(s)).collect::<Result<Vec<_>, _>>()?;
+        let args: Vec<jni::JValue> = strings.iter().map(|s| jni::JValue::Object(s)).collect();
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxDirections"),
+            jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"),
+            &args,
+        )
+    })
+}
+
+/// Show the share sheet (see `RuxActivity.ruxShare`).
+#[cfg(target_os = "android")]
+pub(crate) fn android_share(title: &str, text: &str) -> Result<(), String> {
+    android_string_call("link", |env, activity| {
+        let title = env.new_string(title)?;
+        let text = env.new_string(text)?;
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxShare"),
+            jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"),
+            &[jni::JValue::Object(&title), jni::JValue::Object(&text)],
+        )
+    })
+}
+
+/// Whether an app would take a URL (see `RuxActivity.ruxCanOpen`).
+#[cfg(target_os = "android")]
+pub(crate) fn android_can_open(url: &str) -> bool {
+    let Ok(activity) = ACTIVITY.lock() else { return false };
+    let Some(activity) = activity.as_ref() else { return false };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        let url = env.new_string(url)?;
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxCanOpen"),
+            jni::jni_sig!("(Ljava/lang/String;)Z"),
+            &[jni::JValue::Object(&url)],
+        )?
+        .z()
+    })
+    .unwrap_or(false)
+}
+
 /// Ask for one position (see `RuxActivity.ruxLocationCurrent`); the answer
 /// comes through `nativeLocationFix` or `nativeLocationError` with `id`.
 /// `Err` carries `kind: why`.
 #[cfg(target_os = "android")]
 pub(crate) fn android_location_current(id: i64, high: bool, timeout_ms: u64) -> Result<(), String> {
-    android_location_call(|env, activity| {
+    android_string_call("location", |env, activity| {
         env.call_method(
             activity,
             jni::jni_str!("ruxLocationCurrent"),
@@ -14133,7 +14199,7 @@ pub(crate) fn android_location_current(id: i64, high: bool, timeout_ms: u64) -> 
 /// Start or replace the location watch (see `RuxActivity.ruxLocationWatch`).
 #[cfg(target_os = "android")]
 pub(crate) fn android_location_watch(high: bool, interval_ms: u64, distance_m: f32) -> Result<(), String> {
-    android_location_call(|env, activity| {
+    android_string_call("location", |env, activity| {
         env.call_method(
             activity,
             jni::jni_str!("ruxLocationWatch"),
@@ -14149,17 +14215,18 @@ pub(crate) fn android_location_stop() {
     android_call_activity(jni::jni_str!("ruxLocationStop"));
 }
 
-/// A location method that answers `null`, or `kind: why`: `call` makes the
-/// call on the activity.
+/// A method of the activity that answers `null`, or `kind: why`: `call`
+/// makes the call, and `what` names the feature in the errors of its own.
 #[cfg(target_os = "android")]
-fn android_location_call(
+fn android_string_call(
+    what: &str,
     call: impl for<'a> FnOnce(
         &mut jni::Env<'a>,
         &jni::objects::Global<jni::objects::JObject<'static>>,
     ) -> jni::errors::Result<jni::objects::JValueOwned<'a>>,
 ) -> Result<(), String> {
-    let Ok(activity) = ACTIVITY.lock() else { return Err("location: the app has no activity".into()) };
-    let Some(activity) = activity.as_ref() else { return Err("location: the app has no activity yet".into()) };
+    let Ok(activity) = ACTIVITY.lock() else { return Err(format!("{what}: the app has no activity")) };
+    let Some(activity) = activity.as_ref() else { return Err(format!("{what}: the app has no activity yet")) };
     let ctx = ndk_context::android_context();
     // Safety: as in `android_set_text_input`, which records the reasoning.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
@@ -14171,7 +14238,7 @@ fn android_location_call(
         let why = env.cast_local::<jni::objects::JString>(why)?;
         Ok(Err(why.try_to_string(env)?))
     })
-    .map_err(|e| format!("location: could not reach Android: {e}"))?
+    .map_err(|e| format!("{what}: could not reach Android: {e}"))?
 }
 
 /// A position arrived. Called from Java on Android's main thread.

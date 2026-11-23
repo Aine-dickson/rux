@@ -6,9 +6,9 @@
 //! `rux_native::links` (so the app's Rust holds to the same rules). This
 //! module reads script's arguments and hands the platform a checked URL.
 //!
-//! The platforms: the desktop opens through the operating system's own verb.
-//! Android and the web are built after it (UD-005 steps 2 and 3); until then
-//! they throw `unsupported`.
+//! The platforms: the desktop opens through the operating system's own verb,
+//! Android through an intent. The web is built after them (UD-005 step 3) and
+//! throws `unsupported` until then.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -185,7 +185,36 @@ mod platform {
     }
 }
 
-#[cfg(any(target_os = "android", target_arch = "wasm32"))]
+#[cfg(target_os = "android")]
+mod platform {
+    use super::*;
+
+    /// Java says `kind: why`.
+    fn from_java(why: String) -> Error {
+        match why.split_once(": ") {
+            Some((kind @ ("notfound" | "link"), message)) => Error::new(kind, message),
+            _ => Error::new("link", why),
+        }
+    }
+
+    pub(super) fn open(url: &str) -> Result<(), Error> {
+        crate::android_open_url(url).map_err(from_java)
+    }
+
+    pub(super) fn directions(to: &Directions) -> Result<(), Error> {
+        crate::android_directions(&to.navigation_url(), &to.pin_url(), &to.web_url()).map_err(from_java)
+    }
+
+    pub(super) fn share(what: &Share) -> Result<(), Error> {
+        crate::android_share(&what.title, &what.text).map_err(from_java)
+    }
+
+    pub(super) fn can_open(url: &str) -> bool {
+        crate::android_can_open(url)
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
 mod platform {
     use super::*;
 

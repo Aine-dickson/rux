@@ -675,6 +675,14 @@ fn android_manifest(manifest: &Manifest, dev: bool, network: bool) -> String {
             <action android:name="android.intent.action.PROCESS_TEXT" />
             <data android:mimeType="text/plain" />
         </intent>
+        <!-- What `links.canOpen` can see: a browser, a dialer, a messaging
+             app, a mail app and a maps app. Opening needs none of these. -->
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="https" /></intent>
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="http" /></intent>
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="tel" /></intent>
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="sms" /></intent>
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="mailto" /></intent>
+        <intent><action android:name="android.intent.action.VIEW" /><data android:scheme="geo" /></intent>
     </queries>
     <application
         android:label="{label}"{icon}
