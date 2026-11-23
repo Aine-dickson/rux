@@ -151,6 +151,10 @@ mod store {
         *DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir);
     }
 
+    pub(crate) fn file_path() -> Option<PathBuf> {
+        file()
+    }
+
     fn file() -> Option<PathBuf> {
         if let Some(dir) = DIR.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             return Some(dir.join("settings.json"));
@@ -235,6 +239,13 @@ mod store {
 
 #[cfg(target_os = "android")]
 pub(crate) use store::set_dir;
+
+/// The app's own data folder, where `settings.json` lives and `secrets.json`
+/// goes beside it.
+#[cfg(windows)]
+pub(crate) fn data_dir() -> Option<std::path::PathBuf> {
+    store::file_path().and_then(|f| f.parent().map(std::path::Path::to_path_buf))
+}
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {

@@ -32,6 +32,7 @@ mod background;
 mod media;
 mod links;
 mod location;
+mod secrets;
 mod notifications;
 mod image_events;
 #[cfg(not(target_arch = "wasm32"))]
@@ -12837,6 +12838,7 @@ fn install_rux_modules() {
     background::install_background();
     location::install_location();
     links::install_links();
+    secrets::install_secrets();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading
@@ -14542,6 +14544,36 @@ pub(crate) fn android_read_uri(uri: &str) -> Option<Vec<u8>> {
     })
     .ok()
     .flatten()
+}
+
+/// `RuxActivity.ruxSecret(op, key, value)`: the activity keeps a secret in the
+/// Keystore (`secrets.rs`). `None` when the activity could not be asked;
+/// `Some(None)` for "nothing"; `Some(Some(text))` the secret, or a message
+/// after a NUL when it failed.
+#[cfg(target_os = "android")]
+pub(crate) fn android_secret(op: i32, key: &str, value: &str) -> Option<Option<String>> {
+    let Ok(activity) = ACTIVITY.lock() else { return None };
+    let Some(activity) = activity.as_ref() else { return None };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        let (key, value) = (env.new_string(key)?, env.new_string(value)?);
+        let answer = env
+            .call_method(
+                activity,
+                jni::jni_str!("ruxSecret"),
+                jni::jni_sig!("(ILjava/lang/String;Ljava/lang/String;)Ljava/lang/String;"),
+                &[jni::JValue::Int(op), jni::JValue::Object(&key), jni::JValue::Object(&value)],
+            )?
+            .l()?;
+        if answer.is_null() {
+            return Ok(None);
+        }
+        let answer = env.cast_local::<jni::objects::JString>(answer)?;
+        Ok::<_, jni::errors::Error>(Some(answer.try_to_string(env)?))
+    })
+    .ok()
 }
 
 /// The phone's decimal separator, from its language. `None` if the activity

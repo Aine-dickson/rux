@@ -75,8 +75,8 @@ pub use rux_native as native;
 /// interface, which a shell installs with code behind it.
 pub mod builtins {
     pub use rux_script::native::{
-        app_interface, background_interface, builtin_interface, clipboard_interface, links_interface, location_interface, notifications_interface, permissions_interface, set_media, settings_interface,
-        window_interface, APP_MODULE, BACKGROUND_MODULE, LINKS_MODULE, LOCATION_MODULE, BUILTIN_FNS, BUILTIN_MODULE, NOTIFICATIONS_MODULE, CLIPBOARD_MODULE, PERMISSIONS_MODULE, SETTINGS_MODULE,
+        app_interface, background_interface, builtin_interface, clipboard_interface, links_interface, location_interface, notifications_interface, permissions_interface, secrets_interface, set_media, settings_interface,
+        window_interface, APP_MODULE, BACKGROUND_MODULE, LINKS_MODULE, LOCATION_MODULE, BUILTIN_FNS, BUILTIN_MODULE, NOTIFICATIONS_MODULE, CLIPBOARD_MODULE, PERMISSIONS_MODULE, SECRETS_MODULE, SETTINGS_MODULE,
         WINDOW_MODULE,
     };
 }

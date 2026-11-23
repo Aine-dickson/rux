@@ -1154,6 +1154,79 @@ public class RuxActivity extends NativeActivity {
         }
     }
 
+    /**
+     * A secret (UD-007): {@code op} 0 gets {@code key}, 1 sets it to
+     * {@code value}, 2 removes it. The value is sealed with an AES-GCM key that
+     * lives in the AndroidKeyStore and never leaves it, bound to the key's name,
+     * and kept as IV + ciphertext in a file of {@code getNoBackupFilesDir()},
+     * which a backup leaves out. Answers the secret, {@code null} for none (and
+     * for a set or a remove), or {@code "\0" + message} when something failed.
+     * Rust has checked {@code key}: letters, digits and {@code ._-}.
+     */
+    String ruxSecret(int op, String key, String value) {
+        try {
+            java.io.File dir = new java.io.File(getNoBackupFilesDir(), "rux-secrets");
+            java.io.File file = new java.io.File(dir, key + ".bin");
+            if (op == 2) {
+                file.delete();
+                return null;
+            }
+            java.security.KeyStore store = java.security.KeyStore.getInstance("AndroidKeyStore");
+            store.load(null);
+            String alias = "rux.secrets";
+            javax.crypto.SecretKey secret;
+            if (store.containsAlias(alias)) {
+                secret = (javax.crypto.SecretKey) store.getKey(alias, null);
+            } else {
+                javax.crypto.KeyGenerator generator = javax.crypto.KeyGenerator.getInstance(
+                        android.security.keystore.KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore");
+                generator.init(new android.security.keystore.KeyGenParameterSpec.Builder(alias,
+                        android.security.keystore.KeyProperties.PURPOSE_ENCRYPT
+                                | android.security.keystore.KeyProperties.PURPOSE_DECRYPT)
+                        .setBlockModes(android.security.keystore.KeyProperties.BLOCK_MODE_GCM)
+                        .setEncryptionPaddings(android.security.keystore.KeyProperties.ENCRYPTION_PADDING_NONE)
+                        .setKeySize(256)
+                        .build());
+                secret = generator.generateKey();
+            }
+            javax.crypto.Cipher cipher = javax.crypto.Cipher.getInstance("AES/GCM/NoPadding");
+            byte[] name = key.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+            if (op == 1) {
+                cipher.init(javax.crypto.Cipher.ENCRYPT_MODE, secret);
+                cipher.updateAAD(name);
+                byte[] sealed = cipher.doFinal(value.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                byte[] iv = cipher.getIV();
+                dir.mkdirs();
+                java.io.File part = new java.io.File(dir, key + ".part");
+                try (java.io.FileOutputStream out = new java.io.FileOutputStream(part)) {
+                    out.write(iv);
+                    out.write(sealed);
+                    out.getFD().sync();
+                }
+                if (!part.renameTo(file)) {
+                    return "\0could not keep the secret: the rename failed";
+                }
+                return null;
+            }
+            if (!file.exists()) {
+                return null;
+            }
+            byte[] all = new byte[(int) file.length()];
+            try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+                int at = 0;
+                for (int n; at < all.length && (n = in.read(all, at, all.length - at)) > 0; ) {
+                    at += n;
+                }
+            }
+            cipher.init(javax.crypto.Cipher.DECRYPT_MODE, secret, new javax.crypto.spec.GCMParameterSpec(128, all, 0, 12));
+            cipher.updateAAD(name);
+            return new String(cipher.doFinal(all, 12, all.length - 12), java.nio.charset.StandardCharsets.UTF_8);
+        } catch (java.lang.Exception e) {
+            android.util.Log.w("rux", "secret " + op + " " + key, e);
+            return "\0" + e;
+        }
+    }
+
     /** A picker's or a camera's answer, as {@link #nativeFilesPicked} takes it. */
     private void filesAnswered(int request, int result, Intent data) {
         java.util.List<android.net.Uri> uris = new java.util.ArrayList<>();

@@ -3712,6 +3712,22 @@ Windows 11 (`rux-harness\ud014-win`, `ud013-win`, `ud013s-win`, `rux run` from `
 | Android: the select dialog | The same four labels with `4 hours` greyed and not tappable (the dialog stays open); `8 hours` writes 480 and shows `8 hours`, one `@change` |
 | **Not driven** | A phone browser's hidden inputs for `datetime-local`, `time` and `<option disabled>` (they run only where `touch_first()`), typing on the web, a touch fling's `@scrollend`, a finger resting mid-drag (`@scrollend` fires after 100 ms still), an RTL scroller's `scrollLeft`, Android 10 and below, a select whose options change while its dropdown is open |
 
+## Secrets and a file's bytes in the app's Rust, 2026-11-24
+
+Android emulator `rux_test` (Android 15), probe `rux-harness\ud0047-and` (a `native/` crate with `#[rux::export] async fn describe(file: rux::File)`), built with `target/debug/rux build --target android`. Windows: the unit tests, which call the real DPAPI.
+
+| Case | Result |
+|---|---|
+| `secrets.get` before anything is kept | `none` |
+| `secrets.set("refreshToken", "tok-abc-123")`, then `get` | `tok-abc-123` |
+| `force-stop` the app, start it, `get` | Still `tok-abc-123` |
+| `adb run-as ... cat no_backup/rux-secrets/refreshToken.bin`, searched for `tok-abc` | The file is under `no_backup/rux-secrets/` and holds no plain text |
+| `secrets.remove`, then `get` | `none` |
+| Windows: set, replace, remove, a second key, and `secrets.json` read as text | Values come back; the file holds neither text; a changed blob is refused |
+| Android picker: `pickFile({})`, choose `pick.png` (286 B), then `await files.describe(f)` | Script shows `picked pick.png 286 image/png`; the Rust read `286 bytes (said 286), starts 89 50 4e 47` (a PNG's first four bytes) through the `content://` URI |
+| Desktop: `rux::File::bytes` on a picked path; the file deleted; a file with no path | The bytes; `io`; `io` |
+| **Not driven** | The Windows window for `secrets`, the web reader for `File::bytes`, a camera photo after Android killed the app, a file over a few MB, Android 5 and below |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

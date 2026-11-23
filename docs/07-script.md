@@ -2267,6 +2267,15 @@ async fn saveAs() {
 - **The window keeps going while the dialog is open**: it is the platform's
   dialog run off the window's thread, and the path comes back as an `await`'s
   answer does. On Linux it is the desktop portal's dialog, not GTK's.
+- **The app's Rust reads a `File` itself.** An export takes it as `rux::File`
+  (or `&rux::File`) and `await file.bytes()` gives the whole file as a
+  `Vec<u8>`: the path on the desktop, the `content://` URI through Android's
+  `ContentResolver`, the browser's own file on the web. The bytes never cross
+  to script, so an upload is `await api.upload(file)` with the read and the
+  request both in Rust. A file gone since it was chosen is an `io` error.
+  Shrinking a 12 MP photo before sending it is the app's Rust too (a crate
+  such as `image`); Rux gives it the bytes. Driven on Windows and the Android
+  emulator; the web reader is written, not driven.
 - **`file.path` is the desktop's**, for the app's Rust to open; `file.text()`
   reads it from script, everywhere.
 - **On the web and on Android** `pickFile` and `pickFiles` open the picker an
@@ -2339,6 +2348,36 @@ fn toggle() {
 - **`<audio>`** is the same sound as an element, with drawn controls and
   `@play`, `@pause`, `@ended`, `@timeupdate` and `@error` (see the
   elements reference).
+
+## Secrets
+
+**`secrets.get(key)`, `secrets.set(key, value)` and `secrets.remove(key)`**
+keep a string where the platform protects it, for what `settings` (a plain
+JSON file) should not hold: a refresh token, an API key. Rux's own, so nothing
+is imported; plain calls, not `await`s.
+
+```rux
+secrets.set("refreshToken", token);
+let saved: string? = secrets.get("refreshToken");   // none when nothing is kept
+secrets.remove("refreshToken");                      // nothing there is no error
+```
+
+- **Values are strings.** A key is letters, digits and `._-`, up to 128
+  (anything else throws `option`). `set` replaces what was there.
+- **Android:** an AES-GCM key in the `AndroidKeyStore`, which never leaves it
+  and goes with the app; the sealed value is bound to its key's name and kept
+  in a file of the app's `noBackupFilesDir`, so a backup leaves it out and an
+  update keeps it. **Windows:** DPAPI, readable only by the same person on the
+  same machine, with the app's id as extra entropy; kept in `secrets.json`
+  beside `settings.json`.
+- **macOS, Linux and the web throw `unsupported`.** Nothing is kept rather
+  than kept where anyone can read it. A cross-platform app keeps the value in
+  `settings` there, knowingly, or not at all.
+- **The app's Rust uses `rux::secrets`** (`get`, `set`, `remove`), so a token
+  need not pass through script.
+- **Driven** on Windows (the real DPAPI, in tests) and the Android emulator
+  (set, get, kill the app and get again, remove; the file holds no plain
+  text). **Not driven:** the Windows window, a phone, Android 5 and below.
 
 ## Settings
 

@@ -419,6 +419,35 @@ pub fn links_interface() -> rux_native::Interface {
     }
 }
 
+/// The module behind `secrets.get`, `secrets.set` and `secrets.remove`: a
+/// string kept in what the platform protects (UD-007).
+pub const SECRETS_MODULE: &str = "native/rux/secrets";
+
+/// The name a script reaches [`SECRETS_MODULE`] by without importing it.
+pub const SECRETS_NAME: &str = "secrets";
+
+/// The secrets module's interface. Values are strings; `get` gives `none`
+/// for a key nothing is kept under.
+pub fn secrets_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str, params: &[(&str, &str)], result: &str| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            result: result.into(),
+            is_async: false,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux::secrets".into(),
+        items: vec![
+            f("get", &[("key", "string")], "string?"),
+            f("set", &[("key", "string"), ("value", "string")], "void"),
+            f("remove", &[("key", "string")], "void"),
+        ],
+    }
+}
+
 /// The module behind `notifications.post`, `notifications.cancel` and
 /// `notifications.cancelAll`: local notifications on a channel `rux.toml`
 /// declared.
@@ -561,6 +590,9 @@ pub fn ensure_builtins() {
     if registry::interface(LINKS_MODULE).is_none() {
         let _ = registry::declare(links_interface());
     }
+    if registry::interface(SECRETS_MODULE).is_none() {
+        let _ = registry::declare(secrets_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -581,6 +613,7 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         (BACKGROUND_NAME, BACKGROUND_MODULE),
         (LOCATION_NAME, LOCATION_MODULE),
         (LINKS_NAME, LINKS_MODULE),
+        (SECRETS_NAME, SECRETS_MODULE),
     ] {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')

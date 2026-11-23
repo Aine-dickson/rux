@@ -23,6 +23,7 @@ pub mod location;
 pub mod notifications;
 pub mod permissions;
 pub mod registry;
+pub mod secrets;
 mod signal;
 mod value;
 
