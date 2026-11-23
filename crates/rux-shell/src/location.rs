@@ -6,9 +6,8 @@
 //! declared (else `undeclared`, naming the table to add). Whether the person
 //! allowed it is the platform's to check, since only it can say.
 //!
-//! The platforms: Android and the web are built after the interface
-//! (UD-002 steps 2 and 3); until then they, and the desktop, throw
-//! `unsupported`.
+//! The platforms: Android (the platform's `LocationManager`) and the web
+//! (`navigator.geolocation`). The desktop throws `unsupported`.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -235,12 +234,108 @@ mod platform {
 #[cfg(target_os = "android")]
 pub(crate) use platform::{error_arrived, fix_arrived};
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_arch = "wasm32")]
+mod platform {
+    use super::*;
+    use crate::files::Slot;
+
+    /// One fix as the browser's `getCurrentPosition` gives it, answered as
+    /// `"lat,lng,accuracy,timestamp"`; a refusal rejects with the kind.
+    const CURRENT: &str = "return new Promise((ok, no) => {
+        if (!navigator.geolocation) { no('unsupported'); return; }
+        navigator.geolocation.getCurrentPosition(
+            (p) => ok([p.coords.latitude, p.coords.longitude, p.coords.accuracy, p.timestamp].join(',')),
+            (e) => no(['permission', 'location', 'timeout'][e.code - 1] || 'location'),
+            { enableHighAccuracy: high, timeout: timeoutMs, maximumAge: 0 });
+    });";
+
+    /// `watchPosition`, replacing a running watch. A browser takes no interval
+    /// or distance: it delivers as the device does. A refusal is not reported
+    /// here (the watch just never fires), as the first `current` would have been.
+    const WATCH: &str = "if (!navigator.geolocation) { return 'unsupported'; }
+        if (window.__ruxGeo != null) { navigator.geolocation.clearWatch(window.__ruxGeo); }
+        window.__ruxGeo = navigator.geolocation.watchPosition(
+            (p) => fix(p.coords.latitude, p.coords.longitude, p.coords.accuracy, p.timestamp),
+            (e) => { console.warn('location watch: ' + e.message); },
+            { enableHighAccuracy: high, maximumAge: 0 });
+        return 'ok';";
+
+    const STOP: &str = "if (navigator.geolocation && window.__ruxGeo != null) { navigator.geolocation.clearWatch(window.__ruxGeo); }
+        window.__ruxGeo = null; return 'ok';";
+
+    thread_local! {
+        /// The one callback every watch fix calls, made once.
+        static FIX: wasm_bindgen::JsValue = wasm_bindgen::closure::Closure::<dyn FnMut(f64, f64, f64, f64)>::new(
+            |lat: f64, lng: f64, accuracy: f64, at: f64| {
+                rux_runtime::native::location::report(Fix { lat, lng, accuracy_m: accuracy, at: at as i64, is_mock: false });
+            },
+        )
+        .into_js_value();
+    }
+
+    fn unsupported() -> Error {
+        Error::new("unsupported", "this browser has no geolocation")
+    }
+
+    pub(super) async fn current(options: Options) -> Result<Fix, Error> {
+        use wasm_bindgen::JsValue as J;
+        let slot = Slot::default();
+        let answer = slot.clone();
+        let f = js_sys::Function::new_with_args("high,timeoutMs", CURRENT);
+        let promise = f.call2(&J::NULL, &J::from_bool(options.accuracy == Accuracy::High), &J::from_f64(options.timeout_ms as f64));
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = match promise {
+                Ok(p) => wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(p)).await,
+                Err(e) => Err(e),
+            };
+            answer.set(match result {
+                Ok(v) => Ok(Any::Str(v.as_string().unwrap_or_default())),
+                Err(e) => Err(match e.as_string().as_deref() {
+                    Some("permission") => Error::new(
+                        "permission",
+                        "the browser did not allow location: the person refused, or the page is not on https",
+                    ),
+                    Some("timeout") => Error::new("timeout", "no position arrived in time"),
+                    Some("unsupported") => unsupported(),
+                    _ => Error::new("location", "the browser could not find the device's position"),
+                }),
+            });
+        });
+        let Any::Str(text) = slot.await? else { return Err(Error::new("location", "the browser gave no position")) };
+        let n: Vec<f64> = text.split(',').filter_map(|v| v.parse().ok()).collect();
+        match n.as_slice() {
+            [lat, lng, accuracy, at] => Ok(Fix { lat: *lat, lng: *lng, accuracy_m: *accuracy, at: *at as i64, is_mock: false }),
+            _ => Err(Error::new("location", "the browser gave an unreadable position")),
+        }
+    }
+
+    pub(super) fn watch(options: Options) -> Result<(), Error> {
+        use wasm_bindgen::JsValue as J;
+        let f = js_sys::Function::new_with_args("high,fix", WATCH);
+        let fix = FIX.with(|c| c.clone());
+        let answer = f
+            .call2(&J::NULL, &J::from_bool(options.accuracy == Accuracy::High), &fix)
+            .map_err(|_| unsupported())?;
+        if answer.as_string().as_deref() != Some("ok") {
+            return Err(unsupported());
+        }
+        set_watching(true);
+        Ok(())
+    }
+
+    pub(super) fn stop() -> Result<(), Error> {
+        let _ = js_sys::Function::new_no_args(STOP).call0(&wasm_bindgen::JsValue::NULL);
+        set_watching(false);
+        Ok(())
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 mod platform {
     use super::*;
 
     fn unsupported() -> Error {
-        Error::new("unsupported", "this platform cannot say where it is yet")
+        Error::new("unsupported", "this platform has no location yet: Android and the web do")
     }
 
     pub(super) async fn current(_options: Options) -> Result<Fix, Error> {

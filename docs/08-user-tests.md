@@ -3660,6 +3660,18 @@ Emulator `rux_test` (Android 15), probe `rux-harness\ud002-and`, a dev build fro
 | Location switched off in the system (`settings put secure location_mode 0`), then `current` | Throws `disabled`, saying it is switched off in the system settings |
 | **Not driven** | The fix from a real GPS, `balanced` accuracy and an approximate-only grant, a timeout (the emulator always has a fix), Android 10 and below (the `requestLocationUpdates` path for `current`), a watch with the screen off and with a `location` service, `on_fix` from the app's Rust, `isMock` on a real device |
 
+## Location on the web, 2026-11-23
+
+Edge over CDP, probe `rux-harness\ud002-web` (a real `rux build --target web` bundle from `target/debug/rux`), the browser's location permission set in the profile, fixes from `Emulation.setGeolocationOverride`, the page read by screenshot.
+
+| Case | Result |
+|---|---|
+| `location.current`, allowed | `{ lat 0.31, lng 32.58, accuracyM 10, isMock false }` |
+| `location.watch`, then new overrides | `location.watching` is `true` and `location.position` follows (`isMock` is always `false`: a page cannot tell) |
+| `location.stop()`, then a new override | `watching` is `false` and `position` stays |
+| Location blocked in the browser, then `current` | Throws `permission` |
+| **Not driven** | The browser's own location prompt (the profile answered it), a `timeout`, a phone's browser, Safari and Firefox, a page on plain http (a browser refuses location there, which reports as `permission`), `intervalMs` and `distanceM` (a browser takes neither) |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
