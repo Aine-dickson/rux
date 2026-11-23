@@ -56,11 +56,24 @@ fn url_of(file: &Any) -> Option<String> {
 
 /// An answer that arrives from elsewhere: a one-shot channel, as a future.
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-#[derive(Clone, Default)]
-pub(crate) struct Slot(std::sync::Arc<std::sync::Mutex<(Option<Result<Any, Error>>, Option<std::task::Waker>)>>);
+pub(crate) struct Slot<T = Any>(std::sync::Arc<std::sync::Mutex<(Option<Result<T, Error>>, Option<std::task::Waker>)>>);
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-impl Slot {
+impl<T> Clone for Slot<T> {
+    fn clone(&self) -> Self {
+        Slot(self.0.clone())
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+impl<T> Default for Slot<T> {
+    fn default() -> Self {
+        Slot(Default::default())
+    }
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+impl<T> Slot<T> {
     /// A slot already answered with this error.
     pub(crate) fn failed(error: Error) -> Self {
         let slot = Slot::default();
@@ -68,7 +81,7 @@ impl Slot {
         slot
     }
 
-    pub(crate) fn set(&self, answer: Result<Any, Error>) {
+    pub(crate) fn set(&self, answer: Result<T, Error>) {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         s.0 = Some(answer);
         if let Some(w) = s.1.take() {
@@ -78,8 +91,8 @@ impl Slot {
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
-impl std::future::Future for Slot {
-    type Output = Result<Any, Error>;
+impl<T> std::future::Future for Slot<T> {
+    type Output = Result<T, Error>;
     fn poll(self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<Self::Output> {
         let mut s = self.0.lock().unwrap_or_else(|e| e.into_inner());
         match s.0.take() {
@@ -141,6 +154,54 @@ fn read(file: &Any) -> Result<Vec<u8>, Error> {
         return Err(Error::new("type", "this `File` has no `url` to read"));
     };
     crate::android_read_uri(url).ok_or_else(|| Error::new("io", format!("cannot read {url}")))
+}
+
+/// Install how the app's own Rust reads a `File` (`rux::File::bytes`).
+pub(crate) fn install_reader() {
+    rux_runtime::native::files::set_reader(read_bytes);
+}
+
+type Bytes = std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<u8>, Error>> + Send + 'static>>;
+
+/// The desktop reads the path the picker gave. An async native runs on a
+/// thread of its own, so the read does not stall a frame.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn read_bytes(file: rux_runtime::native::files::File) -> Bytes {
+    Box::pin(async move {
+        let Some(path) = file.path else {
+            return Err(Error::new("io", format!("`{}` has no path to read on this platform", file.name)));
+        };
+        std::fs::read(&path).map_err(|e| Error::new("io", format!("cannot read {path}: {e}")))
+    })
+}
+
+/// On Android a picked file is a `content://` URI that only the activity's
+/// `ContentResolver` opens; the call attaches whichever thread runs it.
+#[cfg(target_os = "android")]
+fn read_bytes(file: rux_runtime::native::files::File) -> Bytes {
+    Box::pin(async move {
+        crate::android_read_uri(&file.url).ok_or_else(|| Error::new("io", format!("cannot read {}", file.url)))
+    })
+}
+
+/// A browser reads a file only by a promise, started on the page's thread and
+/// answered through a [`Slot`], since a native future must be `Send`.
+#[cfg(target_arch = "wasm32")]
+fn read_bytes(file: rux_runtime::native::files::File) -> Bytes {
+    let slot: Slot<Vec<u8>> = Slot::default();
+    let Some(dom) = WEB_FILES.with(|m| m.borrow().get(&file.url).cloned()) else {
+        slot.set(Err(Error::new("type", "this `File` was not picked in this page")));
+        return Box::pin(slot);
+    };
+    let answer = slot.clone();
+    wasm_bindgen_futures::spawn_local(async move {
+        let read = wasm_bindgen_futures::JsFuture::from(dom.array_buffer()).await;
+        answer.set(match read {
+            Ok(buffer) => Ok(js_sys::Uint8Array::new(&buffer).to_vec()),
+            Err(_) => Err(Error::new("io", format!("cannot read {}", dom.name()))),
+        });
+    });
+    Box::pin(slot)
 }
 
 /// The `File`s a picker's answer describes: one line per file, its URI,
@@ -457,6 +518,28 @@ mod tests {
     fn a_path_becomes_a_file_url() {
         assert_eq!(file_url(std::path::Path::new(r"C:\a b\ü.png")), "file:///C:/a%20b/%C3%BC.png");
         assert_eq!(file_url(std::path::Path::new("/home/x.png")), "file:///home/x.png");
+    }
+
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[test]
+    fn the_apps_rust_reads_a_picked_file_by_its_path() {
+        use rux_runtime::native::files::File;
+        use rux_runtime::native::FromRux;
+        install_reader();
+        let dir = std::env::temp_dir().join(format!("rux-file-bytes-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("id.bin");
+        std::fs::write(&path, [0u8, 255, 7]).unwrap();
+        let file = File::from_rux(from_path(&path).unwrap()).unwrap();
+        assert_eq!(rux_runtime::native::block_on(file.bytes()).unwrap(), vec![0, 255, 7]);
+        // A file that is gone is an `io` error, not a panic.
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(rux_runtime::native::block_on(file.bytes()).unwrap_err().kind, "io");
+        // A file with no path (a browser's or a phone's) cannot be read on the desktop.
+        let mut no_path = file.clone();
+        no_path.path = None;
+        assert_eq!(rux_runtime::native::block_on(no_path.bytes()).unwrap_err().kind, "io");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]

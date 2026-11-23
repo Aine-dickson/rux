@@ -16,6 +16,7 @@
 
 pub mod app;
 pub mod background;
+pub mod files;
 mod exec;
 pub mod links;
 pub mod location;
@@ -28,6 +29,7 @@ mod value;
 pub use exec::{block_on, panic_text, set_spawner, spawn, CatchUnwind, Task};
 pub use signal::{notify, set_signal_waker, signal_epoch, Channel, Signal, SignalValue};
 pub use registry::{declare_throws, install, is_channel, throws, BoxFuture, Call, Export, FieldSig, Interface, Item, ItemKind, Module, Sig};
+pub use files::File;
 pub use value::{field, Any, Error, FromRux, FromRuxRef, Handle, IntoError, IntoRux, Resource};
 
 #[cfg(feature = "macros")]

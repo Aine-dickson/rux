@@ -12828,6 +12828,7 @@ fn watch_tab_visibility() {
 fn install_rux_modules() {
     dialogs::install_builtins();
     settings::install_settings();
+    files::install_reader();
     clipboard::install_clipboard();
     permissions::install_permissions();
     window_module::install_window();

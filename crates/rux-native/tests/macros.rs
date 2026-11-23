@@ -93,6 +93,17 @@ pub mod shop {
         Err(rux::Error::new("custom", "as built").with("n", 3i64))
     }
 
+    /// A `File` a script holds, read here: the bytes never cross to script.
+    #[rux::export]
+    pub async fn upload(file: rux::File) -> Result<i64, rux::Error> {
+        Ok(file.bytes().await?.len() as i64)
+    }
+
+    #[rux::export]
+    pub fn label(file: &rux::File) -> String {
+        format!("{} ({})", file.name, file.media_type)
+    }
+
     #[rux::export]
     pub fn explode() -> i64 {
         panic!("native code panicked on purpose")
@@ -116,6 +127,8 @@ fn exports() -> Vec<Export> {
     all.extend(shop::__rux_export_refuse());
     all.extend(shop::__rux_export_refuse_later());
     all.extend(shop::__rux_export_pass_on());
+    all.extend(shop::__rux_export_upload());
+    all.extend(shop::__rux_export_label());
     all.extend(shop::__rux_export_explode());
     all.extend(shop::__rux_export_slow_double());
     all
@@ -205,6 +218,21 @@ fn an_error_type_chooses_its_kind_and_fields() {
     // A `rux::Error` is not wrapped again with kind "Error".
     let e = call("passOn", vec![]).unwrap_err();
     assert_eq!((e.kind.as_str(), e.message.as_str(), e.fields["n"].clone()), ("custom", "as built", Any::Int(3)));
+}
+
+#[test]
+fn an_export_takes_the_file_a_script_holds_and_reads_its_bytes() {
+    rux::files::set_reader(|_| Box::pin(async { Ok(vec![1u8, 2, 3, 4]) }));
+    let mut m = std::collections::BTreeMap::new();
+    for (k, v) in [("name", "id.png"), ("type", "image/png"), ("url", "blob:x")] {
+        m.insert(k.to_string(), Any::Str(v.into()));
+    }
+    m.insert("size".to_string(), Any::Int(4));
+    m.insert("path".to_string(), Any::None);
+    let file = Any::Map(m);
+    assert_eq!(call("upload", vec![file.clone()]), Ok(Any::Int(4)));
+    assert_eq!(call("label", vec![file]), Ok(Any::Str("id.png (image/png)".into())));
+    assert_eq!(call("upload", vec![Any::Str("a.png".into())]).unwrap_err().kind, "type");
 }
 
 #[test]

@@ -628,6 +628,9 @@ impl rux::IntoError for Refused {
 
 #[rux::export]
 pub fn refuse() -> Result<i64, Refused> { Err(Refused("phone_required".into())) }
+
+#[rux::export]
+pub async fn upload(file: rux::File) -> Result<i64, rux::Error> { Ok(file.bytes().await?.len() as i64) }
 "#;
 
     /// A project whose `native/` crate exports [`SHOP`] and whose `app.rux` runs
@@ -674,6 +677,21 @@ pub fn refuse() -> Result<i64, Refused> { Err(Refused("phone_required".into())) 
         // The language's own kinds are always possible.
         let (code, said) = checked("seam-kind-language", &body("overflow"));
         assert_eq!((code, said.as_str()), (0, ""), "{said}");
+    }
+
+    /// UD-004: an export can take the `File` a script holds.
+    #[test]
+    fn a_file_is_passed_to_an_export_that_takes_one() {
+        let (code, said) = checked(
+            "seam-file-right",
+            "use native::shop;
+async fn send(f: File): int { await shop.upload(f) }",
+        );
+        assert_eq!((code, said.as_str()), (0, ""), "{said}");
+        let (code, said) = checked("seam-file-wrong", "use native::shop;
+async fn send() { let n = await shop.upload(\"a.png\"); }");
+        assert_eq!(code, 1, "{said}");
+        assert!(said.contains("File"), "{said}");
     }
 
     #[test]
