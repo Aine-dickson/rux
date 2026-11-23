@@ -101,6 +101,8 @@ reference half does not wait: `docs/05-as-built.md` describes the tip.
 | Swiping the app from Recents stops the service | The task and the process go with it (`stopWithTask`). A service that survives a swipe needs its own process, which Rux does not build | `07-script` "Background work" | documented |
 | `background.start` throws `background` | Android 12 and later start a foreground service only while the app is in front. Start it from a tap, not from a timer or a thread | `07-script` "Background work" | documented |
 | A `dataSync` shift stops after six hours | Android 15 limits that service type to six hours in a day. A rider's shift that shares a position is a `location` service, which has no limit | `07-script` "Background work" | documented |
+| A notification posted from a web page does nothing on a phone | The call throws `unsupported`: Chrome on Android only shows one through a service worker, which Rux does not register. A desktop browser works, from a tap that asked for the permission first. Plan on Android's own build for phones | `07-script` "Notifications" | documented |
+| A Windows toast tapped after the app quit does nothing | The tap is heard by the running process; nothing starts the app again from it (that needs a COM activator, not built). `rux run` registers the dev app's id under `HKCU\Software\Classes\AppUserModelId` the first time it posts | `07-script` "Notifications" | documented |
 | `{{ background.active }}` is undefined in a page | The name is linked from the script, and a template-only mention is not seen. Mention `background` in the page's script once, or write `use native::rux::background;` | `07-script` "Background work" | documented |
 
 ### From writing the `rux new` template (2026-09-17)

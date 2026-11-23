@@ -41,6 +41,134 @@ pub fn undeclared_uses(text: &str, permissions: &Permissions) -> Vec<(usize, Str
     out
 }
 
+/// What `rux.toml` declared for notifications, as `rux check` reads it.
+pub struct Declared<'a> {
+    /// The ids under `[channels]`.
+    pub channels: Vec<&'a str>,
+    /// Whether a `[background]` table is there.
+    pub background: bool,
+}
+
+/// The text of the call whose `(` is at `open`, up to its matching `)`.
+fn call_args(text: &str, open: usize) -> &str {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    for (at, c) in text[open..].char_indices() {
+        match (quote, c) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, '"' | '\'' | '`') => quote = Some(c),
+            (None, '(') => depth += 1,
+            (None, ')') => {
+                depth -= 1;
+                if depth == 0 {
+                    return &text[open + 1..open + at];
+                }
+            }
+            _ => {}
+        }
+    }
+    &text[open + 1..]
+}
+
+/// The literal after `key:` in an options map, `channel: "jobs"`.
+fn literal_after_key(args: &str, key: &str) -> Option<String> {
+    let mut from = 0;
+    while let Some(at) = args[from..].find(key) {
+        let start = from + at;
+        from = start + key.len();
+        let boundary = args[..start].chars().next_back().map_or(true, |c| !(c.is_alphanumeric() || c == '_'));
+        let rest = args[from..].trim_start();
+        let Some(rest) = rest.strip_prefix(':').filter(|_| boundary) else { continue };
+        let rest = rest.trim_start();
+        let quote = rest.chars().next().filter(|c| matches!(c, '"' | '\'' | '`'))?;
+        let end = rest[1..].find(quote)?;
+        return Some(rest[1..1 + end].to_string());
+    }
+    None
+}
+
+/// The nth (from 0) string literal in `args`, for `Notice::new("id", "channel", "title")`.
+fn nth_literal(args: &str, n: usize) -> Option<String> {
+    let mut found = 0;
+    let mut at = 0;
+    while at < args.len() {
+        let c = args[at..].chars().next()?;
+        if matches!(c, '"' | '\'' | '`') {
+            let end = args[at + 1..].find(c)?;
+            if found == n {
+                return Some(args[at + 1..at + 1 + end].to_string());
+            }
+            found += 1;
+            at += end + 2;
+        } else {
+            at += c.len_utf8();
+        }
+    }
+    None
+}
+
+fn undeclared_channel(name: &str, declared: &Declared) -> Option<String> {
+    if declared.channels.contains(&name) {
+        return None;
+    }
+    let known = if declared.channels.is_empty() {
+        "rux.toml declares no channels yet".to_string()
+    } else {
+        format!("it declares {}", declared.channels.join(", "))
+    };
+    Some(format!(
+        "`{name}` is not a declared channel ({known}): add `[channels.{name}]` with a `name` and an `importance` to rux.toml"
+    ))
+}
+
+/// `(line, message)` for each call in `text` that posts to a channel
+/// `rux.toml` does not declare, or starts background work in an app with no
+/// `[background]`. Reads documents (`notifications.post({ channel: "jobs" })`)
+/// and the app's Rust (`Notice::new("id", "jobs", "title")`), by the same plain
+/// read as [`undeclared_uses`].
+pub fn undeclared_notifications(text: &str, declared: &Declared) -> Vec<(usize, String)> {
+    let line_of = |at: usize| text[..at].bytes().filter(|b| *b == b'\n').count() + 1;
+    let mut out = Vec::new();
+    for (prefix, call) in [
+        ("notifications.post", "post"),
+        ("notifications::post", "post"),
+        ("background.start", "start"),
+        ("background::start", "start"),
+    ] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(prefix) {
+            let start = from + at;
+            from = start + prefix.len();
+            if text[..start].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_') {
+                continue;
+            }
+            let after = &text[from..];
+            let trimmed = after.trim_start();
+            if !trimmed.starts_with('(') {
+                continue;
+            }
+            let open = from + (after.len() - trimmed.len());
+            let args = call_args(text, open);
+            let name = prefix.split(['.', ':']).next().unwrap_or_default();
+            if name == "background" && !declared.background {
+                out.push((
+                    line_of(start),
+                    "background.start: rux.toml has no `[background]`: add `types = [\"dataSync\"]` (or `location`, ...) to say what the service is for".into(),
+                ));
+            }
+            let channel = literal_after_key(args, "channel")
+                .or_else(|| args.find("Notice::new(").and_then(|n| nth_literal(&args[n..], 1)));
+            if let Some(why) = channel.and_then(|c| undeclared_channel(&c, declared)) {
+                out.push((line_of(start), format!("{name}.{call}: {why}")));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// The `.rs` files under `native/src`, for the calls an app's Rust makes.
 pub fn native_sources(root: &Path) -> Vec<std::path::PathBuf> {
     let mut out = Vec::new();
@@ -99,5 +227,29 @@ mod tests {
         let p = declared("");
         assert!(undeclared_uses("permissions.request(name)", &p).is_empty());
         assert!(undeclared_uses("let permissions = 3; permissions.openSettings();", &p).is_empty());
+    }
+    #[test]
+    fn a_post_to_an_undeclared_channel_or_a_background_with_no_table_is_found() {
+        let d = Declared { channels: vec!["jobs"], background: false };
+        let text = "notifications.post({ id: \"a\", channel: \"jobs\", title: \"Hi\" });\nnotifications.post({\n  id: \"b\",\n  channel: \"shift\",\n});\nbackground.start({ channel: \"jobs\", title: \"On\" });\n";
+        let found = undeclared_notifications(text, &d);
+        assert_eq!(found.len(), 2, "{found:?}");
+        assert_eq!(found[0].0, 2);
+        assert!(found[0].1.contains("[channels.shift]") && found[0].1.contains("it declares jobs"), "{}", found[0].1);
+        assert_eq!(found[1].0, 6);
+        assert!(found[1].1.contains("no `[background]`"), "{}", found[1].1);
+
+        let rust = "rux::notifications::post(Notice::new(\"a\", \"nope\", \"Hi\").text(\"x\"))?;";
+        let found = undeclared_notifications(rust, &Declared { channels: vec![], background: true });
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].1.contains("declares no channels"), "{}", found[0].1);
+    }
+
+    #[test]
+    fn a_channel_built_or_declared_is_left_alone() {
+        let d = Declared { channels: vec!["jobs"], background: true };
+        assert!(undeclared_notifications("notifications.post({ channel: name })", &d).is_empty());
+        assert!(undeclared_notifications("notifications.post({ channel: \"jobs\" }); background.start({ channel: \"jobs\" });", &d).is_empty());
+        assert!(undeclared_notifications("xnotifications.post({ channel: \"x\" })", &d).is_empty());
     }
 }

@@ -2479,8 +2479,7 @@ let slow = computed(() => app.state == "background");
 - **It is `"foreground"` from the start**, and saying the same thing twice
   changes nothing.
 - Leaving the front does not stop the app's Rust. What keeps work going once the
-  app is gone from the screen is background work (not built yet: UD-003, steps 3
-  and 4 of its plan).
+  app is gone from the screen is [background work](#background-work).
 
 ## Notifications
 
@@ -2525,8 +2524,14 @@ notifications.cancelAll();
   screen: `rux::notifications::post(Notice::new("job-41", "jobs", "New job")
   .text("Kololo to Ntinda").route("/jobs/41"))?`, and `cancel(id)`,
   `cancel_all()`. The same checks apply.
-- **Targets.** Android is built. The web and Windows are next, and macOS and
-  Linux after them; until then `post` throws `unsupported` there.
+- **Targets.** Android, the web and Windows. macOS and Linux throw
+  `unsupported`. On the web a notification is the browser's own
+  (`new Notification`, the `id` as its tag): ask with
+  `permissions.request("notifications")` from a tap first, a tap on it focuses
+  the page and opens `route`, and a phone's browser that wants a service worker
+  for it throws `unsupported`. On Windows it is a toast headed with the app's
+  `[app] name`; a tap restores the window and opens `route` while the app runs,
+  and does nothing once it has quit. A `low` or `min` channel's toast is silent.
 - **Not built yet:** a notification's own icon (it uses the app's launcher
   icon), sound or vibration choices beyond the channel's `importance`, action
   buttons, and push from a server.
@@ -2587,6 +2592,11 @@ background.stop();
   `background` once** (a call is enough), as the name is linked from the
   script; or write `use native::rux::background;`. A file with a `background` of
   its own (a `prop background`, a `let background`) keeps it.
+- **`rux check` reads the calls.** A literal `channel:` in `notifications.post`
+  or `background.start` that `rux.toml` does not declare, a `Notice::new` in the
+  app's Rust with such a channel, and a `background.start` with no `[background]`
+  are warned about, naming the table to add. A channel built from pieces is not
+  read, and the runtime still throws `undeclared` for it.
 - **The app's Rust** has the same calls: `rux::background::start(Options::new(
   "shift", "On shift").text("Looking for jobs").route("/board"))?`, `stop()`,
   `active()` and `on_change(|active| ...)`. Poll on your own thread while

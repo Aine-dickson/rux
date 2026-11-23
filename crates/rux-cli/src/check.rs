@@ -222,8 +222,8 @@ pub fn run(options: Options) -> i32 {
     }
 }
 
-/// Warnings for calls naming a permission the project's `rux.toml` does not
-/// declare, in the documents and in the app's own Rust. Nothing without a
+/// Warnings for calls naming a permission, a notification channel or a
+/// background service the project's `rux.toml` does not declare, in the documents and in the app's own Rust. Nothing without a
 /// readable manifest: `rux check` does not need one.
 fn undeclared_permissions(files: &[PathBuf]) -> Vec<Diagnostic> {
     let Some(first) = files.first() else { return Vec::new() };
@@ -236,7 +236,14 @@ fn undeclared_permissions(files: &[PathBuf]) -> Vec<Diagnostic> {
     let mut out = Vec::new();
     for file in sources {
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
-        for (line, message) in crate::permission_check::undeclared_uses(&text, &manifest.permissions) {
+        let declared = crate::permission_check::Declared {
+            channels: manifest.channels.iter().map(|c| c.id.as_str()).collect(),
+            background: manifest.background.is_some(),
+        };
+        let found = crate::permission_check::undeclared_uses(&text, &manifest.permissions)
+            .into_iter()
+            .chain(crate::permission_check::undeclared_notifications(&text, &declared));
+        for (line, message) in found {
             out.push(Diagnostic { file: file.clone(), line: Some(line), column: None, severity: Severity::Warning, message });
         }
     }

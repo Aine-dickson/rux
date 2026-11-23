@@ -695,3 +695,31 @@ fn native_runs_cargo_check_and_reports_the_rust() {
     assert!(stdout(&broken).contains("native/src/lib.rs:2:"), "{}", stdout(&broken));
     assert!(String::from_utf8_lossy(&broken.stderr).contains("can take several minutes"));
 }
+
+/// A post to a channel `rux.toml` does not declare, and a background service in
+/// an app with no `[background]`, are found before the app runs (UD-003).
+#[test]
+fn a_notification_channel_or_service_the_manifest_lacks_is_warned() {
+    let app = r#"<template><screen><text>hi</text></screen></template>
+<script>
+fn alert() {
+  notifications.post({ id: "a", channel: "shift", title: "Hi" });
+  background.start({ channel: "jobs", title: "On" });
+}
+</script>"#;
+    let dir = fixture(
+        "notification_channels",
+        &[
+            ("app.rux", app),
+            (
+                "rux.toml",
+                "[app]\nname = \"A\"\nid = \"dev.example.a\"\nversion = \"0.1.0\"\n\n[permissions.notifications]\nwhy = \"Job alerts\"\n\n[channels.jobs]\nname = \"Jobs\"\nimportance = \"high\"\n",
+            ),
+        ],
+    );
+    let out = check(&[dir.join("app.rux").to_str().unwrap()]);
+    let text = stdout(&out);
+    assert!(text.contains("[channels.shift]") && text.contains("it declares jobs"), "{text}");
+    assert!(text.contains("no `[background]`"), "{text}");
+    assert_eq!(out.status.code(), Some(0), "warnings alone do not fail: {text}");
+}
