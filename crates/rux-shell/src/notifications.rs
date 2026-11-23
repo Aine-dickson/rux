@@ -13,8 +13,9 @@
 //! `[permissions.notifications]` is declared, and that the person has allowed
 //! notifications (`permission`), then hands the notice to the platform.
 //!
-//! The platforms: Android is built here. The web and Windows are built after
-//! it (UD-003 steps 5 and 6); until then they throw `unsupported`.
+//! The platforms: Android and the web are built here; Windows is built after
+//! them (UD-003 step 6) and, like macOS and Linux until then, throws
+//! `unsupported`.
 
 // The background table is read by the service built on it (UD-003 step 4), and
 // the importance's loudness by the web and Windows backends (steps 5 and 6).
@@ -272,12 +273,105 @@ mod platform {
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(target_arch = "wasm32")]
+mod platform {
+    use super::*;
+
+    /// `new Notification` with the id as its tag (a post with the same tag
+    /// replaces the old one), kept by tag so `cancel` can close it. A tap
+    /// focuses the page and hands the route to Rust. Where the constructor
+    /// throws (Chrome on Android wants a service worker for it) the call
+    /// answers `"unsupported"`.
+    const POST: &str = "try {
+        const kept = (window.__ruxNotices = window.__ruxNotices || new Map());
+        const old = kept.get(id);
+        if (old) { old.close(); }
+        const n = new Notification(title, { body: text, tag: id, silent: silent });
+        n.onclick = () => { window.focus(); n.close(); if (route) { click(route); } };
+        n.onclose = () => { if (kept.get(id) === n) { kept.delete(id); } };
+        kept.set(id, n);
+        return 'ok';
+    } catch (e) { return 'unsupported'; }";
+
+    const CANCEL: &str = "const kept = window.__ruxNotices;
+    if (!kept) { return 'ok'; }
+    for (const [tag, n] of [...kept]) { if (!id || tag === id) { n.close(); kept.delete(tag); } }
+    return 'ok';";
+
+    thread_local! {
+        /// The one callback every notification's tap calls, made once.
+        static CLICK: wasm_bindgen::JsValue = wasm_bindgen::closure::Closure::<dyn FnMut(String)>::new(|route: String| {
+            crate::web_send(crate::RuxEvent::WebLink(route));
+        })
+        .into_js_value();
+    }
+
+    fn run(body: &str, names: &[&str], values: &[wasm_bindgen::JsValue]) -> Result<String, Error> {
+        let f = js_sys::Function::new_with_args(&names.join(","), body);
+        let args = js_sys::Array::new();
+        for v in values {
+            args.push(v);
+        }
+        f.apply(&wasm_bindgen::JsValue::NULL, &args)
+            .map(|v| v.as_string().unwrap_or_default())
+            .map_err(|_| Error::new("unsupported", "this browser cannot show notifications"))
+    }
+
+    pub(super) fn post(notice: &Notice, channel: &Channel) -> Result<(), Error> {
+        use wasm_bindgen::JsValue as J;
+        let granted = web_sys::window()
+            .and_then(|w| js_sys::Reflect::get(&w, &"Notification".into()).ok())
+            .filter(|n| n.is_object() || n.is_function())
+            .and_then(|n| js_sys::Reflect::get(&n, &"permission".into()).ok())
+            .and_then(|p| p.as_string());
+        match granted.as_deref() {
+            None => return Err(Error::new("unsupported", "this browser has no notifications")),
+            Some("granted") => {}
+            Some(_) => {
+                return Err(Error::new(
+                    "permission",
+                    "notifications are not allowed: ask with `permissions.request(\"notifications\")` from a tap first",
+                ))
+            }
+        }
+        let click = CLICK.with(|c| c.clone());
+        let answer = run(
+            POST,
+            &["id", "title", "text", "silent", "route", "click"],
+            &[
+                J::from_str(&notice.id),
+                J::from_str(&notice.title),
+                J::from_str(&notice.text),
+                J::from_bool(!channel.importance.audible()),
+                J::from_str(notice.route.as_deref().unwrap_or("")),
+                click,
+            ],
+        )?;
+        if answer == "ok" {
+            Ok(())
+        } else {
+            Err(Error::new(
+                "unsupported",
+                "this browser would not show it: a phone's browser wants a service worker for notifications",
+            ))
+        }
+    }
+
+    pub(super) fn cancel(id: &str) -> Result<(), Error> {
+        run(CANCEL, &["id"], &[wasm_bindgen::JsValue::from_str(id)]).map(|_| ())
+    }
+
+    pub(super) fn cancel_all() -> Result<(), Error> {
+        run(CANCEL, &["id"], &[wasm_bindgen::JsValue::from_str("")]).map(|_| ())
+    }
+}
+
+#[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
 mod platform {
     use super::*;
 
     fn unsupported() -> Error {
-        Error::new("unsupported", "this platform cannot show notifications yet: Android can")
+        Error::new("unsupported", "this platform cannot show notifications yet: Android and the web can")
     }
 
     pub(super) fn post(_notice: &Notice, _channel: &Channel) -> Result<(), Error> {

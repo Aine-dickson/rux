@@ -235,6 +235,10 @@ enum RuxEvent {
     /// into a route by [`link_route`].
     #[cfg(target_os = "android")]
     AndroidLink(String),
+    /// A notification the page showed was tapped: its route, pushed like a
+    /// link that reached a running app.
+    #[cfg(target_arch = "wasm32")]
+    WebLink(String),
     /// Android is destroying the activity, whatever the reason (the system
     /// took it, another launch cleared the task). See
     /// [`Java_dev_ruxlang_shell_RuxActivity_nativeDestroyed`].
@@ -9201,6 +9205,13 @@ impl ApplicationHandler<RuxEvent> for App {
 
             #[cfg(target_arch = "wasm32")]
             RuxEvent::WebRoute(index) => self.apply_web_route(index),
+
+            #[cfg(target_arch = "wasm32")]
+            RuxEvent::WebLink(route) => {
+                if self.document.open_link(&route, true) {
+                    self.request_redraw();
+                }
+            }
 
             // The key is the phone keyboard's action key, labelled from
             // `enterkeyhint`, so it does what its label says, as on Android. A

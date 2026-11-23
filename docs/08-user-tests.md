@@ -3617,6 +3617,21 @@ Emulator `rux_test` (Android 15), probe `rux-harness\ud003-and` with `[backgroun
 | The restart with a link (`am start --activity-clear-task -a VIEW -d rux-notification:///jobs/77`) | The new process opens on `/jobs/77` |
 | **Not driven** | `background.start` from the back (needs an app thread), `types = ["location"]` without location allowed (`permission`), `keep-awake`, `onTimeout` (Android 15, six hours), the app's Rust calling `rux::background`, a real phone under Doze and vendor killers |
 
+## Notifications on the web, 2026-11-23
+
+Edge over CDP, probe `rux-harness퀃-web` (a real `rux build --target web` bundle from `target/debug/rux`), the notification permission set in the profile, the page read by screenshot and the kept `Notification` objects read from `window.__ruxNotices`.
+
+| Case | Result |
+|---|---|
+| `notifications.post` on a `high` channel, allowed | One `Notification`, title and body as written, tag = the id, not silent |
+| The same on a `low` channel | `silent` is true |
+| A second post with the same id | Replaces the first (one entry for the tag) |
+| A channel `rux.toml` does not declare | Throws `undeclared`, naming the channels it declares and the table to add |
+| Notifications blocked in the browser | Throws `permission`, saying to ask from a tap first |
+| Tapping the notification (its `onclick`) with `route: "/jobs/41"` | The page's `route` reads `/jobs/41` |
+| `notifications.cancel(id)` and `cancelAll()` | The named one closes, then none are left |
+| **Not driven** | The OS toast itself and its sound (headless-style capture), a phone browser (Chrome on Android throws from `new Notification` without a service worker, which the call reports as `unsupported`), Safari and Firefox, a tap after the page was reloaded (the notification is gone with it) |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
