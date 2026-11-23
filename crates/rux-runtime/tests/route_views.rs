@@ -287,7 +287,8 @@ fn an_input_type_rux_does_not_know_is_refused() {
 #[test]
 fn the_input_types_rux_has_are_accepted() {
     for kind in [
-        "text", "textarea", "password", "search", "number", "date", "checkbox", "radio", "switch",
+        "text", "textarea", "password", "search", "number", "date", "datetime-local", "time", "checkbox",
+        "radio", "switch",
         "slider",
     ] {
         let doc = app(

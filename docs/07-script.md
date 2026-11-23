@@ -2755,6 +2755,9 @@ Each result carries:
 |---|---|
 | `tag`, `id`, `classes` | `id` is absent rather than empty when there is none |
 | `x`, `y`, `width`, `height` | The laid-out box, in absolute window pixels |
+| `scrollLeft`, `scrollTop` | How far a box that scrolls is scrolled from its start, in logical pixels. `0` on a box that does not scroll |
+| `scrollWidth`, `scrollHeight` | The size of what a scroller holds, which the offsets can reach to `scrollWidth - clientWidth`. A box that does not scroll: its own size |
+| `clientWidth`, `clientHeight` | The visible part of a scroller: its own box, without the bars |
 
 **Geometry is one frame stale**, exactly as `getBoundingClientRect` is in a
 browser: a handler runs before the next layout, so it reads what the last one
@@ -2768,6 +2771,21 @@ let card = query(".card")[0];
 report = card.width ?? "not laid out yet";
 ```
 
+**A scroller's position is read the same way, and one frame stale.**
+`scrollLeft` and `scrollTop` are where the box was scrolled to in the frame on
+screen, so a handler that calls `scrollTo` and reads `scrollLeft` straight after
+sees the old one.
+
+**`@scroll` and `@scrollend` hear a scroller.** `@scroll` runs at most once a
+frame while the offset moves, from a wheel, a drag, a fling, a snap glide or
+`scrollTo`; `@scrollend` runs once, after it has been still for 100 ms with
+nothing coasting or gliding. The handler's `event` is a `ScrollEvent`:
+`scrollLeft`, `scrollTop`, `maxLeft` and `maxTop`.
+
+```rux
+<view class="row" @scroll="dot = round(event.scrollLeft / 220)">...</view>
+```
+
 ## Acting on an element
 
 None of these edits the tree, which is why they can exist at all. They move host
@@ -2779,6 +2797,7 @@ state, and the next build produces the tree it would have produced anyway.
 | `el.focus()` | Puts the caret in a text input |
 | `blur()` | Drops focus entirely |
 | `el.scrollIntoView()` | Scrolls the containing scroller until it is visible |
+| `el.scrollTo(x, y)`, `el.scrollTo(x, y, { smooth: true })` | Scrolls this box to `x` and `y` from its start, clamped to what it can scroll; `smooth` glides there. On an element that does not scroll, the box it is in. Leaves a snap point alone: a carousel's card is `el.scrollTo(index * card.width, 0)` |
 | `el.scrollBy(dx, dy)` | Scrolls this box by that many logical pixels, clamped to what it can scroll; an element that does not scroll hands it to the box it is in |
 | `el.setSelectionRange(start, end)` | Selects characters `start` to `end` of a text field, the caret at `end`, and gives it focus |
 | `el.insertText(text)` | Replaces a text field's selection with `text` as typing would: one undo step, `@input` after it, the caret after the text |

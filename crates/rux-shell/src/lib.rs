@@ -2367,7 +2367,15 @@ struct App {
     /// The `type="date"` a platform date picker is open for: its model, row,
     /// instance and `@change`, held for the same reason as `pending_select`.
     #[cfg(any(target_os = "android", target_arch = "wasm32"))]
-    pending_date: Option<(String, Option<String>, Option<String>, Option<String>)>,
+    pending_date: Option<(
+        String,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+        InputKind,
+        Option<rux_layout::Moment>,
+        Option<rux_layout::Moment>,
+    )>,
     /// Caret position in the focused input, as a byte index into its value.
     caret: usize,
     /// Where the current selection started, as a byte index. Equal to `caret`
@@ -3600,7 +3608,7 @@ impl App {
         };
         // A date on a phone is not typed into: the tap opens the platform's
         // picker, in `dispatch_tap`. Nor in a phone's browser.
-        if region.kind == InputKind::Date && touch_first() {
+        if region.kind.picker() && touch_first() {
             return false;
         }
 
@@ -4614,7 +4622,7 @@ impl App {
             .focuses
             .iter()
             .rev()
-            .find(|f| f.kind == InputKind::Date && f.contains(fx, fy) && touch_first() && field_here)
+            .find(|f| f.kind.picker() && f.contains(fx, fy) && touch_first() && field_here)
             .cloned()
         {
             if !region.field.readonly {
@@ -4623,13 +4631,14 @@ impl App {
                 let (min, max) = (region.field.min, region.field.max);
                 #[cfg(target_arch = "wasm32")]
                 let rect = (region.x, region.y, region.width, region.height);
+                let kind = region.kind;
                 self.pending_date =
-                    Some((region.model, region.row, region.instance, region.field.on_change));
+                    Some((region.model, region.row, region.instance, region.field.on_change, kind, min, max));
                 self.set_focus(None);
                 #[cfg(target_os = "android")]
-                android_open_date(&value, min, max);
+                android_open_date(kind, &value, min, max);
                 #[cfg(target_arch = "wasm32")]
-                web_open_date(&value, min, max, rect);
+                web_open_date(kind, &value, min, max, rect);
             }
             return;
         }
@@ -5330,7 +5339,7 @@ impl App {
         let focused = self.focused.as_deref()?;
         fn typing(item: &FocusItem) -> Option<(&str, Option<&str>, Option<&str>)> {
             match &item.kind {
-                FocusKind::Text { model, row, instance, kind, .. } => (*kind != InputKind::Date)
+                FocusKind::Text { model, row, instance, kind, .. } => (!kind.picker())
                     .then_some((model.as_str(), row.as_deref(), instance.as_deref())),
                 _ => None,
             }
@@ -7363,7 +7372,7 @@ impl App {
                 (true, InputKind::Number) => KIND_NUMBER,
                 // Opened as a picker, never typed into on a phone; a text
                 // keyboard if a hardware Tab lands on one.
-                (true, InputKind::Date) => KIND_TEXT,
+                (true, InputKind::Date | InputKind::DateTimeLocal | InputKind::Time) => KIND_TEXT,
             };
             // `inputmode` and `enterkeyhint` ride in the upper bytes, so one
             // native call still answers everything the `EditorInfo` needs.
@@ -9119,9 +9128,18 @@ impl ApplicationHandler<RuxEvent> for App {
             // same write serves it: `@change` if the day moved.
             #[cfg(any(target_os = "android", target_arch = "wasm32"))]
             RuxEvent::PickedDate { value } => {
-                if let Some((model, row, instance, change)) = self.pending_date.take() {
-                    if let Some(value) = value {
-                        self.choose_option(&model, row, instance, &value, change);
+                if let Some((model, row, instance, change, kind, min, max)) = self.pending_date.take() {
+                    // A picker can offer a time its own limits cannot (Android's
+                    // date dialog takes the date part of `min` and `max`, and the
+                    // time is chosen after): a value outside the range is
+                    // refused and the field stays as it was.
+                    let whole = value.and_then(|v| rux_layout::parse_moment(kind, &v));
+                    if let Some(moment) = whole
+                        .filter(|m| min.is_none_or(|lo| *m >= lo))
+                        .filter(|m| max.is_none_or(|hi| *m <= hi))
+                    {
+                        let text = rux_layout::format_moment(kind, moment);
+                        self.choose_option(&model, row, instance, &text, change);
                     }
                     self.request_redraw();
                 }
@@ -11353,9 +11371,10 @@ fn web_open_select(options: &[String], selected: Option<usize>, rect: (f32, f32,
 /// date input writes one; cleared in the picker reads as no answer.
 #[cfg(target_arch = "wasm32")]
 fn web_open_date(
+    kind: InputKind,
     value: &str,
-    min: Option<(i32, u32, u32)>,
-    max: Option<(i32, u32, u32)>,
+    min: Option<rux_layout::Moment>,
+    max: Option<rux_layout::Moment>,
     rect: (f32, f32, f32, f32),
 ) {
     use wasm_bindgen::JsCast;
@@ -11370,15 +11389,16 @@ fn web_open_date(
         })?
         .dyn_into()
         .ok()?;
-        el.set_type("date");
         WEB_DATE.with(|c| *c.borrow_mut() = Some(el.clone()));
         Some(el)
     });
     let Some(el) = el else { return };
+    // The same hidden input serves the three kinds: its type says which.
+    el.set_type(kind.type_name());
     for (name, bound) in [("min", min), ("max", max)] {
         match bound {
-            Some(day) => {
-                let _ = el.set_attribute(name, &rux_layout::format_date(day));
+            Some(moment) => {
+                let _ = el.set_attribute(name, &rux_layout::format_moment(kind, moment));
             }
             None => {
                 let _ = el.remove_attribute(name);
@@ -11626,7 +11646,7 @@ fn floor_char_boundary(s: &str, mut index: usize) -> usize {
     index
 }
 
-/// What a number or date field's text writes to its signal, if it is one
+/// What a number, date, date-time or time field's text writes to its signal, if it is one
 /// yet: a number, or a date inside the field's `min` and `max`, written back
 /// the way HTML writes one. `decimal` is the person's decimal separator.
 fn typed_value(
@@ -11637,10 +11657,10 @@ fn typed_value(
 ) -> Option<rux_reactive::Value> {
     match kind {
         InputKind::Number => parse_number(text, decimal).map(rux_reactive::Value::Number),
-        InputKind::Date => rux_layout::parse_date(text)
+        InputKind::Date | InputKind::DateTimeLocal | InputKind::Time => rux_layout::parse_moment(kind, text)
             .filter(|d| field.min.is_none_or(|min| *d >= min))
             .filter(|d| field.max.is_none_or(|max| *d <= max))
-            .map(|d| rux_reactive::Value::Text(rux_layout::format_date(d))),
+            .map(|d| rux_reactive::Value::Text(rux_layout::format_moment(kind, d))),
         _ => None,
     }
 }
@@ -13954,26 +13974,33 @@ fn android_open_select(options: &[String], selected: Option<usize>) {
     });
 }
 
-/// Ask the platform for a day, starting on `value` (`YYYY-MM-DD`, or empty
-/// for today) and limited to `min` and `max`. Answered through
-/// [`Java_dev_ruxlang_shell_RuxActivity_nativeDateChosen`], like the select.
+/// Ask the platform for a day, a day and a time, or a time of day, starting
+/// on `value` (written as the field holds it, or empty for now) and limited to
+/// `min` and `max`. Answered through
+/// [`Java_dev_ruxlang_shell_RuxActivity_nativeDateTimeChosen`], like the select.
 #[cfg(target_os = "android")]
-fn android_open_date(value: &str, min: Option<(i32, u32, u32)>, max: Option<(i32, u32, u32)>) {
+fn android_open_date(kind: InputKind, value: &str, min: Option<rux_layout::Moment>, max: Option<rux_layout::Moment>) {
     let Ok(activity) = ACTIVITY.lock() else { return };
     let Some(activity) = activity.as_ref() else { return };
     let ctx = ndk_context::android_context();
     // Safety: as in `android_set_text_input`, which records the reasoning.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
-    let limit = |d: Option<(i32, u32, u32)>| d.map(rux_layout::format_date).unwrap_or_default();
+    let limit = |m: Option<rux_layout::Moment>| m.map(|m| rux_layout::format_moment(kind, m)).unwrap_or_default();
     let _ = vm.attach_current_thread(|env| {
+        let kind = env.new_string(kind.type_name())?;
         let value = env.new_string(value)?;
         let min = env.new_string(limit(min))?;
         let max = env.new_string(limit(max))?;
         env.call_method(
             activity,
-            jni::jni_str!("ruxOpenDate"),
-            jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"),
-            &[jni::JValue::Object(&value), jni::JValue::Object(&min), jni::JValue::Object(&max)],
+            jni::jni_str!("ruxOpenDateTime"),
+            jni::jni_sig!("(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)V"),
+            &[
+                jni::JValue::Object(&kind),
+                jni::JValue::Object(&value),
+                jni::JValue::Object(&min),
+                jni::JValue::Object(&max),
+            ],
         )?;
         Ok::<(), jni::errors::Error>(())
     });
@@ -14693,20 +14720,22 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeSelectChosen(
 /// records.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeDateChosen(
-    _env: *mut std::ffi::c_void,
-    _class: *mut std::ffi::c_void,
-    year: i32,
-    month: i32,
-    day: i32,
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeDateTimeChosen<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    chosen: jni::objects::JString<'frame>,
 ) {
-    let value = (year > 0 && month > 0 && day > 0)
-        .then(|| rux_layout::format_date((year, month as u32, day as u32)));
-    if let Ok(proxy) = PROXY.lock() {
-        if let Some(proxy) = proxy.as_ref() {
-            let _ = proxy.send_event(RuxEvent::PickedDate { value });
+    env.with_env(|env| {
+        // `null` is a dismissal.
+        let value = if chosen.is_null() { None } else { Some(chosen.try_to_string(env)?) };
+        if let Ok(proxy) = PROXY.lock() {
+            if let Some(proxy) = proxy.as_ref() {
+                let _ = proxy.send_event(RuxEvent::PickedDate { value });
+            }
         }
-    }
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
 }
 
 /// A file input's picker, camera or recorder answered: one line per file,
@@ -15379,13 +15408,32 @@ mod tests {
     /// padded the way HTML writes it.
     #[test]
     fn a_date_field_writes_only_real_days_in_range() {
-        let field = Field { min: Some((2026, 1, 1)), max: Some((2026, 12, 31)), ..Field::default() };
+        let field = Field { min: Some((2026, 1, 1, 0, 0)), max: Some((2026, 12, 31, 0, 0)), ..Field::default() };
         let date = |text: &str| typed_value(InputKind::Date, text, &field, '.');
         assert_eq!(date("2026-9-3"), Some(rux_reactive::Value::Text("2026-09-03".into())));
         assert_eq!(date("2026-09"), None, "not a day yet");
         assert_eq!(date("2025-12-31"), None, "before min");
         assert_eq!(date("2027-01-01"), None, "after max");
         assert_eq!(typed_value(InputKind::Text, "2026-09-03", &field, '.'), None, "text is not typed");
+    }
+
+    /// A date-time and a time of day write only whole values inside their
+    /// range, in the field's own format (Urbandrop's UD-013).
+    #[test]
+    fn a_datetime_and_a_time_field_write_only_whole_values_in_range() {
+        let moment = Field { min: Some((2026, 11, 24, 8, 0)), max: Some((2026, 12, 8, 18, 30)), ..Field::default() };
+        let when = |text: &str| typed_value(InputKind::DateTimeLocal, text, &moment, '.');
+        assert_eq!(when("2026-11-24T9:30"), Some(rux_reactive::Value::Text("2026-11-24T09:30".into())));
+        assert_eq!(when("2026-11-24T07:59"), None, "before min, by a minute");
+        assert_eq!(when("2026-12-08T18:31"), None, "after max, by a minute");
+        assert_eq!(when("2026-11-24"), None, "no time yet");
+        assert_eq!(when("2026-11-24T09"), None, "half a time");
+        let day = Field { min: Some((0, 0, 0, 8, 0)), max: Some((0, 0, 0, 18, 0)), ..Field::default() };
+        let at = |text: &str| typed_value(InputKind::Time, text, &day, '.');
+        assert_eq!(at("9:05"), Some(rux_reactive::Value::Text("09:05".into())));
+        assert_eq!(at("07:59"), None);
+        assert_eq!(at("18:01"), None);
+        assert_eq!(at("12:00:30"), None, "seconds are not part of it");
     }
 
     /// The names on the command line are the names in the table, and a wrong

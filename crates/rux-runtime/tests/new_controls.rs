@@ -339,8 +339,8 @@ fn a_date_field_is_its_own_kind() {
     let field = input(&d, "due");
     assert_eq!(field.kind, InputKind::Date);
     assert_eq!(field.access.role, rux_layout::AccessRole::DateInput);
-    assert_eq!(field.field().min, Some((2026, 1, 1)));
-    assert_eq!(field.field().max, Some((2026, 12, 31)));
+    assert_eq!(field.field().min, Some((2026, 1, 1, 0, 0)));
+    assert_eq!(field.field().max, Some((2026, 12, 31, 0, 0)));
     assert_eq!(shown(&d, "due"), "2026-09-23");
 }
 
@@ -350,6 +350,40 @@ fn a_date_field_is_its_own_kind() {
 fn a_date_range_that_is_not_dates_is_an_error() {
     let d = doc(r#"<input type="date" r-model="due" min="yesterday" />"#, "let due = signal(\"\");");
     assert!(problems(&d).contains("is not a date written `YYYY-MM-DD`"), "{}", problems(&d));
+}
+
+/// A date and time, and a time of day, are their own kinds with their own
+/// ranges (Urbandrop's UD-013).
+#[test]
+fn a_datetime_and_a_time_field_are_their_own_kinds() {
+    let d = doc(
+        r#"<input type="datetime-local" r-model="when" min="2026-11-24T08:00" max="2026-12-08T18:30" />"#,
+        "let when = signal(\"2026-11-24T09:30\");",
+    );
+    assert!(!problems(&d).contains("level: Error"), "{}", problems(&d));
+    let field = input(&d, "when");
+    assert_eq!(field.kind, InputKind::DateTimeLocal);
+    assert_eq!(field.access.role, rux_layout::AccessRole::DateInput);
+    assert_eq!(field.field().min, Some((2026, 11, 24, 8, 0)));
+    assert_eq!(field.field().max, Some((2026, 12, 8, 18, 30)));
+    assert_eq!(shown(&d, "when"), "2026-11-24T09:30");
+
+    let d = doc(r#"<input type="time" r-model="at" min="08:00" max="18:00" />"#, "let at = signal(\"09:30\");");
+    assert!(!problems(&d).contains("level: Error"), "{}", problems(&d));
+    let field = input(&d, "at");
+    assert_eq!(field.kind, InputKind::Time);
+    assert_eq!(field.field().min, Some((0, 0, 0, 8, 0)));
+    assert_eq!(shown(&d, "at"), "09:30");
+}
+
+/// A range that is not in the field's own format is an error naming the
+/// format, as a date's is.
+#[test]
+fn a_datetime_range_in_the_wrong_format_is_an_error() {
+    let d = doc(r#"<input type="datetime-local" r-model="when" min="2026-11-24" />"#, "let when = signal(\"\");");
+    assert!(problems(&d).contains("is not a date and time written `YYYY-MM-DDTHH:mm`"), "{}", problems(&d));
+    let d = doc(r#"<input type="time" r-model="at" max="6pm" />"#, "let at = signal(\"\");");
+    assert!(problems(&d).contains("is not a time written `HH:mm`"), "{}", problems(&d));
 }
 
 /// A slider's bad range is an error too, and a date's range is not read as

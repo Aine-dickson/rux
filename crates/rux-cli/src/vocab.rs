@@ -256,7 +256,7 @@ const ELEMENT_ATTRIBUTES: &[(&str, &[Entry])] = &[
     (
         "input",
         &[
-            Entry { name: "type", detail: "text | textarea | password | search | number | date | select | checkbox | switch | slider | radio | file", doc: "Omitted means a single-line text field." },
+            Entry { name: "type", detail: "text | textarea | password | search | number | date | datetime-local | time | select | checkbox | switch | slider | radio | file", doc: "Omitted means a single-line text field." },
             Entry { name: "placeholder", detail: "text shown while empty", doc: "Shown until the field has a value. Not a label." },
             Entry { name: "value", detail: "the field's value", doc: "The literal starting value. For state that changes, use `r-model`." },
             Entry { name: "checked", detail: "checkbox / radio state", doc: "Live state for `type=\"checkbox\"` and `type=\"radio\"`, and matched by the `:checked` pseudo-class." },
@@ -343,6 +343,8 @@ const ATTRIBUTE_VALUES: &[(&str, &[(&str, &[Entry])])] = &[(
             Entry { name: "search", detail: "a field whose action key searches", doc: "A one-line field in every other respect." },
             Entry { name: "number", detail: "a number field", doc: "The bound signal always holds a number. While what is typed is not one yet (`-`, `1.`, nothing) the signal keeps its last number and the field shows the typing; leaving the field shows the number again. A phone raises a signed decimal keyboard." },
             Entry { name: "date", detail: "a day", doc: "The bound signal holds `YYYY-MM-DD`, or is empty; start it as `\"\"` or a date in that form. A phone opens the platform's date picker; a desktop types the date, and only a real day inside `min` and `max` reaches the signal." },
+            Entry { name: "datetime-local", detail: "a day and a time", doc: "The bound signal holds `YYYY-MM-DDTHH:mm`, local time, no seconds and no zone, or is empty. A phone opens the platform's date picker and then its time picker; a desktop types it, and only a real moment inside `min` and `max` (written the same way) reaches the signal." },
+            Entry { name: "time", detail: "a time of day", doc: "The bound signal holds `HH:mm`, 24-hour, or is empty. A phone opens the platform's time picker; a desktop types it, and only a real time inside `min` and `max` reaches the signal." },
             Entry { name: "select", detail: "a dropdown", doc: "Shows the bound value and opens a list on tap. Takes its choices from `:options`." },
             Entry { name: "checkbox", detail: "a tap-toggle", doc: "No caret and no focus of its own: a tap flips the bound value, and `:checked` matches it. Space or Enter activates it when tabbed to." },
             Entry { name: "switch", detail: "an on/off switch", doc: "A checkbox that draws as a track and a thumb and is announced as a switch. `:checked` matches it on; `accent-color` colours the track when on." },

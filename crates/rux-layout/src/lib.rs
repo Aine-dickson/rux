@@ -2554,6 +2554,12 @@ pub enum InputKind {
     /// typed, with the same rule as a number: only a real date reaches the
     /// signal.
     Date,
+    /// `type="datetime-local"`: `YYYY-MM-DDTHH:mm`, local time, no seconds and
+    /// no zone, as HTML's holds it. A phone opens its date picker and then
+    /// its time picker; elsewhere it is typed, like a date.
+    DateTimeLocal,
+    /// `type="time"`: `HH:mm`, 24-hour, as HTML's holds it.
+    Time,
 }
 
 impl InputKind {
@@ -2566,6 +2572,8 @@ impl InputKind {
             Some("search") => Self::Search,
             Some("number") => Self::Number,
             Some("date") => Self::Date,
+            Some("datetime-local") => Self::DateTimeLocal,
+            Some("time") => Self::Time,
             _ => Self::Text,
         }
     }
@@ -2583,7 +2591,79 @@ impl InputKind {
     /// Whether the field's signal holds something narrower than text, so
     /// that what is typed reaches it only once it is one: a number, a date.
     pub fn typed(self) -> bool {
-        matches!(self, Self::Number | Self::Date)
+        matches!(self, Self::Number | Self::Date | Self::DateTimeLocal | Self::Time)
+    }
+
+    /// Whether a phone answers a tap with a platform picker, not a keyboard:
+    /// a day, a day and a time, or a time.
+    pub fn picker(self) -> bool {
+        matches!(self, Self::Date | Self::DateTimeLocal | Self::Time)
+    }
+
+    /// The `type=` this kind is written as: what a picker is told to be.
+    pub fn type_name(self) -> &'static str {
+        match self {
+            Self::Date => "date",
+            Self::DateTimeLocal => "datetime-local",
+            Self::Time => "time",
+            Self::Number => "number",
+            Self::Textarea => "textarea",
+            Self::Password => "password",
+            Self::Search => "search",
+            Self::Text => "text",
+        }
+    }
+}
+
+/// A point in time to the minute, `(year, month, day, hour, minute)`, which
+/// orders as time does. A date has `(0, 0)` for its time and a time of day has
+/// `(0, 0, 0)` for its date, so one `min` and `max` type serves all three of
+/// the date and time inputs, each kind comparing only what it has.
+pub type Moment = (i32, u32, u32, u32, u32);
+
+/// A time of day written `HH:mm`, 24-hour, as HTML writes one: `(hour,
+/// minute)`. One or two digits are taken for the hour, so `9:30` typed by hand
+/// is a time. Seconds are not part of it: `09:30:15` is not one yet.
+pub fn parse_time(text: &str) -> Option<(u32, u32)> {
+    let mut parts = text.trim().split(':');
+    let (h, m) = (parts.next()?, parts.next()?);
+    let digits = |s: &str, min: usize, max: usize| {
+        (min..=max).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_digit())
+    };
+    if parts.next().is_some() || !digits(h, 1, 2) || !digits(m, 2, 2) {
+        return None;
+    }
+    let (hour, minute): (u32, u32) = (h.parse().ok()?, m.parse().ok()?);
+    (hour < 24 && minute < 60).then_some((hour, minute))
+}
+
+/// A date and a time, `YYYY-MM-DDTHH:mm`, as `datetime-local` holds it. A
+/// space for the `T` is taken too, as a browser's field takes one.
+pub fn parse_datetime(text: &str) -> Option<Moment> {
+    let text = text.trim();
+    let at = text.find(['T', ' '])?;
+    let (y, m, d) = parse_date(&text[..at])?;
+    let (hour, minute) = parse_time(&text[at + 1..])?;
+    Some((y, m, d, hour, minute))
+}
+
+/// What `text` means for a field of `kind`, if it is a whole one yet.
+pub fn parse_moment(kind: InputKind, text: &str) -> Option<Moment> {
+    match kind {
+        InputKind::Date => parse_date(text).map(|(y, m, d)| (y, m, d, 0, 0)),
+        InputKind::DateTimeLocal => parse_datetime(text),
+        InputKind::Time => parse_time(text).map(|(h, m)| (0, 0, 0, h, m)),
+        _ => None,
+    }
+}
+
+/// A moment written the way a field of `kind` holds it: the inverse of
+/// [`parse_moment`].
+pub fn format_moment(kind: InputKind, (y, mo, d, h, mi): Moment) -> String {
+    match kind {
+        InputKind::Time => format!("{h:02}:{mi:02}"),
+        InputKind::DateTimeLocal => format!("{}T{h:02}:{mi:02}", format_date((y, mo, d))),
+        _ => format_date((y, mo, d)),
     }
 }
 
@@ -2815,10 +2895,11 @@ pub struct Field {
     pub on_blur: Option<String>,
     /// `@select`: the caret moved or the selection changed, by any means.
     pub on_select: Option<String>,
-    /// A date field's earliest and latest day, `YYYY-MM-DD`. A day outside
-    /// them is not offered by the picker and does not reach the signal.
-    pub min: Option<(i32, u32, u32)>,
-    pub max: Option<(i32, u32, u32)>,
+    /// A date, date-time or time field's earliest and latest value, in the
+    /// field's own format. One outside them is not offered by the picker and
+    /// does not reach the signal.
+    pub min: Option<Moment>,
+    pub max: Option<Moment>,
     /// `name=`: the key its value is sent under in a form's `event.values`.
     /// Without one, the `r-model` is.
     pub name: Option<String>,
@@ -8958,6 +9039,29 @@ mod touch_action_tests {
 mod date_tests {
     use super::*;
 
+    #[test]
+    fn a_time_and_a_datetime_are_read_whole_or_not_at_all() {
+        assert_eq!(parse_time("09:30"), Some((9, 30)));
+        assert_eq!(parse_time("9:30"), Some((9, 30)), "one digit for the hour is taken");
+        assert_eq!(parse_time("23:59"), Some((23, 59)));
+        for bad in ["24:00", "09:60", "09:3", "09:30:15", "0930", "", "ab:cd", "-1:30"] {
+            assert_eq!(parse_time(bad), None, "{bad}");
+        }
+        assert_eq!(parse_datetime("2026-11-24T09:30"), Some((2026, 11, 24, 9, 30)));
+        assert_eq!(parse_datetime("2026-11-24 09:30"), Some((2026, 11, 24, 9, 30)), "a space for the T");
+        assert_eq!(parse_datetime("2028-02-29T00:00"), Some((2028, 2, 29, 0, 0)), "a leap day");
+        for bad in ["2026-11-24", "2026-02-30T09:30", "2026-11-24T25:00", "2026-11-24T09:30:00", "T09:30"] {
+            assert_eq!(parse_datetime(bad), None, "{bad}");
+        }
+        assert_eq!(format_moment(InputKind::DateTimeLocal, (2026, 11, 4, 9, 5)), "2026-11-04T09:05");
+        assert_eq!(format_moment(InputKind::Time, (0, 0, 0, 9, 5)), "09:05");
+        assert_eq!(format_moment(InputKind::Date, (2026, 11, 4, 0, 0)), "2026-11-04");
+        assert_eq!(parse_moment(InputKind::Time, "7:15"), Some((0, 0, 0, 7, 15)));
+        assert!(parse_moment(InputKind::DateTimeLocal, "2026-11-24T08:00") < parse_moment(InputKind::DateTimeLocal, "2026-11-24T09:30"));
+        assert_eq!(InputKind::from_type(Some("datetime-local")), InputKind::DateTimeLocal);
+        assert!(InputKind::Time.typed() && InputKind::Time.picker() && !InputKind::Number.picker());
+    }
+
     /// A day that exists, written as HTML writes one or with the padding
     /// left off; a day that does not is not a date.
     #[test]
@@ -8993,6 +9097,7 @@ mod size_budget_tests {
 #[cfg(test)]
 mod transform_tests {
     use crate::TextTransform::*;
+
 
     #[test]
     fn a_transform_changes_letters_and_never_where_they_are() {

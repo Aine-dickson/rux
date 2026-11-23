@@ -367,69 +367,145 @@ public class RuxActivity extends NativeActivity {
     private android.app.AlertDialog picker;
 
     /**
-     * Report the day a date picker settled on, month counting from 1, or
-     * -1 in all three if it was dismissed.
+     * Report what a date, date-time or time picker settled on, written as the
+     * field holds it ({@code YYYY-MM-DD}, {@code YYYY-MM-DDTHH:mm} or
+     * {@code HH:mm}), or {@code null} if it was dismissed.
      */
-    private static native void nativeDateChosen(int year, int month, int day);
+    private static native void nativeDateTimeChosen(String text);
 
     /**
-     * Show the platform's date picker for a {@code type="date"}, starting on
-     * {@code value} ({@code YYYY-MM-DD}, or empty for today) and offering only
-     * the days between {@code min} and {@code max}, each empty for no limit.
+     * Show the platform's picker for a {@code type="date"},
+     * {@code "datetime-local"} or {@code "time"}, starting on {@code value}
+     * (written as the field holds it, or empty for now) and offering only the
+     * days between {@code min} and {@code max}, each empty for no limit.
+     *
+     * <p>A date-time asks for the day and then the time. A dialog's own limits
+     * are days, so a time inside the first or last day that is out of range is
+     * refused by Rux when it arrives, not here.
      *
      * <p>Built like {@link #ruxOpenSelect}, and for the same reasons: the UI
      * thread, an answer through a native call rather than a return, and a
      * dismissal that is reported rather than left unanswered.
      */
-    void ruxOpenDate(final String value, final String min, final String max) {
+    void ruxOpenDateTime(final String kind, final String value, final String min, final String max) {
         runOnUiThread(
                 () -> {
                     if (picker != null) {
                         return;
                     }
-                    int[] start = parseDate(value);
-                    if (start == null) {
-                        java.util.Calendar today = java.util.Calendar.getInstance();
-                        start =
-                                new int[] {
-                                    today.get(java.util.Calendar.YEAR),
-                                    today.get(java.util.Calendar.MONTH) + 1,
-                                    today.get(java.util.Calendar.DAY_OF_MONTH)
-                                };
+                    final boolean wantsDate = !kind.equals("time");
+                    final boolean wantsTime = !kind.equals("date");
+                    // Each limit's day part: before the T of a date-time, all of a date.
+                    final String datePart = datePartOf(value, kind);
+                    final String timePart = kind.equals("time") ? value : timePartOf(value);
+                    if (!wantsDate) {
+                        showTimeDialog(timePart, "");
+                    } else {
+                        showDateDialog(datePart, datePartOf(min, kind), datePartOf(max, kind), wantsTime ? timePart : null);
                     }
-                    final boolean[] answered = {false};
-                    android.app.DatePickerDialog dialog =
-                            new android.app.DatePickerDialog(
-                                    this,
-                                    (view, year, month, day) -> {
-                                        answered[0] = true;
-                                        // Java's months count from 0; a date
-                                        // written down counts from 1.
-                                        nativeDateChosen(year, month + 1, day);
-                                    },
-                                    start[0],
-                                    start[1] - 1,
-                                    start[2]);
-                    int[] low = parseDate(min);
-                    if (low != null) {
-                        dialog.getDatePicker().setMinDate(dayMillis(low));
-                    }
-                    int[] high = parseDate(max);
-                    if (high != null) {
-                        dialog.getDatePicker().setMaxDate(dayMillis(high));
-                    }
-                    dialog.setOnDismissListener(
-                            d -> {
-                                picker = null;
-                                // Choosing dismisses too; report a dismissal
-                                // only when nothing was chosen.
-                                if (!answered[0]) {
-                                    nativeDateChosen(-1, -1, -1);
-                                }
-                            });
-                    picker = dialog;
-                    dialog.show();
                 });
+    }
+
+    private static String datePartOf(String text, String kind) {
+        if (text == null || text.isEmpty()) {
+            return "";
+        }
+        int t = text.indexOf('T');
+        return t >= 0 ? text.substring(0, t) : (kind.equals("date") ? text : "");
+    }
+
+    private static String timePartOf(String text) {
+        if (text == null) {
+            return "";
+        }
+        int t = text.indexOf('T');
+        return t >= 0 ? text.substring(t + 1) : "";
+    }
+
+    /** The day dialog; {@code timePart} is {@code null} for a date alone, else the time follows. */
+    private void showDateDialog(String value, String min, String max, final String timePart) {
+        int[] start = parseDate(value);
+        if (start == null) {
+            java.util.Calendar today = java.util.Calendar.getInstance();
+            start =
+                    new int[] {
+                        today.get(java.util.Calendar.YEAR),
+                        today.get(java.util.Calendar.MONTH) + 1,
+                        today.get(java.util.Calendar.DAY_OF_MONTH)
+                    };
+        }
+        final boolean[] answered = {false};
+        android.app.DatePickerDialog dialog =
+                new android.app.DatePickerDialog(
+                        this,
+                        (view, year, month, day) -> {
+                            answered[0] = true;
+                            // Java's months count from 0; a date written down counts from 1.
+                            final String text = String.format(java.util.Locale.ROOT, "%04d-%02d-%02d", year, month + 1, day);
+                            if (timePart == null) {
+                                nativeDateTimeChosen(text);
+                            } else {
+                                // After this dialog has gone, or `picker` is cleared under the next.
+                                new android.os.Handler(android.os.Looper.getMainLooper())
+                                        .post(() -> showTimeDialog(timePart, text + "T"));
+                            }
+                        },
+                        start[0],
+                        start[1] - 1,
+                        start[2]);
+        int[] low = parseDate(min);
+        if (low != null) {
+            dialog.getDatePicker().setMinDate(dayMillis(low));
+        }
+        int[] high = parseDate(max);
+        if (high != null) {
+            dialog.getDatePicker().setMaxDate(dayMillis(high));
+        }
+        dialog.setOnDismissListener(
+                d -> {
+                    picker = null;
+                    // Choosing dismisses too; report a dismissal only when nothing was chosen.
+                    if (!answered[0]) {
+                        nativeDateTimeChosen(null);
+                    }
+                });
+        picker = dialog;
+        dialog.show();
+    }
+
+    /** The time dialog, answering {@code prefix} followed by {@code HH:mm}. */
+    private void showTimeDialog(String value, final String prefix) {
+        int hour;
+        int minute;
+        try {
+            String[] parts = value.split(":");
+            hour = Integer.parseInt(parts[0]);
+            minute = Integer.parseInt(parts[1]);
+        } catch (RuntimeException e) {
+            java.util.Calendar now = java.util.Calendar.getInstance();
+            hour = now.get(java.util.Calendar.HOUR_OF_DAY);
+            minute = now.get(java.util.Calendar.MINUTE);
+        }
+        final boolean[] answered = {false};
+        android.app.TimePickerDialog dialog =
+                new android.app.TimePickerDialog(
+                        this,
+                        (view, h, m) -> {
+                            answered[0] = true;
+                            nativeDateTimeChosen(prefix + String.format(java.util.Locale.ROOT, "%02d:%02d", h, m));
+                        },
+                        hour,
+                        minute,
+                        android.text.format.DateFormat.is24HourFormat(this));
+        dialog.setOnDismissListener(
+                d -> {
+                    picker = null;
+                    if (!answered[0]) {
+                        nativeDateTimeChosen(null);
+                    }
+                });
+        picker = dialog;
+        dialog.show();
     }
 
     /**

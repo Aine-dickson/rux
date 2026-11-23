@@ -13456,7 +13456,7 @@ async fn go() {
         doc.apply_handler("query(\"#list\")[0].scrollBy(0, 12.5)");
         let scrolls = doc.take_scrolls();
         assert_eq!(scrolls.len(), 1, "{scrolls:?}");
-        assert_eq!((scrolls[0].1, scrolls[0].2), (0.0, 12.5));
+        assert_eq!((scrolls[0].x, scrolls[0].y), (0.0, 12.5));
         assert!(doc.take_scrolls().is_empty(), "and taking it empties the queue");
     }
 

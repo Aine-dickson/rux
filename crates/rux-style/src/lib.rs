@@ -518,14 +518,19 @@ fn check_field_attributes(el: &Element) {
     }
     // A date's range is two dates, and each would otherwise be dropped in
     // silence, leaving a picker that offers every day there is.
-    if el.attr("type") == Some("date") {
+    let picker = InputKind::from_type(el.attr("type"));
+    if picker.picker() {
+        let (written, any) = match picker {
+            InputKind::DateTimeLocal => ("a date and time written `YYYY-MM-DDTHH:mm`", "moment"),
+            InputKind::Time => ("a time written `HH:mm`", "time of day"),
+            _ => ("a date written `YYYY-MM-DD`", "day"),
+        };
         for name in ["min", "max"] {
             let Some(value) = el.attr(name) else { continue };
-            if rux_layout::parse_date(value).is_none() {
+            if rux_layout::parse_moment(picker, value).is_none() {
                 located(el.attr_line(name), || {
                     error(format!(
-                        "`{name}=\"{value}\"` is not a date written `YYYY-MM-DD`, so the \
-                         field would accept any day"
+                        "`{name}=\"{value}\"` is not {written}, so the field would accept any {any}"
                     ))
                 });
             }
@@ -612,6 +617,7 @@ fn field_of(
     part: rux_layout::Field,
 ) -> rux_layout::Field {
     let handler = |name: &str| el.attr(name).map(|h| bind_locals(h, locals));
+    let kind_of = InputKind::from_type(el.attr("type"));
     rux_layout::Field {
         disabled,
         readonly,
@@ -634,8 +640,8 @@ fn field_of(
         on_focus: handler("@focus"),
         on_blur: handler("@blur"),
         on_select: handler("@select"),
-        min: el.attr("min").and_then(rux_layout::parse_date),
-        max: el.attr("max").and_then(rux_layout::parse_date),
+        min: el.attr("min").and_then(|v| rux_layout::parse_moment(kind_of, v)),
+        max: el.attr("max").and_then(|v| rux_layout::parse_moment(kind_of, v)),
         autocomplete: el.attr("autocomplete").map(str::to_string),
         ..part
     }
@@ -8544,8 +8550,8 @@ fn build_node_inner(
     // could Rux.
     if el.tag == "input" {
         if let Some(kind) = el.attr("type") {
-            const KNOWN: [&str; 12] = [
-                "text", "textarea", "password", "search", "number", "date", "select", "checkbox",
+            const KNOWN: [&str; 14] = [
+                "text", "textarea", "password", "search", "number", "date", "datetime-local", "time", "select", "checkbox",
                 "radio", "switch", "slider", "file",
             ];
             if !KNOWN.contains(&kind) {
@@ -9692,7 +9698,7 @@ fn build_node_inner(
                 AccessRole::ComboBox
             } else if multiline {
                 AccessRole::MultilineTextInput
-            } else if kind == InputKind::Date {
+            } else if kind.picker() {
                 AccessRole::DateInput
             } else {
                 AccessRole::TextInput
