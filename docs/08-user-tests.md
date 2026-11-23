@@ -3557,7 +3557,7 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 
 | Case | Where | Result |
 |---|---|---|
-| `{{ app.state }}` and an `effect` logging each value, no import | Windows 11, `rux run`, probe `rux-harness퀃` | Reads `foreground` at start. After `window.minimize()` and a restore the log is `foreground background foreground` |
+| `{{ app.state }}` and an `effect` logging each value, no import | Windows 11, `rux run`, probe `rux-harness\ud003` | Reads `foreground` at start. After `window.minimize()` and a restore the log is `foreground background foreground` |
 | `app.state` on the web | `cargo check --target wasm32-unknown-unknown` only | A `visibilitychange` listener reports it. **Not driven in a browser** |
 | `app.state` on Android | not built or run | `onStart` and `onStop` call `nativeVisible`. **Written, not compiled**: the Java and the JNI function have not been through an NDK build here |
 | A window covered by another | not driven | Counts as in front by design (only minimizing hides) |
@@ -3619,7 +3619,7 @@ Emulator `rux_test` (Android 15), probe `rux-harness\ud003-and` with `[backgroun
 
 ## Notifications on the web, 2026-11-23
 
-Edge over CDP, probe `rux-harness퀃-web` (a real `rux build --target web` bundle from `target/debug/rux`), the notification permission set in the profile, the page read by screenshot and the kept `Notification` objects read from `window.__ruxNotices`.
+Edge over CDP, probe `rux-harness\ud003-web` (a real `rux build --target web` bundle from `target/debug/rux`), the notification permission set in the profile, the page read by screenshot and the kept `Notification` objects read from `window.__ruxNotices`.
 
 | Case | Result |
 |---|---|
@@ -3634,7 +3634,7 @@ Edge over CDP, probe `rux-harness퀃-web` (a real `rux build --target web` bundl
 
 ## Notifications on Windows, 2026-11-23
 
-Windows 11, probe `rux-harness퀃-win` run with `target/debug/rux run`, driven with the mouse and read by full-screen screenshots (`act.ps1`, `tap.ps1`). `rux run` registers the dev app's id under `HKCU\Software\Classes\AppUserModelId` at the first post, with the `[app] name` as its header.
+Windows 11, probe `rux-harness\ud003-win` run with `target/debug/rux run`, driven with the mouse and read by full-screen screenshots (`act.ps1`, `tap.ps1`). `rux run` registers the dev app's id under `HKCU\Software\Classes\AppUserModelId` at the first post, with the `[app] name` as its header.
 
 | Case | Result |
 |---|---|
