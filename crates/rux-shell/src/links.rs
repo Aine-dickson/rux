@@ -7,8 +7,7 @@
 //! module reads script's arguments and hands the platform a checked URL.
 //!
 //! The platforms: the desktop opens through the operating system's own verb,
-//! Android through an intent. The web is built after them (UD-005 step 3) and
-//! throws `unsupported` until then.
+//! Android through an intent, the web through a click on an anchor.
 
 use std::collections::{BTreeMap, HashMap};
 
@@ -218,24 +217,65 @@ mod platform {
 mod platform {
     use super::*;
 
-    fn unsupported() -> Error {
-        Error::new("unsupported", "this build cannot open other apps yet")
+    /// A click on an anchor, which a browser treats as the person's own: it
+    /// opens a web page in a new tab (`noopener`, so the page cannot reach
+    /// back) and hands `tel:`, `sms:`, `mailto:` and `geo:` to whatever the
+    /// device registered. Only inside a tap, as any opener is.
+    const OPEN: &str = "const a = document.createElement('a');
+        a.href = url;
+        if (/^https?:/i.test(url)) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        return 'ok';";
+
+    const SHARE: &str = "if (!navigator.share) { return 'unsupported'; }
+        navigator.share({ title: title, text: text }).catch(() => {});
+        return 'ok';";
+
+    fn gesture() -> Result<(), Error> {
+        if crate::web_user_activation() {
+            Ok(())
+        } else {
+            Err(Error::new(
+                "gesture",
+                "a browser opens another page or app only from a tap: call it in a tap handler, before any `await`",
+            ))
+        }
     }
 
-    pub(super) fn open(_url: &str) -> Result<(), Error> {
-        Err(unsupported())
+    fn run(body: &str, names: &str, values: &[&str]) -> Result<String, Error> {
+        let f = js_sys::Function::new_with_args(names, body);
+        let args = js_sys::Array::new();
+        for v in values {
+            args.push(&wasm_bindgen::JsValue::from_str(v));
+        }
+        f.apply(&wasm_bindgen::JsValue::NULL, &args)
+            .map(|v| v.as_string().unwrap_or_default())
+            .map_err(|_| Error::new("link", "the browser would not open that"))
     }
 
-    pub(super) fn directions(_to: &Directions) -> Result<(), Error> {
-        Err(unsupported())
+    pub(super) fn open(url: &str) -> Result<(), Error> {
+        gesture()?;
+        run(OPEN, "url", &[url]).map(|_| ())
     }
 
-    pub(super) fn share(_what: &Share) -> Result<(), Error> {
-        Err(unsupported())
+    pub(super) fn directions(to: &Directions) -> Result<(), Error> {
+        open(&to.web_url())
+    }
+
+    pub(super) fn share(what: &Share) -> Result<(), Error> {
+        gesture()?;
+        match run(SHARE, "title,text", &[&what.title, &what.text])?.as_str() {
+            "ok" => Ok(()),
+            _ => Err(Error::new("unsupported", "this browser has no share sheet: copy the text instead")),
+        }
     }
 
     pub(super) fn can_open(_url: &str) -> bool {
-        false
+        // A page cannot ask what the device has registered.
+        true
     }
 }
 
