@@ -14113,6 +14113,111 @@ pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeBackgroundActive
     rux_runtime::native::background::set_active(active);
 }
 
+/// Ask for one position (see `RuxActivity.ruxLocationCurrent`); the answer
+/// comes through `nativeLocationFix` or `nativeLocationError` with `id`.
+/// `Err` carries `kind: why`.
+#[cfg(target_os = "android")]
+pub(crate) fn android_location_current(id: i64, high: bool, timeout_ms: u64) -> Result<(), String> {
+    android_location_call(|env, activity| {
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxLocationCurrent"),
+            jni::jni_sig!("(JZJ)Ljava/lang/String;"),
+            &[jni::JValue::Long(id), jni::JValue::Bool(high), jni::JValue::Long(timeout_ms as i64)],
+        )
+    })
+}
+
+/// Start or replace the location watch (see `RuxActivity.ruxLocationWatch`).
+#[cfg(target_os = "android")]
+pub(crate) fn android_location_watch(high: bool, interval_ms: u64, distance_m: f32) -> Result<(), String> {
+    android_location_call(|env, activity| {
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxLocationWatch"),
+            jni::jni_sig!("(ZJF)Ljava/lang/String;"),
+            &[jni::JValue::Bool(high), jni::JValue::Long(interval_ms as i64), jni::JValue::Float(distance_m)],
+        )
+    })
+}
+
+/// End the location watch.
+#[cfg(target_os = "android")]
+pub(crate) fn android_location_stop() {
+    android_call_activity(jni::jni_str!("ruxLocationStop"));
+}
+
+/// A location method that answers `null`, or `kind: why`: `call` makes the
+/// call on the activity.
+#[cfg(target_os = "android")]
+fn android_location_call(
+    call: impl for<'a> FnOnce(
+        &mut jni::Env<'a>,
+        &jni::objects::Global<jni::objects::JObject<'static>>,
+    ) -> jni::errors::Result<jni::objects::JValueOwned<'a>>,
+) -> Result<(), String> {
+    let Ok(activity) = ACTIVITY.lock() else { return Err("location: the app has no activity".into()) };
+    let Some(activity) = activity.as_ref() else { return Err("location: the app has no activity yet".into()) };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        let why = call(env, activity)?.l()?;
+        if why.is_null() {
+            return Ok::<_, jni::errors::Error>(Ok(()));
+        }
+        let why = env.cast_local::<jni::objects::JString>(why)?;
+        Ok(Err(why.try_to_string(env)?))
+    })
+    .map_err(|e| format!("location: could not reach Android: {e}"))?
+}
+
+/// A position arrived. Called from Java on Android's main thread.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeLocationFix<'frame>(
+    _env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    id: jni::sys::jlong,
+    lat: jni::sys::jdouble,
+    lng: jni::sys::jdouble,
+    accuracy: jni::sys::jfloat,
+    at: jni::sys::jlong,
+    mock: jni::sys::jboolean,
+) {
+    location::fix_arrived(
+        id,
+        rux_runtime::native::location::Fix { lat, lng, accuracy_m: f64::from(accuracy), at, is_mock: mock },
+    );
+}
+
+/// There is no position. Called from Java on Android's main thread.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeLocationError<'frame>(
+    mut env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    id: jni::sys::jlong,
+    kind: jni::objects::JString<'frame>,
+    why: jni::objects::JString<'frame>,
+) {
+    env.with_env(|env| {
+        let kind = kind.try_to_string(env)?;
+        let why = why.try_to_string(env)?;
+        location::error_arrived(id, &kind, &why);
+        Ok::<(), jni::errors::Error>(())
+    })
+    .resolve::<jni::errors::LogErrorAndDefault>();
+}
+
 /// Take a notification away by its tag, or every one for `None`.
 #[cfg(target_os = "android")]
 pub(crate) fn android_cancel_notification(tag: Option<&str>) {

@@ -1668,6 +1668,171 @@ public class RuxActivity extends NativeActivity {
         }
     }
 
+    // ---- Location ----------------------------------------------------------
+    //
+    // The platform's own LocationManager, not Google's fused provider: no Play
+    // Services, and it works on any device and the emulator. Everything goes
+    // through the application context and the main looper, so a watch goes on
+    // delivering with no activity on screen (the foreground service keeps the
+    // process). A fix, or why there is none, comes back through two natives;
+    // {@code id} names the one-fix request waiting, 0 is the watch.
+
+    /** A position. {@code id} is the request that asked, 0 for the watch. */
+    static native void nativeLocationFix(long id, double lat, double lng, float accuracy, long at, boolean mock);
+
+    /** Why there is no position: {@code kind} is {@code timeout}, {@code disabled}, {@code permission} or {@code location}. */
+    static native void nativeLocationError(long id, String kind, String why);
+
+    /** The watch's listener, so a second call can replace it. */
+    private static android.location.LocationListener locationWatcher;
+
+    /** The provider to ask: GPS when {@code high}, else the network's, whichever is switched on. */
+    private static String locationProvider(android.location.LocationManager lm, boolean high) {
+        String first = high ? android.location.LocationManager.GPS_PROVIDER : android.location.LocationManager.NETWORK_PROVIDER;
+        String second = high ? android.location.LocationManager.NETWORK_PROVIDER : android.location.LocationManager.GPS_PROVIDER;
+        if (lm.isProviderEnabled(first)) {
+            return first;
+        }
+        return lm.isProviderEnabled(second) ? second : null;
+    }
+
+    private static android.location.LocationListener locationListener(final long id, final Runnable onFix) {
+        return new android.location.LocationListener() {
+            @Override
+            public void onLocationChanged(android.location.Location l) {
+                boolean mock = Build.VERSION.SDK_INT >= 31 ? l.isMock() : l.isFromMockProvider();
+                nativeLocationFix(id, l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : -1f, l.getTime(), mock);
+                if (onFix != null) {
+                    onFix.run();
+                }
+            }
+
+            @Override
+            public void onProviderEnabled(String provider) {}
+
+            @Override
+            public void onProviderDisabled(String provider) {}
+
+            @Override
+            public void onStatusChanged(String provider, int status, Bundle extras) {}
+        };
+    }
+
+    /**
+     * Ask for one fix, answered later by {@code nativeLocationFix(id, ...)} or
+     * {@code nativeLocationError(id, ...)}. Returns {@code null} when the
+     * request is under way, else {@code kind: why}.
+     */
+    String ruxLocationCurrent(final long id, boolean high, long timeoutMs) {
+        try {
+            final android.location.LocationManager lm =
+                    (android.location.LocationManager) getApplicationContext().getSystemService(Context.LOCATION_SERVICE);
+            String provider = locationProvider(lm, high);
+            if (provider == null) {
+                return "disabled: location is switched off in the system settings";
+            }
+            final android.os.Handler handler = new android.os.Handler(android.os.Looper.getMainLooper());
+            final boolean[] done = {false};
+            if (Build.VERSION.SDK_INT >= 30) {
+                // Android's own one-shot: it answers with a recent fix at once
+                // where it has one, and does not wait for the next one.
+                final android.os.CancellationSignal cancel = new android.os.CancellationSignal();
+                lm.getCurrentLocation(provider, cancel, getMainExecutor(), new java.util.function.Consumer<android.location.Location>() {
+                    @Override
+                    public void accept(android.location.Location l) {
+                        if (done[0]) {
+                            return;
+                        }
+                        done[0] = true;
+                        if (l == null) {
+                            nativeLocationError(id, "timeout", "Android had no position to give");
+                            return;
+                        }
+                        boolean mock = Build.VERSION.SDK_INT >= 31 ? l.isMock() : l.isFromMockProvider();
+                        nativeLocationFix(id, l.getLatitude(), l.getLongitude(), l.hasAccuracy() ? l.getAccuracy() : -1f, l.getTime(), mock);
+                    }
+                });
+                handler.postDelayed(new Runnable() {
+                    @Override
+                    public void run() {
+                        if (!done[0]) {
+                            done[0] = true;
+                            cancel.cancel();
+                            nativeLocationError(id, "timeout", "no position arrived in time");
+                        }
+                    }
+                }, timeoutMs);
+                return null;
+            }
+            final android.location.LocationListener[] listener = new android.location.LocationListener[1];
+            listener[0] = locationListener(id, new Runnable() {
+                @Override
+                public void run() {
+                    done[0] = true;
+                    lm.removeUpdates(listener[0]);
+                }
+            });
+            lm.requestLocationUpdates(provider, 0, 0f, listener[0], android.os.Looper.getMainLooper());
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (!done[0]) {
+                        done[0] = true;
+                        lm.removeUpdates(listener[0]);
+                        nativeLocationError(id, "timeout", "no position arrived in time");
+                    }
+                }
+            }, timeoutMs);
+            return null;
+        } catch (SecurityException e) {
+            return "permission: " + e.getMessage();
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "asking for a position failed", e);
+            return "location: " + e.getMessage();
+        }
+    }
+
+    /** Start the watch, or replace the running one. Returns {@code null}, or {@code kind: why}. */
+    String ruxLocationWatch(boolean high, long intervalMs, float distanceM) {
+        try {
+            android.location.LocationManager lm =
+                    (android.location.LocationManager) getApplicationContext().getSystemService(Context.LOCATION_SERVICE);
+            String provider = locationProvider(lm, high);
+            if (provider == null) {
+                return "disabled: location is switched off in the system settings";
+            }
+            synchronized (RuxActivity.class) {
+                if (locationWatcher != null) {
+                    lm.removeUpdates(locationWatcher);
+                }
+                locationWatcher = locationListener(0, null);
+                lm.requestLocationUpdates(provider, intervalMs, distanceM, locationWatcher, android.os.Looper.getMainLooper());
+            }
+            return null;
+        } catch (SecurityException e) {
+            return "permission: " + e.getMessage();
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "starting the location watch failed", e);
+            return "location: " + e.getMessage();
+        }
+    }
+
+    /** End the watch. Nothing running is not an error. */
+    void ruxLocationStop() {
+        try {
+            android.location.LocationManager lm =
+                    (android.location.LocationManager) getApplicationContext().getSystemService(Context.LOCATION_SERVICE);
+            synchronized (RuxActivity.class) {
+                if (locationWatcher != null) {
+                    lm.removeUpdates(locationWatcher);
+                    locationWatcher = null;
+                }
+            }
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "stopping the location watch failed", e);
+        }
+    }
+
     /** Send the app's task to the back, as Home would: the screen goes, the process stays. */
     void ruxMoveToBack() {
         runOnUiThread(() -> moveTaskToBack(true));

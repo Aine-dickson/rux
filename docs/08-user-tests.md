@@ -3647,6 +3647,19 @@ Windows 11, probe `rux-harness\ud003-win` run with `target/debug/rux run`, drive
 | `notifications.cancelAll()` while a toast shows | The toast goes |
 | **Not driven** | A tap after the app quit (does nothing, recorded), `min` importance (`SuppressPopup`, action center only), the Action Center list, a packaged or installed build (only `rux run` was driven), the toast's sound, macOS and Linux (`unsupported`) |
 
+## Location on Android, 2026-11-23
+
+Emulator `rux_test` (Android 15), probe `rux-harness\ud002-and`, a dev build from `target/debug/rux`, fixes from `adb emu geo fix`, read by screenshots. Permission granted with `pm grant` (the system dialog itself is the `permissions` rows above).
+
+| Case | Result |
+|---|---|
+| `location.current` before location was allowed | Throws `permission`, saying to `request` from a tap first |
+| `location.current` after `geo fix 32.58 0.31` | `{ lat 0.31, lng 32.58, accuracyM 5, isMock false }` at once (Android's `getCurrentLocation`) |
+| `location.watch({ intervalMs: 2000 })`, then new `geo fix` values | `location.watching` is `true` and `location.position` follows each fix |
+| `location.stop()`, then a new fix | `watching` is `false` and `position` stays where it was |
+| Location switched off in the system (`settings put secure location_mode 0`), then `current` | Throws `disabled`, saying it is switched off in the system settings |
+| **Not driven** | The fix from a real GPS, `balanced` accuracy and an approximate-only grant, a timeout (the emulator always has a fix), Android 10 and below (the `requestLocationUpdates` path for `current`), a watch with the screen off and with a `location` service, `on_fix` from the app's Rust, `isMock` on a real device |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

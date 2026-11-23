@@ -121,6 +121,121 @@ pub(crate) fn install_location() {
     }
 }
 
+#[cfg(target_os = "android")]
+mod platform {
+    use super::*;
+    use crate::files::Slot;
+    use std::sync::atomic::{AtomicI64, Ordering};
+    use std::sync::Mutex;
+
+    const FINE: &str = "android.permission.ACCESS_FINE_LOCATION";
+    const COARSE: &str = "android.permission.ACCESS_COARSE_LOCATION";
+
+    /// The one-fix requests waiting on Android, by id.
+    static PENDING: Mutex<Option<HashMap<i64, Slot>>> = Mutex::new(None);
+    static NEXT: AtomicI64 = AtomicI64::new(1);
+
+    /// `Ok(high)` when location is allowed: whether GPS may be asked, which an
+    /// approximate-only grant forbids.
+    fn allowed(options: &Options) -> Result<bool, Error> {
+        let granted = |name: &str| crate::android_permission_flag("granted", name);
+        if !(granted(FINE) || granted(COARSE)) {
+            return Err(Error::new(
+                "permission",
+                "location is not allowed: ask with `permissions.request(\"location\")` from a tap first",
+            ));
+        }
+        Ok(options.accuracy == Accuracy::High && granted(FINE))
+    }
+
+    /// Java says `kind: why`.
+    fn from_java(why: String) -> Error {
+        match why.split_once(": ") {
+            Some((kind @ ("disabled" | "permission" | "timeout" | "location"), message)) => Error::new(kind, message),
+            _ => Error::new("location", why),
+        }
+    }
+
+    pub(super) async fn current(options: Options) -> Result<Fix, Error> {
+        let high = allowed(&options)?;
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let slot = Slot::default();
+        PENDING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).insert(id, slot.clone());
+        if let Err(why) = crate::android_location_current(id, high, options.timeout_ms) {
+            PENDING.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(HashMap::new).remove(&id);
+            return Err(from_java(why));
+        }
+        match slot.await? {
+            Any::Map(m) => Ok(fix_of(&m)),
+            _ => Err(Error::new("location", "Android gave no position")),
+        }
+    }
+
+    fn fix_of(m: &BTreeMap<String, Any>) -> Fix {
+        let f = |k: &str| match m.get(k) {
+            Some(Any::Float(v)) => *v,
+            _ => 0.0,
+        };
+        Fix {
+            lat: f("lat"),
+            lng: f("lng"),
+            accuracy_m: f("accuracyM"),
+            at: match m.get("at") {
+                Some(Any::Int(v)) => *v,
+                _ => 0,
+            },
+            is_mock: matches!(m.get("isMock"), Some(Any::Bool(true))),
+        }
+    }
+
+    pub(super) fn watch(options: Options) -> Result<(), Error> {
+        let high = allowed(&options)?;
+        crate::android_location_watch(high, options.interval_ms, options.distance_m as f32).map_err(from_java)?;
+        set_watching(true);
+        Ok(())
+    }
+
+    pub(super) fn stop() -> Result<(), Error> {
+        crate::android_location_stop();
+        set_watching(false);
+        Ok(())
+    }
+
+    /// Java delivered a position: to the request waiting on `id`, or, for the watch (0), to everyone.
+    pub(crate) fn fix_arrived(id: i64, fix: Fix) {
+        if id == 0 {
+            rux_runtime::native::location::report(fix);
+            return;
+        }
+        let slot = PENDING.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|p| p.remove(&id));
+        if let Some(slot) = slot {
+            let mut m = BTreeMap::new();
+            m.insert("lat".to_string(), Any::Float(fix.lat));
+            m.insert("lng".to_string(), Any::Float(fix.lng));
+            m.insert("accuracyM".to_string(), Any::Float(fix.accuracy_m));
+            m.insert("at".to_string(), Any::Int(fix.at));
+            m.insert("isMock".to_string(), Any::Bool(fix.is_mock));
+            slot.set(Ok(Any::Map(m)));
+        }
+    }
+
+    /// Java could not deliver one.
+    pub(crate) fn error_arrived(id: i64, kind: &str, why: &str) {
+        if id == 0 {
+            crate::android_log(&format!("location watch: {kind}: {why}"));
+            return;
+        }
+        let slot = PENDING.lock().unwrap_or_else(|e| e.into_inner()).as_mut().and_then(|p| p.remove(&id));
+        if let Some(slot) = slot {
+            slot.set(Err(from_java(format!("{kind}: {why}"))));
+        }
+    }
+}
+
+#[cfg(target_os = "android")]
+pub(crate) use platform::{error_arrived, fix_arrived};
+
+#[cfg(not(target_os = "android"))]
 mod platform {
     use super::*;
 
