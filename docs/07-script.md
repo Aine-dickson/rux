@@ -2445,8 +2445,13 @@ give one of:
   the only place a blocked permission changes. It throws `unsupported` on the
   desktop and the web.
 - **Targets.** Android asks the system. On the desktop there is nothing to ask,
-  so a declared name is `"granted"`. The web is not done yet and throws
-  `unsupported`.
+  so a declared name is `"granted"`. The web asks the browser: `status` reads
+  `navigator.permissions` (a refusal the browser will not ask about again is
+  `"blocked"`), and `request` raises its prompt (a one-shot position, the
+  notification request, a camera or microphone stream stopped at once), which a
+  browser allows only from a tap, so call it in a tap handler before any
+  `await` or it throws `gesture`. `"location-background"`, a platform name and
+  `openSettings()` throw `unsupported` there.
 - **A file input's `capture` asks for the camera first** when the app declares
   `camera`: Android refuses its camera to an app that lists the permission and
   has not been given it. If the person refuses, the picker opens instead.

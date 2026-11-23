@@ -3549,7 +3549,7 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | **Found by driving** | emulator | Tapping the probe while its dialog was on screen dismissed the dialog, and two dismissals made the permission `"blocked"` with no dialog ever shown to the person. That is Android's rule, not a Rux fault, and it is why `"blocked"` cannot be told from "refused for good" except by what the system will still show |
 | `permissions` on the desktop | `cargo test` only | `"granted"` for a declared name, `openSettings` throws `unsupported`. **Not driven in a window** |
 '| `rux check` on a call naming a permission that is not declared | desktop | One warning at the call's line, "permissions.status: 'microphone' is not declared: add [permissions.microphone] with a 'why' to rux.toml"; the declared `camera` call beside it is not reported. Nothing is reported outside a project with a `rux.toml` |
-| `permissions` on the web | **not done** | Throws `unsupported`; a backend is still to be written |
+| `permissions` on the web | `cargo check --target wasm32-unknown-unknown` only | The backend (browser permission state, the prompts, a `gesture` error outside a tap) compiles; the check still fails on the five errors that were already in `rux-shell` (HANDOFF, the web build). **Never run in a browser**, because no web bundle can be built until those are fixed |
 | `rux::permissions` from the app's Rust | `cargo test` only | Without a shell every call fails with `unavailable`. **Not driven on a device**: no probe app has native code calling it yet |
 | An address, or an HTTP crate, in `native/` | `cargo test` | `INTERNET` is asked for in a release build. Before, only `.rux` and `.css` files were read |
 

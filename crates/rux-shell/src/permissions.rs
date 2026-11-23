@@ -291,16 +291,105 @@ pub(crate) fn request_done() {
     backend::done();
 }
 
+/// The browser's own permissions: `navigator.permissions` for the state, and
+/// the prompt each one raises for asking (a one-shot position, the notification
+/// request, a camera or microphone stream stopped at once).
+///
+/// Written as two small scripts rather than through `web-sys` types, which
+/// would need a feature per object for three calls and a state read. A
+/// browser has no "blocked" of its own: a refusal it will not ask about again
+/// is `"denied"` there, and reads as `"blocked"` here. Background location and
+/// a platform name are Android's alone.
 #[cfg(target_arch = "wasm32")]
 mod backend {
     use super::*;
+    use crate::files::Slot;
 
-    pub(super) async fn status(_which: &Which) -> Result<&'static str, Error> {
-        Err(Error::new("unsupported", "permissions are not asked for on the web yet"))
+    const STATUS: &str = "return (async () => {
+        const name = { location: 'geolocation', notifications: 'notifications', camera: 'camera', microphone: 'microphone' }[kind];
+        try {
+            if (kind === 'notifications' && !navigator.permissions) {
+                return { default: 'prompt', granted: 'granted', denied: 'denied' }[Notification.permission] || 'prompt';
+            }
+            return (await navigator.permissions.query({ name })).state;
+        } catch (e) { return 'prompt'; }
+    })();";
+
+    const REQUEST: &str = "return (async () => {
+        try {
+            if (kind === 'location') {
+                await new Promise((ok, no) => navigator.geolocation.getCurrentPosition(ok, no, { timeout: 30000 }));
+            } else if (kind === 'notifications') {
+                await Notification.requestPermission();
+            } else {
+                const s = await navigator.mediaDevices.getUserMedia(kind === 'camera' ? { video: true } : { audio: true });
+                s.getTracks().forEach((t) => t.stop());
+            }
+        } catch (e) { /* refused or dismissed: the state says which */ }
+        return 'done';
+    })();";
+
+    fn kind(which: &Which) -> Result<&'static str, Error> {
+        match which {
+            Which::Location { .. } => Ok("location"),
+            Which::Notifications => Ok("notifications"),
+            Which::Camera => Ok("camera"),
+            Which::Microphone => Ok("microphone"),
+            Which::LocationBackground => {
+                Err(Error::new("unsupported", "a web page has no background location: only `\"location\"` while it is open"))
+            }
+            Which::Raw(name) => Err(Error::new("unsupported", format!("`{name}` is a platform permission, and the web has none by that name"))),
+        }
     }
 
-    pub(super) async fn request(_which: &Which) -> Result<&'static str, Error> {
-        Err(Error::new("unsupported", "permissions are not asked for on the web yet"))
+    /// Run one of the scripts with `kind`, answered through a [`Slot`] since a
+    /// promise is not `Send`.
+    fn run(body: &'static str, kind: &'static str) -> Slot {
+        let slot = Slot::default();
+        let answer = slot.clone();
+        let f = js_sys::Function::new_with_args("kind", body);
+        let promise = f.call1(&wasm_bindgen::JsValue::NULL, &wasm_bindgen::JsValue::from_str(kind));
+        wasm_bindgen_futures::spawn_local(async move {
+            let result = match promise {
+                Ok(p) => wasm_bindgen_futures::JsFuture::from(js_sys::Promise::from(p)).await,
+                Err(e) => Err(e),
+            };
+            answer.set(match result {
+                Ok(v) => Ok(Any::Str(v.as_string().unwrap_or_default())),
+                Err(_) => Err(Error::new("unsupported", "this browser cannot say")),
+            });
+        });
+        slot
+    }
+
+    pub(super) async fn status(which: &Which) -> Result<&'static str, Error> {
+        let state = match run(STATUS, kind(which)?).await? {
+            Any::Str(s) => s,
+            _ => String::new(),
+        };
+        Ok(match state.as_str() {
+            "granted" => "granted",
+            "denied" => "blocked",
+            _ => "unasked",
+        })
+    }
+
+    pub(super) async fn request(which: &Which) -> Result<&'static str, Error> {
+        let kind = kind(which)?;
+        let before = status(which).await?;
+        if matches!(before, "granted" | "blocked") {
+            return Ok(before);
+        }
+        // A browser raises its prompt only during a person's gesture, and one
+        // that is refused never answers: an error now says why instead.
+        if !crate::web_user_activation() {
+            return Err(Error::new(
+                "gesture",
+                "`permissions.request` shows the browser's prompt only from a tap: call it in a tap handler, before any `await`",
+            ));
+        }
+        run(REQUEST, kind).await?;
+        status(which).await
     }
 
     pub(super) fn open_settings() -> Result<(), Error> {
