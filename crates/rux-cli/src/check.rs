@@ -186,6 +186,10 @@ pub fn run(options: Options) -> i32 {
         found.extend(crate::native::cargo_check(&files));
     }
 
+    // A call asking for a permission `rux.toml` does not declare. Only inside a
+    // project: a loose file has no manifest to be held to.
+    found.extend(undeclared_permissions(&files));
+
     // A component is read on its own and through whatever uses it, so the same
     // finding can come twice; once is enough.
     let mut seen = std::collections::HashSet::new();
@@ -216,6 +220,27 @@ pub fn run(options: Options) -> i32 {
     } else {
         0
     }
+}
+
+/// Warnings for calls naming a permission the project's `rux.toml` does not
+/// declare, in the documents and in the app's own Rust. Nothing without a
+/// readable manifest: `rux check` does not need one.
+fn undeclared_permissions(files: &[PathBuf]) -> Vec<Diagnostic> {
+    let Some(first) = files.first() else { return Vec::new() };
+    let start = first.canonicalize().unwrap_or_else(|_| first.clone());
+    let Ok(manifest) = crate::manifest::Manifest::find(start.parent().unwrap_or_else(|| Path::new("."))) else {
+        return Vec::new();
+    };
+    let mut sources: Vec<PathBuf> = files.to_vec();
+    sources.extend(crate::permission_check::native_sources(&manifest.root));
+    let mut out = Vec::new();
+    for file in sources {
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        for (line, message) in crate::permission_check::undeclared_uses(&text, &manifest.permissions) {
+            out.push(Diagnostic { file: file.clone(), line: Some(line), column: None, severity: Severity::Warning, message });
+        }
+    }
+    out
 }
 
 /// One file's findings, and the other files looking at it reached.

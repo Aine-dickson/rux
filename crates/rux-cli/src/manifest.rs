@@ -154,6 +154,31 @@ impl Permissions {
     pub fn get(&self, name: &str) -> Option<&Permission> {
         self.entries.iter().find(|p| p.name == name)
     }
+
+    /// Why a call asking for `name` would throw `undeclared`, or `None` when
+    /// the manifest allows it. The same rule the runtime holds a script to
+    /// (`permissions.rs` in `rux-shell`), said before the app is run.
+    pub fn undeclared(&self, name: &str) -> Option<String> {
+        match name {
+            "location-background" => match self.get("location") {
+                Some(p) if p.background => None,
+                Some(_) => Some(
+                    "`location-background` needs `background = true` under [permissions.location] in rux.toml"
+                        .to_string(),
+                ),
+                None => Some(format!("`{name}` is not declared: add [permissions.location] with `background = true` and a `why` to rux.toml")),
+            },
+            n if PORTABLE_PERMISSIONS.contains(&n) => self
+                .get(n)
+                .is_none()
+                .then(|| format!("`{n}` is not declared: add [permissions.{n}] with a `why` to rux.toml")),
+            n if self.android.iter().any(|a| a == n) => None,
+            n => Some(format!(
+                "`{n}` is not a permission this app declared. The names are {}, or a platform name listed under `android = [...]` in [permissions] of rux.toml",
+                PORTABLE_PERMISSIONS.join(", ")
+            )),
+        }
+    }
 }
 
 /// `[window]`: the desktop window's opening size, its smallest, and whether

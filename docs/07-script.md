@@ -2432,7 +2432,10 @@ give one of:
   `[permissions.location]`.
 - **A name `rux.toml` does not declare throws `undeclared`**, naming the table
   to add. Nothing is requested that was not written there, and the manifest is
-  written from the same table.
+  written from the same table. `rux check` warns about it first, for a name
+  written out in the call (`permissions.request("camera")`), in documents and
+  in the app's Rust (`permissions::request("camera")`); a name built from
+  pieces is left to the runtime.
 - **`request` on a permission that is granted or blocked answers at once**; the
   system shows no dialog for either. Only one dialog is open at a time, and
   asking while one is open throws `busy`.

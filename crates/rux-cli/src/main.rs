@@ -38,6 +38,7 @@ mod iconset;
 mod manifest;
 mod native;
 mod new;
+mod permission_check;
 mod vocab;
 mod web;
 
