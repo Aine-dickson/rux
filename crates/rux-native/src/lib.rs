@@ -27,8 +27,8 @@ mod value;
 
 pub use exec::{block_on, panic_text, set_spawner, spawn, CatchUnwind, Task};
 pub use signal::{notify, set_signal_waker, signal_epoch, Channel, Signal, SignalValue};
-pub use registry::{install, is_channel, BoxFuture, Call, Export, FieldSig, Interface, Item, ItemKind, Module, Sig};
-pub use value::{field, Any, Error, FromRux, FromRuxRef, Handle, IntoRux, Resource};
+pub use registry::{declare_throws, install, is_channel, throws, BoxFuture, Call, Export, FieldSig, Interface, Item, ItemKind, Module, Sig};
+pub use value::{field, Any, Error, FromRux, FromRuxRef, Handle, IntoError, IntoRux, Resource};
 
 #[cfg(feature = "macros")]
 pub use rux_native_macros::{export, init, resource};
@@ -68,11 +68,46 @@ pub mod __private {
         v.into_rux()
     }
 
-    /// A `Result` returned by a native function: its `Err` thrown.
-    pub fn result<T: IntoRux, E: std::fmt::Display>(r: Result<T, E>) -> Result<Any, Error> {
-        match r {
-            Ok(v) => v.into_rux(),
-            Err(e) => Err(Error::from_rust(e)),
+    /// An export's `Err(e)` held while its error is chosen: through
+    /// [`crate::IntoError`] when `E` implements it, else through `Display`
+    /// with the type's name as the `kind`. The pick is autoref specialisation:
+    /// `(&Thrown::new(e)).rux_error()` finds [`ViaIntoError`] first (its
+    /// `Self` is `Thrown<E>`, so `&self` matches the receiver as it is) and
+    /// [`ViaDisplay`] (its `Self` is `&Thrown<E>`) only when that does not
+    /// apply.
+    pub struct Thrown<E>(std::cell::Cell<Option<E>>);
+
+    impl<E> Thrown<E> {
+        pub fn new(e: E) -> Thrown<E> {
+            Thrown(std::cell::Cell::new(Some(e)))
+        }
+    }
+
+    pub trait ViaIntoError {
+        fn rux_error(&self) -> Error;
+    }
+
+    impl<E: crate::IntoError> ViaIntoError for Thrown<E> {
+        fn rux_error(&self) -> Error {
+            let e = self.0.take().expect("an error is chosen once").into_error();
+            if cfg!(debug_assertions) && !E::KINDS.is_empty() && !E::KINDS.contains(&e.kind.as_str()) {
+                eprintln!(
+                    "rux: `{}` threw kind `{}`, which its `KINDS` does not list; `rux check` trusts that list",
+                    std::any::type_name::<E>(),
+                    e.kind
+                );
+            }
+            e
+        }
+    }
+
+    pub trait ViaDisplay {
+        fn rux_error(&self) -> Error;
+    }
+
+    impl<E: std::fmt::Display> ViaDisplay for &Thrown<E> {
+        fn rux_error(&self) -> Error {
+            Error::from_rust(self.0.take().expect("an error is chosen once"))
         }
     }
 

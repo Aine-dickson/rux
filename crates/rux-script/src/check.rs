@@ -385,7 +385,27 @@ struct Checker<'a> {
     /// While set, an `async fn` may not be started here, and this says what
     /// "here" is: a binding or a `computed`, which run on every change.
     no_start: Option<&'static str>,
+    /// What each `try` body being checked can throw, innermost last.
+    throws: Vec<Throws>,
+    /// Inside a `catch`: the name it binds and the `kind`s it can hold, for a
+    /// name whose `try` body threw nothing the checker could not see.
+    caught: Vec<(String, Vec<String>)>,
 }
+
+/// The `kind`s a `try` body can throw. Only calls the checker can see into
+/// count: a native call whose Rust error type the source names, a `throw` of
+/// a string or a record literal, and what the language raises itself. Any
+/// other call (a script function, a method on a value of unknown type, a
+/// name it cannot resolve) makes the set `open`, which narrows nothing.
+#[derive(Default)]
+struct Throws {
+    kinds: Vec<String>,
+    open: bool,
+}
+
+/// What the language and native code raise on their own, which any body can
+/// throw (`docs/07-script.md`, "Errors").
+const LANGUAGE_KINDS: [&str; 5] = ["error", "overflow", "unwrap", "type", "panic"];
 
 /// The id of an expression the checker makes up itself, as `x++` is checked
 /// as `x += 1`: nothing is kept about one.
@@ -443,6 +463,60 @@ impl<'a> Checker<'a> {
             awaited: false,
             awaited_method: false,
             no_start: None,
+            throws: Vec::new(),
+            caught: Vec::new(),
+        }
+    }
+
+    /// The enclosing `try` body can throw `ty`, a native error's record.
+    fn throws_type(&mut self, ty: Option<&Type>) {
+        let Some(top) = self.throws.last_mut() else { return };
+        let Some(Type::Record(fields)) = ty else {
+            top.open = true;
+            return;
+        };
+        let Some(kind) = fields.iter().find(|f| f.name == "kind") else {
+            top.open = true;
+            return;
+        };
+        let literals: Option<Vec<String>> = match &kind.ty {
+            Type::Literal(s) => Some(vec![s.clone()]),
+            Type::Union(members) => members.iter().map(|m| if let Type::Literal(s) = m { Some(s.clone()) } else { None }).collect(),
+            _ => None,
+        };
+        match literals {
+            Some(list) => top.kinds.extend(list),
+            None => top.open = true,
+        }
+    }
+
+    /// The enclosing `try` body can throw something the checker cannot name.
+    fn throws_unknown(&mut self) {
+        if let Some(top) = self.throws.last_mut() {
+            top.open = true;
+        }
+    }
+
+    /// `e.kind == "x"` inside the `catch` of a body whose throws are all
+    /// known: `x` has to be one of them.
+    fn check_caught_kind(&mut self, left: &Expr, right: &Expr, pos: Pos) {
+        for (side, other) in [(left, right), (right, left)] {
+            let (ExprKind::Field { base, name, optional: false }, ExprKind::Str(want)) = (&side.kind, &other.kind) else {
+                continue;
+            };
+            let ExprKind::Var(var) = &base.kind else { continue };
+            if name.name != "kind" {
+                continue;
+            }
+            let Some((_, kinds)) = self.caught.iter().rev().find(|(v, _)| v == var) else { continue };
+            if kinds.iter().any(|k| k == want) {
+                return;
+            }
+            let bare: Vec<&str> = kinds.iter().map(String::as_str).collect();
+            let hint = near_miss(want, &bare).map(|m| format!("; did you mean \"{m}\"?")).unwrap_or_default();
+            let listed = kinds.iter().map(|k| format!("\"{k}\"")).collect::<Vec<_>>().join(", ");
+            self.error(pos, format!("`{var}.kind` is one of {listed}, so it is never {want:?}{hint}"));
+            return;
         }
     }
 
@@ -1790,7 +1864,24 @@ impl<'a> Checker<'a> {
             }
             StmtKind::Block(block) => self.check_block(block),
             StmtKind::Try { body, var, catch } => {
+                self.throws.push(Throws::default());
                 self.check_block(body);
+                let thrown = self.throws.pop().unwrap_or_default();
+                let known = (!thrown.open).then(|| {
+                    let mut kinds: Vec<String> = LANGUAGE_KINDS.iter().map(|k| k.to_string()).collect();
+                    for k in thrown.kinds {
+                        if !kinds.contains(&k) {
+                            kinds.push(k);
+                        }
+                    }
+                    kinds
+                });
+                let narrowed = match (var, known) {
+                    (Some(v), Some(kinds)) => Some((v.name.clone(), kinds)),
+                    _ => None,
+                };
+                let mark = self.caught.len();
+                self.caught.extend(narrowed);
                 self.with_scope(|c| {
                     if let Some(v) = var {
                         c.note_decl(v.span, &Type::Any);
@@ -1798,6 +1889,7 @@ impl<'a> Checker<'a> {
                     }
                     c.check_statements(&catch.stmts);
                 });
+                self.caught.truncate(mark);
                 Type::Null
             }
             StmtKind::Expr(e) => self.infer(e),
@@ -1826,6 +1918,25 @@ impl<'a> Checker<'a> {
             // when a `throw` was a flagged `return`.
             StmtKind::Throw(value) => {
                 let ty = value.as_ref().map_or(Type::Null, |v| self.infer(v));
+                match value.as_ref().map(|v| &v.kind) {
+                    Some(ExprKind::Str(_)) => self.throws_type(Some(&Type::Record(vec![rux_ir::types::Field {
+                        name: "kind".into(),
+                        optional: false,
+                        ty: Type::Literal("error".into()),
+                    }]))),
+                    Some(ExprKind::Map { entries, .. }) => {
+                        let kind = entries.iter().find(|e| e.key.name == "kind").map(|e| &e.value.kind);
+                        match kind {
+                            Some(ExprKind::Str(s)) => self.throws_type(Some(&Type::Record(vec![rux_ir::types::Field {
+                                name: "kind".into(),
+                                optional: false,
+                                ty: Type::Literal(s.clone()),
+                            }]))),
+                            _ => self.throws_unknown(),
+                        }
+                    }
+                    _ => self.throws_unknown(),
+                }
                 if let Some(returns) = self.returns.last_mut() {
                     returns.push(ty);
                 }
@@ -2507,6 +2618,7 @@ impl<'a> Checker<'a> {
                     return Type::Any;
                 }
                 if matches!(op, "==" | "!=" | "===" | "!==") {
+                    self.check_caught_kind(lhs, rhs, pos);
                     self.check_comparable(lhs, &a, rhs, &b, pos);
                 }
                 // `a ** b` of two `int`s is an `int` (decided 2026-09-27):
@@ -2601,7 +2713,10 @@ impl<'a> Checker<'a> {
             },
             ExprKind::Method { name, args, .. } => match crate::native::type_name(&shown) {
                 Some(t) => match crate::native::method(t, &name.name) {
-                    Some(m) => self.native_method(m, &name.name, args, name.span),
+                    Some(m) => {
+                        self.throws_unknown();
+                        self.native_method(m, &name.name, args, name.span)
+                    }
                     None if matches!(base, Type::Opaque(_)) => {
                         let has = crate::native::methods_of(t);
                         let has = if has.is_empty() {
@@ -2615,7 +2730,14 @@ impl<'a> Checker<'a> {
                     }
                     None => self.method(&base, &name.name, args, name.span),
                 },
-                None => self.method(&base, &name.name, args, name.span),
+                None => {
+                    // A method of a value whose type is not known may be a
+                    // native one, which may throw anything.
+                    if matches!(base, Type::Any | Type::Param(_) | Type::Named(_)) {
+                        self.throws_unknown();
+                    }
+                    self.method(&base, &name.name, args, name.span)
+                }
             },
             _ => Type::Any,
         };
@@ -2877,9 +2999,11 @@ impl<'a> Checker<'a> {
     /// A call, by name: `f(args)` or `a::b(args)`.
     /// A linked module function's parameters, result and whether it is
     /// `async`. See [`Context::linked`].
-    fn linked_fn(&self, name: &str) -> Option<(&Vec<Type>, &Type, bool)> {
+    fn linked_fn(&self, name: &str) -> Option<(&Vec<Type>, &Type, bool, Option<&Type>)> {
         self.cx.linked.iter().find(|x| x.name == name).and_then(|x| match &x.kind {
-            crate::link::ExportKind::Fn { params, result, is_async } => Some((params, result, *is_async)),
+            crate::link::ExportKind::Fn { params, result, is_async, throws } => {
+                Some((params, result, *is_async, throws.as_ref()))
+            }
             _ => None,
         })
     }
@@ -2902,8 +3026,13 @@ impl<'a> Checker<'a> {
         }
 
         // A module's function, linked in.
-        if let Some((params, result, is_async)) = self.linked_fn(name).map(|(p, r, a)| (p.clone(), r.clone(), a)) {
+        if let Some((params, result, is_async, throws)) =
+            self.linked_fn(name).map(|(p, r, a, t)| (p.clone(), r.clone(), a, t.cloned()))
+        {
             let native = crate::link::split(name).is_some_and(|(m, _)| crate::native::is_native(m));
+            // A native call's error type is read from the Rust source; a
+            // script module's function is not looked into.
+            self.throws_type(if native { throws.as_ref() } else { None });
             if native && is_async && !awaited {
                 self.error(pos, native_not_awaited(&crate::link::shown(name)));
             }
@@ -3061,6 +3190,7 @@ impl<'a> Checker<'a> {
 
         // A function of the script's own.
         if self.fns.contains_key(&(name.to_string(), args.len())) {
+            self.throws_unknown();
             let result = self.call_script_fn(name, args);
             if self.fns[&(name.to_string(), args.len())].def.is_async && !awaited {
                 if let Some(here) = self.no_start {
@@ -3083,6 +3213,7 @@ impl<'a> Checker<'a> {
             return result;
         }
         // An arrow kept in a variable, called by name.
+        self.throws_unknown();
         if let Some(Type::Function(params, result)) = self.lookup(name).map(|t| self.resolve(&t)) {
             for (a, p) in args.iter().zip(params.iter()) {
                 self.check_expr(a, p);
@@ -3539,7 +3670,7 @@ impl<'a> Checker<'a> {
                     self.fns
                         .get(&(name.to_string(), args.len()))
                         .map(|f| f.def.is_async)
-                        .or_else(|| self.linked_fn(name).map(|(_, _, is_async)| is_async))
+                        .or_else(|| self.linked_fn(name).map(|(_, _, is_async, _)| is_async))
                 } else {
                     None
                 };
@@ -4840,6 +4971,26 @@ let n = [1].len();");
 
     const LOAD: &str = "type Load =\n  | { state: \"idle\" }\n  | { state: \"done\", rows: int[] };\n\
                         let load: Load = signal({ state: \"idle\" });\n";
+
+    #[test]
+    fn a_caught_kind_is_checked_against_what_the_body_can_throw() {
+        // A thrown string is an `"error"`; the language's own kinds are always possible.
+        one_error(
+            "fn f() { try { throw \"x\"; } catch e { if e.kind == \"typo\" { print(1); } } }",
+            "`e.kind` is one of",
+        );
+        clean("fn f() { try { throw \"x\"; } catch e { if e.kind == \"error\" { print(1); } } }");
+        clean("fn f() { try { throw \"x\"; } catch e { if e.kind == \"overflow\" { print(1); } } }");
+        // A thrown record names its own kind.
+        one_error(
+            "fn f() { try { throw { message: \"m\", kind: \"phone_required\" }; } catch e { if e.kind == \"phone_requird\" { print(1); } } }",
+            "did you mean \"phone_required\"",
+        );
+        clean("fn f() { try { throw { message: \"m\", kind: \"phone_required\" }; } catch e { if e.kind == \"phone_required\" { print(1); } } }");
+        // A call the checker cannot look into leaves every kind possible.
+        clean("fn g() { throw { message: \"m\", kind: \"later\" }; }\nfn f() { try { g(); } catch e { if e.kind == \"later\" { print(1); } } }");
+        clean("fn f() { try { throw \"x\"; } catch e { let k = e.kind; if k == \"anything\" { print(1); } } }");
+    }
 
     #[test]
     fn a_discriminant_narrows_its_union() {

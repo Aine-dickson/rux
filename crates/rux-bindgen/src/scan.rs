@@ -1,7 +1,7 @@
 //! Reading a whole `native/` crate: every export, with its Rux signature,
 //! and the path of the code that registers it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use syn::spanned::Spanned;
@@ -41,10 +41,23 @@ pub struct Problem {
     pub message: String,
 }
 
+/// What an exported function can throw, read from its `Result`'s error type.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Thrown {
+    /// The module's Rust path, as [`ScannedModule::path`].
+    pub path: String,
+    /// The export's key: its name, or `Type.name` for a method.
+    pub key: String,
+    /// A Rux record type text: `{ message: string, kind: "a" | "b", status?: any }`.
+    pub ty: String,
+}
+
 /// What a crate exports.
 #[derive(Clone, Debug, Default)]
 pub struct Scan {
     pub modules: Vec<ScannedModule>,
+    /// What each function with a `Result` can throw.
+    pub throws: Vec<Thrown>,
     /// The Rust paths of the `#[rux::init]` functions.
     pub inits: Vec<String>,
     pub problems: Vec<Problem>,
@@ -53,7 +66,15 @@ pub struct Scan {
 /// Read the crate whose root file is `lib`, following `mod x;` to its file.
 /// Never fails: what cannot be read is a [`Problem`].
 pub fn scan(lib: &Path) -> Scan {
-    let mut s = Scanner { scan: Scan::default(), renames: HashMap::new(), impls: Vec::new() };
+    let mut s = Scanner {
+        scan: Scan::default(),
+        renames: HashMap::new(),
+        impls: Vec::new(),
+        fn_errors: Vec::new(),
+        error_impls: HashMap::new(),
+        structs: HashMap::new(),
+        defined: HashSet::new(),
+    };
     let dir = lib.parent().unwrap_or(Path::new(".")).to_path_buf();
     s.file(lib, "", &dir, true);
     s.finish();
@@ -74,6 +95,25 @@ struct Scanner {
     /// A type's Rust name to its Rux name and module, for the impls.
     renames: HashMap<String, (String, String)>,
     impls: Vec<PendingImpl>,
+    /// Each function with a `Result`: its module path, key and `E`'s name.
+    fn_errors: Vec<(String, String, Option<String>)>,
+    /// `impl IntoError for X`, by `X`.
+    error_impls: HashMap<String, ErrorImpl>,
+    /// An exported struct's fields, by its Rust name, for `with_fields`.
+    structs: HashMap<String, Vec<(String, String, bool)>>,
+    /// The structs and enums this crate defines, by Rust name.
+    defined: HashSet<String>,
+}
+
+/// What `impl rux::IntoError for X` says script can see of an `X`.
+#[derive(Default)]
+struct ErrorImpl {
+    /// `KINDS`; `None` when it is not written out as string literals.
+    kinds: Option<Vec<String>>,
+    /// Fields added by `.with("name", ..)`.
+    named: Vec<String>,
+    /// The struct handed to `.with_fields(S { .. })`.
+    record: Option<String>,
 }
 
 fn join(module: &str, name: &str) -> String {
@@ -154,6 +194,9 @@ impl Scanner {
                     }
                     match fn_info(&f.sig, &f.attrs, false) {
                         Ok(i) => {
+                            if i.throws {
+                                self.fn_errors.push((module.to_string(), i.rux.clone(), i.error.clone()));
+                            }
                             let found = Found::Fn {
                                 name: i.rux,
                                 params: i.params.into_iter().map(|p| (p.name, p.rux)).collect(),
@@ -183,7 +226,21 @@ impl Scanner {
                         Err(e) => self.problem(file, e.span(), e.to_string()),
                     }
                 }
+                Item::Enum(e) => {
+                    self.defined.insert(e.ident.to_string());
+                }
+                Item::Impl(im)
+                    if im.trait_.as_ref().is_some_and(|(_, p, _)| p.segments.last().is_some_and(|s| s.ident == "IntoError")) =>
+                {
+                    if let syn::Type::Path(p) = &*im.self_ty {
+                        if let Some(name) = p.path.segments.last() {
+                            let read = error_impl(im);
+                            self.error_impls.insert(name.ident.to_string(), read);
+                        }
+                    }
+                }
                 Item::Struct(st) => {
+                    self.defined.insert(st.ident.to_string());
                     let export = st.attrs.iter().any(|a| is_rux_attr(a, "export"));
                     let resource = st.attrs.iter().any(|a| is_rux_attr(a, "resource"));
                     if !export && !resource {
@@ -208,10 +265,12 @@ impl Scanner {
                         Found::Resource { name: name.clone() }
                     } else {
                         match struct_fields(st) {
-                            Ok(fields) => Found::Record {
-                                name: name.clone(),
-                                fields: fields.into_iter().map(|f| (f.rux, f.rux_ty, f.optional)).collect(),
-                            },
+                            Ok(fields) => {
+                                let fields: Vec<(String, String, bool)> =
+                                    fields.into_iter().map(|f| (f.rux, f.rux_ty, f.optional)).collect();
+                                self.structs.insert(st.ident.to_string(), fields.clone());
+                                Found::Record { name: name.clone(), fields }
+                            }
                             Err(e) => {
                                 self.problem(file, e.span(), e.to_string());
                                 continue;
@@ -276,6 +335,10 @@ impl Scanner {
                 }
                 match fn_info(&f.sig, &f.attrs, true) {
                     Ok(i) => {
+                        if i.throws {
+                            let key = if i.method { format!("{on}.{}", i.rux) } else { i.rux.clone() };
+                            self.fn_errors.push((p.module.clone(), key, i.error.clone()));
+                        }
                         let params = i.params.into_iter().map(|q| (q.name, q.rux)).collect();
                         found.push(if i.method {
                             Found::Method { on: on.clone(), name: i.rux, params, result: i.result, is_async: i.is_async }
@@ -290,6 +353,143 @@ impl Scanner {
             let m = self.module(&p.module);
             m.items.extend(found);
             m.registrations.push(reg);
+        }
+        for (path, key, error) in std::mem::take(&mut self.fn_errors) {
+            let ty = self.thrown_type(error.as_deref());
+            self.scan.throws.push(Thrown { path, key, ty });
+        }
+    }
+
+    /// The Rux record type of what a function whose `Result` has error type
+    /// `error` throws. Every field but `message` and `kind` is optional,
+    /// because the language raises errors that have none of them.
+    fn thrown_type(&self, error: Option<&str>) -> String {
+        let plain = |kind: String| format!("{{ message: string, kind: {kind} }}");
+        let Some(name) = error else { return plain("string".into()) };
+        let Some(imp) = self.error_impls.get(name) else {
+            // A type of this crate with no impl is thrown as its own name;
+            // `rux::Error` is built by the app and one from another crate may
+            // implement the trait there, so their kinds are not known here.
+            return if self.defined.contains(name) { plain(format!("{name:?}")) } else { plain("string".into()) };
+        };
+        let kind = match &imp.kinds {
+            Some(k) if !k.is_empty() => k.iter().map(|k| format!("{k:?}")).collect::<Vec<_>>().join(" | "),
+            _ => "string".to_string(),
+        };
+        let mut fields: Vec<(String, String)> = Vec::new();
+        if let Some(rec) = imp.record.as_ref().and_then(|r| self.structs.get(r)) {
+            fields.extend(rec.iter().map(|(n, t, _)| (n.clone(), t.trim_end_matches('?').to_string())));
+        }
+        for n in &imp.named {
+            if !fields.iter().any(|(f, _)| f == n) {
+                fields.push((n.clone(), "any".to_string()));
+            }
+        }
+        let rest: String = fields.iter().map(|(n, t)| format!(", {n}?: {t}")).collect();
+        format!("{{ message: string, kind: {kind}{rest} }}")
+    }
+}
+
+/// `KINDS`, the struct handed to `with_fields` and the names given to `with`
+/// in an `impl IntoError`, read from its tokens.
+fn error_impl(im: &syn::ItemImpl) -> ErrorImpl {
+    use quote::ToTokens;
+    let mut out = ErrorImpl::default();
+    for it in &im.items {
+        match it {
+            ImplItem::Const(c) if c.ident == "KINDS" => {
+                let mut kinds = Vec::new();
+                let mut plain = true;
+                let mut expr = &c.expr;
+                while let syn::Expr::Reference(r) = expr {
+                    expr = &r.expr;
+                }
+                match expr {
+                    syn::Expr::Array(a) => {
+                        for e in &a.elems {
+                            match e {
+                                syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) => kinds.push(s.value()),
+                                _ => plain = false,
+                            }
+                        }
+                    }
+                    _ => plain = false,
+                }
+                out.kinds = plain.then_some(kinds);
+            }
+            ImplItem::Fn(f) if f.sig.ident == "into_error" => {
+                let mut flat = Vec::new();
+                flatten(f.block.to_token_stream(), &mut flat);
+                for (i, t) in flat.iter().enumerate() {
+                    let Tok::Ident(name) = t else { continue };
+                    match (name.as_str(), flat.get(i + 1)) {
+                        ("with", Some(Tok::Open)) => {
+                            if let Some(Tok::Str(s)) = flat.get(i + 2) {
+                                out.named.push(s.clone());
+                            }
+                        }
+                        ("with_fields", Some(Tok::Open)) => {
+                            // `S { .. }` or `path::S { .. }`: the ident before the brace.
+                            let mut j = i + 2;
+                            let mut last = None;
+                            while let Some(Tok::Ident(n)) = flat.get(j) {
+                                last = Some(n.clone());
+                                j += 1;
+                                if matches!(flat.get(j), Some(Tok::Colons)) {
+                                    j += 1;
+                                }
+                            }
+                            if matches!(flat.get(j), Some(Tok::Brace)) {
+                                out.record = last;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+/// The few kinds of token `error_impl` looks for, with groups opened out.
+enum Tok {
+    Ident(String),
+    Str(String),
+    /// `(`
+    Open,
+    /// `{`
+    Brace,
+    /// `::`
+    Colons,
+    Other,
+}
+
+fn flatten(ts: proc_macro2::TokenStream, out: &mut Vec<Tok>) {
+    use proc_macro2::{Delimiter, TokenTree};
+    for tt in ts {
+        match tt {
+            TokenTree::Group(g) => {
+                out.push(match g.delimiter() {
+                    Delimiter::Parenthesis => Tok::Open,
+                    Delimiter::Brace => Tok::Brace,
+                    _ => Tok::Other,
+                });
+                flatten(g.stream(), out);
+            }
+            TokenTree::Ident(i) => out.push(Tok::Ident(i.to_string())),
+            TokenTree::Literal(l) => match syn::parse_str::<syn::LitStr>(&l.to_string()) {
+                Ok(s) => out.push(Tok::Str(s.value())),
+                Err(_) => out.push(Tok::Other),
+            },
+            // `::` is two joint colons; one marker is enough.
+            TokenTree::Punct(p) if p.as_char() == ':' => {
+                if !matches!(out.last(), Some(Tok::Colons)) {
+                    out.push(Tok::Colons);
+                }
+            }
+            TokenTree::Punct(_) => out.push(Tok::Other),
         }
     }
 }
@@ -372,6 +572,37 @@ mod tests {
         }));
         assert!(shop.items.iter().any(|f| matches!(f, Found::Fn { name, .. } if name == "new")));
         assert!(!shop.items.iter().any(|f| matches!(f, Found::Method { name, .. } if name == "hidden")));
+    }
+
+    #[test]
+    fn what_a_function_throws_is_read_from_its_error_type() {
+        let (_d, s) = crate_with(&[(
+            "lib.rs",
+            "pub struct ApiFailure(u8);\n\
+             pub struct Plain;\n\
+             #[rux::export]\npub struct ApiFields { pub status: u16, pub details: rux::Any, pub note: Option<String> }\n\
+             impl rux::IntoError for ApiFailure {\n\
+               const KINDS: &'static [&'static str] = &[\"phone_required\", \"quote_expired\"];\n\
+               fn into_error(self) -> rux::Error {\n\
+                 rux::Error::new(\"x\", \"y\").with(\"retry\", 1).with_fields(ApiFields { status: 1, details: rux::Any::None, note: None })\n\
+               }\n\
+             }\n\
+             #[rux::export]\npub fn a() -> Result<i64, ApiFailure> { todo!() }\n\
+             #[rux::export]\npub fn b() -> Result<i64, Plain> { todo!() }\n\
+             #[rux::export]\npub fn c() -> Result<i64, rux::Error> { todo!() }\n\
+             #[rux::export]\npub fn d() -> Result<i64, std::io::Error> { todo!() }\n\
+             #[rux::export]\npub fn e() -> i64 { 1 }\n",
+        )]);
+        assert_eq!(s.problems, vec![]);
+        let of = |k: &str| s.throws.iter().find(|t| t.key == k).map(|t| t.ty.as_str());
+        assert_eq!(
+            of("a"),
+            Some("{ message: string, kind: \"phone_required\" | \"quote_expired\", status?: int, details?: any, note?: string, retry?: any }")
+        );
+        assert_eq!(of("b"), Some("{ message: string, kind: \"Plain\" }"));
+        assert_eq!(of("c"), Some("{ message: string, kind: string }"));
+        assert_eq!(of("d"), Some("{ message: string, kind: string }"));
+        assert_eq!(of("e"), None);
     }
 
     #[test]

@@ -70,7 +70,9 @@ pub struct Export {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ExportKind {
     /// `export fn`: its parameters and result, and whether it is `async`.
-    Fn { params: Vec<Type>, result: Type, is_async: bool },
+    /// `throws` is what a call can throw, as a record with the error's
+    /// `kind`, when the module's source says; `None` when nothing does.
+    Fn { params: Vec<Type>, result: Type, is_async: bool, throws: Option<Type> },
     /// `export let x = signal(…)`: state that importers read and follow.
     Signal(Type),
     /// `export let x = …`: a value that is never written.
@@ -143,7 +145,7 @@ pub fn exports_of(script: &Script, record: &crate::check::Record) -> Vec<Export>
                         .get(&(def.name.name.clone(), def.params.len()))
                         .cloned()
                         .unwrap_or_else(|| (vec![Type::Any; def.params.len()], Type::Any));
-                    ExportKind::Fn { params, result, is_async: def.is_async }
+                    ExportKind::Fn { params, result, is_async: def.is_async, throws: None }
                 }
                 StmtKind::Let { name, value, .. } => {
                     let ty = record.script.decl.get(&name.span.start).cloned().unwrap_or(Type::Any);
@@ -466,7 +468,7 @@ mod tests {
     use super::*;
 
     fn exports() -> HashMap<String, Vec<Export>> {
-        let f = ExportKind::Fn { params: vec![Type::Any], result: Type::Null, is_async: false };
+        let f = ExportKind::Fn { params: vec![Type::Any], result: Type::Null, is_async: false, throws: None };
         HashMap::from([(
             "stores/cart".to_string(),
             vec![

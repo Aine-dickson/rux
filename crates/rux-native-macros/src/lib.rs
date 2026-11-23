@@ -107,7 +107,16 @@ fn call_tokens(i: &FnInfo, callee: Tokens, receiver: bool, output: &syn::ReturnT
     }
     let called = if i.is_async { quote!(#callee(#(#passes),*).await) } else { quote!(#callee(#(#passes),*)) };
     let gives = match output {
-        syn::ReturnType::Type(_, t) if result_ok(t).is_some() => quote!(::rux::__private::result(#called)),
+        syn::ReturnType::Type(_, t) if result_ok(t).is_some() => quote! {
+            match #called {
+                ::std::result::Result::Ok(__v) => ::rux::IntoRux::into_rux(__v),
+                ::std::result::Result::Err(__e) => {
+                    #[allow(unused_imports)]
+                    use ::rux::__private::{ViaDisplay as _, ViaIntoError as _};
+                    ::std::result::Result::Err((&::rux::__private::Thrown::new(__e)).rux_error())
+                }
+            }
+        },
         _ => quote!(::rux::__private::ok(#called)),
     };
     if i.is_async {

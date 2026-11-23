@@ -738,15 +738,24 @@ fn save() {
   `Err`, a failed `await`, an `int` overflow or `r.unwrap()` arrives as an
   `Error`, `{ message: string, kind: string }`. `catch { }` without a name is
   allowed.
-- **`throw` takes a value.** `throw` of a record with a `message` field
-  (`throw { message: "empty title", kind: "input" }`, or `throw e` to rethrow)
-  arrives as that record. **Not built:** `throw "empty title"` arriving as an
-  `Error` with `kind` `"error"`; a thrown string is caught as that string, so
-  `e.message` on it fails although the checker types `e` as an `Error`.
+- **`throw` takes a value.** `throw "empty title"` arrives as an `Error`,
+  `{ message: "empty title", kind: "error" }`. `throw` of a record with a
+  `message` field (`throw { message: "empty title", kind: "input" }`, or
+  `throw e` to rethrow) arrives as that record.
+- **A native error can carry fields.** `e.status`, `e.details` and the like are
+  there when the app's Rust added them (see Native code, below); they are
+  typed `any`.
+- **`rux check` reads `e.kind == "x"`.** Where a `try` body holds only calls it
+  can look into (native calls whose Rust error type it can read, `throw`s of a
+  string or a record literal, and builtins), `x` has to be a kind the body can
+  throw, or one the language raises on its own; a misspelling is an error with
+  a "did you mean". A script function, a method on a value of unknown type or a
+  closure in the body leaves every kind possible, and nothing is checked.
 - **`kind`** is `"error"` for failures the language raises, `"overflow"` for
   `int` overflow, `"unwrap"` for `r.unwrap()` on an error, `"type"` for a
   write to a field a declared record does not have, `"panic"` for a panic in
-  native code, and the Rust error type's name for a native `Err`.
+  native code, and for a native `Err` the kind its `rux::IntoError` chooses, else
+  the Rust error type's name.
 - There is no `finally`.
 - **An error nothing catches** is reported to the dev overlay and `rux check`
   with the file and line. The handler stops there; its writes before the error
@@ -1446,7 +1455,17 @@ pub fn open_till() -> Till { … }
   `HashMap` and `BTreeMap<String, T>` as `Map<string, T>`; `()` as `void`. A function
   returning `Result<T, E>` appears as returning `T`, and its `Err` is thrown as an
   `Error` whose `message` is `e.to_string()` and whose `kind` names the Rust error
-  type. A type with no Rux meaning in an exported signature is a compile error at the
+  type. **To choose the `kind` and add fields, implement `rux::IntoError` for the
+  error type** (a newtype of the app's own when the type is another crate's, since
+  the impl must be local):
+  `fn into_error(self) -> rux::Error { rux::Error::new(code, message).with("status", 409) }`.
+  `Error::with(name, value)` adds one field and `with_fields(a_rux_export_struct)`
+  adds a struct's; `message` and `kind` are never replaced, and a value that cannot
+  cross (an integer over `i64`) becomes `none`. `const KINDS: &[&str] = &["a", "b"]`
+  lists the kinds in string literals, which `rux check` reads from the source (a
+  debug build prints to stderr when a kind outside the list is thrown); without it
+  any string is allowed. A function returning `Result<T, rux::Error>` throws the
+  error as it is. A type with no Rux meaning in an exported signature is a compile error at the
   export, saying why, never dropped silently.
 - **`rux::Any` is the boundary value** (`None`, `Bool`, `Int`, `Float`, `Str`, `Array`,
   `Map`, `Resource`); a Rust function taking or giving it is typed `any`.

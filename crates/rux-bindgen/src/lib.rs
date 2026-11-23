@@ -12,7 +12,7 @@ use syn::{Attribute, FnArg, GenericArgument, Pat, PathArguments, ReturnType, Sig
 
 mod scan;
 
-pub use scan::{scan, Found, Problem, Scan, ScannedModule};
+pub use scan::{scan, Found, Problem, Scan, ScannedModule, Thrown};
 
 /// The hidden function `#[rux::export]` writes beside an exported `fn foo`,
 /// giving its descriptor.
@@ -199,6 +199,19 @@ pub fn result_ok(ty: &Type) -> Option<&Type> {
     type_args(&seg.arguments).first().copied()
 }
 
+/// The name of `E` in a `Result<T, E>`: its last path segment.
+pub fn result_err(ty: &Type) -> Option<String> {
+    let Type::Path(p) = ty else { return None };
+    let seg = p.path.segments.last()?;
+    if seg.ident != "Result" {
+        return None;
+    }
+    match type_args(&seg.arguments).get(1)? {
+        Type::Path(e) => e.path.segments.last().map(|s| s.ident.to_string()),
+        _ => None,
+    }
+}
+
 /// A parameter of an exported function.
 #[derive(Clone, Debug)]
 pub struct ParamInfo {
@@ -222,6 +235,9 @@ pub struct FnInfo {
     pub params: Vec<ParamInfo>,
     pub result: String,
     pub throws: bool,
+    /// The last path segment of `E` in `Result<T, E>`: the error type's name.
+    /// `None` when it is not a `Result`, or `E` is not written (`io::Result<T>`).
+    pub error: Option<String>,
     pub is_async: bool,
 }
 
@@ -277,6 +293,10 @@ pub fn fn_info(sig: &Signature, attrs: &[Attribute], in_impl: bool) -> syn::Resu
         params,
         result,
         throws,
+        error: match &sig.output {
+            ReturnType::Type(_, t) => result_err(t),
+            ReturnType::Default => None,
+        },
         is_async: sig.asyncness.is_some(),
     })
 }

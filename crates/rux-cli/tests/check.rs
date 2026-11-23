@@ -618,6 +618,16 @@ pub fn add(a: i64, b: i64) -> i64 { a + b }
 
 #[rux::export]
 pub async fn fetch(id: i64) -> String { id.to_string() }
+
+pub struct Refused(pub String);
+
+impl rux::IntoError for Refused {
+    const KINDS: &'static [&'static str] = &["phone_required", "quote_expired"];
+    fn into_error(self) -> rux::Error { rux::Error::new(self.0, "refused").with("status", 409) }
+}
+
+#[rux::export]
+pub fn refuse() -> Result<i64, Refused> { Err(Refused("phone_required".into())) }
 "#;
 
     /// A project whose `native/` crate exports [`SHOP`] and whose `app.rux` runs
@@ -646,6 +656,23 @@ pub async fn fetch(id: i64) -> String { id.to_string() }
             "seam-clean",
             "use native::shop;\nlet s: string = shop.greet(\"a\");\nlet n: int = shop.add(1, 2);\nasync fn f(): string { await shop.fetch(1) }",
         );
+        assert_eq!((code, said.as_str()), (0, ""), "{said}");
+    }
+
+    /// UD-001: the kinds an app's error type lists are what `catch e` can see
+    /// of a call to it, so a misspelt one is found before the app runs.
+    #[test]
+    fn a_caught_kind_is_checked_against_the_kinds_the_rust_lists() {
+        let body = |kind: &str| {
+            format!("use native::shop;\nfn f() {{ try {{ shop.refuse(); }} catch e {{ if e.kind == \"{kind}\" {{ print(e.status); }} }} }}")
+        };
+        let (code, said) = checked("seam-kind-typo", &body("phone_requird"));
+        assert_eq!(code, 1, "{said}");
+        assert!(said.contains("did you mean \"phone_required\""), "{said}");
+        let (code, said) = checked("seam-kind-right", &body("quote_expired"));
+        assert_eq!((code, said.as_str()), (0, ""), "{said}");
+        // The language's own kinds are always possible.
+        let (code, said) = checked("seam-kind-language", &body("overflow"));
         assert_eq!((code, said.as_str()), (0, ""), "{said}");
     }
 

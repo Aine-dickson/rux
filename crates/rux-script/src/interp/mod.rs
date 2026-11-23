@@ -1089,7 +1089,10 @@ impl Interp {
             V::Map(_) | V::Rec(_) => v.field_of("message").map(V::display).unwrap_or_else(|| v.display()),
             other => other.display(),
         };
-        Flow::from(Fault { message, kind: "error", thrown: Some(v), at: None })
+        // `throw "text"` is caught as an `Error`, as a failure the language
+        // raises is; any other value is caught as it is.
+        let thrown = if matches!(v, V::Str(_)) { error_record(v, V::str("error")) } else { v };
+        Flow::from(Fault { message, kind: "error", thrown: Some(thrown), at: None })
     }
 
     pub(crate) fn builtin_pub(&mut self, name: &str, argv: Vec<V>) -> R<V> {
@@ -1303,11 +1306,7 @@ impl Interp {
         match &s.kind {
             StmtKind::Throw(v) => {
                 let v = self.expr(v)?;
-                let message = match &v {
-                    V::Map(_) | V::Rec(_) => v.field_of("message").map(V::display).unwrap_or_else(|| v.display()),
-                    other => other.display(),
-                };
-                return Err(Flow::from(Fault { message, kind: "error", thrown: Some(v), at: None }));
+                return Err(Self::thrown_pub(v));
             }
             StmtKind::Try { body, var, catch } => match self.block(body) {
                 Err(Flow::Fault(f)) => {

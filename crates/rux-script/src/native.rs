@@ -647,6 +647,7 @@ pub fn exports(module: &str) -> Option<Vec<Export>> {
                         params: s.params.iter().map(|(_, t)| ty(t)).collect(),
                         result: ty(&s.result),
                         is_async: s.is_async,
+                        throws: rux_native::throws(module, &item.key()).and_then(|t| parse_type(&t).ok()),
                     },
                     ItemKind::Record(_) | ItemKind::Resource => ExportKind::Type,
                     // Read and followed like a script module's signal, and
@@ -1033,7 +1034,23 @@ pub fn from_any(a: Any) -> V {
     }
 }
 
-/// A native error as the value `catch e` gives: `{ message, kind }`.
+/// A native error as the value `catch e` gives: `{ message, kind }`, then
+/// the fields the app added, by name.
 pub fn error_value(e: &Error) -> V {
-    crate::interp::error_record(V::str(e.message.as_str()), V::str(e.kind.as_str()))
+    let (message, kind) = (V::str(e.message.as_str()), V::str(e.kind.as_str()));
+    if e.fields.is_empty() {
+        return crate::interp::error_record(message, kind);
+    }
+    use rux_ir::types::{Field, Type};
+    let mut fields = vec![
+        Field { name: "message".into(), optional: false, ty: Type::String },
+        Field { name: "kind".into(), optional: false, ty: Type::String },
+    ];
+    let mut vals = vec![message, kind];
+    for (name, value) in &e.fields {
+        fields.push(Field { name: name.clone(), optional: false, ty: Type::Any });
+        vals.push(from_any(value.clone()));
+    }
+    let shape = crate::interp::value::Shape::closed(&fields);
+    V::Rec(Rc::new(crate::interp::value::Record { shape, vals: vals.into_boxed_slice() }))
 }

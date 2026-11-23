@@ -82,7 +82,7 @@ pub const CORPUS: &[(&str, &[&str])] = &[
     (
         "fn safe_div(a: int, b: int): int { try { return trunc(a / b); } catch e { return -1; } }\n\
          fn first_bad(xs: int[]): int { let n = 0; for x in xs { try { if x < 0 { break; } if x == 0 { continue; } n += trunc(10 / x); } catch { n = -100; } } n }\n\
-         fn kinds(): string { let out = \"\"; try { try { throw \"inner\"; } catch e { out = out + e; throw \"outer\"; } } catch e2 { out = out + \"+\" + e2; } out }\n\
+         fn kinds(): string { let out = \"\"; try { try { throw \"inner\"; } catch e { out = out + e.message; throw \"outer\"; } } catch e2 { out = out + \"+\" + e2.message + \"+\" + e2.kind; } out }\n\
          fn missing(): string { let m = { a: 1 }; let r = \"found\"; try { m.b; } catch e { r = e.kind; } r }\n\
          fn ok(): int { let k = 0; try { k = 5; } catch { k = 9; } k }\n",
         &["safe_div(7, 2)", "safe_div(1, 0)", "first_bad([1, 0, 2, -1, 5])", "first_bad([])", "kinds()", "missing()", "ok()"],

@@ -141,6 +141,10 @@ pub fn declare_for(files: &[PathBuf]) -> Vec<crate::check::Diagnostic> {
         let scan = rux_bindgen::scan(&c.lib);
         out.extend(diagnostics(&scan));
         for i in interfaces(&scan) {
+            // What each export can throw, which only the source says.
+            for t in scan.throws.iter().filter(|t| t.path == i.path) {
+                registry::declare_throws(&i.rux_name(), &t.key, t.ty.clone());
+            }
             if let Err(e) = registry::declare(i) {
                 out.push(crate::check::Diagnostic {
                     file: c.lib.clone(),

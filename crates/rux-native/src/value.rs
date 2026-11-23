@@ -112,16 +112,43 @@ pub trait Resource: Send + Sync + 'static {
     const NAME: &'static str;
 }
 
-/// What a native call throws: a Rux `Error`, `{ message, kind }`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// What a native call throws: a Rux `Error`, `{ message, kind }` and any
+/// `fields` the app adds (`e.status`).
+#[derive(Clone, Debug, PartialEq)]
 pub struct Error {
     pub message: String,
     pub kind: String,
+    /// Extra fields beside `message` and `kind`, read in script as `e.name`.
+    pub fields: BTreeMap<String, Any>,
 }
 
 impl Error {
     pub fn new(kind: impl Into<String>, message: impl Into<String>) -> Error {
-        Error { message: message.into(), kind: kind.into() }
+        Error { message: message.into(), kind: kind.into(), fields: BTreeMap::new() }
+    }
+
+    /// One more field on the error, read in script as `e.name`. `message` and
+    /// `kind` are the error's own and are never replaced; a value that cannot
+    /// cross (an integer over `i64`) is `none`.
+    pub fn with(mut self, name: impl Into<String>, value: impl IntoRux) -> Error {
+        let name = name.into();
+        if name != "message" && name != "kind" {
+            self.fields.insert(name, value.into_rux().unwrap_or(Any::None));
+        }
+        self
+    }
+
+    /// The fields of an exported struct (or a map) added as [`Error::with`]
+    /// adds each.
+    pub fn with_fields(mut self, fields: impl IntoRux) -> Error {
+        if let Ok(Any::Map(m)) = fields.into_rux() {
+            for (name, value) in m {
+                if name != "message" && name != "kind" {
+                    self.fields.insert(name, value);
+                }
+            }
+        }
+        self
     }
 
     /// A Rust error returned as `Err(e)`: its text, and its type's name as
@@ -147,6 +174,24 @@ impl fmt::Display for Error {
 }
 
 impl std::error::Error for Error {}
+
+/// What an app's error type implements to choose what script sees: its own
+/// `kind`, and fields beside `message`. An error type without it is thrown
+/// with its type's name as the `kind`. A type from another crate is wrapped in
+/// a newtype of the app's own, since the impl must be local.
+pub trait IntoError {
+    /// Every `kind` this type can set, written as string literals so `rux check`
+    /// can read them from the source. Empty means any string.
+    const KINDS: &'static [&'static str] = &[];
+
+    fn into_error(self) -> Error;
+}
+
+impl IntoError for Error {
+    fn into_error(self) -> Error {
+        self
+    }
+}
 
 /// `std::io::error::Error` as `Error`, `my_app::DbError<X>` as `DbError`.
 fn short_type_name<T: ?Sized>() -> String {
@@ -442,6 +487,21 @@ mod tests {
         assert!(Arc::<Db>::from_rux(h.clone()).is_ok());
         let e = Arc::<Other>::from_rux(h).unwrap_err();
         assert_eq!((e.kind.as_str(), e.message.as_str()), ("type", "expected a Other, got a Db"));
+    }
+
+    #[test]
+    fn an_error_carries_fields_but_never_replaces_its_own() {
+        let e = Error::new("quote_expired", "gone").with("status", 410u16).with("kind", "x").with("message", "y");
+        assert_eq!((e.kind.as_str(), e.message.as_str()), ("quote_expired", "gone"));
+        assert_eq!(e.fields.get("status"), Some(&Any::Int(410)));
+        assert_eq!(e.fields.len(), 1);
+        let mut m = BTreeMap::new();
+        m.insert("details".to_string(), 1i64);
+        m.insert("kind".to_string(), 2i64);
+        let e = Error::new("k", "m").with_fields(m);
+        assert_eq!(e.fields.keys().collect::<Vec<_>>(), ["details"]);
+        // A value that cannot cross is none.
+        assert_eq!(Error::new("k", "m").with("big", u64::MAX).fields["big"], Any::None);
     }
 
     #[test]

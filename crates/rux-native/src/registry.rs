@@ -365,6 +365,25 @@ pub fn install(m: Module) -> Result<(), String> {
     Ok(())
 }
 
+fn thrown() -> std::sync::MutexGuard<'static, HashMap<(String, String), String>> {
+    static THROWN: std::sync::OnceLock<std::sync::Mutex<HashMap<(String, String), String>>> = std::sync::OnceLock::new();
+    THROWN.get_or_init(Default::default).lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// What export `key` of module `module` (`native/shop`) can throw, as a Rux
+/// record type text (`{ kind: "a" | "b", status?: int }`), read from the
+/// crate's source. Kept apart from the interface because only a scan of the
+/// source can know it: the installed code says nothing of its error types.
+pub fn declare_throws(module: &str, key: &str, ty: String) {
+    thrown().insert((module.to_string(), key.to_string()), ty);
+}
+
+/// What `declare_throws` was told of an export; `None` when the source was
+/// not read (a host module, or a build with no scan).
+pub fn throws(module: &str, key: &str) -> Option<String> {
+    thrown().get(&(module.to_string(), key.to_string())).cloned()
+}
+
 /// Declare `i` as read from source, with no code of its own, unless a module
 /// of its name is installed.
 ///
@@ -461,6 +480,7 @@ fn empty_of(ty: &str, i: &Interface) -> Any {
 /// the source again.
 pub fn forget_declared() {
     modules().retain(|_, e| e.compiled);
+    thrown().clear();
     changed();
 }
 

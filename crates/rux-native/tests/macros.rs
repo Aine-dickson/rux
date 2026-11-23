@@ -64,6 +64,35 @@ pub mod shop {
         text.parse()
     }
 
+    /// An app's error with a code inside, and what script sees of it.
+    pub struct Refused {
+        pub code: String,
+        pub status: u16,
+    }
+
+    impl rux::IntoError for Refused {
+        const KINDS: &'static [&'static str] = &["phone_required", "quote_expired"];
+        fn into_error(self) -> rux::Error {
+            rux::Error::new(self.code, "refused").with("status", self.status)
+        }
+    }
+
+    #[rux::export]
+    pub fn refuse(code: String) -> Result<i64, Refused> {
+        Err(Refused { code, status: 409 })
+    }
+
+    #[rux::export]
+    pub async fn refuse_later() -> Result<i64, Refused> {
+        Err(Refused { code: "quote_expired".into(), status: 410 })
+    }
+
+    /// A `rux::Error` goes through as it is, not wrapped again.
+    #[rux::export]
+    pub fn pass_on() -> Result<i64, rux::Error> {
+        Err(rux::Error::new("custom", "as built").with("n", 3i64))
+    }
+
     #[rux::export]
     pub fn explode() -> i64 {
         panic!("native code panicked on purpose")
@@ -84,6 +113,9 @@ fn exports() -> Vec<Export> {
     all.extend(shop::__rux_export_counter());
     all.extend(shop::__rux_export_total());
     all.extend(shop::__rux_export_parse());
+    all.extend(shop::__rux_export_refuse());
+    all.extend(shop::__rux_export_refuse_later());
+    all.extend(shop::__rux_export_pass_on());
     all.extend(shop::__rux_export_explode());
     all.extend(shop::__rux_export_slow_double());
     all
@@ -161,6 +193,18 @@ fn errors_panics_and_overflow_are_thrown_as_rux_errors() {
     assert_eq!(e.kind, "type");
     let e = call("total", vec![]).unwrap_err();
     assert_eq!(e.message, "total takes 2 arguments, was given 0");
+}
+
+#[test]
+fn an_error_type_chooses_its_kind_and_fields() {
+    let e = call("refuse", vec![Any::Str("phone_required".into())]).unwrap_err();
+    assert_eq!((e.kind.as_str(), e.message.as_str()), ("phone_required", "refused"));
+    assert_eq!(e.fields["status"], Any::Int(409));
+    let e = call("refuseLater", vec![]).unwrap_err();
+    assert_eq!((e.kind.as_str(), e.fields["status"].clone()), ("quote_expired", Any::Int(410)));
+    // A `rux::Error` is not wrapped again with kind "Error".
+    let e = call("passOn", vec![]).unwrap_err();
+    assert_eq!((e.kind.as_str(), e.message.as_str(), e.fields["n"].clone()), ("custom", "as built", Any::Int(3)));
 }
 
 #[test]
