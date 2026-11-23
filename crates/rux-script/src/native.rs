@@ -318,6 +318,33 @@ pub fn app_interface() -> rux_native::Interface {
     }
 }
 
+/// The module behind `notifications.post`, `notifications.cancel` and
+/// `notifications.cancelAll`: local notifications on a channel `rux.toml`
+/// declared.
+pub const NOTIFICATIONS_MODULE: &str = "native/rux/notifications";
+
+/// The name a script reaches [`NOTIFICATIONS_MODULE`] by without importing it.
+pub const NOTIFICATIONS_NAME: &str = "notifications";
+
+/// The notifications module's interface. `post` takes `{ id, channel, title,
+/// text, route }`: the same `id` replaces the notification on screen, and a tap
+/// opens the app on `route`.
+pub fn notifications_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str, params: &[(&str, &str)]| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            result: "void".into(),
+            is_async: false,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux::notifications".into(),
+        items: vec![f("post", &[("options", "any")]), f("cancel", &[("id", "string")]), f("cancelAll", &[])],
+    }
+}
+
 /// The permissions module's interface. A name is `"location"`,
 /// `"location-background"` (the separate step Android asks for after the first),
 /// `"notifications"`, `"camera"` or `"microphone"`; the answer is `"granted"`,
@@ -421,6 +448,9 @@ pub fn ensure_builtins() {
     if registry::interface(APP_MODULE).is_none() {
         let _ = registry::declare(app_interface());
     }
+    if registry::interface(NOTIFICATIONS_MODULE).is_none() {
+        let _ = registry::declare(notifications_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -437,6 +467,7 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         (WINDOW_NAME, WINDOW_MODULE),
         (PERMISSIONS_NAME, PERMISSIONS_MODULE),
         (APP_NAME, APP_MODULE),
+        (NOTIFICATIONS_NAME, NOTIFICATIONS_MODULE),
     ] {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')

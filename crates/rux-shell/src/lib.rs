@@ -12606,6 +12606,7 @@ fn install_rux_modules() {
     permissions::install_permissions();
     window_module::install_window();
     install_app_module();
+    notifications::install_notifications();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading
@@ -13879,6 +13880,72 @@ pub(crate) fn android_request_permissions(names: &[&str]) {
             jni::jni_str!("ruxRequestPermissions"),
             jni::jni_sig!("([Ljava/lang/String;)V"),
             &[jni::JValue::Object(&array)],
+        )?;
+        Ok::<(), jni::errors::Error>(())
+    });
+}
+
+/// Show a notification (see `RuxActivity.ruxNotify`): `channels` is the
+/// declared table, one `id TAB name TAB importance` per line, so the channel
+/// exists before the first post to it. Any thread. `Err` carries why not.
+#[cfg(target_os = "android")]
+pub(crate) fn android_notify(
+    channels: &str,
+    tag: &str,
+    channel: &str,
+    title: &str,
+    text: &str,
+    route: &str,
+) -> Result<(), String> {
+    let Ok(activity) = ACTIVITY.lock() else { return Err("the app has no activity".into()) };
+    let Some(activity) = activity.as_ref() else { return Err("the app has no activity yet".into()) };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        let strings = [channels, tag, channel, title, text, route]
+            .iter()
+            .map(|s| env.new_string(s))
+            .collect::<Result<Vec<_>, _>>()?;
+        let args: Vec<jni::JValue> = strings.iter().map(|s| jni::JValue::Object(s)).collect();
+        let why = env
+            .call_method(
+                activity,
+                jni::jni_str!("ruxNotify"),
+                jni::jni_sig!(
+                    "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;"
+                ),
+                &args,
+            )?
+            .l()?;
+        if why.is_null() {
+            return Ok::<_, jni::errors::Error>(Ok(()));
+        }
+        let why = env.cast_local::<jni::objects::JString>(why)?;
+        Ok(Err(why.try_to_string(env)?))
+    })
+    .map_err(|e| format!("could not reach Android: {e}"))?
+}
+
+/// Take a notification away by its tag, or every one for `None`.
+#[cfg(target_os = "android")]
+pub(crate) fn android_cancel_notification(tag: Option<&str>) {
+    let Ok(activity) = ACTIVITY.lock() else { return };
+    let Some(activity) = activity.as_ref() else { return };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    let _ = vm.attach_current_thread(|env| {
+        let tag = tag.map(|t| env.new_string(t)).transpose()?;
+        let arg = match &tag {
+            Some(t) => jni::JValue::Object(t),
+            None => jni::JValue::Object(&jni::objects::JObject::null()),
+        };
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxCancelNotification"),
+            jni::jni_sig!("(Ljava/lang/String;)V"),
+            &[arg],
         )?;
         Ok::<(), jni::errors::Error>(())
     });

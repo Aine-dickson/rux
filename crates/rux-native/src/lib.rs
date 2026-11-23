@@ -16,6 +16,7 @@
 
 pub mod app;
 mod exec;
+pub mod notifications;
 pub mod permissions;
 pub mod registry;
 mod signal;

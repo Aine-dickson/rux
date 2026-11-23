@@ -130,6 +130,13 @@ fn resolve(name: &str) -> Result<Which, Error> {
     }
 }
 
+/// `Ok` when `rux.toml` declared `name`, else the `undeclared` error that says
+/// what to add. For the calls that need a permission without asking for it
+/// (posting a notification needs `notifications`).
+pub(crate) fn ensure_declared(name: &str) -> Result<(), Error> {
+    resolve(name).map(|_| ())
+}
+
 fn name_arg(call: &str, args: Vec<Any>) -> Result<String, Error> {
     match args.into_iter().next() {
         Some(Any::Str(s)) => Ok(s),

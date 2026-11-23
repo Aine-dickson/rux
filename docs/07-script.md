@@ -2482,6 +2482,55 @@ let slow = computed(() => app.state == "background");
   app is gone from the screen is background work (not built yet: UD-003, steps 3
   and 4 of its plan).
 
+## Notifications
+
+A local notification, posted by the app: a new job arrived, a timer ran out.
+It belongs to a **channel**, which `rux.toml` declares, and it needs the
+notification permission declared and allowed.
+
+```toml
+[permissions.notifications]
+why = "Tells you when a new job arrives"
+
+[channels.jobs]
+name = "New jobs"          # what the person reads in the system settings
+importance = "high"        # high: sound, pops up; default: sound; low: silent; min: silent, collapsed
+```
+
+```rux
+notifications.post({ id: "job-41", channel: "jobs", title: "New job", text: "Kololo to Ntinda", route: "/jobs/41" });
+notifications.cancel("job-41");
+notifications.cancelAll();
+```
+
+- **`id` names the notification.** Posting again with the same `id` replaces the
+  one on screen instead of adding another; `cancel(id)` takes it away, shown or
+  not. `title` and `channel` are required; `text` and `route` are optional.
+- **A tap opens the app on `route`**, as a link to that route would: navigated
+  to when the app is running, the first page when it was not. Without a `route`
+  it brings the app forward where it was.
+- **The call is checked in this order.** The channel is declared, else
+  `undeclared` (the message lists the declared ones and the table to add).
+  `[permissions.notifications]` is declared, else `undeclared`. The person has
+  allowed notifications, else `permission`: ask first with
+  `permissions.request("notifications")`, from a tap. A wrong or unknown option
+  throws `option`. A platform that cannot show them throws `unsupported`.
+- **A channel is the person's to tune.** The system settings list each channel
+  by its `name`, and the person can silence or switch off one without the
+  others, which is why "New jobs" and "On shift" are two. Android keeps their
+  choice: changing `importance` in `rux.toml` later does not move a channel
+  that already exists on a phone, so pick it before the first release or give
+  the channel a new id.
+- **The app's Rust posts the same way**, from any thread and with no page on
+  screen: `rux::notifications::post(Notice::new("job-41", "jobs", "New job")
+  .text("Kololo to Ntinda").route("/jobs/41"))?`, and `cancel(id)`,
+  `cancel_all()`. The same checks apply.
+- **Targets.** Android is built. The web and Windows are next, and macOS and
+  Linux after them; until then `post` throws `unsupported` there.
+- **Not built yet:** a notification's own icon (it uses the app's launcher
+  icon), sound or vibration choices beyond the channel's `importance`, action
+  buttons, and push from a server.
+
 ## Talking to the outside
 
 | Call | Does |

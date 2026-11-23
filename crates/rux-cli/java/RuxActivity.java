@@ -1352,6 +1352,109 @@ public class RuxActivity extends NativeActivity {
         }
     }
 
+    // ---- Local notifications ----------------------------------------------
+    //
+    // Called from Rust, on whichever thread posted: they touch no view, and
+    // each says what went wrong by returning text rather than throwing,
+    // because an exception left pending in a native thread is a crash.
+
+    /**
+     * Make the channels {@code rux.toml} declared exist, one per line:
+     * {@code id TAB name TAB importance}. Idempotent: Android keeps what the
+     * person changed in settings, and ignores a repeat.
+     */
+    private void ruxEnsureChannels(String spec) {
+        android.app.NotificationManager nm =
+                (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        for (String line : spec.split("\n")) {
+            String[] part = line.split("\t");
+            if (part.length < 3) {
+                continue;
+            }
+            int importance = android.app.NotificationManager.IMPORTANCE_DEFAULT;
+            switch (part[2]) {
+                case "high":
+                    importance = android.app.NotificationManager.IMPORTANCE_HIGH;
+                    break;
+                case "low":
+                    importance = android.app.NotificationManager.IMPORTANCE_LOW;
+                    break;
+                case "min":
+                    importance = android.app.NotificationManager.IMPORTANCE_MIN;
+                    break;
+                default:
+                    break;
+            }
+            nm.createNotificationChannel(new android.app.NotificationChannel(part[0], part[1], importance));
+        }
+    }
+
+    /**
+     * Show the notification called {@code tag} on {@code channel}, or replace
+     * the one with that tag. A tap opens the app on {@code route} (a link to
+     * that route, which {@link #link} turns into a navigation), or just brings
+     * the app forward when {@code route} is empty. Returns {@code null}, or why
+     * it could not.
+     */
+    String ruxNotify(String channels, String tag, String channel, String title, String text, String route) {
+        try {
+            ruxEnsureChannels(channels);
+            Intent open;
+            if (route.isEmpty()) {
+                open = getPackageManager().getLaunchIntentForPackage(getPackageName());
+            } else {
+                open = new Intent(Intent.ACTION_VIEW, android.net.Uri.parse("rux-notification://" + route));
+                open.setClass(this, RuxActivity.class);
+            }
+            if (open == null) {
+                return "this app has no launcher activity to open";
+            }
+            open.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+            // The tag is part of the request code's identity: two notifications
+            // must not share one PendingIntent, or the second's route would
+            // replace the first's.
+            android.app.PendingIntent tap =
+                    android.app.PendingIntent.getActivity(
+                            this,
+                            tag.hashCode(),
+                            open,
+                            android.app.PendingIntent.FLAG_IMMUTABLE
+                                    | android.app.PendingIntent.FLAG_UPDATE_CURRENT);
+            int icon = getApplicationInfo().icon;
+            android.app.Notification.Builder builder =
+                    new android.app.Notification.Builder(this, channel)
+                            .setSmallIcon(icon != 0 ? icon : android.R.drawable.ic_dialog_info)
+                            .setContentTitle(title)
+                            .setContentIntent(tap)
+                            .setAutoCancel(true);
+            if (!text.isEmpty()) {
+                builder.setContentText(text);
+                builder.setStyle(new android.app.Notification.BigTextStyle().bigText(text));
+            }
+            ((android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE))
+                    .notify(tag, 0, builder.build());
+            return null;
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "notification failed", e);
+            return String.valueOf(e.getMessage());
+        }
+    }
+
+    /** Take the notification called {@code tag} away; every one when {@code tag} is null. */
+    void ruxCancelNotification(String tag) {
+        try {
+            android.app.NotificationManager nm =
+                    (android.app.NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+            if (tag == null) {
+                nm.cancelAll();
+            } else {
+                nm.cancel(tag, 0);
+            }
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "cancelling a notification failed", e);
+        }
+    }
+
     /**
      * Load the Rux shared object under this class's own class loader.
      *

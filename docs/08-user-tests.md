@@ -3571,6 +3571,24 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | The wrapper | `cargo test -p ruxlang` | `set_channels` and `set_background` are written into `main`, empty tables included |
 | **Not run** | | No APK was built with these tables: the `<service>` names `RuxActivity$Background`, which the Java does not have until step 4 |
 
+## Notifications on Android, 2026-11-23
+
+Emulator `rux_test` (Android 15, 1080x2400), probe `rux-harness\ud003-and`, a dev build from `target/debug/rux`, read with `dumpsys notification --noredact` and screenshots.
+
+| Case | Result |
+|---|---|
+| `notifications.post` before the person allowed notifications | Throws `permission`, saying to `request` from a tap first |
+| A post to a channel `rux.toml` does not declare | Throws `undeclared`: "`nope` is not a declared channel (it declares jobs, shift). Add it to rux.toml:" and the table |
+| `permissions.request("notifications")` | The system's "Allow ud003-and to send you notifications?" dialog; Allow |
+| A post on `jobs` (`importance = "high"`) | One record, `tag=job-41`, `importance=4`, `channel=jobs`; the shade shows the title and the text |
+| The same `id` posted again with another title | Still one record for `job-41`, with the new title and text (replaced, not added) |
+| A second `id` | A second record. Android adds its own `ranker_group` summary |
+| A post on `shift` (`importance = "low"`) | `importance=2`, listed under Silent |
+| `cancel("job-41")`, then `cancelAll()` | The record goes, then every record |
+| Tapping a notification with `route: "/jobs/41"`, the app in the back | The app comes forward on `/jobs/41` (the page's `route` reads it) |
+| The same with the app's process killed (`am kill`; the notification stays posted) | A new process starts on `/jobs/42`, the notification's route |
+| **Not driven** | A notification's small icon (the probe has no launcher icon, so Android's fallback `info` icon shows), sound and vibration on a phone, Android 12 and below (`areNotificationsEnabled`), "Don't allow" followed by a post, a notification from the app's Rust with no page on screen, a tap with `route` empty |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
