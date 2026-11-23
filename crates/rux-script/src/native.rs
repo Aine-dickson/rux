@@ -381,6 +381,41 @@ pub fn location_interface() -> rux_native::Interface {
     }
 }
 
+/// The module behind `links.open`, `links.dial`, `links.sms`,
+/// `links.directions`, `links.share` and `links.canOpen`: handing over to
+/// other apps.
+pub const LINKS_MODULE: &str = "native/rux/links";
+
+/// The name a script reaches [`LINKS_MODULE`] by without importing it.
+pub const LINKS_NAME: &str = "links";
+
+/// The links module's interface. `open` takes a URL (only `https`, `http`,
+/// `tel`, `sms`, `mailto` and `geo` open); `dial` a number; `sms` a number and
+/// the message text; `directions` `{ lat, lng, label }`; `share` `{ title, text }`;
+/// `canOpen` a URL, and says whether something would handle it.
+pub fn links_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str, params: &[(&str, &str)], result: &str| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            result: result.into(),
+            is_async: false,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux::links".into(),
+        items: vec![
+            f("open", &[("url", "string")], "void"),
+            f("dial", &[("number", "string")], "void"),
+            f("sms", &[("number", "string"), ("text", "string")], "void"),
+            f("directions", &[("options", "any")], "void"),
+            f("share", &[("options", "any")], "void"),
+            f("canOpen", &[("url", "string")], "bool"),
+        ],
+    }
+}
+
 /// The module behind `notifications.post`, `notifications.cancel` and
 /// `notifications.cancelAll`: local notifications on a channel `rux.toml`
 /// declared.
@@ -520,6 +555,9 @@ pub fn ensure_builtins() {
     if registry::interface(LOCATION_MODULE).is_none() {
         let _ = registry::declare(location_interface());
     }
+    if registry::interface(LINKS_MODULE).is_none() {
+        let _ = registry::declare(links_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -539,6 +577,7 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         (NOTIFICATIONS_NAME, NOTIFICATIONS_MODULE),
         (BACKGROUND_NAME, BACKGROUND_MODULE),
         (LOCATION_NAME, LOCATION_MODULE),
+        (LINKS_NAME, LINKS_MODULE),
     ] {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')

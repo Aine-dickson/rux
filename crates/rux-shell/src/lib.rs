@@ -30,6 +30,7 @@ mod dialogs;
 /// `<audio>` and `<video>`: what each element plays, and its events.
 mod background;
 mod media;
+mod links;
 mod location;
 mod notifications;
 mod image_events;
@@ -12670,6 +12671,7 @@ fn install_rux_modules() {
     notifications::install_notifications();
     background::install_background();
     location::install_location();
+    links::install_links();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading
