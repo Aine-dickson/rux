@@ -348,6 +348,39 @@ pub fn background_interface() -> rux_native::Interface {
     }
 }
 
+/// The module behind `location.current`, `location.watch`, `location.stop`,
+/// `location.position` and `location.watching`: where the device is.
+pub const LOCATION_MODULE: &str = "native/rux/location";
+
+/// The name a script reaches [`LOCATION_MODULE`] by without importing it.
+pub const LOCATION_NAME: &str = "location";
+
+/// The location module's interface. `current` takes `{ accuracy, timeoutMs }`
+/// and gives a fix, `{ lat, lng, accuracyM, at, isMock }`; `watch` takes
+/// `{ accuracy, intervalMs, distanceM }`. `position` is the newest fix a
+/// watch gave (`none` before one) and `watching` follows the watch.
+pub fn location_interface() -> rux_native::Interface {
+    use rux_native::{Item, Sig};
+    let f = |name: &str, params: &[(&str, &str)], result: &str, is_async: bool| Item {
+        name: name.into(),
+        kind: ItemKind::Fn(Sig {
+            params: params.iter().map(|(n, t)| (n.to_string(), t.to_string())).collect(),
+            result: result.into(),
+            is_async,
+        }),
+    };
+    rux_native::Interface {
+        path: "rux::location".into(),
+        items: vec![
+            f("current", &[("options", "any")], "any", true),
+            f("watch", &[("options", "any")], "void", false),
+            f("stop", &[], "void", false),
+            Item { name: "position".into(), kind: ItemKind::Signal("any".into()) },
+            Item { name: "watching".into(), kind: ItemKind::Signal("bool".into()) },
+        ],
+    }
+}
+
 /// The module behind `notifications.post`, `notifications.cancel` and
 /// `notifications.cancelAll`: local notifications on a channel `rux.toml`
 /// declared.
@@ -484,6 +517,9 @@ pub fn ensure_builtins() {
     if registry::interface(BACKGROUND_MODULE).is_none() {
         let _ = registry::declare(background_interface());
     }
+    if registry::interface(LOCATION_MODULE).is_none() {
+        let _ = registry::declare(location_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -502,6 +538,7 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         (APP_NAME, APP_MODULE),
         (NOTIFICATIONS_NAME, NOTIFICATIONS_MODULE),
         (BACKGROUND_NAME, BACKGROUND_MODULE),
+        (LOCATION_NAME, LOCATION_MODULE),
     ] {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')

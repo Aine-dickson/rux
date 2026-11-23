@@ -30,6 +30,7 @@ mod dialogs;
 /// `<audio>` and `<video>`: what each element plays, and its events.
 mod background;
 mod media;
+mod location;
 mod notifications;
 mod image_events;
 #[cfg(not(target_arch = "wasm32"))]
@@ -12668,6 +12669,7 @@ fn install_rux_modules() {
     install_app_module();
     notifications::install_notifications();
     background::install_background();
+    location::install_location();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading

@@ -17,6 +17,7 @@
 pub mod app;
 pub mod background;
 mod exec;
+pub mod location;
 pub mod notifications;
 pub mod permissions;
 pub mod registry;
