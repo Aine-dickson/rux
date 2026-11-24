@@ -198,10 +198,12 @@ mod platform {
 
         #[test]
         fn a_secret_is_kept_replaced_and_forgotten_in_a_file_that_does_not_hold_its_text() {
+            let _store = crate::settings::STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
             let dir = std::env::temp_dir().join(format!("rux_secrets_{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
-            // SAFETY: only this test reads APPDATA in this process while it runs.
-            unsafe { std::env::set_var("APPDATA", &dir) };
+            // The store's folder, as the settings test sets it: once any test
+            // has, `APPDATA` is no longer read.
+            crate::settings::store::set_dir(dir.clone());
             assert_eq!(get("refreshToken").unwrap(), None);
             set("refreshToken", "abc-123").unwrap();
             assert_eq!(get("refreshToken").unwrap(), Some("abc-123".into()));

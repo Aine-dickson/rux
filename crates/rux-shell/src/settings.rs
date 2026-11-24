@@ -138,8 +138,14 @@ fn from_json(j: serde_json::Value) -> Any {
 type All = BTreeMap<String, serde_json::Value>;
 
 /// Where the settings live: one JSON file per app.
+/// Held by every test that points the store at a folder of its own: the
+/// folder is process-wide, and a test that deleted its folder while another
+/// wrote there lost that one's file (the secrets test failed 1 in a few runs).
+#[cfg(all(test, not(target_arch = "wasm32")))]
+pub(crate) static STORE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(not(target_arch = "wasm32"))]
-mod store {
+pub(crate) mod store {
     use super::*;
     use std::path::PathBuf;
 
@@ -278,6 +284,7 @@ mod tests {
 
     #[test]
     fn set_get_and_remove_keep_to_a_file() {
+        let _store = STORE_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("rux_settings_{}", std::process::id()));
         store::set_dir(dir.clone());
         let mut all = store::read();
