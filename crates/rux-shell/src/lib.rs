@@ -8589,6 +8589,9 @@ impl App {
         {
             self.video_frames = web_sound::after_scene(&videos, images);
         }
+        // What has not been drawn for longest goes once the pictures kept
+        // pass their budget (a panned map kept every tile it ever showed).
+        images.trim();
         state.scene.reset();
         state
             .scene
@@ -13097,6 +13100,10 @@ pub fn run_windowed(
     // A bare `rux run file.rux` has no `[app] id`: its settings are kept
     // under the file's name. One with a manifest has set it already.
     settings::app_id_or(&path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default());
+    // Images from the network are kept there between runs.
+    if let Some(dir) = settings::image_cache_dir() {
+        rux_runtime::disk_cache::set_dir(dir);
+    }
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
         .expect("create event loop");
@@ -15444,6 +15451,11 @@ fn run_android_with(
     if let Some(dir) = app.internal_data_path() {
         // A video's bytes are written here for the platform's extractor.
         rux_video::set_scratch_dir(dir.clone());
+        // Images from the network go in the app's cache directory, `cache`
+        // beside `files`, which the system may empty when space is short.
+        if let Some(app_dir) = dir.parent() {
+            rux_runtime::disk_cache::set_dir(app_dir.join("cache").join("rux-images"));
+        }
         settings::set_dir(dir);
     }
 

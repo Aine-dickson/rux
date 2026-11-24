@@ -81,17 +81,59 @@ pub fn default_selection() -> Rgba {
 const PREEDIT_RULE: f32 = rux_text::CARET_WIDTH;
 
 /// Decoded images, keyed by the `src` path. Decoding is the expensive part, and
-/// we repaint on every event, so an image is read from disk at most once. A src
-/// that fails to decode is remembered as a miss and not retried, until an
+/// we repaint on every event, so an image is decoded once while it is in use.
+/// A src that fails to decode is remembered as a miss and not retried, until an
 /// image arrives from the network ([`rux_layout::images_arrived`]): the miss
 /// may have been one still on its way.
-#[derive(Default)]
+///
+/// **What is kept is bounded** ([`IMAGE_BUDGET`]). Every picture was kept for
+/// the life of the process, so a map panned for 40 s held 1,300 decoded tiles
+/// (about 330 MB) and never gave them back. After each scene,
+/// [`ImageCache::trim`] drops the pictures drawn longest ago, never one the
+/// scene just drew, until the rest fit; one that comes back into view is
+/// decoded again from its bytes.
 pub struct ImageCache {
-    images: HashMap<String, Option<Picture>>,
+    images: HashMap<String, Entry>,
     arrived: u64,
     /// The `<video>` pictures drawn since [`ImageCache::take_frames_drawn`]:
     /// one out of sight is culled before it is looked up, so is not here.
     frames_drawn: HashSet<String>,
+    /// Counts scenes; an entry records the one that last drew it.
+    scene: u64,
+    /// The decoded bytes held, of everything but video frames.
+    held: usize,
+    budget: usize,
+}
+
+struct Entry {
+    picture: Option<Picture>,
+    bytes: usize,
+    drawn: u64,
+}
+
+/// How many bytes of decoded pictures are kept: 128 MB, 64 MB on a phone.
+/// One 256 px tile is 256 KB, so a phone keeps about 250, several screens'
+/// worth.
+#[cfg(any(target_os = "android", target_os = "ios", target_arch = "wasm32"))]
+pub const IMAGE_BUDGET: usize = 64 * 1024 * 1024;
+#[cfg(not(any(target_os = "android", target_os = "ios", target_arch = "wasm32")))]
+pub const IMAGE_BUDGET: usize = 128 * 1024 * 1024;
+
+/// What an SVG's drawing is counted as: its commands are small next to pixels,
+/// and the scene does not say its size.
+const VECTOR_BYTES: usize = 64 * 1024;
+
+impl Default for ImageCache {
+    fn default() -> Self {
+        Self {
+            images: HashMap::new(),
+            arrived: 0,
+            frames_drawn: HashSet::new(),
+            scene: 0,
+            held: 0,
+            budget: IMAGE_BUDGET,
+        }
+    }
 }
 
 /// A decoded picture: pixels, or an SVG kept as vectors so it is drawn sharp
@@ -102,6 +144,14 @@ enum Picture {
 }
 
 impl Picture {
+    /// What it holds in memory, as the budget counts it.
+    fn bytes(&self) -> usize {
+        match self {
+            Picture::Bitmap(b) => b.image.data.data().len(),
+            Picture::Vector { .. } => VECTOR_BYTES,
+        }
+    }
+
     fn size(&self) -> (f64, f64) {
         match self {
             Picture::Bitmap(b) => (b.image.width as f64, b.image.height as f64),
@@ -123,12 +173,24 @@ impl ImageCache {
         Self::default()
     }
 
+    /// A cache that keeps `budget` bytes of decoded pictures.
+    pub fn with_budget(budget: usize) -> Self {
+        Self { budget, ..Self::default() }
+    }
+
+    /// The decoded bytes held now, video frames aside.
+    pub fn held(&self) -> usize {
+        self.held
+    }
+
     /// What a `<video>` shows now ([`rux_layout::VIDEO_FRAME`] and its key),
-    /// or `None` once it has gone.
+    /// or `None` once it has gone. Not counted against the budget: a video
+    /// replaces its one picture, and stops when out of sight.
     pub fn set_frame(&mut self, src: &str, frame: Option<ImageBrush>) {
         match frame {
             Some(brush) => {
-                self.images.insert(src.to_string(), Some(Picture::Bitmap(brush)));
+                let entry = Entry { picture: Some(Picture::Bitmap(brush)), bytes: 0, drawn: self.scene };
+                self.images.insert(src.to_string(), entry);
             }
             None => {
                 self.images.remove(src);
@@ -141,17 +203,49 @@ impl ImageCache {
             if !self.frames_drawn.contains(src) {
                 self.frames_drawn.insert(src.to_string());
             }
-            return self.images.get(src).and_then(Option::as_ref);
+            return self.images.get(src).and_then(|e| e.picture.as_ref());
         }
         let arrived = rux_layout::images_arrived();
         if arrived != self.arrived {
             self.arrived = arrived;
-            self.images.retain(|_, picture| picture.is_some());
+            self.images.retain(|_, e| e.picture.is_some());
         }
-        self.images
-            .entry(src.to_string())
-            .or_insert_with(|| decode(src))
-            .as_ref()
+        let scene = self.scene;
+        if !self.images.contains_key(src) {
+            let picture = decode(src);
+            let bytes = picture.as_ref().map_or(0, Picture::bytes);
+            self.held += bytes;
+            self.images.insert(src.to_string(), Entry { picture, bytes, drawn: scene });
+        }
+        let entry = self.images.get_mut(src)?;
+        entry.drawn = scene;
+        entry.picture.as_ref()
+    }
+
+    /// The scene is built: drop the pictures drawn longest ago until what is
+    /// kept fits the budget. What this scene drew stays, whatever it costs, so
+    /// a screen of pictures larger than the budget still draws.
+    pub fn trim(&mut self) {
+        let scene = self.scene;
+        self.scene += 1;
+        if self.held <= self.budget {
+            return;
+        }
+        let mut old: Vec<(u64, String)> = self
+            .images
+            .iter()
+            .filter(|(_, e)| e.bytes > 0 && e.drawn < scene)
+            .map(|(src, e)| (e.drawn, src.clone()))
+            .collect();
+        old.sort_unstable();
+        for (_, src) in old {
+            if self.held <= self.budget {
+                break;
+            }
+            if let Some(e) = self.images.remove(&src) {
+                self.held -= e.bytes;
+            }
+        }
     }
 
     /// Which `<video>` pictures were drawn since this was last asked, so a
@@ -1797,6 +1891,58 @@ fn build(
 #[cfg(test)]
 mod tests {
     use super::decode_bounded;
+
+    /// Four 64 x 64 pictures (16 KB each decoded) on disk.
+    fn pictures(tag: &str) -> Vec<String> {
+        let dir = std::env::temp_dir().join(format!("rux_paint_budget_{tag}_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        (0..4)
+            .map(|i| {
+                let path = dir.join(format!("p{i}.png"));
+                image::RgbaImage::new(64, 64).save(&path).unwrap();
+                path.to_string_lossy().into_owned()
+            })
+            .collect()
+    }
+
+    /// Over budget, the pictures drawn longest ago go first, and one drawn
+    /// again is decoded again.
+    #[test]
+    fn the_image_cache_drops_what_was_drawn_longest_ago_once_over_budget() {
+        let p = pictures("lru");
+        let mut cache = super::ImageCache::with_budget(40 * 1024);
+        for src in &p {
+            assert!(cache.picture(src).is_some());
+            cache.trim();
+        }
+        // 4 x 16 KB drawn one a scene, 40 KB kept: the first two are gone.
+        assert_eq!(cache.held(), 2 * 16 * 1024);
+        assert!(!cache.images.contains_key(&p[0]) && !cache.images.contains_key(&p[1]));
+        assert!(cache.images.contains_key(&p[2]) && cache.images.contains_key(&p[3]));
+        // Back in view: decoded again, and the oldest of the rest goes.
+        assert!(cache.picture(&p[0]).is_some());
+        cache.trim();
+        assert!(cache.images.contains_key(&p[0]) && !cache.images.contains_key(&p[2]));
+        assert_eq!(cache.held(), 2 * 16 * 1024);
+    }
+
+    /// What one scene draws is kept, however much it is: a screen of pictures
+    /// over the budget still draws.
+    #[test]
+    fn the_image_cache_keeps_everything_the_last_scene_drew() {
+        let p = pictures("scene");
+        let mut cache = super::ImageCache::with_budget(20 * 1024);
+        for src in &p {
+            assert!(cache.picture(src).is_some());
+        }
+        cache.trim();
+        assert_eq!(cache.held(), 4 * 16 * 1024);
+        // The next scene draws one of them: the other three go.
+        assert!(cache.picture(&p[3]).is_some());
+        cache.trim();
+        assert_eq!(cache.held(), 16 * 1024);
+        assert!(cache.images.contains_key(&p[3]));
+    }
 
     /// A gradient whose first stop is past 0 holds its colour up to it, as
     /// CSS does, rather than vello fading into it from 0.

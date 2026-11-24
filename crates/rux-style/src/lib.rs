@@ -12802,6 +12802,10 @@ thread_local! {
         std::cell::RefCell::new(HashMap::new());
 }
 
+/// The most declaration sets [`interpreted`] keeps between builds: far more
+/// than a build's rows share, and a few MB at most.
+const INTERPRETED_MAX: usize = 1024;
+
 /// Forget every shared interpretation. Called as a build starts.
 fn forget_interpreted() {
     INTERPRETED.with(|m| m.borrow_mut().clear());
@@ -12833,7 +12837,16 @@ fn interpreted(p: &HashMap<String, String>) -> Style {
     let style = interpret(p);
     if WARN_CALLS.with(std::cell::Cell::get) == before {
         let owned = pairs.into_iter().map(|(a, b)| (a.clone(), b.clone())).collect();
-        INTERPRETED.with(|m| m.borrow_mut().entry(key).or_default().push((owned, style.clone())));
+        INTERPRETED.with(|m| {
+            let mut m = m.borrow_mut();
+            // Only a whole build empties it, and a patch is not one: a
+            // `:style` that moves every frame (map tiles, a dragged box) made
+            // a new entry every frame, about 4 MB a second, for good.
+            if m.len() >= INTERPRETED_MAX {
+                m.clear();
+            }
+            m.entry(key).or_default().push((owned, style.clone()));
+        });
     }
     style
 }
@@ -16755,6 +16768,20 @@ fn parse_hex(hex: &str) -> Option<Rgba> {
 #[cfg(test)]
 mod tests {
     use super::{build_styled_tree, build_styled_tree_tracked, interpolate_tracked, interpret, Len, Locals};
+
+    /// A `:style` with a new value every frame, patched and never rebuilt,
+    /// keeps a bounded number of interpretations, not one per frame.
+    #[test]
+    fn shared_interpretations_stay_bounded_without_a_build() {
+        super::forget_interpreted();
+        for i in 0..(super::INTERPRETED_MAX * 3) {
+            let p = std::collections::HashMap::from([("left".to_string(), format!("{i}px"))]);
+            let st = super::interpreted(&p);
+            assert!(st.inset.contains(&Some(Len::Px(i as f32))), "{:?}", st.inset);
+        }
+        let kept = super::INTERPRETED.with(|m| m.borrow().len());
+        assert!(kept <= super::INTERPRETED_MAX, "{kept}");
+    }
 
     /// A namespace for a test registry keyed by tag.
     ///

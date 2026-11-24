@@ -231,8 +231,8 @@ app is built: `RUX_PROFILE=1 rux build` bakes it in, and the summary goes to
 
 ### An image's size is read once
 
-An `<image>` with a file `src` lays out at the picture's own size, which is read
-from the file's header. It is read once per path and kept until the next load
+An `<image>` lays out at the picture's own size, which is read from the file's
+header. It is read once per path or URL and kept until the next load
 (a hot reload reads it again): a patch builds a fresh tree and resolves every
 image in it, so 64 map tiles under a box that moves were read from disk every
 frame (`patch` 6.3 ms, now 1.8 ms). A file changed while the app runs keeps its
@@ -588,9 +588,30 @@ no size until the bytes come, as a browser's does, then takes the picture's
 size and paints it. Fetched on a thread with `ureq` (rustls, its own root
 certificates) on the desktop and Android, and by the browser's `fetch` on the
 web. Redirects are followed; a body over 32 MB is refused, and so is a picture
-over the size limit below. Each URL is fetched once per run and kept, a
-failure too. An Android release asks for `INTERNET` when a document or
-stylesheet names an `http:` or `https:` address, and for nothing otherwise.
+over the size limit below. At most 6 fetches run at once, the one asked for
+last first (what is on screen now), and the rest wait their turn. An
+Android release asks for `INTERNET` when a document or stylesheet names an
+`http:` or `https:` address, and for nothing otherwise.
+
+**What is kept, and how much.** Every picture used to be kept for the life of
+the process, so a map panned for 40 s grew to 635 MB and never gave it back.
+Now each store has a limit, and past it the entries used longest ago go:
+
+| Store | Limit | What happens past it |
+|---|---|---|
+| Decoded pictures (the painter's) | 128 MB on the desktop, 64 MB on Android and the web | dropped unless the last frame drew it; decoded again when it comes back into view |
+| Bytes from the network | 32 MB | fetched again (or read from disk) when asked for again |
+| On disk, between runs | 100 MB | the files read longest ago are removed, down to 90 MB |
+
+A failed fetch is kept, so a missing picture is asked for once. The disk copy
+is in the system's cache folder for the app's id (`%LOCALAPPDATA%\<id>\cache\images`,
+`~/Library/Caches/<id>/images`, `$XDG_CACHE_HOME/<id>/images`) or Android's
+cache directory, which the system may empty. It follows `Cache-Control`:
+`no-store`, `no-cache` and `max-age=0` are not kept, `max-age` says for how
+long, and an answer that says nothing is kept 7 days. There is no
+revalidation (`ETag`): a picture that changes at the same URL shows the old
+one until it runs out. The web keeps nothing on disk itself; the browser's
+cache does.
 
 **`srcset` and `sizes`**, as in HTML: `srcset="logo.png 1x,
 logo@2x.png 2x"` shows the candidate nearest above the screen's density (the

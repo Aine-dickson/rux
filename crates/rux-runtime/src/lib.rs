@@ -27,6 +27,7 @@
 mod modules;
 mod data_url;
 pub mod remote;
+pub mod disk_cache;
 mod source;
 pub mod tailwind;
 pub mod window_open;
@@ -2454,12 +2455,18 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
         // asked for is left alone: the painter asks, once its box comes
         // near the window, and until then it has no size.
         let unasked = img.lazy && remote::is_remote(&img.src) && remote::peek(&img.src).is_none();
-        if is_url(&img.src) && !unasked {
+        let known = IMAGE_SIZES.with(|s| s.borrow().get(Path::new(&img.src)).copied());
+        if let Some(size) = known.filter(|_| is_url(&img.src)) {
+            img.intrinsic = size;
+        } else if is_url(&img.src) && !unasked {
             let read = image_bytes(&img.src);
             let waiting = read.as_ref().is_err_and(|e| e.kind() == std::io::ErrorKind::WouldBlock);
             match read.ok().and_then(|bytes| picture_size(&bytes).ok()) {
                 Some((w, h)) => {
                     img.intrinsic = (w, h);
+                    // Kept as a file's is: the bytes were copied and parsed
+                    // on every patch, and may have left the remote store.
+                    IMAGE_SIZES.with(|s| s.borrow_mut().insert(PathBuf::from(&img.src), (w, h)));
                     if let Some(why) = rux_layout::image_too_large(w.ceil() as u32, h.ceil() as u32) {
                         rux_style::warn_stylesheet(format!("`<image src=\"{}\">` will not be drawn: {why}", img.src));
                     }

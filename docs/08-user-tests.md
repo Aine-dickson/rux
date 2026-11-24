@@ -3801,6 +3801,29 @@ So a map is not limited by layout or patching. It is limited by memory: every an
 A few minutes of panning on a phone would end with the system killing the app. New pictures also cost the GPU
 about 4x a frame while they arrive (not investigated).
 
+**Bounded, 2026-11-24** (plan `bounded-image-memory-and-disk-cache.md`, the owner's choices: fixed budgets,
+`Cache-Control` with 7 days by default, memory first). `map_long.rux` pans for 100 s, about 3,300 tiles. A
+temporary counting allocator in the CLI found what the stores did not explain.
+
+| Case | Result |
+|---|---|
+| Painter budget (128 MB) and remote budget (32 MB) | growth slowed from 11 to about 5 MB/s, still endless: 781 MB at 110 s |
+| Same, pictures decoded but not drawn | the same growth: not vello, not the GPU |
+| Same, list without `r-key` | the same: not the row cache |
+| Same, one shared HTTP client | the same; and a server that closes each connection made reused ones fail ("Peer disconnected", failures cached for good), so reverted |
+| The heap by block size | 2 to 4 KB blocks grew without end; sampled backtraces: `rux_style::interpreted`'s memo of inline styles, emptied only by a whole build, never by a patch, so a `:style` moving every frame added about 20 entries a frame |
+| The memo capped at 1,024 declaration sets | flat: working set 450 MB from 30 s to the end, Rust heap 163 MB (128 of it the picture budget) |
+| With the disk cache, cold (3,300 tiles fetched and written) | flat at about 350 MB; frames median 15.8 ms, none over 16.1 ms; `patch` 1.45 ms; no failed load; 3,304 files, 6.9 MB on disk; CPU 52.8 s, against 33.3 s warm: writing a new file costs about 6 ms of CPU (likely Defender's scan and the rename), on the fetch threads |
+| With the disk cache, warm (every tile from disk, the server answered nothing) | flat at about 350 MB; CPU 33.3 s |
+| `map_still.rux` with the server, then with the server stopped | the same 20 tiles both times, no load error (`disk_both.png`) |
+| The `gpu` phase at 9 to 14 ms while tiles arrive | not GPU work: it includes waiting for the next frame in `get_current_texture`, and an arrival wakes the window for an extra frame between the timer's; no fix needed |
+
+The rest outside the Rust heap (about 190 to 290 MB) fits vello's image atlas, which grows to 8192 x 8192 (256 MB)
+before it evicts anything: upstream behaviour, a report for Linebender, not a Rux change.
+
+**Not driven:** the emulator or a phone (the Android build of this change, the 64 MB budget, Android's cache
+directory), a real server's `Cache-Control`, the web.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

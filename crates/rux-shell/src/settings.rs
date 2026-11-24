@@ -240,6 +240,22 @@ mod store {
 #[cfg(target_os = "android")]
 pub(crate) use store::set_dir;
 
+/// Where images from the network are kept on the desktop: the system's cache
+/// folder, under the app's id (`rux_runtime::disk_cache`).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(crate) fn image_cache_dir() -> Option<std::path::PathBuf> {
+    use std::path::PathBuf;
+    let env = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+    let base = if cfg!(windows) {
+        env("LOCALAPPDATA").map(|d| d.join(app_id()).join("cache"))
+    } else if cfg!(target_os = "macos") {
+        env("HOME").map(|h| h.join("Library").join("Caches").join(app_id()))
+    } else {
+        env("XDG_CACHE_HOME").or_else(|| env("HOME").map(|h| h.join(".cache"))).map(|d| d.join(app_id()))
+    }?;
+    Some(base.join("images"))
+}
+
 /// The app's own data folder, where `settings.json` lives and `secrets.json`
 /// goes beside it.
 #[cfg(windows)]
