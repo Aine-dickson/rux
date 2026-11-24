@@ -232,3 +232,183 @@ effect { session.keep(ud012_client.signedIn); }\nmounted { session.start(); }\n<
     assert!(seen_checking, "the sign-in never started: {}", shown(&doc));
     assert!(shown(&doc).contains("[3 orders][2 payments][false][]"), "{}", shown(&doc));
 }
+
+/// Urbandrop's UD-012 on Android, as the booking's You step has it: the page
+/// shows `<sign-in />` under `r-else` of `r-if="signedIn"`, and the component
+/// binds inputs with `r-model`. Its `verify()` awaits a native call that sets
+/// the session first, so the component is gone when the task goes on to write
+/// `busy = false`. Nothing of the removed component may be evaluated again,
+/// and the page must show the signed-in branch. `gap_ms` is the time between
+/// the signal and the answer: on the emulator both often land in one wake.
+fn removed_component_with_inputs(module: &'static str, signed: &'static rn::Signal<bool>, gap_ms: u64) {
+    let verify = rn::Call::future(move |_| async move {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        signed.set(true);
+        rn::notify();
+        if gap_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+        }
+        Ok(rn::Any::Str("ok".into()))
+    });
+    rn::Module::new(module)
+        .export(rn::Export::signal("signedIn", "bool?", move || signed.__read()))
+        .export(rn::Export::function("verify", &[], "string", verify))
+        .install();
+    let sign_in = format!(
+        "<template><view><input r-model=\"email\" /><input r-model=\"code\" /><input r-model=\"phone\" />\
+<text>[{{{{ if busy {{ \"Checking\" }} else {{ \"Verify\" }} }}}}][{{{{ error }}}}]</text></view></template>\n\
+<script>\nuse native::{module};\nlet email = signal(\"a@b.c\");\nlet code = signal(\"123456\");\nlet phone = signal(\"\");\n\
+let busy = signal(false);\nlet error = signal(\"\");\n\
+async fn verify() {{ busy = true; try {{ await {module}.verify(); }} catch e {{ error = e.message; }} busy = false; }}\n\
+mounted {{ verify(); }}\n</script>"
+    );
+    let page = format!(
+        "<template><view><text>You</text>\
+<view r-if=\"signedIn\"><text>Signed in as someone</text></view>\
+<view r-else><sign-in /></view></view></template>\n\
+<script>\nuse native::{module};\nuse components::sign_in;\ncomputed signedIn = {module}.signedIn ?? false;\n</script>"
+    );
+    let app = "<template><screen><router><route path=\"/\" view=\"book\" /></router></screen></template>\n\
+<script>\nuse pages::book;\n</script>";
+    let dir = std::env::temp_dir().join(format!("rux_{module}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (rel, body) in [("app.rux", app), ("pages/book.rux", page.as_str()), ("components/sign_in.rux", sign_in.as_str())] {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), body).unwrap();
+    }
+    let mut doc = Document::load(dir.join("app.rux")).expect("loads");
+    assert!(shown(&doc).contains("[Checking]"), "{}", shown(&doc));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let _ = doc.refresh_native_signals();
+        let _ = doc.settle_tasks();
+        if !doc.has_waiting_tasks() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "still waiting: {}", shown(&doc));
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+    let errors: Vec<String> =
+        doc.diagnostics().warnings.iter().filter(|w| w.is_error()).map(|w| w.message.clone()).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(shown(&doc).contains("Signed in as someone"), "{}", shown(&doc));
+    assert!(!shown(&doc).contains("Checking"), "{}", shown(&doc));
+}
+
+#[test]
+fn a_removed_component_with_inputs_is_not_evaluated_again_when_its_task_goes_on() {
+    static SIGNED: rn::Signal<bool> = rn::Signal::new();
+    removed_component_with_inputs("ud012_you_gap", &SIGNED, 20);
+}
+
+#[test]
+fn a_removed_component_with_inputs_is_not_evaluated_again_when_signal_and_answer_land_together() {
+    static SIGNED: rn::Signal<bool> = rn::Signal::new();
+    removed_component_with_inputs("ud012_you_together", &SIGNED, 0);
+}
+
+/// UD-012 as the booking's You step has it in full: the component sends a
+/// code (its "Send code" branch goes), then verifies; its `:disabled`
+/// bindings read `busy` first and call native functions; the page is on step
+/// 4 of an `r-if`/`r-elif` chain and its `effect` copies the session's name
+/// into a page signal the moment it arrives.
+fn you_step_in_full(module: &'static str, signed: &'static rn::Signal<bool>, gap_ms: u64, settle_first: bool) {
+    let send = rn::Call::future(|_| async {
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        Ok(rn::Any::None)
+    });
+    let verify = rn::Call::future(move |_| async move {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        signed.set(true);
+        rn::notify();
+        if gap_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+        }
+        Ok(rn::Any::None)
+    });
+    let is_email = rn::Call::sync(|args| Ok(rn::Any::Bool(matches!(args.first(), Some(rn::Any::Str(s)) if s.contains('@')))));
+    rn::Module::new(module)
+        .export(rn::Export::signal("signedIn", "bool?", move || signed.__read()))
+        .export(rn::Export::function("requestCode", &[], "void", send))
+        .export(rn::Export::function("verifyCode", &[], "void", verify))
+        .export(rn::Export::function("isEmail", &[("s", "string")], "bool", is_email))
+        .install();
+    let sign_in = format!(
+        "<template><view><input r-model=\"email\" />\
+<view r-if=\"!codeSent\"><button :disabled=\"busy || !{module}.isEmail(email)\"><text>{{{{ if busy {{ \"Sending...\" }} else {{ \"Send code\" }} }}}}</text></button></view>\
+<view r-else><input r-model=\"code\" /><input r-model=\"phone\" />\
+<button :disabled=\"busy || code.trim().length != 6 || phone.length > 9\"><text>{{{{ if busy {{ \"Checking...\" }} else {{ \"Verify\" }} }}}}</text></button></view>\
+<text r-if='error != \"\"'>{{{{ error }}}}</text></view></template>\n\
+<script>\nuse native::{module};\nlet email = signal(\"a@b.c\");\nlet code = signal(\"123456\");\nlet phone = signal(\"\");\n\
+let codeSent = signal(false);\nlet busy = signal(false);\nlet error = signal(\"\");\n\
+async fn sendCode() {{ busy = true; error = \"\"; try {{ await {module}.requestCode(); codeSent = true; }} catch e {{ error = e.message; }} busy = false; }}\n\
+async fn verify() {{ busy = true; error = \"\"; try {{ await {module}.verifyCode(); }} catch e {{ error = e.message; }} busy = false; }}\n\
+mounted {{ go(); }}\nasync fn go() {{ await sendCode(); await verify(); }}\n</script>"
+    );
+    let page = format!(
+        "<template><view>\
+<view r-if=\"step == 1\"><text>Parcel</text></view>\
+<view r-elif=\"step == 4\"><text>Your contact details</text>\
+<view r-if=\"signedIn\"><text>Signed in as [{{{{ name }}}}]</text><input r-model=\"name\" /></view>\
+<view r-else><sign-in /></view></view>\
+<view r-elif=\"step == 5\"><text>Confirm</text></view>\
+<button :disabled=\"!canNext\"><text>Continue</text></button></view></template>\n\
+<script>\nuse native::{module};\nuse components::sign_in;\nlet step = signal(4);\nlet name = signal(\"\");\n\
+computed signedIn = {module}.signedIn ?? false;\ncomputed canNext = if step == 4 {{ signedIn && name.trim().length >= 3 }} else {{ true }};\n\
+effect {{ if signedIn {{ if name == \"\" {{ name = \"Amina\"; }} }} }}\n</script>"
+    );
+    let app = "<template><screen><router><route path=\"/\" view=\"book\" /></router></screen></template>\n\
+<script>\nuse pages::book;\n</script>";
+    let dir = std::env::temp_dir().join(format!("rux_{module}_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (rel, body) in [("app.rux", app), ("pages/book.rux", page.as_str()), ("components/sign_in.rux", sign_in.as_str())] {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), body).unwrap();
+    }
+    let mut doc = Document::load(dir.join("app.rux")).expect("loads");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut seen_checking = false;
+    loop {
+        seen_checking |= shown(&doc).contains("Checking...");
+        // The shell settles answers when they come and reads native signals
+        // when it draws, so an answer and a signal in one wake are settled first.
+        if settle_first {
+            let _ = doc.settle_tasks();
+            let _ = doc.refresh_native_signals();
+        } else {
+            let _ = doc.refresh_native_signals();
+            let _ = doc.settle_tasks();
+        }
+        if !doc.has_waiting_tasks() {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "still waiting: {}", shown(&doc));
+        // Long enough, settling first, that the session and the answer have
+        // both landed by the next round, as in one wake on the emulator.
+        std::thread::sleep(std::time::Duration::from_millis(if settle_first { 30 } else { 1 }));
+    }
+    let errors: Vec<String> =
+        doc.diagnostics().warnings.iter().filter(|w| w.is_error()).map(|w| w.message.clone()).collect();
+    assert!(seen_checking, "never verified: {}", shown(&doc));
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(shown(&doc).contains("Signed in as [Amina]"), "{}", shown(&doc));
+    assert!(!shown(&doc).contains("Checking"), "{}", shown(&doc));
+}
+
+#[test]
+fn the_you_step_signs_in_with_a_gap_between_the_session_and_the_answer() {
+    static SIGNED: rn::Signal<bool> = rn::Signal::new();
+    you_step_in_full("ud012_full_gap", &SIGNED, 20, false);
+}
+
+#[test]
+fn the_you_step_signs_in_when_the_session_and_the_answer_land_together() {
+    static SIGNED: rn::Signal<bool> = rn::Signal::new();
+    you_step_in_full("ud012_full_together", &SIGNED, 0, false);
+}
+
+#[test]
+fn the_you_step_signs_in_when_the_answer_is_settled_before_the_session_is_read() {
+    static SIGNED: rn::Signal<bool> = rn::Signal::new();
+    you_step_in_full("ud012_full_settled", &SIGNED, 0, true);
+}

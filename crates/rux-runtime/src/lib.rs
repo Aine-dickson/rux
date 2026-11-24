@@ -4367,9 +4367,7 @@ impl Document {
         let moved = self.write_back_instance(&key, after);
         if !moved.is_empty() {
             let mut wake = moved.clone();
-            if let Some(c) = self.refresh_instance_computeds(None).remove(&key) {
-                wake.extend(c);
-            }
+            wake.extend(self.refresh_own_computeds(&key));
             changed.extend(self.run_own_effects(&key, wake));
         }
 
@@ -5590,9 +5588,7 @@ impl Document {
         // again too, and what they write of the document's goes out with the
         // handler's own.
         if moved {
-            if let Some(c) = self.refresh_instance_computeds(None).remove(key) {
-                own.extend(c);
-            }
+            own.extend(self.refresh_own_computeds(key));
             let key = key.to_string();
             changed.extend(self.run_own_effects(&key, own));
         }
@@ -5859,6 +5855,25 @@ impl Document {
     /// UD-012) or over the instance's own state never ran again.
     fn refresh_instance_computeds(&mut self, changed: Option<&HashSet<String>>) -> HashMap<String, HashSet<String>> {
         let keys: Vec<String> = self.instance_computeds.keys().cloned().collect();
+        self.refresh_computeds_of(keys, changed)
+    }
+
+    /// Instance `key`'s computeds worked out again, and the ones that moved.
+    /// Only its own: a run in one component that refreshed every instance's
+    /// and kept only its own moves left another instance's computed already
+    /// at its new value, so the change that moved it found nothing moved and
+    /// never patched what reads it. A page's `signedIn` read a native signal
+    /// that a component's `await` set, and its `r-if` stayed on the sign-in
+    /// (Urbandrop's UD-012 on Android).
+    fn refresh_own_computeds(&mut self, key: &str) -> HashSet<String> {
+        self.refresh_computeds_of(vec![key.to_string()], None).remove(key).unwrap_or_default()
+    }
+
+    fn refresh_computeds_of(
+        &mut self,
+        keys: Vec<String>,
+        changed: Option<&HashSet<String>>,
+    ) -> HashMap<String, HashSet<String>> {
         let mut moved: HashMap<String, HashSet<String>> = HashMap::new();
         for key in keys {
             let Some(list) = self.instance_computeds.get(&key).cloned() else { continue };
@@ -6022,9 +6037,7 @@ impl Document {
             writes.extend(wrote);
             moved = again.into_iter().map(|(_, n)| n).collect();
             if !moved.is_empty() {
-                if let Some(c) = self.refresh_instance_computeds(None).remove(key) {
-                    moved.extend(c);
-                }
+                moved.extend(self.refresh_own_computeds(key));
             }
         }
         if !moved.is_empty() {
@@ -6381,16 +6394,14 @@ impl Document {
                 }
                 // Establish both, which is also how each finds out what it
                 // reads: a subscription comes from having read something.
-                self.refresh_instance_computeds(None);
+                self.refresh_own_computeds(&fresh.key);
                 // This instance's alone: the others established theirs when
                 // they mounted, and running them again for every later mount
                 // ran a side effect once per sibling.
                 let (mut effect_writes, own) = self.run_instance_effects(Wake::Mounted(&fresh.key));
                 let mut own: HashSet<String> = own.into_iter().map(|(_, n)| n).collect();
                 if !own.is_empty() {
-                    if let Some(c) = self.refresh_instance_computeds(None).remove(&fresh.key) {
-                        own.extend(c);
-                    }
+                    own.extend(self.refresh_own_computeds(&fresh.key));
                     effect_writes.extend(self.run_own_effects(&fresh.key, own));
                 }
                 if !effect_writes.is_empty() {

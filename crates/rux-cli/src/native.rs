@@ -265,10 +265,16 @@ mod cargo_tests {
         assert_eq!(d.message, "mismatched types");
     }
 
+    /// Cargo names a file outside the crate by its absolute path, in the
+    /// host's own form: a drive letter is absolute only on Windows.
     #[test]
-    fn a_warning_and_an_absolute_windows_path_are_read() {
-        let d = parse_short(r"C:\work\app\native\src\lib.rs:3:9: warning: unused variable: `x`", Path::new("n")).unwrap();
-        assert_eq!(d.file, Path::new(r"C:\work\app\native\src\lib.rs"));
+    fn a_warning_and_an_absolute_path_are_read() {
+        #[cfg(windows)]
+        let file = r"C:\work\app\native\src\lib.rs";
+        #[cfg(not(windows))]
+        let file = "/work/app/native/src/lib.rs";
+        let d = parse_short(&format!("{file}:3:9: warning: unused variable: `x`"), Path::new("n")).unwrap();
+        assert_eq!(d.file, Path::new(file));
         assert_eq!((d.line, d.severity), (Some(3), Severity::Warning));
         assert_eq!(d.message, "unused variable: `x`");
     }
