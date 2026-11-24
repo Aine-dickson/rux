@@ -10,13 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn rux() -> PathBuf {
-    // The integration-test binary sits beside the one under test.
-    let mut path = std::env::current_exe().expect("test binary path");
-    path.pop();
-    if path.ends_with("deps") {
-        path.pop();
-    }
-    path.join(format!("rux{}", std::env::consts::EXE_SUFFIX))
+    // Cargo's own path to the binary under test, as `check.rs` and `fmt.rs`
+    // use. Working it out from this test's own path found nothing on CI.
+    PathBuf::from(env!("CARGO_BIN_EXE_rux"))
 }
 
 /// A scratch directory that cleans itself up, named after the calling test so a
