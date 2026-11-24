@@ -89,3 +89,33 @@ fn a_components_computed_is_current_in_its_handler() {
     assert!(s.contains("b seen inline 4 5, shown 4 5"), "{s}");
     assert!(s.contains("a seen twice 8 more 9, shown 8 9"), "{s}");
 }
+
+/// An `effect` that reads only a computed runs again when a handler moves what
+/// the computed reads, through a chain of two (it ran only for the state the
+/// handler wrote itself, the shape of Urbandrop's UD-012).
+#[test]
+fn a_components_effect_on_a_computed_runs_when_the_handler_moves_its_source() {
+    let dir = std::env::temp_dir().join(format!("rux_computed_effect_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(dir.join("components")).unwrap();
+    std::fs::write(
+        dir.join("components/card.rux"),
+        "<template><view>\
+           <view @tap=\"n = 4\"><text>go</text></view>\
+           <text>seen {{ seen }} runs {{ runs }}</text>\
+         </view></template>\n\
+         <script>\nlet n = signal(1);\ncomputed twice = n * 2;\ncomputed more = twice + 1;\n\
+         let seen = signal(\"\");\nlet runs = signal(0);\n\
+         effect { seen = `more ${more}`; runs = runs + 1; }\n</script>",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("app.rux"),
+        "<template><screen><card /></screen></template>\n<script>\nuse components::card;\n</script>",
+    )
+    .unwrap();
+    let mut doc = Document::load(dir.join("app.rux")).expect("loads");
+    assert!(shown(&doc).contains("seen more 3 runs 1"), "{}", shown(&doc));
+    tap(&mut doc, "go");
+    assert!(shown(&doc).contains("seen more 9 runs 2"), "{}", shown(&doc));
+}

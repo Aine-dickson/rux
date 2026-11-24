@@ -91,8 +91,9 @@ pub use rux_script::profile;
 /// Which component effects a change wakes. See `Document::run_instance_effects`.
 #[derive(Clone, Copy)]
 enum Wake<'a> {
-    /// Those that read one of these document signals.
-    Signals(&'a HashSet<String>),
+    /// Those that read one of these document signals, or one of their own
+    /// instance's computeds that moved with them (by instance).
+    Signals(&'a HashSet<String>, &'a HashMap<String, HashSet<String>>),
     /// Every effect of one instance, just mounted.
     Mounted(&'a str),
     /// Those of one instance that read one of these names of its own state.
@@ -857,6 +858,13 @@ fn check_script_functions(
     // At the line of the call, made file-relative as the names below are, so
     // the report points into the `<script>` rather than at no line at all.
     for (problem, at) in engine.unknown_calls_in_functions(own_script_lines) {
+        // A retired name is the type checker's to report, which reaches the
+        // hooks and `setInterval` blocks this does not: said once, not twice.
+        if let rux_script::CallProblem::NoSuchFunction(name) = &problem {
+            if rux_script::interp::stdlib::retired_free(name).is_some() {
+                continue;
+            }
+        }
         let message = format!("a <script> function {}", problem.describe());
         rux_script::located(Some(at + script_line - 1), || {
             if rux_script::is_fragment() {
@@ -2408,6 +2416,31 @@ fn picture_size(bytes: &[u8]) -> Result<(f32, f32), String> {
     Ok((w as f32, h as f32))
 }
 
+thread_local! {
+    /// The size of each local picture read, by its resolved path. A patch
+    /// resolves the images of a whole fresh tree, so 64 map tiles under a box
+    /// that moves were each read from disk and parsed every frame (4 ms of a
+    /// 6 ms patch). Emptied when a document loads, so a hot reload reads the
+    /// files again; the painter's decoded pictures are kept as long.
+    static IMAGE_SIZES: std::cell::RefCell<HashMap<PathBuf, (f32, f32)>> =
+        std::cell::RefCell::new(HashMap::new());
+}
+
+/// Forget the sizes [`resolve_images`] has read: a document is loading.
+fn forget_image_sizes() {
+    IMAGE_SIZES.with(|s| s.borrow_mut().clear());
+}
+
+/// The size of the local picture at `path`, read once.
+fn local_picture_size(path: &Path) -> Option<(f32, f32)> {
+    if let Some(size) = IMAGE_SIZES.with(|s| s.borrow().get(path).copied()) {
+        return Some(size);
+    }
+    let size = source::read_bytes(path).ok().and_then(|bytes| picture_size(&bytes).ok())?;
+    IMAGE_SIZES.with(|s| s.borrow_mut().insert(path.to_path_buf(), size));
+    Some(size)
+}
+
 /// Resolve every `<image src>` in the tree against `base` and read its intrinsic
 /// size, so a sizeless `<image>` lays out at its natural pixel dimensions. Only
 /// the file header is read, not the pixels; the painter decodes and caches those.
@@ -2441,7 +2474,7 @@ fn resolve_images(node: &mut LayoutNode, base: &Path) {
             let path = base.join(&img.src);
             // Read through the provider rather than by path, because `path` is
             // a key and not necessarily a file. See `picture_size`.
-            match source::read_bytes(&path).ok().and_then(|bytes| picture_size(&bytes).ok()) {
+            match local_picture_size(&path) {
                 Some((w, h)) => {
                     img.intrinsic = (w, h);
                     // Said here, where it can be a diagnostic with the image's
@@ -2628,6 +2661,7 @@ impl Document {
     }
 
     fn load_with(path: &Path, window_props: Option<&[(String, Value)]>) -> Result<Self, LoadError> {
+        forget_image_sizes();
         // The painter reads image bytes through this, so that an `<image>`
         // resolves the same way a component or a stylesheet does. Installed on
         // every load rather than once, because the provider may have changed
@@ -3340,6 +3374,7 @@ impl Document {
     /// with no line was all it could ever show, and "something is wrong
     /// somewhere" is not much of an editor.
     pub fn from_source_checked(src: &str) -> Result<Self, LoadError> {
+        forget_image_sizes();
         // The painter's reader, as `load_checked` installs it: a picked
         // file's URL is all an `<image>` here can show beyond what is
         // embedded, and without it the painter tried the disk, which a
@@ -4324,8 +4359,11 @@ impl Document {
         let (after, mut changed) = self.engine.run_scoped_handler(&src, &locals);
         let moved = self.write_back_instance(&key, after);
         if !moved.is_empty() {
-            self.refresh_instance_computeds(None);
-            changed.extend(self.run_own_effects(&key, moved.clone()));
+            let mut wake = moved.clone();
+            if let Some(c) = self.refresh_instance_computeds(None).remove(&key) {
+                wake.extend(c);
+            }
+            changed.extend(self.run_own_effects(&key, wake));
         }
 
         if !changed.is_empty() {
@@ -5536,15 +5574,18 @@ impl Document {
         // Only the component's own names are written back. A prop belongs to the
         // caller: assigning to one inside a component would look like it worked
         // and be forgotten on the next build, which is worse than not allowing it.
-        let own = self.write_back_instance(key, after);
-        let mut moved = !own.is_empty();
+        let mut own = self.write_back_instance(key, after);
+        let moved = !own.is_empty();
 
         // A handler that moved this instance's state has moved whatever its
         // computeds derive from, and those are read by the build that is about
-        // to happen. Its effects that read that state run again too, and what
-        // they write of the document's goes out with the handler's own.
+        // to happen. Its effects that read that state, or those computeds, run
+        // again too, and what they write of the document's goes out with the
+        // handler's own.
         if moved {
-            moved |= self.refresh_instance_computeds(None);
+            if let Some(c) = self.refresh_instance_computeds(None).remove(key) {
+                own.extend(c);
+            }
             let key = key.to_string();
             changed.extend(self.run_own_effects(&key, own));
         }
@@ -5794,7 +5835,7 @@ impl Document {
     }
 
     /// Re-evaluate every instance computed whose dependencies were touched, in
-    /// its own instance's scope, and say whether any of them moved.
+    /// its own instance's scope, and say which of them moved, by instance.
     ///
     /// `None` means refresh all of them, which is what a freshly mounted
     /// instance needs: nothing has changed yet, and the point is to establish
@@ -5804,9 +5845,14 @@ impl Document {
     /// script, so it exists as ordinary instance state from the moment the
     /// instance is created. What was missing was ever recomputing it, which is
     /// all this does.
-    fn refresh_instance_computeds(&mut self, changed: Option<&HashSet<String>>) -> bool {
+    ///
+    /// **What moved wakes the instance's effects that read it.** Until that,
+    /// only the state a handler wrote did, so an effect reading a computed
+    /// over a native signal (Urbandrop's `effect { if signedIn { load(); } }`,
+    /// UD-012) or over the instance's own state never ran again.
+    fn refresh_instance_computeds(&mut self, changed: Option<&HashSet<String>>) -> HashMap<String, HashSet<String>> {
         let keys: Vec<String> = self.instance_computeds.keys().cloned().collect();
-        let mut moved = false;
+        let mut moved: HashMap<String, HashSet<String>> = HashMap::new();
         for key in keys {
             let Some(list) = self.instance_computeds.get(&key).cloned() else { continue };
             let Some(instance) = self.instances.get(&key) else { continue };
@@ -5817,7 +5863,13 @@ impl Document {
                     // Its own dependencies, or nothing yet known about them: a
                     // computed that has never run has no dependency set, and
                     // skipping it would leave it stale forever.
-                    Some(changed) => computed.deps.is_empty() || !computed.deps.is_disjoint(changed),
+                    // An earlier computed of the same instance that just
+                    // moved counts as changed, so one built on another follows.
+                    Some(changed) => {
+                        computed.deps.is_empty()
+                            || !computed.deps.is_disjoint(changed)
+                            || moved.get(&key).is_some_and(|m| !computed.deps.is_disjoint(m))
+                    }
                     None => true,
                 };
                 if !stale {
@@ -5837,7 +5889,7 @@ impl Document {
                 };
                 if slot.1 != value {
                     slot.1 = value.clone();
-                    moved = true;
+                    moved.entry(key.clone()).or_default().insert(computed.name.clone());
                     // Later computeds in the same component may read this one,
                     // so the scope they are evaluated against has to carry it.
                     if let Some(local) = locals.iter_mut().find(|(n, _)| *n == computed.name) {
@@ -5863,14 +5915,14 @@ impl Document {
     fn run_instance_effects(&mut self, wake: Wake<'_>) -> (HashSet<String>, Vec<(String, String)>) {
         let keys: Vec<String> = match wake {
             Wake::Own(key, _) | Wake::Mounted(key) => vec![key.to_string()],
-            Wake::Signals(_) => self.instance_effects.keys().cloned().collect(),
+            Wake::Signals(..) => self.instance_effects.keys().cloned().collect(),
         };
         let mut writes = HashSet::new();
         let mut moved = Vec::new();
         // A document signal only this effect wrote, in the round before,
         // does not wake it: see `run_effects`.
         let last = match wake {
-            Wake::Signals(_) => std::mem::take(&mut self.instance_effect_writers),
+            Wake::Signals(..) => std::mem::take(&mut self.instance_effect_writers),
             _ => HashMap::new(),
         };
         for key in keys {
@@ -5884,10 +5936,12 @@ impl Document {
                     // A document signal, not a state name that happens to be
                     // spelled the same: the effect read its own, not the
                     // document's.
-                    Wake::Signals(changed) => effect.deps.iter().any(|d| {
-                        changed.contains(d)
+                    // Or one of its own computeds the change moved.
+                    Wake::Signals(changed, computeds) => effect.deps.iter().any(|d| {
+                        (changed.contains(d)
                             && !state_names.contains(d)
-                            && last.get(d).is_none_or(|by| by.iter().any(|(k, j)| *k != key || *j != i))
+                            && last.get(d).is_none_or(|by| by.iter().any(|(k, j)| *k != key || *j != i)))
+                            || computeds.get(&key).is_some_and(|m| m.contains(d))
                     }),
                     Wake::Own(_, names) => effect.deps.iter().any(|d| names.contains(d)),
                 };
@@ -5961,7 +6015,9 @@ impl Document {
             writes.extend(wrote);
             moved = again.into_iter().map(|(_, n)| n).collect();
             if !moved.is_empty() {
-                self.refresh_instance_computeds(None);
+                if let Some(c) = self.refresh_instance_computeds(None).remove(key) {
+                    moved.extend(c);
+                }
             }
         }
         if !moved.is_empty() {
@@ -6323,9 +6379,11 @@ impl Document {
                 // they mounted, and running them again for every later mount
                 // ran a side effect once per sibling.
                 let (mut effect_writes, own) = self.run_instance_effects(Wake::Mounted(&fresh.key));
-                let own: HashSet<String> = own.into_iter().map(|(_, n)| n).collect();
+                let mut own: HashSet<String> = own.into_iter().map(|(_, n)| n).collect();
                 if !own.is_empty() {
-                    self.refresh_instance_computeds(None);
+                    if let Some(c) = self.refresh_instance_computeds(None).remove(&fresh.key) {
+                        own.extend(c);
+                    }
                     effect_writes.extend(self.run_own_effects(&fresh.key, own));
                 }
                 if !effect_writes.is_empty() {
@@ -6623,26 +6681,31 @@ impl Document {
         // for the same reason the document's are: a binding that reads one must
         // read what this change made it, not what it was.
         let before = self.instance_states();
-        let instance_moved = self.refresh_instance_computeds(Some(&changed));
+        let computeds_moved = self.refresh_instance_computeds(Some(&changed));
         // A patch is chosen by which document signals moved, and instance state
         // is not among them, so what a computed moved is patched on its own.
-        let patched = self.patch(&changed) && (!instance_moved || self.patch_instances(&before));
+        let patched =
+            self.patch(&changed) && (computeds_moved.is_empty() || self.patch_instances(&before));
         if !patched {
             self.rebuild();
         }
         let before = self.instance_states();
         let mut writes = self.run_effects(&changed);
-        let (instance_writes, own) = self.run_instance_effects(Wake::Signals(&changed));
+        let (instance_writes, own) = self.run_instance_effects(Wake::Signals(&changed, &computeds_moved));
         writes.extend(instance_writes);
         let instance_state_moved = !own.is_empty();
         // What those effects wrote of their own instance's state wakes that
-        // instance's effects that read it.
+        // instance's effects that read it, or a computed built on it.
         let mut by_instance: HashMap<String, HashSet<String>> = HashMap::new();
         for (key, name) in own {
             by_instance.entry(key).or_default().insert(name);
         }
+        if !by_instance.is_empty() {
+            for (key, names) in self.refresh_instance_computeds(None) {
+                by_instance.entry(key).or_default().extend(names);
+            }
+        }
         for (key, names) in by_instance {
-            self.refresh_instance_computeds(None);
             writes.extend(self.run_own_effects(&key, names));
         }
         // An instance effect that wrote only its own state moved nothing the

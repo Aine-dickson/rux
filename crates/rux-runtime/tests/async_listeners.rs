@@ -151,3 +151,84 @@ mounted { verify(); }\n</script>";
     assert!(shown(&doc).contains("signed in"), "{}", shown(&doc));
     assert!(shown(&doc).contains("[ok]"), "{}", shown(&doc));
 }
+
+/// Urbandrop's UD-012 as the client app has it, on the desktop: the page
+/// shows `<sign-in />` under `r-elif="!signedIn"`, so the signal the
+/// component's await sets removes that component while its task waits. The
+/// page's `effect` then starts `load()`, which awaits two native calls; the
+/// app's `effect` hands the session to a store.
+#[test]
+fn a_component_removed_by_the_signal_its_await_sets_lets_the_pages_load_finish() {
+    static SIGNED: rn::Signal<bool> = rn::Signal::new();
+    let verify = rn::Call::future(|_| async {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        SIGNED.set(true);
+        rn::notify();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        Ok(rn::Any::Str("ok".into()))
+    });
+    let orders = rn::Call::future(|_| async {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        Ok(rn::Any::Str("3 orders".into()))
+    });
+    let money = rn::Call::future(|_| async {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        Ok(rn::Any::Str("2 payments".into()))
+    });
+    rn::Module::new("ud012_client")
+        .export(rn::Export::signal("signedIn", "bool?", || SIGNED.__read()))
+        .export(rn::Export::function("verify", &[], "string", verify))
+        .export(rn::Export::function("myOrders", &[], "string", orders))
+        .export(rn::Export::function("transactions", &[], "string", money))
+        .install();
+    let sign_in = "<template><view><text>[{{ if busy { \"Checking\" } else { \"Verify\" } }}]</text></view></template>\n\
+<script>\nuse native::ud012_client;\nlet busy = signal(false);\nlet error = signal(\"\");\n\
+async fn verify() { busy = true; error = \"\"; try { await ud012_client.verify(); } catch e { error = e.message; } busy = false; }\n\
+mounted { verify(); }\n</script>";
+    let page = "<template><view>\
+<text r-if=\"!session.ready\">Loading...</text>\
+<view r-elif=\"!signedIn\"><text>Sign in</text><sign-in /></view>\
+<view r-else><text>[{{ list }}][{{ pays }}][{{ loading }}][{{ error }}]</text></view>\
+</view></template>\n\
+<script>\nuse native::ud012_client;\nuse stores::session;\nuse components::sign_in;\n\
+let list = signal(\"\");\nlet pays = signal(\"\");\nlet loading = signal(false);\nlet error = signal(\"\");\n\
+computed signedIn = ud012_client.signedIn ?? false;\n\
+async fn load() { if !signedIn { return; } loading = true; error = \"\"; \
+try { list = await ud012_client.myOrders(); pays = await ud012_client.transactions(); } catch e { error = e.message; } loading = false; }\n\
+effect { if signedIn { load(); } }\n</script>";
+    let store = "<script>\nexport let ready = signal(false);\nexport let kept = signal(0);\n\
+export async fn start() { ready = true; }\n\
+export fn keep(s: bool?) { if s == none { return; } kept = kept + 1; }\n</script>";
+    let app = "<template><screen><router><route path=\"/\" view=\"account\" /></router></screen></template>\n\
+<script>\nuse native::ud012_client;\nuse pages::account;\nuse stores::session;\n\
+effect { session.keep(ud012_client.signedIn); }\nmounted { session.start(); }\n</script>";
+    let dir = std::env::temp_dir().join(format!("rux_ud012c_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (rel, body) in [
+        ("app.rux", app),
+        ("pages/account.rux", page),
+        ("components/sign_in.rux", sign_in),
+        ("stores/session.rux", store),
+    ] {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), body).unwrap();
+    }
+    let mut doc = Document::load(dir.join("app.rux")).expect("loads");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut seen_checking = false;
+    loop {
+        seen_checking |= shown(&doc).contains("[Checking]");
+        let _ = doc.refresh_native_signals();
+        let _ = doc.settle_tasks();
+        if !doc.has_waiting_tasks() && shown(&doc).contains("[false]") {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "still waiting: {}", shown(&doc));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    let errors: Vec<String> =
+        doc.diagnostics().warnings.iter().filter(|w| w.is_error()).map(|w| w.message.clone()).collect();
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(seen_checking, "the sign-in never started: {}", shown(&doc));
+    assert!(shown(&doc).contains("[3 orders][2 payments][false][]"), "{}", shown(&doc));
+}

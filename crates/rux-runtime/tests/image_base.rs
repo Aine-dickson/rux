@@ -40,3 +40,36 @@ fn a_page_read_on_its_own_reads_its_image_from_the_apps_folder() {
     let app = Document::load(dir.join("app.rux")).expect("loads");
     assert_eq!(image_size(&app.root), Some((1.0, 1.0)));
 }
+
+fn png(w: u32, h: u32) -> Vec<u8> {
+    let mut out = Vec::new();
+    image::RgbaImage::new(w, h).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+    out
+}
+
+/// A picture's size is read once and kept, since a patch resolves every image
+/// of a fresh tree each frame (64 map tiles were read from disk every frame).
+/// It stays right as the tree is patched, and a load reads the file again.
+#[test]
+fn an_images_size_is_kept_across_patches_and_read_again_on_load() {
+    let dir = std::env::temp_dir().join(format!("rux_image_sizes_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("tile.png"), png(3, 2)).unwrap();
+    std::fs::write(
+        dir.join("app.rux"),
+        "<template><screen><view :style=\"`width: ${w}px`\"><image src=\"tile.png\" /></view><text>{{ w }}</text></screen></template>\n\
+         <script>\nlet w = signal(10);\n</script>",
+    )
+    .unwrap();
+    let mut doc = Document::load(dir.join("app.rux")).expect("loads");
+    assert_eq!(image_size(&doc.root), Some((3.0, 2.0)));
+    assert!(doc.apply_handler("w = 20"));
+    assert!(doc.apply_handler("w = 30"));
+    assert_eq!(image_size(&doc.root), Some((3.0, 2.0)), "kept through patches");
+    // The file changes, as an author saving a new picture does: the next load
+    // is the hot reload, and it reads the file again.
+    std::fs::write(dir.join("tile.png"), png(5, 4)).unwrap();
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    assert_eq!(image_size(&doc.root), Some((5.0, 4.0)));
+}

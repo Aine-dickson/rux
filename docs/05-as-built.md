@@ -229,6 +229,15 @@ Android has no environment to pass, so there the variable is read when the
 app is built: `RUX_PROFILE=1 rux build` bakes it in, and the summary goes to
 `adb logcat -s rux`. The web build has no profile.
 
+### An image's size is read once
+
+An `<image>` with a file `src` lays out at the picture's own size, which is read
+from the file's header. It is read once per path and kept until the next load
+(a hot reload reads it again): a patch builds a fresh tree and resolves every
+image in it, so 64 map tiles under a box that moves were read from disk every
+frame (`patch` 6.3 ms, now 1.8 ms). A file changed while the app runs keeps its
+old size until the reload, as the painter keeps its old pixels.
+
 ### A frame that only scrolls
 
 A frame that only scrolls lays nothing out again. The layout keeps the last

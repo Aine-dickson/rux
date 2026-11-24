@@ -3747,6 +3747,45 @@ Android emulator `rux_test` (Android 15), probe `rux-harness퀄7-and`. Two finge
 | The Android keyboard hidden by Back and by its own hide key, five frames each | No white window: not reproduced |
 | **Not driven** | A real phone's fingers (the emulator's are exact), three or more fingers, a pinch on a scroller's content, macOS trackpad pinch, the web and desktop (no touch here), Android 9 and below for `location.enabled()`, `network.online` on a captive portal |
 
+## UD-012 on the desktop, map tiles, a retired name in a timer, 2026-11-24
+
+**UD-012, the client app's shape.** The emulator probe above never removed the sign-in component, and the field
+report's desktop runs (2026-11-12) still failed. The app's shape as a test
+(`a_component_removed_by_the_signal_its_await_sets_lets_the_pages_load_finish` in
+`crates/rux-runtime/tests/async_listeners.rs`): `<sign-in />` under `r-elif="!signedIn"`, `computed signedIn =
+api.signedIn ?? false`, `effect { if signedIn { load(); } }`, the app's `effect` handing the session to a store.
+
+| Case | Expected | Result |
+|---|---|---|
+| The test, before the fix, 3 runs | the list loads after sign-in | fail, 3 of 3: the signed-in view with `[][][false][]`, the field report's "No orders yet." `load()` never started |
+| The same with the sign-in component left mounted, and with no app `effect` | | fail both: neither is the cause |
+| The `effect` reading `api.signedIn ?? false` itself, not the `computed` | | pass: the cause is a component's `effect` on a `computed` |
+| After the fix, 3 runs | | pass, 3 of 3 |
+| A component's `effect` reading only `computed more = twice + 1` (`twice = n * 2`), a tap setting `n` | `seen more 9 runs 2` | pass; before the fix it stayed at `more 3 runs 1` |
+
+**Map tiles.** Probe `rux-harness/tiles-perf/app.rux`: 64 PNG tiles of 256 px (8 x 8, `make_tiles.py`) in a
+`transform: translate(...) scale(...)` box in an 800 x 600 `overflow: hidden` viewport, moved by a 16 ms
+`setInterval` for 750 steps. `RUX_PROFILE=1`, 18 s per run, release builds, Windows 11 at 150%. Before: the
+installed CLI (2026-11-12); after: `target/release/rux.exe` from this tree.
+
+| Case | Before | After |
+|---|---|---|
+| Frame, median of 12 reports of 60 frames | 10.2 ms | 4.5 ms (about 2.2x faster) |
+| `patch` per frame | 6.3 ms | 1.8 ms (about 3.5x faster) |
+| CPU for the 18 s | 7.3 s | 3.8 s |
+| The same 64 cells as plain coloured boxes | `patch` 1.75 ms | `patch` 1.7 ms: an image now costs what a box does |
+| Screenshot mid-pan | | the grid drawn, panned and zoomed (`shot2_moving.png`) |
+
+The cause: a patch builds a fresh tree and resolved every `<image>` in it, reading each file from disk and parsing
+its header, every frame. Sizes are now read once per path and forgotten on each load (hot reload included).
+
+**A retired name in a timer.** `sin(t)` in a `setInterval` block inside `mounted` passed `rux check` and failed
+16 ms after the window opened (`sin` is retired: write `Math.sin(x)`). After the fix, `rux check` says it at the
+line, in the block, in `mounted`, and in a `fn` (once, not twice).
+
+**Not driven:** the client app itself with a CLI built from this tree (sign-in during a booking, desktop and
+Android); tiles on a phone or the emulator; tiles from the network; a real drag or pinch over the tiles.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

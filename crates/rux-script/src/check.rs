@@ -3148,6 +3148,20 @@ impl<'a> Checker<'a> {
                 self.error(pos, format!("`{name}(x)` is retired: write `Math.{name}(x)` or `x.{name}()`"));
                 return Type::Int;
             }
+            // The rest of the retired spellings, as the interpreter words them.
+            // Here as well as in the call lint, which walks only `fn`s and
+            // handlers: in a hook, or a `setInterval` block, it was reported
+            // only when it ran.
+            (_, _)
+                if crate::interp::stdlib::retired_free(name).is_some()
+                    && !self.fns.contains_key(&(name.to_string(), args.len()))
+                    && self.lookup(name).is_none() =>
+            {
+                self.infer_all(args);
+                let hint = crate::interp::stdlib::retired_free(name).unwrap_or_default();
+                self.error(pos, format!("`{name}` is retired: {hint}"));
+                return Type::Any;
+            }
             ("Number" | "toFloat", _) => {
                 self.infer_all(args);
                 return Type::Float;
@@ -4907,6 +4921,17 @@ let n = [1].len();");
         assert!(f.iter().any(|f| f.message.contains("`async` in Rust")), "{f:?}");
         let f = native_findings("fn f(db: Db): string { db.size() }");
         assert!(f.iter().any(|f| f.message.contains("declared to return `string`, and this is `int`")), "{f:?}");
+    }
+
+    /// A retired name in a `setInterval` block was reported only once the timer
+    /// first fired.
+    #[test]
+    fn a_retired_function_in_an_interval_block_is_an_error() {
+        one_error(
+            "let x = signal(0.0); let t = signal(0); mounted { t = setInterval(16) { x = sin(1.0); }; }",
+            "`sin` is retired: write `Math.sin(x)`",
+        );
+        assert!(errors("let x = signal(0.0); fn sin(a: float): float { a } fn f() { x = sin(1.0); }").is_empty());
     }
 
     #[test]
