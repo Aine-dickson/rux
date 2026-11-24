@@ -3537,6 +3537,311 @@ Steps 3 to 5. Driven on the Windows 11 desktop with the project
 | `color` written on an `<icon>` | `.pink { color: #f38ba8 }` on `<icon class="pink">` in a routed page, `rux run`, tap About | a pink heart, not the text colour | pass (Windows; it drew white before the fix) |
 | MS-014: `<icon>` in a dev build with a native crate | `rux build`, run `dist/ico.exe`, click About | the heart is drawn; the build says it embeds all 5148 icons | pass (Windows; the build took 10 minutes cold) |
 
+## Permissions, 2026-11-12
+
+| Case | Where | Result |
+|---|---|---|
+| `[permissions]` declaring location (with `background`), notifications, camera | emulator (Android 15), read with `dumpsys package` | The installed app lists exactly `ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`, `ACCESS_BACKGROUND_LOCATION`, `POST_NOTIFICATIONS`, `CAMERA` and `INTERNET` (a dev build). No `RECORD_AUDIO`: nothing is added that was not declared |
+| A reason containing `--` | emulator | The manifest links and installs: the `--` is written as `- -` in the comment, which XML would otherwise refuse |
+| `permissions.status` before anything was asked | emulator | `"unasked"` for notifications and camera |
+| `permissions.status("microphone")`, not declared | emulator | Throws `undeclared`, and the message is the table to add, `[permissions.microphone]` with a `why` |
+| `request("location")`, refused twice with "Don't allow" | emulator, `pm clear` first | The system dialog (precise or approximate) shows; the answers are `"denied"`, then `"blocked"`; a third `request` answers `"blocked"` at once and shows no dialog |
+| `openSettings()` from a blocked permission | emulator | The app's page in the system settings opens |
+| `request("location")` with "While using the app" | emulator | `"granted"` |
+| `request("location-background")` with `"location"` not granted | emulator | Throws `order`, saying to request `"location"` first |
+| `request("location-background")` after `"location"` is granted | emulator | Android 15 sends the person to the app's location permission page, not a dialog. Choosing "Allow all the time" and going back resolves the call with `"granted"` |
+| `request("notifications")` | emulator | The system dialog, then `"granted"` |
+| `request("camera")` | emulator | The system dialog, which names taking pictures and recording video |
+| A file input with `capture="environment"` while `camera` is declared and not granted | emulator, `pm clear` first | The camera dialog shows first. "Don't allow" opens the document picker instead. Asked again and allowed, the camera app opens. Without this, declaring `camera` would have broken a capture input that worked |
+| **Found by driving** | emulator | Tapping the probe while its dialog was on screen dismissed the dialog, and two dismissals made the permission `"blocked"` with no dialog ever shown to the person. That is Android's rule, not a Rux fault, and it is why `"blocked"` cannot be told from "refused for good" except by what the system will still show |
+| `permissions` on the desktop | `cargo test` only | `"granted"` for a declared name, `openSettings` throws `unsupported`. **Not driven in a window** |
+| `rux check` on a call naming a permission that is not declared | desktop | One warning at the call's line, "permissions.status: 'microphone' is not declared: add [permissions.microphone] with a 'why' to rux.toml"; the declared `camera` call beside it is not reported. Nothing is reported outside a project with a `rux.toml` |
+| `permissions` on the web, a real `rux build --target web` bundle | Edge 2026-11-23 over CDP, canvas read by screenshot; the browser's permission state set in the profile's own settings | All four names in each state. Granted: `status` and `request` answer `"granted"` (no prompt). Blocked: `"blocked"` for both. Ask: `status` answers `"unasked"`; with the media prompt auto-accepted, `request("microphone")` raises it and ends `"granted"`. `location-background` throws `unsupported`, saying a web page has none. A name not in `rux.toml` throws `undeclared` (what the playground bundle shows, since it has no manifest). **Not driven:** the `gesture` error, the location and notification prompts themselves (a browser will not answer them from here), `openSettings` (`unsupported` is thrown and an unhandled one shows nothing on screen), Safari and Firefox. Found: the `rux` on the PATH predates the permissions work and drops the table from a web build; build with `target/debug/rux` |
+| `rux::permissions` from the app's Rust | `cargo test` only | Without a shell every call fails with `unavailable`. **Not driven on a device**: no probe app has native code calling it yet |
+| An address, or an HTTP crate, in `native/` | `cargo test` | `INTERNET` is asked for in a release build. Before, only `.rux` and `.css` files were read |
+
+## App state, 2026-11-23
+
+| Case | Where | Result |
+|---|---|---|
+| `{{ app.state }}` and an `effect` logging each value, no import | Windows 11, `rux run`, probe `rux-harness\ud003` | Reads `foreground` at start. After `window.minimize()` and a restore the log is `foreground background foreground` |
+| `app.state` on the web | `cargo check --target wasm32-unknown-unknown` only | A `visibilitychange` listener reports it. **Not driven in a browser** |
+| `app.state` on Android | not built or run | `onStart` and `onStop` call `nativeVisible`. **Written, not compiled**: the Java and the JNI function have not been through an NDK build here |
+| A window covered by another | not driven | Counts as in front by design (only minimizing hides) |
+
+## Channels and background in rux.toml, 2026-11-23
+
+| Case | Where | Result |
+|---|---|---|
+| `[channels.*]` and `[background]` read, written, refused | `cargo test -p ruxlang` | Parsed with their defaults; a channel with no `name`, a bad `importance`, an unknown key, a background with no or an unknown `types`, and a missing `[permissions.notifications]` (or `location`, `camera`, `microphone` for a service of that type) each refused with the table to add |
+| The manifest | `cargo test -p ruxlang` | `[background]` writes `FOREGROUND_SERVICE`, one `FOREGROUND_SERVICE_*` per type, `WAKE_LOCK` only with `keep-awake`, and a `<service>` with `foregroundServiceType` and `stopWithTask`; none of it without `[background]` |
+| The wrapper | `cargo test -p ruxlang` | `set_channels` and `set_background` are written into `main`, empty tables included |
+| **Not run** | | No APK was built with these tables: the `<service>` names `RuxActivity$Background`, which the Java does not have until step 4 |
+
+## Notifications on Android, 2026-11-23
+
+Emulator `rux_test` (Android 15, 1080x2400), probe `rux-harness\ud003-and`, a dev build from `target/debug/rux`, read with `dumpsys notification --noredact` and screenshots.
+
+| Case | Result |
+|---|---|
+| `notifications.post` before the person allowed notifications | Throws `permission`, saying to `request` from a tap first |
+| A post to a channel `rux.toml` does not declare | Throws `undeclared`: "`nope` is not a declared channel (it declares jobs, shift). Add it to rux.toml:" and the table |
+| `permissions.request("notifications")` | The system's "Allow ud003-and to send you notifications?" dialog; Allow |
+| A post on `jobs` (`importance = "high"`) | One record, `tag=job-41`, `importance=4`, `channel=jobs`; the shade shows the title and the text |
+| The same `id` posted again with another title | Still one record for `job-41`, with the new title and text (replaced, not added) |
+| A second `id` | A second record. Android adds its own `ranker_group` summary |
+| A post on `shift` (`importance = "low"`) | `importance=2`, listed under Silent |
+| `cancel("job-41")`, then `cancelAll()` | The record goes, then every record |
+| Tapping a notification with `route: "/jobs/41"`, the app in the back | The app comes forward on `/jobs/41` (the page's `route` reads it) |
+| The same with the app's process killed (`am kill`; the notification stays posted) | A new process starts on `/jobs/42`, the notification's route |
+| **Not driven** | A notification's small icon (the probe has no launcher icon, so Android's fallback `info` icon shows), sound and vibration on a phone, Android 12 and below (`areNotificationsEnabled`), "Don't allow" followed by a post, a notification from the app's Rust with no page on screen, a tap with `route` empty |
+
+## An activity Android destroys while the app runs, 2026-11-23
+
+Emulator `rux_test`, probe `rux-harness\ud003-and`. The wedge was reproduced first with a throwaway debug hook that called `finish()` from `onNewIntent` (removed), then the fix was driven with a real system-style destroy: `am start --activity-clear-task`.
+
+| Case | Result |
+|---|---|
+| Before the fix: the activity destroyed while the loop runs | The log says "Activity destroy timeout" after 10 s, the process lives on, and relaunching it sits on the system splash screen for good. The main thread is blocked in `onDestroy`, waiting for `android_main` to return, and winit ignores the destroy message that would end it |
+| After: `am start --activity-clear-task` on a running app | `onDestroy` asks the loop to end, the log says "the activity is being destroyed: closing", the process exits cleanly, no timeout. **That launch itself is lost**: the new activity was starting in the process that was ending, so the person lands on the launcher |
+| Back, then a launch | Unchanged: the process ends, the next launch is a cold start on the first page |
+| **Not driven** | A destroy while a background service holds the process (the next step) |
+
+## Background service on Android, 2026-11-23
+
+Emulator `rux_test` (Android 15), probe `rux-harness\ud003-and` with `[background] types = ["dataSync"]`, read with `dumpsys activity services`, `dumpsys notification` and screenshots.
+
+| Case | Result |
+|---|---|
+| `background.start` before notifications were allowed | Throws `permission`, saying to ask from a tap first |
+| `background.start` after allowing | `isForeground=true foregroundId=1 types=0x1` (dataSync), the notification "On shift / Looking for jobs" on channel `shift` (importance 2) under Silent, and `{{ background.active }}` turns `true` |
+| Back with the service running | The process keeps its pid, the launcher is on top, the service is still foreground |
+| Tapping the service's notification with the app in the back | The app returns in the same process on `/board` |
+| `background.stop` | The service and its notification are gone, `active` is `false` |
+| Swiping the app from Recents with the service running | The process and the service both end (`stopWithTask`) |
+| A launch that clears the task while the service runs, before the fix | The new activity's `android_main` panics with `RecreationAttempt` and finishes, the service lives on, and the person lands on the launcher with no way to open the app's screen |
+| The same, with the restart | Log "a second activity in this process: restarting it", the old process dies, Android starts a new one into the app on the first page; the service is gone and `active` is `false` |
+| The restart with a link (`am start --activity-clear-task -a VIEW -d rux-notification:///jobs/77`) | The new process opens on `/jobs/77` |
+| **Not driven** | `background.start` from the back (needs an app thread), `types = ["location"]` without location allowed (`permission`), `keep-awake`, `onTimeout` (Android 15, six hours), the app's Rust calling `rux::background`, a real phone under Doze and vendor killers |
+
+## Notifications on the web, 2026-11-23
+
+Edge over CDP, probe `rux-harness\ud003-web` (a real `rux build --target web` bundle from `target/debug/rux`), the notification permission set in the profile, the page read by screenshot and the kept `Notification` objects read from `window.__ruxNotices`.
+
+| Case | Result |
+|---|---|
+| `notifications.post` on a `high` channel, allowed | One `Notification`, title and body as written, tag = the id, not silent |
+| The same on a `low` channel | `silent` is true |
+| A second post with the same id | Replaces the first (one entry for the tag) |
+| A channel `rux.toml` does not declare | Throws `undeclared`, naming the channels it declares and the table to add |
+| Notifications blocked in the browser | Throws `permission`, saying to ask from a tap first |
+| Tapping the notification (its `onclick`) with `route: "/jobs/41"` | The page's `route` reads `/jobs/41` |
+| `notifications.cancel(id)` and `cancelAll()` | The named one closes, then none are left |
+| **Not driven** | The OS toast itself and its sound (headless-style capture), a phone browser (Chrome on Android throws from `new Notification` without a service worker, which the call reports as `unsupported`), Safari and Firefox, a tap after the page was reloaded (the notification is gone with it) |
+
+## Notifications on Windows, 2026-11-23
+
+Windows 11, probe `rux-harness\ud003-win` run with `target/debug/rux run`, driven with the mouse and read by full-screen screenshots (`act.ps1`, `tap.ps1`). `rux run` registers the dev app's id under `HKCU\Software\Classes\AppUserModelId` at the first post, with the `[app] name` as its header.
+
+| Case | Result |
+|---|---|
+| `notifications.post` on a `high` channel | A toast headed `ud003-web` (the app's name) with the title and text, shown bottom right |
+| The same on a `low` channel | Posted without error and silent (`<audio silent>`); its toast was not told apart from the loud one by eye, the sound was not heard |
+| A channel `rux.toml` does not declare | Throws `undeclared`, naming the channels it declares |
+| Tapping the toast with `route: "/jobs/41"` | The window's `route` reads `/jobs/41` |
+| The same with the window minimized | The window comes back (restored and in front) on the route |
+| `notifications.cancel(id)` while the toast shows | The toast goes |
+| `notifications.cancelAll()` while a toast shows | The toast goes |
+| **Not driven** | A tap after the app quit (does nothing, recorded), `min` importance (`SuppressPopup`, action center only), the Action Center list, a packaged or installed build (only `rux run` was driven), the toast's sound, macOS and Linux (`unsupported`) |
+
+## Location on Android, 2026-11-23
+
+Emulator `rux_test` (Android 15), probe `rux-harness\ud002-and`, a dev build from `target/debug/rux`, fixes from `adb emu geo fix`, read by screenshots. Permission granted with `pm grant` (the system dialog itself is the `permissions` rows above).
+
+| Case | Result |
+|---|---|
+| `location.current` before location was allowed | Throws `permission`, saying to `request` from a tap first |
+| `location.current` after `geo fix 32.58 0.31` | `{ lat 0.31, lng 32.58, accuracyM 5, isMock false }` at once (Android's `getCurrentLocation`) |
+| `location.watch({ intervalMs: 2000 })`, then new `geo fix` values | `location.watching` is `true` and `location.position` follows each fix |
+| `location.stop()`, then a new fix | `watching` is `false` and `position` stays where it was |
+| Location switched off in the system (`settings put secure location_mode 0`), then `current` | Throws `disabled`, saying it is switched off in the system settings |
+| **Not driven** | The fix from a real GPS, `balanced` accuracy and an approximate-only grant, a timeout (the emulator always has a fix), Android 10 and below (the `requestLocationUpdates` path for `current`), a watch with the screen off and with a `location` service, `on_fix` from the app's Rust, `isMock` on a real device |
+
+## Location on the web, 2026-11-23
+
+Edge over CDP, probe `rux-harness\ud002-web` (a real `rux build --target web` bundle from `target/debug/rux`), the browser's location permission set in the profile, fixes from `Emulation.setGeolocationOverride`, the page read by screenshot.
+
+| Case | Result |
+|---|---|
+| `location.current`, allowed | `{ lat 0.31, lng 32.58, accuracyM 10, isMock false }` |
+| `location.watch`, then new overrides | `location.watching` is `true` and `location.position` follows (`isMock` is always `false`: a page cannot tell) |
+| `location.stop()`, then a new override | `watching` is `false` and `position` stays |
+| Location blocked in the browser, then `current` | Throws `permission` |
+| **Not driven** | The browser's own location prompt (the profile answered it), a `timeout`, a phone's browser, Safari and Firefox, a page on plain http (a browser refuses location there, which reports as `permission`), `intervalMs` and `distanceM` (a browser takes neither) |
+
+## Links and other apps, 2026-11-23
+
+Three targets, one probe app (`rux-harness\ud005-win`, `ud005-and`, `ud005-web`), each a dev build from `target/debug/rux`.
+
+| Case | Result |
+|---|---|
+| Windows 11: `links.open("https://example.com/?from=rux")` | The default browser opens that exact URL |
+| Windows: `links.open("file:///C:/Windows/notepad.exe")` | Throws `scheme`, naming the schemes that open |
+| Windows: `links.canOpen("https://x.co")`, `links.share(...)` | `true`; `share` throws `unsupported` |
+| Android emulator (Android 15): `links.dial("+256 (700) 000-000")` | The dialer, with `+256 700 000000` filled in and the call not placed |
+| Android: `links.sms("0700 000 000", "Hi & bye")` | The messaging app opens |
+| Android: `links.directions({ lat, lng, label })` | Google Maps opens (its first-run screen on the emulator) through the navigation intent |
+| Android: `links.share({ text: "hello" })` | The share sheet, "Sharing text", with `hello` |
+| Android: `links.canOpen` for `tel:`, `geo:` and `https:` | `true` for all three (the manifest's `<queries>`) |
+| Edge over CDP, anchor clicks logged: `open`, `dial`, `sms`, `directions` | `https` opens `target=_blank rel="noopener noreferrer"`; `tel:+256700000000`; `sms:0700000000?body=Hi%20%26%20bye`; the Google Maps `dir` URL with the destination |
+| Web: a `file:` URL, and `share` | `scheme`; `share` answered through `navigator.share` |
+| **Not driven** | `open` on Android through the probe (its first row sat under the status bar, so the tap did not land: the same call as `dial`), a phone with no dialer or maps app (`notfound`), turn-by-turn actually starting, WhatsApp, `share` to a real target, `gesture` in a browser, macOS and Linux, a call from a background thread, Safari and Firefox |
+
+## A scroller's position, date-time inputs and select options, 2026-11-24
+
+Windows 11 (`rux-harness\ud014-win`, `ud013-win`, `ud013s-win`, `rux run` from `target/debug/rux`) and the emulator `rux_test` (Android 15; `ud013-and`, `ud013s-and`). Read by screenshots, input by `mouse_event`, `SendKeys` and `adb shell input`.
+
+| Case | Result |
+|---|---|
+| A horizontal snap carousel: `el.scrollLeft`, `scrollWidth`, `clientWidth` in a handler | `0`, `1080`, `300` for a 300 px box over five 200 px cards with 20 px gaps |
+| `el.scrollTo(220, 0)` | `scrollLeft` reads 220 after the next frame; `@scroll` ran once, `@scrollend` once |
+| `el.scrollTo(440, 0, { smooth: true })` | It glides: `@scroll` ran about 23 times (once a frame), then `@scrollend` once |
+| Three horizontal wheel notches over the carousel | It moves, snaps back to a snap point, and `@scrollend` ran once for the wheel and its snap together |
+| `scrollTo` with an option it does not have | A warning naming `smooth`; nothing queued |
+| Windows: typing `2026-11-24T9:30` into `type="datetime-local"` | Written as `2026-11-24T09:30` |
+| Windows: typing `9:05` into `type="time"` with `min="08:00"`, then `7:00`, then `8:00` | `09:05`; `7:00` refused, the signal stays `09:05`; `08:00` accepted |
+| Android: a tap on `type="time"`, OK at 8:27 PM with `max="18:00"` | The time dialog; the value is refused and the signal stays empty |
+| Android: the same, AM chosen, OK | `08:27` |
+| Android: a tap on `type="datetime-local"` with `min="2026-11-24T08:00"` | The date dialog with days before the 24th greyed; choosing the 25th and OK opens the time dialog; AM and OK writes `2026-11-25T08:28` |
+| A select with `[{ value: 60, label: `1 hour` }, { value: 120, ... }, { value: 240, label: `4 hours`, disabled: true }, { value: 480, ... }]` bound to a signal holding `60` | The closed field shows `1 hour` while the signal reads 60 |
+| Windows: the dropdown | Labels, "4 hours" dim; a tap on it does nothing and the list stays open; "2 hours" writes the number 120, the field shows `2 hours`, and `@change` ran once with `event.value` 120 |
+| Windows: the arrows from `2 hours`, Down, Down, Enter | Pass over `4 hours` and write 480 |
+| Android: the select dialog | The same four labels with `4 hours` greyed and not tappable (the dialog stays open); `8 hours` writes 480 and shows `8 hours`, one `@change` |
+| **Not driven** | A phone browser's hidden inputs for `datetime-local`, `time` and `<option disabled>` (they run only where `touch_first()`), typing on the web, a touch fling's `@scrollend`, a finger resting mid-drag (`@scrollend` fires after 100 ms still), an RTL scroller's `scrollLeft`, Android 10 and below, a select whose options change while its dropdown is open |
+
+## Secrets and a file's bytes in the app's Rust, 2026-11-24
+
+Android emulator `rux_test` (Android 15), probe `rux-harness\ud0047-and` (a `native/` crate with `#[rux::export] async fn describe(file: rux::File)`), built with `target/debug/rux build --target android`. Windows: the unit tests, which call the real DPAPI.
+
+| Case | Result |
+|---|---|
+| `secrets.get` before anything is kept | `none` |
+| `secrets.set("refreshToken", "tok-abc-123")`, then `get` | `tok-abc-123` |
+| `force-stop` the app, start it, `get` | Still `tok-abc-123` |
+| `adb run-as ... cat no_backup/rux-secrets/refreshToken.bin`, searched for `tok-abc` | The file is under `no_backup/rux-secrets/` and holds no plain text |
+| `secrets.remove`, then `get` | `none` |
+| Windows: set, replace, remove, a second key, and `secrets.json` read as text | Values come back; the file holds neither text; a changed blob is refused |
+| Android picker: `pickFile({})`, choose `pick.png` (286 B), then `await files.describe(f)` | Script shows `picked pick.png 286 image/png`; the Rust read `286 bytes (said 286), starts 89 50 4e 47` (a PNG's first four bytes) through the `content://` URI |
+| Desktop: `rux::File::bytes` on a picked path; the file deleted; a file with no path | The bytes; `io`; `io` |
+| **Not driven** | The Windows window for `secrets`, the web reader for `File::bytes`, a camera photo after Android killed the app, a file over a few MB, Android 5 and below |
+
+## Pinch and rotate, network, location switch and settings pages, 2026-11-24
+
+Android emulator `rux_test` (Android 15), probe `rux-harness퀄7-and`. Two fingers injected with `sendevent` on `/dev/input/event2` (the emulator's multi-touch device; needs `adb root`), by `two_touch.py`: 14 steps of 50 ms around (540, 1200) on a 1080 x 500 box with `@gesturestart/@gesturechange/@gestureend`.
+
+| Case | Result |
+|---|---|
+| Two fingers 240 px apart spread to 640 px apart | `zoom` 2.6666 (640 / 240), `turn` 0, `event.touches.length` 2, `@gestureend` ran; the page did not scroll and nothing was tapped |
+| Two fingers 400 px apart, the line turned a quarter turn clockwise | `turn` 90, `zoom` unchanged |
+| Pinched back in to 240 px | `zoom` 1.0001, `turn` 0 |
+| `network.online` with airplane mode on, then off | `false` at once; `true` again after the emulator's Wi-Fi came back (about 10 s) |
+| `location.enabled()` with `settings put secure location_mode 0`, then 3 | `false`, then `true` |
+| `permissions.openLocationSettings()` | The system's Location page opened |
+| `permissions.openBatterySettings()` | "App battery usage" opened |
+| UD-012's Android shape: a component's `async fn verify()` awaits a native call that sets a native signal (`files.session`) from its own thread, and the page's `effect` on that signal starts `load()`, which awaits another native call | The component ends on `verified` (not stuck on "Checking..."), the page shows `3 orders` and `true`: fixed on Android |
+| An inset box-shadow (`inset 0 3px 0`) on a tab, Windows at 150% | Before: a faint pale line down the tab's left edge. After the hard-edged cut: gone (seen zoomed, before and after) |
+| Desktop wheel over a sideways scroller, plain and with `scroll-snap`, the page taller than the window | The page scrolls: nothing wrong |
+| The Android keyboard hidden by Back and by its own hide key, five frames each | No white window: not reproduced |
+| **Not driven** | A real phone's fingers (the emulator's are exact), three or more fingers, a pinch on a scroller's content, macOS trackpad pinch, the web and desktop (no touch here), Android 9 and below for `location.enabled()`, `network.online` on a captive portal |
+
+## UD-012 on the desktop, map tiles, a retired name in a timer, 2026-11-24
+
+**UD-012, the client app's shape.** The emulator probe above never removed the sign-in component, and the field
+report's desktop runs (2026-11-12) still failed. The app's shape as a test
+(`a_component_removed_by_the_signal_its_await_sets_lets_the_pages_load_finish` in
+`crates/rux-runtime/tests/async_listeners.rs`): `<sign-in />` under `r-elif="!signedIn"`, `computed signedIn =
+api.signedIn ?? false`, `effect { if signedIn { load(); } }`, the app's `effect` handing the session to a store.
+
+| Case | Expected | Result |
+|---|---|---|
+| The test, before the fix, 3 runs | the list loads after sign-in | fail, 3 of 3: the signed-in view with `[][][false][]`, the field report's "No orders yet." `load()` never started |
+| The same with the sign-in component left mounted, and with no app `effect` | | fail both: neither is the cause |
+| The `effect` reading `api.signedIn ?? false` itself, not the `computed` | | pass: the cause is a component's `effect` on a `computed` |
+| After the fix, 3 runs | | pass, 3 of 3 |
+| A component's `effect` reading only `computed more = twice + 1` (`twice = n * 2`), a tap setting `n` | `seen more 9 runs 2` | pass; before the fix it stayed at `more 3 runs 1` |
+
+**Map tiles.** Probe `rux-harness/tiles-perf/app.rux`: 64 PNG tiles of 256 px (8 x 8, `make_tiles.py`) in a
+`transform: translate(...) scale(...)` box in an 800 x 600 `overflow: hidden` viewport, moved by a 16 ms
+`setInterval` for 750 steps. `RUX_PROFILE=1`, 18 s per run, release builds, Windows 11 at 150%. Before: the
+installed CLI (2026-11-12); after: `target/release/rux.exe` from this tree.
+
+| Case | Before | After |
+|---|---|---|
+| Frame, median of 12 reports of 60 frames | 10.2 ms | 4.5 ms (about 2.2x faster) |
+| `patch` per frame | 6.3 ms | 1.8 ms (about 3.5x faster) |
+| CPU for the 18 s | 7.3 s | 3.8 s |
+| The same 64 cells as plain coloured boxes | `patch` 1.75 ms | `patch` 1.7 ms: an image now costs what a box does |
+| Screenshot mid-pan | | the grid drawn, panned and zoomed (`shot2_moving.png`) |
+
+The cause: a patch builds a fresh tree and resolved every `<image>` in it, reading each file from disk and parsing
+its header, every frame. Sizes are now read once per path and forgotten on each load (hot reload included).
+
+**A retired name in a timer.** `sin(t)` in a `setInterval` block inside `mounted` passed `rux check` and failed
+16 ms after the window opened (`sin` is retired: write `Math.sin(x)`). After the fix, `rux check` says it at the
+line, in the block, in `mounted`, and in a `fn` (once, not twice).
+
+**Not driven:** the client app itself with a CLI built from this tree (sign-in during a booking, desktop and
+Android); tiles on a phone or the emulator; a real drag or pinch over the tiles.
+
+**A map that keeps panning, tiles from the network.** Probe `rux-harness/tiles-perf/map.rux`: the 20 tiles under
+an 800 x 600 view in a keyed `r-for`, placed with `left`/`top`, from `tile_server.py` (a local server drawing any
+`/z/x/y.png`, 100 ms before each answer), panned 24 px a frame for 2,500 frames; `stress.ps1` samples the process
+every 5 s. The installed CLI from `431787e`.
+
+| Case | Result |
+|---|---|
+| 1,300 distinct tiles over 40 s | memory 215 MB at 5 s, then about 11 MB a second, 635 MB at the end, never given back (about 330 KB per tile seen: a decoded 256 px picture is 256 KB). Threads 18 to 27. `patch` 1.3 ms, `layout` 0.2 ms; `gpu` 9 to 14 ms; no frame over 16.7 ms after the first second; tiles drawn in place |
+| The same pan over 16 repeating URLs (control) | memory 183 to 201 MB over 25 s (a creep of about 0.7 MB a second, not explained); `gpu` 2.5 ms |
+
+So a map is not limited by layout or patching. It is limited by memory: every answer from the network
+(`remote.rs`) and every decoded picture (`rux_paint::ImageCache`) is kept for the life of the process, with no cap.
+A few minutes of panning on a phone would end with the system killing the app. New pictures also cost the GPU
+about 4x a frame while they arrive (not investigated).
+
+**Bounded, 2026-11-24** (plan `bounded-image-memory-and-disk-cache.md`, the owner's choices: fixed budgets,
+`Cache-Control` with 7 days by default, memory first). `map_long.rux` pans for 100 s, about 3,300 tiles. A
+temporary counting allocator in the CLI found what the stores did not explain.
+
+| Case | Result |
+|---|---|
+| Painter budget (128 MB) and remote budget (32 MB) | growth slowed from 11 to about 5 MB/s, still endless: 781 MB at 110 s |
+| Same, pictures decoded but not drawn | the same growth: not vello, not the GPU |
+| Same, list without `r-key` | the same: not the row cache |
+| Same, one shared HTTP client | the same; and a server that closes each connection made reused ones fail ("Peer disconnected", failures cached for good), so reverted |
+| The heap by block size | 2 to 4 KB blocks grew without end; sampled backtraces: `rux_style::interpreted`'s memo of inline styles, emptied only by a whole build, never by a patch, so a `:style` moving every frame added about 20 entries a frame |
+| The memo capped at 1,024 declaration sets | flat: working set 450 MB from 30 s to the end, Rust heap 163 MB (128 of it the picture budget) |
+| With the disk cache, cold (3,300 tiles fetched and written) | flat at about 350 MB; frames median 15.8 ms, none over 16.1 ms; `patch` 1.45 ms; no failed load; 3,304 files, 6.9 MB on disk; CPU 52.8 s, against 33.3 s warm: writing a new file costs about 6 ms of CPU (likely Defender's scan and the rename), on the fetch threads |
+| With the disk cache, warm (every tile from disk, the server answered nothing) | flat at about 350 MB; CPU 33.3 s |
+| `map_still.rux` with the server, then with the server stopped | the same 20 tiles both times, no load error (`disk_both.png`) |
+| The `gpu` phase at 9 to 14 ms while tiles arrive | not GPU work: it includes waiting for the next frame in `get_current_texture`, and an arrival wakes the window for an extra frame between the timer's; no fix needed |
+
+The rest outside the Rust heap (about 190 to 290 MB) fits vello's image atlas, which grows to 8192 x 8192 (256 MB)
+before it evicts anything: upstream behaviour, a report for Linebender, not a Rux change.
+
+**Android emulator** `rux_test` (Android 15, x86_64), probe `rux-harness/tiles-and` (the same pan, built with
+`target/release/rux.exe` from `c962f8c`, `RUX_PROFILE=1` baked in), the tile server reached through
+`adb reverse tcp:8765 tcp:8765`, `stress-and.ps1` reading `dumpsys meminfo` every 10 s.
+
+| Case | Result |
+|---|---|
+| The build | compiles and installs (the plain `cargo check` for Android needs the NDK that `rux build` sets up) |
+| 96 px a step for 240 s, 4,200 tiles | native heap 37 MB at 10 s, 97 MB at 30 s (the 64 MB picture budget full), then about 9 KB a tile to 135 MB: the network-bytes budget filling (tiles average 8 KB here), which stops at 32 MB. Total PSS 191 MB at the end. Before this change the same pan kept every picture |
+| Disk cache | 4,209 files, 34 MB in `cache/rux-images`; every tile fetched (server 4,200) |
+| Frames | about 230 ms each (`patch` 69 ms, `gpu` 150 ms): the emulator's software GPU and translated CPU, not a phone; no speed claim is made from it |
+| The screen after 240 s | tiles drawn; Android's "System UI isn't responding" over them (the system's own process, starved by the emulator's load, not the probe's) |
+
+**Not driven:** a phone (speed and memory there), a real server's `Cache-Control`, the web.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

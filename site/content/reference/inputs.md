@@ -21,7 +21,7 @@ the keystrokes and the value it shows are all addressed by the signal it binds
 
 `<input r-model="sig" placeholder="…">`: tap to focus, type to edit. The `type`
 is one of `text` (the default), `textarea`, `password`, `search`, `number`,
-`date`, `select`, `checkbox`, `switch`, `slider`, `radio` and `file`; `password`
+`date`, `datetime-local`, `time`, `select`, `checkbox`, `switch`, `slider`, `radio` and `file`; `password`
 shows bullets, refuses Copy and Cut and asks a phone's keyboard not to learn
 what is typed, and `search` is a one-line field that puts a Search key on a
 phone. There is a real **caret**: tapping puts it where you tapped, ←/→ move it, Home/End jump,
@@ -48,6 +48,14 @@ opens below when every option fits there, else above, else on the side with more
 room, and scrolls inside its panel when it is longer than the window. While it
 is open the wheel scrolls it, the arrows, Home and End move an outlined pick,
 Enter or Space takes it, and Escape or Tab closes it.
+
+**An option can be a map, `{ value, label, disabled }`.** The model holds the
+`value`, the field and the list show the `label` (the value's text when there is
+none), and a `disabled: true` row is drawn dim, skipped by the arrows and takes a
+tap without closing the list. When every `value` is a number, a pick writes a
+number to the model and `@change`'s `event.value` is one too, so a signal that
+holds `60` stays an `int`. A list of plain text is as it was, and a list that
+mixes the two shows the maps' labels and writes text.
 
 **On Android the platform's own picker opens instead**, a Material dialog with
 the current value already selected. A drawn dropdown is the right answer on a

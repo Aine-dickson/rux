@@ -147,8 +147,10 @@ cannot hold text: name a function and call it from the attribute.
 **Not built:** `'text'` as a string of any length. There is no character type.
 
 Escapes in strings: `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, `` \` ``, `\$`, `\xHH`,
-`\uHHHH` and `\UHHHHHHHH` (fixed width, no braces). A backtick string decodes
-the same escapes. Spreading anything but an array or a string in an array
+`\uHHHH`, `\u{H...}` (one to six hex digits in braces, as JavaScript and Rust
+write a character past `￿`: `"\u{2190} back"`) and `\UHHHHHHHH`. A
+backtick string decodes the same escapes, and so does a string inside a
+template's `{{ }}`. Spreading anything but an array or a string in an array
 literal is an error.
 
 **A number literal has no suffix** and no leading `+`. `-1` is the unary minus
@@ -745,15 +747,24 @@ fn save() {
   `Err`, a failed `await`, an `int` overflow or `r.unwrap()` arrives as an
   `Error`, `{ message: string, kind: string }`. `catch { }` without a name is
   allowed.
-- **`throw` takes a value.** `throw` of a record with a `message` field
-  (`throw { message: "empty title", kind: "input" }`, or `throw e` to rethrow)
-  arrives as that record. **Not built:** `throw "empty title"` arriving as an
-  `Error` with `kind` `"error"`; a thrown string is caught as that string, so
-  `e.message` on it fails although the checker types `e` as an `Error`.
+- **`throw` takes a value.** `throw "empty title"` arrives as an `Error`,
+  `{ message: "empty title", kind: "error" }`. `throw` of a record with a
+  `message` field (`throw { message: "empty title", kind: "input" }`, or
+  `throw e` to rethrow) arrives as that record.
+- **A native error can carry fields.** `e.status`, `e.details` and the like are
+  there when the app's Rust added them (see Native code, below); they are
+  typed `any`.
+- **`rux check` reads `e.kind == "x"`.** Where a `try` body holds only calls it
+  can look into (native calls whose Rust error type it can read, `throw`s of a
+  string or a record literal, and builtins), `x` has to be a kind the body can
+  throw, or one the language raises on its own; a misspelling is an error with
+  a "did you mean". A script function, a method on a value of unknown type or a
+  closure in the body leaves every kind possible, and nothing is checked.
 - **`kind`** is `"error"` for failures the language raises, `"overflow"` for
   `int` overflow, `"unwrap"` for `r.unwrap()` on an error, `"type"` for a
   write to a field a declared record does not have, `"panic"` for a panic in
-  native code, and the Rust error type's name for a native `Err`.
+  native code, and for a native `Err` the kind its `rux::IntoError` chooses, else
+  the Rust error type's name.
 - There is no `finally`.
 - **An error nothing catches** is reported to the dev overlay and `rux check`
   with the file and line. The handler stops there; its writes before the error
@@ -1045,7 +1056,7 @@ A template is checked against the script it binds to.
   what that attribute takes: `:disabled` (on `<input>` and `<button>`),
   `:readonly` and `:required` (on `<input>`) a `bool`; `:controls`,
   `:autoplay`, `:loop` and `:muted` on `<audio>` and `<video>` a `bool`;
-  `:options` a `string[]`, `:marks` a `TextMark[]`, `:src` (on `<image>`,
+  `:options` a list of text or of `{ value, label, disabled }` maps, `:marks` a `TextMark[]`, `:src` (on `<image>`,
   `<audio>` and `<video>`), `:poster`, `:d` and `:to` a `string`,
   `:style` a `string` or a `{ [string]: any }`, and `:r-transition` a
   `float?`, the progress of a swap or nothing.
@@ -1119,6 +1130,10 @@ With a default and no annotation, the default's type is inferred, as for a
 
 A plain attribute, `label="Save"`, passes a `string`, so a `float` prop must be
 bound: `:price="3"`. Passing text to it is an error at the tag.
+
+Written bare, with no `=`, an attribute passes `true`, as `disabled` is on for
+an element: `<driver-fields strict />` is `:strict="true"`. Bare on a prop that
+is not a `bool` is an error when the program runs.
 
 **Props are also checked when the program runs, in release builds as well as
 in development.** A prop is a boundary: its value can come from a route
@@ -1449,8 +1464,27 @@ pub fn open_till() -> Till { … }
   `HashMap` and `BTreeMap<String, T>` as `Map<string, T>`; `()` as `void`. A function
   returning `Result<T, E>` appears as returning `T`, and its `Err` is thrown as an
   `Error` whose `message` is `e.to_string()` and whose `kind` names the Rust error
-  type. A type with no Rux meaning in an exported signature is a compile error at the
+  type. **To choose the `kind` and add fields, implement `rux::IntoError` for the
+  error type** (a newtype of the app's own when the type is another crate's, since
+  the impl must be local):
+  `fn into_error(self) -> rux::Error { rux::Error::new(code, message).with("status", 409) }`.
+  `Error::with(name, value)` adds one field and `with_fields(a_rux_export_struct)`
+  adds a struct's; `message` and `kind` are never replaced, and a value that cannot
+  cross (an integer over `i64`) becomes `none`. `const KINDS: &[&str] = &["a", "b"]`
+  lists the kinds in string literals, which `rux check` reads from the source (a
+  debug build prints to stderr when a kind outside the list is thrown); without it
+  any string is allowed. A function returning `Result<T, rux::Error>` throws the
+  error as it is. A type with no Rux meaning in an exported signature is a compile error at the
   export, saying why, never dropped silently.
+- **Two apps can share one file of exports with `#[path]`.** In each app's
+  `native/src/lib.rs`: `#[path = "../../shared/session.rs"] pub mod session;`.
+  The file is Rust's own `#[path]` (relative to the file that holds the
+  declaration), so it compiles into each app's own crate and its
+  `#[rux::export]`s are read and registered as for any module of that crate;
+  `rux check` sees them without a build. There is no dependency crate and no
+  second registry. `rux run` may not rebuild when a shared file outside
+  `native/` changes (not checked): touch a file under `native/`. Exports from a
+  dependency crate are not read (UD-015, assessed and parked).
 - **`rux::Any` is the boundary value** (`None`, `Bool`, `Int`, `Float`, `Str`, `Array`,
   `Map`, `Resource`); a Rust function taking or giving it is typed `any`.
 - **`#[rux::init]`** marks one function run once before the first document loads,
@@ -2073,6 +2107,40 @@ the press) the event follows suit. On a touchscreen `@longpress` fires first.
 `@doubletap` runs after both taps' `@tap`, in the order a browser's `dblclick`
 comes, and a third tap starts counting again.
 
+### Pinch and rotate
+
+Two fingers on a box are one gesture: a pinch (they move apart or together), a
+rotate (the line between them turns) and a pan (the middle moves), reported
+together by three events, named as Safari's `gesturestart`, `gesturechange` and
+`gestureend`. They run on the topmost box under the two fingers that has one of
+them, or its nearest ancestor.
+
+```rux
+<view class="photo" @gesturestart="base = zoom"
+      @gesturechange="zoom = base * event.scale; turn = event.rotation"
+      @gestureend="base = zoom">
+```
+
+- **`event.scale`** is 1 where the fingers landed and 2 when twice as far
+  apart; **`event.rotation`** is degrees clockwise since they landed, and keeps
+  counting past a half turn. **`deltaScale`**, **`deltaRotation`** and
+  **`deltaX`**/**`deltaY`** (the middle's move) are since the last event, which
+  suits an app that applies each change as it comes. **`x`** and **`y`** are the
+  middle between the fingers, relative to the box, as every pointer event has
+  them; `touches` still lists both fingers. `phase` is `"start"`, `"change"` or
+  `"end"`.
+- **The fingers belong to the gesture** once the second lands: whatever the first
+  had begun (a press, a drag, a scroll, a text selection) is let go as a cancelled
+  touch is, with nothing fired, and neither finger scrolls or taps. `@gestureend`
+  runs once, when either lifts or the system takes it; the finger left down does
+  nothing until it lifts. A third finger is ignored.
+- **A box with none of the three behaves as before**: two fingers on it scroll
+  and tap as they did.
+- **The scroll under the box does not move** while the box has the fingers,
+  so a zoomable image inside a scroller can be pinched.
+- **Not built:** a trackpad's pinch on macOS (the platform reports it as its own
+  event) and a mouse standing in for two fingers. The fingers need a touchscreen.
+
 ### Drag and drop
 
 Picking something up in one place and putting it down in another is four
@@ -2200,6 +2268,7 @@ can name these without a `use`:
 | `TapEvent` | `@tap`, `@press`, `@release`, `@longpress`, `@contextmenu`, `@doubletap` | `button` |
 | `DragEvent` | `@drag` | `totalX`, `totalY`, `moveX`, `moveY`, `phase` |
 | `DropEvent` | `@dragstart`, `@dragmove`, `@dragenter`, `@dragover`, `@dragleave`, `@drop`, `@dragend` | `data`, `group`, `index`, `before`, `dropped`, `grabX`, `grabY` (see "Drag and drop") |
+| `GestureEvent` | `@gesturestart`, `@gesturechange`, `@gestureend` | `scale`, `rotation`, `deltaScale`, `deltaRotation`, `deltaX`, `deltaY`, `phase` (see "Pinch and rotate") |
 | `SwipeEvent` | `@swipe` | `totalX`, `totalY`, `moveX`, `moveY`, `direction` |
 | `KeyEvent` | `@key` | none of those, only `key`, `ctrl`, `shift`, `alt`, `meta`, `primary`, `repeat` |
 | `SelectEvent` | `@select` on a field | none of those, only `value`, `start`, `end`, `caret` |
@@ -2251,6 +2320,15 @@ async fn saveAs() {
 - **The window keeps going while the dialog is open**: it is the platform's
   dialog run off the window's thread, and the path comes back as an `await`'s
   answer does. On Linux it is the desktop portal's dialog, not GTK's.
+- **The app's Rust reads a `File` itself.** An export takes it as `rux::File`
+  (or `&rux::File`) and `await file.bytes()` gives the whole file as a
+  `Vec<u8>`: the path on the desktop, the `content://` URI through Android's
+  `ContentResolver`, the browser's own file on the web. The bytes never cross
+  to script, so an upload is `await api.upload(file)` with the read and the
+  request both in Rust. A file gone since it was chosen is an `io` error.
+  Shrinking a 12 MP photo before sending it is the app's Rust too (a crate
+  such as `image`); Rux gives it the bytes. Driven on Windows and the Android
+  emulator; the web reader is written, not driven.
 - **`file.path` is the desktop's**, for the app's Rust to open; `file.text()`
   reads it from script, everywhere.
 - **On the web and on Android** `pickFile` and `pickFiles` open the picker an
@@ -2324,6 +2402,36 @@ fn toggle() {
   `@play`, `@pause`, `@ended`, `@timeupdate` and `@error` (see the
   elements reference).
 
+## Secrets
+
+**`secrets.get(key)`, `secrets.set(key, value)` and `secrets.remove(key)`**
+keep a string where the platform protects it, for what `settings` (a plain
+JSON file) should not hold: a refresh token, an API key. Rux's own, so nothing
+is imported; plain calls, not `await`s.
+
+```rux
+secrets.set("refreshToken", token);
+let saved: string? = secrets.get("refreshToken");   // none when nothing is kept
+secrets.remove("refreshToken");                      // nothing there is no error
+```
+
+- **Values are strings.** A key is letters, digits and `._-`, up to 128
+  (anything else throws `option`). `set` replaces what was there.
+- **Android:** an AES-GCM key in the `AndroidKeyStore`, which never leaves it
+  and goes with the app; the sealed value is bound to its key's name and kept
+  in a file of the app's `noBackupFilesDir`, so a backup leaves it out and an
+  update keeps it. **Windows:** DPAPI, readable only by the same person on the
+  same machine, with the app's id as extra entropy; kept in `secrets.json`
+  beside `settings.json`.
+- **macOS, Linux and the web throw `unsupported`.** Nothing is kept rather
+  than kept where anyone can read it. A cross-platform app keeps the value in
+  `settings` there, knowingly, or not at all.
+- **The app's Rust uses `rux::secrets`** (`get`, `set`, `remove`), so a token
+  need not pass through script.
+- **Driven** on Windows (the real DPAPI, in tests) and the Android emulator
+  (set, get, kill the app and get again, remove; the file holds no plain
+  text). **Not driven:** the Windows window, a phone, Android 5 and below.
+
 ## Settings
 
 **`settings.get(key)`, `settings.set(key, value)` and `settings.remove(key)`**
@@ -2389,6 +2497,364 @@ async fn pasteUrl() {
 - A file with a `clipboard` of its own keeps it; the built-in is then
   `use native::rux::clipboard;`.
 
+## Permissions
+
+The platform lets an app use the location, the camera, notifications and the
+microphone only when the person allows it. An app says which it will ask for in
+`rux.toml`, once, with the reason; the script then asks at the moment it needs
+one.
+
+```toml
+[permissions.location]
+why = "Shows the customer where the rider is"
+background = true          # also while the app is not on screen
+
+[permissions.notifications]
+why = "Tells you when a new job arrives"
+```
+
+```rux
+async fn startShift() {
+  let state = await permissions.request("location");
+  if state == "blocked" {
+    permissions.openSettings();
+  } else if state == "denied" {
+    notice = permissions.why("location");
+  }
+}
+```
+
+**`await permissions.status(name)`** and **`await permissions.request(name)`**
+give one of:
+
+| Answer | Means |
+|---|---|
+| `"granted"` | allowed |
+| `"limited"` | a rough position, where a precise one was asked for |
+| `"unasked"` | never asked; `request` will show the system's dialog |
+| `"denied"` | refused, and the system will ask again |
+| `"blocked"` | refused for good: only the app's page in the system settings changes it |
+
+- **The names** are `"location"`, `"location-background"`, `"notifications"`,
+  `"camera"` and `"microphone"`, and any platform name listed under
+  `android = [...]` in `rux.toml`. **`"location-background"` is a second step**:
+  Android asks for it only once `"location"` is granted, and `request` throws
+  `order` before then. Declare it with `background = true` under
+  `[permissions.location]`.
+- **A name `rux.toml` does not declare throws `undeclared`**, naming the table
+  to add. Nothing is requested that was not written there, and the manifest is
+  written from the same table. `rux check` warns about it first, for a name
+  written out in the call (`permissions.request("camera")`), in documents and
+  in the app's Rust (`permissions::request("camera")`); a name built from
+  pieces is left to the runtime.
+- **`request` on a permission that is granted or blocked answers at once**; the
+  system shows no dialog for either. Only one dialog is open at a time, and
+  asking while one is open throws `busy`.
+- **`permissions.why(name)`** gives the sentence from `rux.toml`, for explaining
+  after a refusal. Rux draws no dialog of its own.
+- **`permissions.openSettings()`** opens this app's page in the system settings,
+  the only place a blocked permission changes. It throws `unsupported` on the
+  desktop and the web. **`permissions.openLocationSettings()`** opens the
+  system's location switch (for a `disabled` location error, see `location.enabled()`),
+  and **`permissions.openBatterySettings()`** the battery-optimisation list,
+  where a person lets the app run in the background on a phone that stops it.
+  Both only open the page: Rux does not ask for the exemption itself, which Play
+  limits to certain apps. Each throws `unsupported` off Android.
+- **Targets.** Android asks the system. On the desktop there is nothing to ask,
+  so a declared name is `"granted"`. The web asks the browser: `status` reads
+  `navigator.permissions` (a refusal the browser will not ask about again is
+  `"blocked"`), and `request` raises its prompt (a one-shot position, the
+  notification request, a camera or microphone stream stopped at once), which a
+  browser allows only from a tap, so call it in a tap handler before any
+  `await` or it throws `gesture`. `"location-background"`, a platform name and
+  `openSettings()` throw `unsupported` there.
+- **A file input's `capture` asks for the camera first** when the app declares
+  `camera`: Android refuses its camera to an app that lists the permission and
+  has not been given it. If the person refuses, the picker opens instead.
+- A file with a `permissions` of its own keeps it; the built-in is then
+  `use native::rux::permissions;`.
+
+## App state
+
+`app.state` is `"foreground"` while the app is on screen and `"background"` while
+it is not. A signal, so `{{ app.state }}` and an `effect` that reads it follow it.
+Nothing to import; a file with an `app` of its own keeps it.
+
+```rux
+let slow = computed(() => app.state == "background");
+```
+
+- **When it is `"background"`.** Android: the activity stopped (Home, another
+  app, the screen off). Web: the tab is hidden (`document.visibilityState`).
+  Desktop: every window is minimized; a window that another covers still counts
+  as in front, since it is drawn.
+- **The app's Rust reads the same value**, from any thread: `rux::app::state()`
+  gives the same two words, and `rux::app::on_change(|state| ...)` runs a
+  closure on each change (on the UI thread, so hand real work on). A poll in
+  the app's Rust can slow down when nobody is looking.
+- **It is `"foreground"` from the start**, and saying the same thing twice
+  changes nothing.
+- Leaving the front does not stop the app's Rust. What keeps work going once the
+  app is gone from the screen is [background work](#background-work).
+
+## Network
+
+`network.online` is `true` while the device has a network connection. A signal,
+so `{{ network.online }}` and an `effect` that reads it follow it. Nothing to
+import; a file with a `network` of its own keeps it, and a script mentions
+`network.` once to read it in markup.
+
+```rux
+<text r-if="!network.online">You are offline</text>
+let busy = computed(() => !network.online);
+```
+
+- **A link, not a server.** It means a default network exists (Android's
+  connectivity callback, a browser's `online` and `offline` events). A captive
+  portal or a dead upstream still reads online, so use it to show "offline" and
+  pause calls that would only fail, and still handle a failed request.
+- **The desktop cannot say** and reports `true`. It is `true` from the start,
+  and saying the same thing twice changes nothing.
+- **The app's Rust reads it too**: `rux::network::online()` and
+  `rux::network::on_change(|online| ...)` (on whichever thread the platform
+  reports, so hand real work on).
+- **Android** needs `ACCESS_NETWORK_STATE`, a permission with no prompt, which
+  a build adds beside `INTERNET` (a dev build, or `[permissions] network =
+  true`, or an app that names an address). An app that never has `INTERNET`
+  cannot be online anyway.
+
+## Notifications
+
+A local notification, posted by the app: a new job arrived, a timer ran out.
+It belongs to a **channel**, which `rux.toml` declares, and it needs the
+notification permission declared and allowed.
+
+```toml
+[permissions.notifications]
+why = "Tells you when a new job arrives"
+
+[channels.jobs]
+name = "New jobs"          # what the person reads in the system settings
+importance = "high"        # high: sound, pops up; default: sound; low: silent; min: silent, collapsed
+```
+
+```rux
+notifications.post({ id: "job-41", channel: "jobs", title: "New job", text: "Kololo to Ntinda", route: "/jobs/41" });
+notifications.cancel("job-41");
+notifications.cancelAll();
+```
+
+- **`id` names the notification.** Posting again with the same `id` replaces the
+  one on screen instead of adding another; `cancel(id)` takes it away, shown or
+  not. `title` and `channel` are required; `text` and `route` are optional.
+- **A tap opens the app on `route`**, as a link to that route would: navigated
+  to when the app is running, the first page when it was not. Without a `route`
+  it brings the app forward where it was.
+- **The call is checked in this order.** The channel is declared, else
+  `undeclared` (the message lists the declared ones and the table to add).
+  `[permissions.notifications]` is declared, else `undeclared`. The person has
+  allowed notifications, else `permission`: ask first with
+  `permissions.request("notifications")`, from a tap. A wrong or unknown option
+  throws `option`. A platform that cannot show them throws `unsupported`.
+- **A channel is the person's to tune.** The system settings list each channel
+  by its `name`, and the person can silence or switch off one without the
+  others, which is why "New jobs" and "On shift" are two. Android keeps their
+  choice: changing `importance` in `rux.toml` later does not move a channel
+  that already exists on a phone, so pick it before the first release or give
+  the channel a new id.
+- **The app's Rust posts the same way**, from any thread and with no page on
+  screen: `rux::notifications::post(Notice::new("job-41", "jobs", "New job")
+  .text("Kololo to Ntinda").route("/jobs/41"))?`, and `cancel(id)`,
+  `cancel_all()`. The same checks apply.
+- **Targets.** Android, the web and Windows. macOS and Linux throw
+  `unsupported`. On the web a notification is the browser's own
+  (`new Notification`, the `id` as its tag): ask with
+  `permissions.request("notifications")` from a tap first, a tap on it focuses
+  the page and opens `route`, and a phone's browser that wants a service worker
+  for it throws `unsupported`. On Windows it is a toast headed with the app's
+  `[app] name`; a tap restores the window and opens `route` while the app runs,
+  and does nothing once it has quit. A `low` or `min` channel's toast is silent.
+- **Not built yet:** a notification's own icon (it uses the app's launcher
+  icon), sound or vibration choices beyond the channel's `importance`, action
+  buttons, and push from a server.
+
+## Background work
+
+What lets the app's Rust go on running while the app is not on screen: a rider
+"on shift" keeps getting new jobs, and the app's own thread posts a
+[notification](#notifications) when one comes. On Android it is a **foreground
+service**, which Android shows as a permanent notification the person can see and
+tap.
+
+```toml
+[permissions.notifications]
+why = "Tells you when a new job arrives"
+
+[channels.shift]
+name = "On shift"
+importance = "low"          # it stays up, so keep it quiet
+
+[background]
+types = ["location"]        # what the service is for; Android refuses one that does not say
+keep-awake = true           # optional: hold the processor awake with the screen off
+```
+
+```rux
+background.start({ channel: "shift", title: "On shift", text: "Looking for jobs", route: "/board" });
+background.stop();
+{{ background.active }}     // a signal: true while the service runs
+```
+
+- **`start` is checked in this order.** `[background]` is declared, else
+  `undeclared`. The channel is declared, else `undeclared`.
+  `[permissions.notifications]` is declared, else `undeclared`. Then on Android:
+  notifications are allowed, else `permission`; and for a `location`, `camera`
+  or `microphone` type, that permission is allowed too, else `permission`
+  (Android 14 refuses the service otherwise). Starting while it runs updates the
+  notification.
+- **Android 12 and later start a service only while the app is in front**, so
+  call `start` from a tap. From the back it throws `background`.
+- **`types`** are `location`, `dataSync`, `mediaPlayback`, `connectedDevice`,
+  `remoteMessaging`, `camera`, `microphone` and `health`. The type a service
+  declares is the type it is held to: Android 15 ends a `dataSync` service after
+  six hours in a day (`background.active` then turns `false`), a `location` one
+  has no such limit.
+- **Back goes to the back.** While the service runs, Back at the root sends the
+  app to the back, as Home does, instead of closing it, so the screen and the
+  service stay one process. The notification's tap opens the app on its `route`.
+- **The service ends with the process, and so does the shift.** Swiping the app
+  away from Recents stops it. So does a launch that finds the app's screen gone
+  while the service lived on (Android took the activity back, or `close()` was
+  called on shift): this process cannot draw a second screen, so it ends, and
+  Android starts the app again in a fresh one with the intent it was opened
+  with (a tapped notification's route survives). **After a restart
+  `background.active` is `false`: keep "on shift" in the app's own saved state
+  (`settings`) and call `start` again when the app opens.**
+- **`{{ background.active }}` in markup needs the page's script to mention
+  `background` once** (a call is enough), as the name is linked from the
+  script; or write `use native::rux::background;`. A file with a `background` of
+  its own (a `prop background`, a `let background`) keeps it.
+- **`rux check` reads the calls.** A literal `channel:` in `notifications.post`
+  or `background.start` that `rux.toml` does not declare, a `Notice::new` in the
+  app's Rust with such a channel, and a `background.start` with no `[background]`
+  are warned about, naming the table to add. A channel built from pieces is not
+  read, and the runtime still throws `undeclared` for it.
+- **The app's Rust** has the same calls: `rux::background::start(Options::new(
+  "shift", "On shift").text("Looking for jobs").route("/board"))?`, `stop()`,
+  `active()` and `on_change(|active| ...)`. Poll on your own thread while
+  `active()`.
+- **Targets.** Android is built. On the desktop `start` and `stop` succeed and
+  `active` follows them: the process runs anyway, and closing the main window
+  still quits. On the web they throw `unsupported`.
+
+## Location
+
+Where the device is: one fix, or a watch that keeps reporting. It needs
+`[permissions.location]` in `rux.toml` and the person's consent
+(`permissions.request("location")`, from a tap).
+
+```rux
+let fix = await location.current({ accuracy: "high", timeoutMs: 10000 });
+// fix: { lat, lng, accuracyM, at, isMock }   (at: milliseconds since the epoch)
+
+location.watch({ intervalMs: 15000, distanceM: 0, accuracy: "high" });
+location.stop();
+{{ location.position?.lat }}    // a signal: the newest fix, `none` before one
+{{ location.watching }}         // a signal: true while a watch runs
+```
+
+- **`current`** gives one fix. Options: `accuracy` (`"high"`, GPS, the default, or
+  `"balanced"`, cell and Wi-Fi) and `timeoutMs` (30 000). **`watch`** takes
+  `accuracy`, `intervalMs` (the shortest wait between fixes, 5 000) and
+  `distanceM` (the shortest move between them, 0). Calling it again replaces
+  the watch. `stop` ends it, and stopping what is not running is not an error.
+- **Errors, by `kind`.** `undeclared` (no `[permissions.location]`),
+  `permission` (not allowed: ask first), `disabled` (location is switched off
+  in the system; open its settings), `timeout`, `option` (a wrong or unknown
+  option) and `unsupported` (the desktop has no location yet).
+- **An approximate-only grant gives `balanced` fixes**, whatever `accuracy`
+  asked for, and `accuracyM` says how coarse they are.
+- **A watch ends with the app, unless a service keeps the process.** Android
+  throttles a background app's location, so a rider who is "on shift" starts a
+  [`background`](#background-work) service of type `location` (with
+  `[permissions.location] background = true`) beside the watch.
+- **The app's Rust hears every fix, with no page on screen**:
+  `rux::location::on_fix(|fix| ...)` runs per fix on the thread that delivers
+  it (keep it short; hand a request to your own thread), `watch(Options::new()
+  .interval_ms(15_000))?`, `stop()`, `position()`, `watching()` and `current(
+  Options::new()).await?` are the same calls. Script reads `location.position`,
+  which holds only the newest.
+- **`{{ location.position }}` in markup needs the page's script to mention
+  `location.` once** (a call is enough), as `background` does. A file with a
+  `location` of its own (a `prop location`, a `let location`) keeps it.
+- **Targets.** Android uses the platform's own `LocationManager`, not Google's
+  fused provider (no Play Services; a little more battery). The web uses
+  `navigator.geolocation`: the browser asks the person itself, takes no
+  `intervalMs` or `distanceM`, and reports `isMock` as `false`. The desktop
+  throws `unsupported`.
+- **`location.enabled()`** says whether the system's location switch is on, so
+  an app can say "turn location on" before a `disabled` error, and
+  `permissions.openLocationSettings()` opens the page that turns it on. Android
+  reads the switch; the web and the desktop cannot and answer `true`. The app's
+  Rust has `rux::location::enabled()` and `rux::permissions::open_location_settings()`.
+- **Not built yet:** the battery optimisation exemption (only its page,
+  `permissions.openBatterySettings()`), Google's fused provider, and a desktop
+  backend.
+
+## Links and other apps
+
+Hands the person over to another app: the browser, the dialer, the messaging
+app, a maps app, the share sheet. Nothing here needs a permission: the other
+app opens in front, and what happens next (a call, a message) is the person's
+to confirm.
+
+```rux
+links.open("https://example.com/track/42");           // a URL, in the app that handles it
+links.dial("+256 700 000 000");                       // the dialer, number filled in, no call placed
+links.sms("+256700000000", "Your parcel is here");    // the messaging app, text filled in
+links.directions({ lat: 0.33, lng: 32.6, label: "Pickup, Kololo" });
+links.share({ title: "Track your parcel", text: "https://track.example/42" });
+if links.canOpen("tel:+256700000000") { ... }          // whether something would take it
+```
+
+- **Only some schemes open**: `https`, `http`, `tel`, `sms`, `mailto` and
+  `geo`. Anything else (`file:`, `intent:`, `content:`, `javascript:`, a
+  custom scheme) throws `scheme`, because a link that came from a server must
+  never reach an arbitrary intent. A URL needs its scheme written out
+  (`https://example.com`, not `example.com`) and holds no line breaks.
+- **`dial`, `sms` and `directions` build their own URL**, so a number or a
+  label is escaped, not trusted. A number is digits with an optional leading
+  `+`; spaces, dashes, dots and brackets are dropped. Anything else throws
+  `option`. WhatsApp is `links.open("https://wa.me/256700000000?text=Hi")`:
+  it has no call of its own.
+- **`directions` starts turn-by-turn where it can.** Android: Google Maps'
+  navigation when it is installed, else a pin in whichever maps app the person
+  has (`geo:`), else the Google Maps web page. A desktop and a browser open the
+  web page. `lat` is -90 to 90 and `lng` -180 to 180, else `option`.
+- **`share`** needs a `text` (and takes an optional `title`). A desktop has no
+  share sheet and throws `unsupported`; a browser uses `navigator.share` where
+  it has one.
+- **`canOpen(url)`** says whether something on this device would handle a URL,
+  so a button can be hidden. On Android it reads what the manifest's
+  `<queries>` allow (a browser, a dialer, messaging, mail and maps are listed
+  for you). A desktop and a browser cannot ask what is registered and answer
+  `true`; the open itself throws `notfound` where nothing handles it.
+- **Errors, by `kind`.** `scheme`, `option`, `notfound` (nothing on this
+  device handles it), `gesture` (a browser opens another page only from a tap:
+  call it in a tap handler, before any `await`) and `unsupported`.
+- **The app's Rust** has the same calls: `rux::links::open`, `dial`, `sms`,
+  `directions(Directions::new(lat, lng).label("..."))`, `share(Share { title,
+  text })` and `can_open`, from any thread. Android 10 and later refuse to start
+  an activity from an app that is not in front, so a call from a background
+  thread while the app is away shows nothing: post a notification with a route
+  instead.
+- **`rux check` reads the literals.** A `links.open("file:///x")`, or a
+  `links.dial("call me")`, is warned about before the app runs. A URL built at
+  run time is not read, and the call still throws.
+- **Mention `links.` once in the page's script to call it**, as `background` does; a file with a `links` of its own keeps it.
+- **Not built:** choosing which maps app, opening a file or a picked document
+  in another app, placing the call itself (`CALL_PHONE`), and contacts.
+
 ## Talking to the outside
 
 | Call | Does |
@@ -2437,6 +2903,9 @@ Each result carries:
 |---|---|
 | `tag`, `id`, `classes` | `id` is absent rather than empty when there is none |
 | `x`, `y`, `width`, `height` | The laid-out box, in absolute window pixels |
+| `scrollLeft`, `scrollTop` | How far a box that scrolls is scrolled from its start, in logical pixels. `0` on a box that does not scroll |
+| `scrollWidth`, `scrollHeight` | The size of what a scroller holds, which the offsets can reach to `scrollWidth - clientWidth`. A box that does not scroll: its own size |
+| `clientWidth`, `clientHeight` | The visible part of a scroller: its own box, without the bars |
 
 **Geometry is one frame stale**, exactly as `getBoundingClientRect` is in a
 browser: a handler runs before the next layout, so it reads what the last one
@@ -2450,6 +2919,21 @@ let card = query(".card")[0];
 report = card.width ?? "not laid out yet";
 ```
 
+**A scroller's position is read the same way, and one frame stale.**
+`scrollLeft` and `scrollTop` are where the box was scrolled to in the frame on
+screen, so a handler that calls `scrollTo` and reads `scrollLeft` straight after
+sees the old one.
+
+**`@scroll` and `@scrollend` hear a scroller.** `@scroll` runs at most once a
+frame while the offset moves, from a wheel, a drag, a fling, a snap glide or
+`scrollTo`; `@scrollend` runs once, after it has been still for 100 ms with
+nothing coasting or gliding. The handler's `event` is a `ScrollEvent`:
+`scrollLeft`, `scrollTop`, `maxLeft` and `maxTop`.
+
+```rux
+<view class="row" @scroll="dot = round(event.scrollLeft / 220)">...</view>
+```
+
 ## Acting on an element
 
 None of these edits the tree, which is why they can exist at all. They move host
@@ -2461,6 +2945,7 @@ state, and the next build produces the tree it would have produced anyway.
 | `el.focus()` | Puts the caret in a text input |
 | `blur()` | Drops focus entirely |
 | `el.scrollIntoView()` | Scrolls the containing scroller until it is visible |
+| `el.scrollTo(x, y)`, `el.scrollTo(x, y, { smooth: true })` | Scrolls this box to `x` and `y` from its start, clamped to what it can scroll; `smooth` glides there. On an element that does not scroll, the box it is in. Leaves a snap point alone: a carousel's card is `el.scrollTo(index * card.width, 0)` |
 | `el.scrollBy(dx, dy)` | Scrolls this box by that many logical pixels, clamped to what it can scroll; an element that does not scroll hands it to the box it is in |
 | `el.setSelectionRange(start, end)` | Selects characters `start` to `end` of a text field, the caret at `end`, and gives it focus |
 | `el.insertText(text)` | Replaces a text field's selection with `text` as typing would: one undo step, `@input` after it, the caret after the text |
