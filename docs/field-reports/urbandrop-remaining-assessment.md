@@ -93,7 +93,10 @@ is read from code or the reports and is marked so.
   `scroll-snap` (driven in a window). `query.code ?? ""` fails when the key is absent by design (strict map
   reads), and the message already says to write `"code" in query`. The keyboard's white flash did not reproduce
   (the Back key and the keyboard's own hide key, five frames each, on the emulator).
-- **Still open:** UD-012's Android shape and a camera photo after Android kills the app. The photo's `content://`
+- **UD-012's Android shape is fixed:** a probe with a component's `async fn` awaiting a native call that sets a
+  native signal, and a page `effect` on that signal, ends with the component on `verified` and the page loaded
+  (driven on the emulator, `08-user-tests`).
+- **Still open:** a camera photo after Android kills the app. The photo's `content://`
   URI is kept in the saved state and is read by the path driven for UD-004, but the camera itself was not driven.
   The trailing space in a row of `<text>` stays "probably correct CSS" until the web page's markup is known.
 

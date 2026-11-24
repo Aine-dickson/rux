@@ -3741,6 +3741,10 @@ Android emulator `rux_test` (Android 15), probe `rux-harness퀄7-and`. Two finge
 | `location.enabled()` with `settings put secure location_mode 0`, then 3 | `false`, then `true` |
 | `permissions.openLocationSettings()` | The system's Location page opened |
 | `permissions.openBatterySettings()` | "App battery usage" opened |
+| UD-012's Android shape: a component's `async fn verify()` awaits a native call that sets a native signal (`files.session`) from its own thread, and the page's `effect` on that signal starts `load()`, which awaits another native call | The component ends on `verified` (not stuck on "Checking..."), the page shows `3 orders` and `true`: fixed on Android |
+| An inset box-shadow (`inset 0 3px 0`) on a tab, Windows at 150% | Before: a faint pale line down the tab's left edge. After the hard-edged cut: gone (seen zoomed, before and after) |
+| Desktop wheel over a sideways scroller, plain and with `scroll-snap`, the page taller than the window | The page scrolls: nothing wrong |
+| The Android keyboard hidden by Back and by its own hide key, five frames each | No white window: not reproduced |
 | **Not driven** | A real phone's fingers (the emulator's are exact), three or more fingers, a pinch on a scroller's content, macOS trackpad pinch, the web and desktop (no touch here), Android 9 and below for `location.enabled()`, `network.online` on a captive portal |
 
 ## Standing gaps
