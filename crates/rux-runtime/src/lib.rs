@@ -75,8 +75,8 @@ pub use rux_native as native;
 /// interface, which a shell installs with code behind it.
 pub mod builtins {
     pub use rux_script::native::{
-        app_interface, background_interface, builtin_interface, clipboard_interface, links_interface, location_interface, notifications_interface, permissions_interface, secrets_interface, set_media, settings_interface,
-        window_interface, APP_MODULE, BACKGROUND_MODULE, LINKS_MODULE, LOCATION_MODULE, BUILTIN_FNS, BUILTIN_MODULE, NOTIFICATIONS_MODULE, CLIPBOARD_MODULE, PERMISSIONS_MODULE, SECRETS_MODULE, SETTINGS_MODULE,
+        app_interface, background_interface, builtin_interface, clipboard_interface, links_interface, location_interface, network_interface, notifications_interface, permissions_interface, secrets_interface, set_media, settings_interface,
+        window_interface, APP_MODULE, BACKGROUND_MODULE, LINKS_MODULE, LOCATION_MODULE, NETWORK_MODULE, BUILTIN_FNS, BUILTIN_MODULE, NOTIFICATIONS_MODULE, CLIPBOARD_MODULE, PERMISSIONS_MODULE, SECRETS_MODULE, SETTINGS_MODULE,
         WINDOW_MODULE,
     };
 }
@@ -460,6 +460,7 @@ pub struct ScrollRequest {
 const EVENT_NAMES: &[&str] = &[
     "tap", "press", "release", "longpress", "swipe", "drag", "contextmenu", "doubletap",
     "dragstart", "dragmove", "dragenter", "dragover", "dragleave", "drop", "dragend",
+    "gesturestart", "gesturechange", "gestureend",
     "scroll", "scrollend",
 ];
 
@@ -1160,6 +1161,7 @@ fn event_type(el: &rux_parser::Element, name: &str, tags: &TagProps) -> rux_scri
             "DropEvent".to_string()
         }
         "scroll" | "scrollend" => "ScrollEvent".to_string(),
+        "gesturestart" | "gesturechange" | "gestureend" => "GestureEvent".to_string(),
         "swipe" => "SwipeEvent".to_string(),
         // Where the caret and the selection are, in characters of the value.
         "select" if el.tag == "input" => "SelectEvent".to_string(),

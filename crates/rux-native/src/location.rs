@@ -124,6 +124,8 @@ pub struct Backend {
     pub current: fn(Options) -> Answer,
     pub watch: fn(Options) -> Result<(), Error>,
     pub stop: fn() -> Result<(), Error>,
+    /// Whether the system's location switch is on.
+    pub enabled: fn() -> bool,
 }
 
 static BACKEND: OnceLock<Backend> = OnceLock::new();
@@ -202,6 +204,14 @@ pub fn stop() -> Result<(), Error> {
     (backend()?.stop)()
 }
 
+/// Whether the system's location switch is on. A platform that cannot say (the
+/// web, the desktop) answers `true`: the call that needs it fails with its own
+/// reason. When it is off, [`crate::permissions::open_location_settings`] opens
+/// the page that turns it on.
+pub fn enabled() -> Result<bool, Error> {
+    Ok((backend()?.enabled)())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,6 +227,7 @@ mod tests {
     fn a_fix_reaches_the_signal_and_every_listener_and_a_call_without_a_shell_says_so() {
         assert_eq!(watch(Options::new()).unwrap_err().kind, "unavailable");
         assert_eq!(stop().unwrap_err().kind, "unavailable");
+        assert_eq!(enabled().unwrap_err().kind, "unavailable");
         assert!(position().is_none() && !watching());
 
         let heard = Arc::new(AtomicUsize::new(0));

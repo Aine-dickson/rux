@@ -32,6 +32,7 @@ mod background;
 mod media;
 mod links;
 mod location;
+mod network;
 mod secrets;
 mod notifications;
 mod image_events;
@@ -51,6 +52,7 @@ mod settings;
 mod caption;
 mod dnd;
 mod dnd_session;
+mod two_finger;
 mod slides;
 mod window_module;
 
@@ -788,6 +790,21 @@ fn snap_target(snap: &Snap, view: (f32, f32), from: Offset, to: Offset) -> Optio
 const BAR_MIN_THUMB: f32 = 24.0;
 /// One line of scroll travel, the wheel's unit, and the arrow keys'.
 const LINE: f32 = 24.0;
+
+/// Two fingers followed as one gesture on a box with `@gesturestart`,
+/// `@gesturechange` or `@gestureend`. See `two_finger`.
+struct Pinch {
+    /// The two fingers, by id, fixed when the second one landed.
+    ids: (u64, u64),
+    track: two_finger::TwoFinger,
+    /// The box's place and size, as they were when the gesture began.
+    origin: (f32, f32),
+    size: (f32, f32),
+    handlers: Vec<(rux_layout::Gesture, String)>,
+    instance: Option<String>,
+    /// What the last report said, which `@gestureend` repeats.
+    last: two_finger::Update,
+}
 
 /// The middle or right button held down on an element with pointer handlers.
 #[derive(Clone, Debug)]
@@ -2239,6 +2256,12 @@ struct App {
     /// with id 0 while a button is held, so a handler written for a phone reads
     /// the same on a desktop.
     points: Vec<(u64, (f32, f32))>,
+    /// Two fingers on a box with a `@gesture*` handler: the pair, followed.
+    pinch: Option<Pinch>,
+    /// Fingers that landed or remained while a two-finger gesture was going or
+    /// had ended, which do nothing until they lift: a third finger, or the one
+    /// left after the other let go, which must not start a scroll.
+    pinch_tail: Vec<u64>,
     /// The `r-model` of the currently focused input, if any.
     focused: Option<String>,
     /// The `r-key` of the row that input is in, when it is inside an `r-for`.
@@ -2555,6 +2578,8 @@ impl App {
             last_tap: None,
             last_drag_press: None,
             points: Vec::new(),
+            pinch: None,
+            pinch_tail: Vec::new(),
             touch: None,
             touch_track: Vec::new(),
             scroll_target: None,
@@ -5120,6 +5145,90 @@ impl App {
         let Some((_, body)) = press.handlers.iter().find(|(g, _)| *g == kind) else { return };
         let event = self.pointer_event(fx, fy, press.origin, press.size, press.button);
         if self.document.apply_handler_with_event(body, press.instance.as_deref(), &event) {
+            self.request_redraw();
+        }
+        self.adopt_element_requests();
+    }
+
+    /// A second finger has landed. When the two are over a box with a
+    /// `@gesture*` handler they become one gesture: whatever the first finger
+    /// had started (a press, a drag, a scroll, a text selection) is let go as a
+    /// cancelled touch is, and `@gesturestart` runs. Whether one began.
+    fn pinch_begin(&mut self) -> bool {
+        if self.pinch.is_some() || self.points.len() != 2 {
+            return false;
+        }
+        let ((ida, a), (idb, b)) = (self.points[0], self.points[1]);
+        let mid = ((a.0 + b.0) / 2.0, (a.1 + b.1) / 2.0);
+        let Some(region) = rux_layout::pinch_at(&self.hits, mid.0, mid.1).or_else(|| rux_layout::pinch_at(&self.hits, a.0, a.1))
+        else {
+            return false;
+        };
+        let (origin, size) = ((region.x, region.y), (region.width, region.height));
+        let (handlers, instance) = (region.gestures.clone(), region.instance.clone());
+        let mut track = two_finger::TwoFinger::start(a, b);
+        let first = track.update(a, b);
+        // The first finger's own gesture ends here, without firing anything.
+        self.touch = None;
+        self.press = None;
+        self.fling = None;
+        self.scroll_target = None;
+        self.touch_track.clear();
+        self.dnd_cancel();
+        self.gesture = None;
+        self.gesture_deadline = None;
+        self.bar_drag = None;
+        self.text_drag = false;
+        self.touch_text = None;
+        self.handle_drag = None;
+        self.pinch_tail.clear();
+        self.pinch = Some(Pinch { ids: (ida, idb), track, origin, size, handlers, instance, last: first });
+        self.fire_pinch(rux_layout::Gesture::GestureStart, "start", first);
+        true
+    }
+
+    /// Either finger of a two-finger gesture moved.
+    fn pinch_moved(&mut self) {
+        let Some(p) = self.pinch.as_mut() else { return };
+        let at = |id: u64| self.points.iter().find(|(i, _)| *i == id).map(|(_, pos)| *pos);
+        let (Some(a), Some(b)) = (at(p.ids.0), at(p.ids.1)) else { return };
+        let update = p.track.update(a, b);
+        p.last = update;
+        self.fire_pinch(rux_layout::Gesture::GestureChange, "change", update);
+    }
+
+    /// One of the two fingers lifted or was taken: `@gestureend`, once. The
+    /// finger that remains does nothing until it lifts, so it cannot start a
+    /// scroll or a tap from the middle of what was a pinch.
+    fn pinch_end(&mut self, lifted: u64) {
+        let Some(p) = self.pinch.as_ref() else { return };
+        let (last, other) = (p.last, if p.ids.0 == lifted { p.ids.1 } else { p.ids.0 });
+        self.fire_pinch(rux_layout::Gesture::GestureEnd, "end", last);
+        self.pinch = None;
+        self.pinch_tail.push(other);
+    }
+
+    /// Run a two-finger handler: the pointer's `event`, at the middle between
+    /// the fingers, and what the gesture has done.
+    fn fire_pinch(&mut self, kind: rux_layout::Gesture, phase: &str, u: two_finger::Update) {
+        use rux_reactive::Value;
+        let Some(p) = self.pinch.as_ref() else { return };
+        let Some((_, body)) = p.handlers.iter().find(|(g, _)| *g == kind).cloned() else { return };
+        let (origin, size, instance) = (p.origin, p.size, p.instance.clone());
+        let mut event = self.pointer_event(u.center.0, u.center.1, origin, size, 0);
+        if let Value::Map(fields) = &mut event {
+            let n = |k: &str, v: f32| (k.to_string(), Value::Number(v as f64));
+            fields.extend([
+                n("scale", u.scale),
+                n("rotation", u.rotation),
+                n("deltaScale", u.delta_scale),
+                n("deltaRotation", u.delta_rotation),
+                n("deltaX", u.delta.0),
+                n("deltaY", u.delta.1),
+                ("phase".to_string(), Value::Text(phase.to_string())),
+            ]);
+        }
+        if self.document.apply_handler_with_event(&body, instance.as_deref(), &event) {
             self.request_redraw();
         }
         self.adopt_element_requests();
@@ -9587,6 +9696,16 @@ impl ApplicationHandler<RuxEvent> for App {
                         // not this one turned out to be a tap.
                         self.points.retain(|(id, _)| *id != touch.id);
                         self.points.push((touch.id, here));
+                        // Two fingers over a box that listens for them are one
+                        // gesture; a third, or any finger while one is going,
+                        // waits until it lifts.
+                        if self.pinch.is_some() {
+                            self.pinch_tail.push(touch.id);
+                            return;
+                        }
+                        if self.points.len() == 2 && self.pinch_begin() {
+                            return;
+                        }
                         // A selection handle is the shell's and is above the
                         // page, so a finger on one takes it before anything
                         // under it, the app's own gestures included.
@@ -9617,6 +9736,15 @@ impl ApplicationHandler<RuxEvent> for App {
                             p.1 = here;
                         }
                         self.track_touch(here);
+                        if let Some(p) = &self.pinch {
+                            if p.ids.0 == touch.id || p.ids.1 == touch.id {
+                                self.pinch_moved();
+                            }
+                            return;
+                        }
+                        if self.pinch_tail.contains(&touch.id) {
+                            return;
+                        }
                         if self.handle_drag.is_some() {
                             self.drag_handle(at);
                             return;
@@ -9678,6 +9806,16 @@ impl ApplicationHandler<RuxEvent> for App {
                         // finger that caused the event is part of the event, so
                         // it is removed once, at the end of this arm.
                         let lifted = touch.id;
+                        if self.pinch.as_ref().is_some_and(|p| p.ids.0 == lifted || p.ids.1 == lifted) {
+                            self.pinch_end(lifted);
+                            self.points.retain(|(id, _)| *id != lifted);
+                            return;
+                        }
+                        if let Some(at) = self.pinch_tail.iter().position(|id| *id == lifted) {
+                            self.pinch_tail.remove(at);
+                            self.points.retain(|(id, _)| *id != lifted);
+                            return;
+                        }
                         if self.release_handle() {
                             self.points.retain(|(id, _)| *id != lifted);
                             return;
@@ -9727,6 +9865,10 @@ impl ApplicationHandler<RuxEvent> for App {
                         self.points.retain(|(id, _)| *id != lifted);
                     }
                     TouchPhase::Cancelled => {
+                        if self.pinch.as_ref().is_some_and(|p| p.ids.0 == touch.id || p.ids.1 == touch.id) {
+                            self.pinch_end(touch.id);
+                        }
+                        self.pinch_tail.retain(|id| *id != touch.id);
                         self.touch = None;
                         self.press = None;
                         // A cancelled gesture is not a throw: the system took
@@ -12839,6 +12981,7 @@ fn install_rux_modules() {
     location::install_location();
     links::install_links();
     secrets::install_secrets();
+    network::install_network();
     media::install();
     // A browser has no thread to run a native call's future on: it runs on
     // the page's own, between frames, as every promise does. Before loading
@@ -14488,18 +14631,56 @@ pub(crate) fn android_cancel_notification(tag: Option<&str>) {
     });
 }
 
-/// Open this app's page in the system settings.
+/// Open a page of the system settings: `"app"` (this app's own), `"location"`
+/// (the location switch) or `"battery"` (the battery-optimisation list).
 #[cfg(target_os = "android")]
-pub(crate) fn android_open_app_settings() {
+pub(crate) fn android_open_settings(page: &str) {
     let Ok(activity) = ACTIVITY.lock() else { return };
     let Some(activity) = activity.as_ref() else { return };
     let ctx = ndk_context::android_context();
     // Safety: as in `android_set_text_input`, which records the reasoning.
     let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
     let _ = vm.attach_current_thread(|env| {
-        env.call_method(activity, jni::jni_str!("ruxOpenAppSettings"), jni::jni_sig!("()V"), &[])?;
+        let page = env.new_string(page)?;
+        env.call_method(
+            activity,
+            jni::jni_str!("ruxOpenSettings"),
+            jni::jni_sig!("(Ljava/lang/String;)V"),
+            &[jni::JValue::Object(&page)],
+        )?;
         Ok::<(), jni::errors::Error>(())
     });
+}
+
+/// Whether the system's location switch is on. `true` when the activity
+/// cannot be asked, so a call that needs a position fails with its own reason.
+#[cfg(target_os = "android")]
+pub(crate) fn android_location_enabled() -> bool {
+    let Ok(activity) = ACTIVITY.lock() else { return true };
+    let Some(activity) = activity.as_ref() else { return true };
+    let ctx = ndk_context::android_context();
+    // Safety: as in `android_set_text_input`, which records the reasoning.
+    let vm = unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) };
+    vm.attach_current_thread(|env| {
+        let on = env.call_method(activity, jni::jni_str!("ruxLocationEnabled"), jni::jni_sig!("()Z"), &[])?.z()?;
+        Ok::<bool, jni::errors::Error>(on)
+    })
+    .unwrap_or(true)
+}
+
+/// The network came or went. Called from Java's connectivity callback.
+///
+/// # Safety
+///
+/// Called by the JVM, with the signature declared in `RuxActivity.java`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "system" fn Java_dev_ruxlang_shell_RuxActivity_nativeNetwork<'frame>(
+    _env: jni::EnvUnowned<'frame>,
+    _class: jni::objects::JClass<'frame>,
+    online: jni::sys::jboolean,
+) {
+    rux_runtime::native::network::set_online(online);
 }
 
 /// A permission request finished: the person answered, or there was nothing

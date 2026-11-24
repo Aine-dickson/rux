@@ -2100,6 +2100,40 @@ the press) the event follows suit. On a touchscreen `@longpress` fires first.
 `@doubletap` runs after both taps' `@tap`, in the order a browser's `dblclick`
 comes, and a third tap starts counting again.
 
+### Pinch and rotate
+
+Two fingers on a box are one gesture: a pinch (they move apart or together), a
+rotate (the line between them turns) and a pan (the middle moves), reported
+together by three events, named as Safari's `gesturestart`, `gesturechange` and
+`gestureend`. They run on the topmost box under the two fingers that has one of
+them, or its nearest ancestor.
+
+```rux
+<view class="photo" @gesturestart="base = zoom"
+      @gesturechange="zoom = base * event.scale; turn = event.rotation"
+      @gestureend="base = zoom">
+```
+
+- **`event.scale`** is 1 where the fingers landed and 2 when twice as far
+  apart; **`event.rotation`** is degrees clockwise since they landed, and keeps
+  counting past a half turn. **`deltaScale`**, **`deltaRotation`** and
+  **`deltaX`**/**`deltaY`** (the middle's move) are since the last event, which
+  suits an app that applies each change as it comes. **`x`** and **`y`** are the
+  middle between the fingers, relative to the box, as every pointer event has
+  them; `touches` still lists both fingers. `phase` is `"start"`, `"change"` or
+  `"end"`.
+- **The fingers belong to the gesture** once the second lands: whatever the first
+  had begun (a press, a drag, a scroll, a text selection) is let go as a cancelled
+  touch is, with nothing fired, and neither finger scrolls or taps. `@gestureend`
+  runs once, when either lifts or the system takes it; the finger left down does
+  nothing until it lifts. A third finger is ignored.
+- **A box with none of the three behaves as before**: two fingers on it scroll
+  and tap as they did.
+- **The scroll under the box does not move** while the box has the fingers,
+  so a zoomable image inside a scroller can be pinched.
+- **Not built:** a trackpad's pinch on macOS (the platform reports it as its own
+  event) and a mouse standing in for two fingers. The fingers need a touchscreen.
+
 ### Drag and drop
 
 Picking something up in one place and putting it down in another is four
@@ -2227,6 +2261,7 @@ can name these without a `use`:
 | `TapEvent` | `@tap`, `@press`, `@release`, `@longpress`, `@contextmenu`, `@doubletap` | `button` |
 | `DragEvent` | `@drag` | `totalX`, `totalY`, `moveX`, `moveY`, `phase` |
 | `DropEvent` | `@dragstart`, `@dragmove`, `@dragenter`, `@dragover`, `@dragleave`, `@drop`, `@dragend` | `data`, `group`, `index`, `before`, `dropped`, `grabX`, `grabY` (see "Drag and drop") |
+| `GestureEvent` | `@gesturestart`, `@gesturechange`, `@gestureend` | `scale`, `rotation`, `deltaScale`, `deltaRotation`, `deltaX`, `deltaY`, `phase` (see "Pinch and rotate") |
 | `SwipeEvent` | `@swipe` | `totalX`, `totalY`, `moveX`, `moveY`, `direction` |
 | `KeyEvent` | `@key` | none of those, only `key`, `ctrl`, `shift`, `alt`, `meta`, `primary`, `repeat` |
 | `SelectEvent` | `@select` on a field | none of those, only `value`, `start`, `end`, `caret` |
@@ -2512,7 +2547,12 @@ give one of:
   after a refusal. Rux draws no dialog of its own.
 - **`permissions.openSettings()`** opens this app's page in the system settings,
   the only place a blocked permission changes. It throws `unsupported` on the
-  desktop and the web.
+  desktop and the web. **`permissions.openLocationSettings()`** opens the
+  system's location switch (for a `disabled` location error, see `location.enabled()`),
+  and **`permissions.openBatterySettings()`** the battery-optimisation list,
+  where a person lets the app run in the background on a phone that stops it.
+  Both only open the page: Rux does not ask for the exemption itself, which Play
+  limits to certain apps. Each throws `unsupported` off Android.
 - **Targets.** Android asks the system. On the desktop there is nothing to ask,
   so a declared name is `"granted"`. The web asks the browser: `status` reads
   `navigator.permissions` (a refusal the browser will not ask about again is
@@ -2549,6 +2589,32 @@ let slow = computed(() => app.state == "background");
   changes nothing.
 - Leaving the front does not stop the app's Rust. What keeps work going once the
   app is gone from the screen is [background work](#background-work).
+
+## Network
+
+`network.online` is `true` while the device has a network connection. A signal,
+so `{{ network.online }}` and an `effect` that reads it follow it. Nothing to
+import; a file with a `network` of its own keeps it, and a script mentions
+`network.` once to read it in markup.
+
+```rux
+<text r-if="!network.online">You are offline</text>
+let busy = computed(() => !network.online);
+```
+
+- **A link, not a server.** It means a default network exists (Android's
+  connectivity callback, a browser's `online` and `offline` events). A captive
+  portal or a dead upstream still reads online, so use it to show "offline" and
+  pause calls that would only fail, and still handle a failed request.
+- **The desktop cannot say** and reports `true`. It is `true` from the start,
+  and saying the same thing twice changes nothing.
+- **The app's Rust reads it too**: `rux::network::online()` and
+  `rux::network::on_change(|online| ...)` (on whichever thread the platform
+  reports, so hand real work on).
+- **Android** needs `ACCESS_NETWORK_STATE`, a permission with no prompt, which
+  a build adds beside `INTERNET` (a dev build, or `[permissions] network =
+  true`, or an app that names an address). An app that never has `INTERNET`
+  cannot be online anyway.
 
 ## Notifications
 
@@ -2719,8 +2785,14 @@ location.stop();
   `navigator.geolocation`: the browser asks the person itself, takes no
   `intervalMs` or `distanceM`, and reports `isMock` as `false`. The desktop
   throws `unsupported`.
-- **Not built yet:** opening the system's location settings, the battery
-  optimisation exemption, Google's fused provider, and a desktop backend.
+- **`location.enabled()`** says whether the system's location switch is on, so
+  an app can say "turn location on" before a `disabled` error, and
+  `permissions.openLocationSettings()` opens the page that turns it on. Android
+  reads the switch; the web and the desktop cannot and answer `true`. The app's
+  Rust has `rux::location::enabled()` and `rux::permissions::open_location_settings()`.
+- **Not built yet:** the battery optimisation exemption (only its page,
+  `permissions.openBatterySettings()`), Google's fused provider, and a desktop
+  backend.
 
 ## Links and other apps
 

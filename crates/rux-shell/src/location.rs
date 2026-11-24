@@ -93,7 +93,7 @@ fn stop() -> Result<(), Error> {
 /// Install the calls for every document this process loads, and the same
 /// three for the app's own Rust (`rux::location`).
 pub(crate) fn install_location() {
-    set_backend(Backend { current: |options| -> Answer { Box::pin(current(options)) }, watch, stop });
+    set_backend(Backend { current: |options| -> Answer { Box::pin(current(options)) }, watch, stop, enabled: platform::enabled });
     let mut calls = HashMap::new();
     calls.insert(
         "current".to_string(),
@@ -110,6 +110,7 @@ pub(crate) fn install_location() {
         }),
     );
     calls.insert("stop".to_string(), Call::sync(|_args: Vec<Any>| stop().map(|()| Any::None)));
+    calls.insert("enabled".to_string(), Call::sync(|_args: Vec<Any>| Ok(Any::Bool(platform::enabled()))));
     calls.insert("position".to_string(), Call::sync(|_args: Vec<Any>| POSITION_SIGNAL.__read()));
     calls.insert("watching".to_string(), Call::sync(|_args: Vec<Any>| WATCHING_SIGNAL.__read()));
     let _ = install(Module { interface: rux_runtime::builtins::location_interface(), calls });
@@ -198,6 +199,11 @@ mod platform {
         crate::android_location_stop();
         set_watching(false);
         Ok(())
+    }
+
+    /// Whether the system's location switch is on.
+    pub(super) fn enabled() -> bool {
+        crate::android_location_enabled()
     }
 
     /// Java delivered a position: to the request waiting on `id`, or, for the watch (0), to everyone.
@@ -328,6 +334,12 @@ mod platform {
         set_watching(false);
         Ok(())
     }
+
+    /// A browser cannot read the system's switch: it answers `true`, and the
+    /// call that needs a position fails with its own reason.
+    pub(super) fn enabled() -> bool {
+        true
+    }
 }
 
 #[cfg(not(any(target_os = "android", target_arch = "wasm32")))]
@@ -348,6 +360,11 @@ mod platform {
 
     pub(super) fn stop() -> Result<(), Error> {
         Ok(())
+    }
+
+    /// The desktop has no location to switch off here.
+    pub(super) fn enabled() -> bool {
+        true
     }
 }
 

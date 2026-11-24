@@ -37,7 +37,9 @@ pub struct Backend {
     pub status: fn(String) -> Answer,
     pub request: fn(String) -> Answer,
     pub why: fn(&str) -> Result<String, Error>,
-    pub open_settings: fn() -> Result<(), Error>,
+    /// Open a page of the system settings: `"app"` (this app's own), `"location"` (the location switch)
+    /// or `"battery"` (the battery-optimisation list).
+    pub open_settings: fn(&str) -> Result<(), Error>,
 }
 
 static BACKEND: OnceLock<Backend> = OnceLock::new();
@@ -73,7 +75,20 @@ pub fn why(name: &str) -> Result<String, Error> {
 /// Open this app's page in the system settings, where a blocked permission is
 /// changed. Throws `unsupported` where there is no such page.
 pub fn open_settings() -> Result<(), Error> {
-    (backend()?.open_settings)()
+    (backend()?.open_settings)("app")
+}
+
+/// Open the system's location switch, for when location services are off
+/// (`location::enabled` says so). Throws `unsupported` where there is none.
+pub fn open_location_settings() -> Result<(), Error> {
+    (backend()?.open_settings)("location")
+}
+
+/// Open the system's battery-optimisation list, where a person lets the app
+/// keep running in the background. Only the page: Rux does not ask for the
+/// exemption itself. Throws `unsupported` where there is none.
+pub fn open_battery_settings() -> Result<(), Error> {
+    (backend()?.open_settings)("battery")
 }
 
 #[cfg(test)]
@@ -88,5 +103,7 @@ mod tests {
         assert_eq!(e.kind, "unavailable");
         assert_eq!(why("location").unwrap_err().kind, "unavailable");
         assert_eq!(open_settings().unwrap_err().kind, "unavailable");
+        assert_eq!(open_location_settings().unwrap_err().kind, "unavailable");
+        assert_eq!(open_battery_settings().unwrap_err().kind, "unavailable");
     }
 }

@@ -3728,6 +3728,21 @@ Android emulator `rux_test` (Android 15), probe `rux-harness\ud0047-and` (a `nat
 | Desktop: `rux::File::bytes` on a picked path; the file deleted; a file with no path | The bytes; `io`; `io` |
 | **Not driven** | The Windows window for `secrets`, the web reader for `File::bytes`, a camera photo after Android killed the app, a file over a few MB, Android 5 and below |
 
+## Pinch and rotate, network, location switch and settings pages, 2026-11-24
+
+Android emulator `rux_test` (Android 15), probe `rux-harness퀄7-and`. Two fingers injected with `sendevent` on `/dev/input/event2` (the emulator's multi-touch device; needs `adb root`), by `two_touch.py`: 14 steps of 50 ms around (540, 1200) on a 1080 x 500 box with `@gesturestart/@gesturechange/@gestureend`.
+
+| Case | Result |
+|---|---|
+| Two fingers 240 px apart spread to 640 px apart | `zoom` 2.6666 (640 / 240), `turn` 0, `event.touches.length` 2, `@gestureend` ran; the page did not scroll and nothing was tapped |
+| Two fingers 400 px apart, the line turned a quarter turn clockwise | `turn` 90, `zoom` unchanged |
+| Pinched back in to 240 px | `zoom` 1.0001, `turn` 0 |
+| `network.online` with airplane mode on, then off | `false` at once; `true` again after the emulator's Wi-Fi came back (about 10 s) |
+| `location.enabled()` with `settings put secure location_mode 0`, then 3 | `false`, then `true` |
+| `permissions.openLocationSettings()` | The system's Location page opened |
+| `permissions.openBatterySettings()` | "App battery usage" opened |
+| **Not driven** | A real phone's fingers (the emulator's are exact), three or more fingers, a pinch on a scroller's content, macOS trackpad pinch, the web and desktop (no touch here), Android 9 and below for `location.enabled()`, `network.online` on a captive portal |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

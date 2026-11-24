@@ -8921,6 +8921,9 @@ fn build_node_inner(
         ("drag", rux_layout::Gesture::Drag),
         ("contextmenu", rux_layout::Gesture::ContextMenu),
         ("doubletap", rux_layout::Gesture::DoubleTap),
+        ("gesturestart", rux_layout::Gesture::GestureStart),
+        ("gesturechange", rux_layout::Gesture::GestureChange),
+        ("gestureend", rux_layout::Gesture::GestureEnd),
     ]
     .into_iter()
     .filter_map(|(name, kind)| {

@@ -78,6 +78,25 @@ is read from code or the reports and is marked so.
 | UD-013 `<option>` elements and `r-for` over options, `step` and seconds | Low | **Park.** |
 | UD-014 `el.scrollTop = n` | Low: `scrollTo` covers it | Familiar DOM spelling, so add only if asked. **Park.** |
 
+## 3b. Done and checked since (2026-11-24, same day)
+
+- **Built:** `\u{...}` escapes; the `<` in a binding fix; `location.enabled()`;
+  `permissions.openLocationSettings()` and `openBatterySettings()` (two calls, not one with an optional page:
+  the checker has no optional arguments); `network.online` and `rux::network`; **pinch and rotate** as
+  `@gesturestart`, `@gesturechange` and `@gestureend`. All in `docs/07-script.md`, driven on the emulator
+  (rows in `08-user-tests`).
+- **Checked and fixed:** the faint line down a tab's edge with `box-shadow: inset 0 3px 0` on Windows was real.
+  A blurred cut with a blur of 0 put half its strength on its edge, so where the cut met the box's edge, half
+  the shadow stayed. A hard-edged cut that reaches past the box fixes it (`rux-paint`, `InsetShadow`);
+  seen before and after in a window at 150%.
+- **Checked, not a defect:** the desktop wheel over a sideways scroller does pass to the page, with and without
+  `scroll-snap` (driven in a window). `query.code ?? ""` fails when the key is absent by design (strict map
+  reads), and the message already says to write `"code" in query`. The keyboard's white flash did not reproduce
+  (the Back key and the keyboard's own hide key, five frames each, on the emulator).
+- **Still open:** UD-012's Android shape and a camera photo after Android kills the app. The photo's `content://`
+  URI is kept in the saved state and is read by the path driven for UD-004, but the camera itself was not driven.
+  The trailing space in a row of `<text>` stays "probably correct CSS" until the web page's markup is known.
+
 ## 4. Suggested order
 
 1. **Fix** the `<` in bindings bug (small, no decision needed).

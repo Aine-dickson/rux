@@ -184,7 +184,9 @@ pub(crate) fn install_permissions() {
         "why".to_string(),
         Call::sync(|args: Vec<Any>| Ok(Any::Str(why_of(&name_arg("why", args)?)?))),
     );
-    calls.insert("openSettings".to_string(), Call::sync(|_args: Vec<Any>| backend::open_settings().map(|()| Any::None)));
+    for (name, page) in [("openSettings", "app"), ("openLocationSettings", "location"), ("openBatterySettings", "battery")] {
+        calls.insert(name.to_string(), Call::sync(move |_args: Vec<Any>| backend::open_settings(page).map(|()| Any::None)));
+    }
     let _ = install(Module { interface, calls });
 }
 
@@ -224,7 +226,7 @@ mod backend {
         Ok("granted")
     }
 
-    pub(super) fn open_settings() -> Result<(), Error> {
+    pub(super) fn open_settings(_page: &str) -> Result<(), Error> {
         Err(Error::new("unsupported", "this app has no system settings page to open on the desktop"))
     }
 }
@@ -286,8 +288,8 @@ mod backend {
         status(which).await
     }
 
-    pub(super) fn open_settings() -> Result<(), Error> {
-        crate::android_open_app_settings();
+    pub(super) fn open_settings(page: &str) -> Result<(), Error> {
+        crate::android_open_settings(page);
         Ok(())
     }
 }
@@ -399,7 +401,7 @@ mod backend {
         status(which).await
     }
 
-    pub(super) fn open_settings() -> Result<(), Error> {
+    pub(super) fn open_settings(_page: &str) -> Result<(), Error> {
         Err(Error::new("unsupported", "a web page has no system settings page to open"))
     }
 }

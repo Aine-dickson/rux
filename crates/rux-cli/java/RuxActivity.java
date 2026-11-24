@@ -130,6 +130,9 @@ public class RuxActivity extends NativeActivity {
     protected void onStart() {
         super.onStart();
         nativeVisible(true);
+        if (networkCallback == null) {
+            ruxWatchNetwork();
+        }
     }
 
     @Override
@@ -953,18 +956,82 @@ public class RuxActivity extends NativeActivity {
                 });
     }
 
-    /** This app's page in the system settings, where a refused permission is changed. */
-    void ruxOpenAppSettings() {
+    /**
+     * A page of the system settings: {@code "app"} (this app's own),
+     * {@code "location"} (the location switch) or {@code "battery"} (the
+     * battery-optimisation list, which only lists: the app does not ask for the
+     * exemption).
+     */
+    void ruxOpenSettings(final String page) {
         runOnUiThread(
                 () -> {
-                    Intent intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                    intent.setData(android.net.Uri.fromParts("package", getPackageName(), null));
+                    Intent intent;
+                    if ("location".equals(page)) {
+                        intent = new Intent(android.provider.Settings.ACTION_LOCATION_SOURCE_SETTINGS);
+                    } else if ("battery".equals(page)) {
+                        intent = new Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS);
+                    } else {
+                        intent = new Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        intent.setData(android.net.Uri.fromParts("package", getPackageName(), null));
+                    }
                     try {
                         startActivity(intent);
                     } catch (RuntimeException e) {
-                        android.util.Log.w("rux", "no settings page", e);
+                        android.util.Log.w("rux", "no settings page for " + page, e);
                     }
                 });
+    }
+
+    /** Whether the system's location switch is on. */
+    boolean ruxLocationEnabled() {
+        try {
+            android.location.LocationManager lm =
+                    (android.location.LocationManager) getApplicationContext().getSystemService(Context.LOCATION_SERVICE);
+            if (Build.VERSION.SDK_INT >= 28) {
+                return lm.isLocationEnabled();
+            }
+            return lm.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER)
+                    || lm.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER);
+        } catch (RuntimeException e) {
+            android.util.Log.w("rux", "cannot read the location switch", e);
+            return true;
+        }
+    }
+
+    private static native void nativeNetwork(boolean online);
+
+    private android.net.ConnectivityManager.NetworkCallback networkCallback;
+
+    /**
+     * Report the default network to {@code network.online}: when one comes or
+     * goes. Registered once. A link is not a working server, which the docs
+     * say.
+     */
+    private void ruxWatchNetwork() {
+        try {
+            final android.net.ConnectivityManager cm =
+                    (android.net.ConnectivityManager) getApplicationContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+            android.net.Network active = cm.getActiveNetwork();
+            android.net.NetworkCapabilities caps = active == null ? null : cm.getNetworkCapabilities(active);
+            nativeNetwork(caps != null && caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET));
+            networkCallback =
+                    new android.net.ConnectivityManager.NetworkCallback() {
+                        @Override
+                        public void onAvailable(android.net.Network network) {
+                            nativeNetwork(true);
+                        }
+
+                        @Override
+                        public void onLost(android.net.Network network) {
+                            nativeNetwork(false);
+                        }
+                    };
+            cm.registerDefaultNetworkCallback(networkCallback);
+        } catch (RuntimeException e) {
+            // No ACCESS_NETWORK_STATE (an app that never wrote [permissions] network and is
+            // not a dev build): the signal stays online.
+            android.util.Log.w("rux", "network.online is not available", e);
+        }
     }
 
     @Override

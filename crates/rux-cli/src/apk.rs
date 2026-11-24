@@ -649,7 +649,9 @@ fn android_manifest(manifest: &Manifest, dev: bool, network: bool) -> String {
     let network = network || manifest.permissions.network;
     let internet = if dev || network {
         "\n    <!-- Hot reload (a dev build) and network images. -->\n    \
-         <uses-permission android:name=\"android.permission.INTERNET\" />"
+         <uses-permission android:name=\"android.permission.INTERNET\" />\n    \
+         <!-- `network.online` reads whether a connection exists. -->\n    \
+         <uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\" />"
     } else {
         ""
     };
@@ -1062,6 +1064,7 @@ mod tests {
         );
         let xml = android_manifest(&m, false, false);
         assert_eq!(xml.matches("android.permission.INTERNET").count(), 1, "{xml}");
+        assert_eq!(xml.matches("android.permission.ACCESS_NETWORK_STATE").count(), 1, "{xml}");
         assert_eq!(xml.matches("android.permission.READ_CONTACTS").count(), 1, "{xml}");
     }
 

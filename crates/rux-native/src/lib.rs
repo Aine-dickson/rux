@@ -20,6 +20,7 @@ pub mod files;
 mod exec;
 pub mod links;
 pub mod location;
+pub mod network;
 pub mod notifications;
 pub mod permissions;
 pub mod registry;

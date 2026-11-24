@@ -219,6 +219,17 @@ pub fn event_types() -> Vec<(&'static str, String)> {
                 "{{ {POINTER_FIELDS}, data: any, group: string?, index: int, before: any, dropped: bool,                  grabX: float, grabY: float }}"
             ),
         ),
+        // Two fingers on a box: `@gesturestart`, `@gesturechange` and
+        // `@gestureend`. `x` and `y` are the middle between the fingers.
+        // `scale` is 1 at the start and `rotation` is degrees clockwise, both
+        // since the fingers landed; the `delta` fields are since the last event.
+        (
+            "GestureEvent",
+            format!(
+                "{{ {POINTER_FIELDS}, scale: float, rotation: float, deltaScale: float, deltaRotation: float, \
+                 deltaX: float, deltaY: float, phase: \"start\" | \"change\" | \"end\" }}"
+            ),
+        ),
         // A scroller's `@scroll` and `@scrollend`: where it is scrolled to and
         // how far it can go, in logical pixels (Urbandrop's UD-014).
         ("ScrollEvent", "{ scrollLeft: float, scrollTop: float, maxLeft: float, maxTop: float }".to_string()),
@@ -378,6 +389,7 @@ pub fn location_interface() -> rux_native::Interface {
             f("current", &[("options", "any")], "any", true),
             f("watch", &[("options", "any")], "void", false),
             f("stop", &[], "void", false),
+            f("enabled", &[], "bool", false),
             Item { name: "position".into(), kind: ItemKind::Signal("any".into()) },
             Item { name: "watching".into(), kind: ItemKind::Signal("bool".into()) },
         ],
@@ -416,6 +428,21 @@ pub fn links_interface() -> rux_native::Interface {
             f("share", &[("options", "any")], "void"),
             f("canOpen", &[("url", "string")], "bool"),
         ],
+    }
+}
+
+/// The module behind `network.online`: whether the device has a connection.
+pub const NETWORK_MODULE: &str = "native/rux/network";
+
+/// The name a script reaches [`NETWORK_MODULE`] by without importing it.
+pub const NETWORK_NAME: &str = "network";
+
+/// The network module's interface: one `bool` signal.
+pub fn network_interface() -> rux_native::Interface {
+    use rux_native::Item;
+    rux_native::Interface {
+        path: "rux::network".into(),
+        items: vec![Item { name: "online".into(), kind: ItemKind::Signal("bool".into()) }],
     }
 }
 
@@ -497,6 +524,8 @@ pub fn permissions_interface() -> rux_native::Interface {
             f("request", &[("name", "string")], "string", true),
             f("why", &[("name", "string")], "string", false),
             f("openSettings", &[], "void", false),
+            f("openLocationSettings", &[], "void", false),
+            f("openBatterySettings", &[], "void", false),
         ],
     }
 }
@@ -593,6 +622,9 @@ pub fn ensure_builtins() {
     if registry::interface(SECRETS_MODULE).is_none() {
         let _ = registry::declare(secrets_interface());
     }
+    if registry::interface(NETWORK_MODULE).is_none() {
+        let _ = registry::declare(network_interface());
+    }
 }
 
 /// The imports a scope gets for free: each built-in function its code calls
@@ -614,6 +646,7 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         (LOCATION_NAME, LOCATION_MODULE),
         (LINKS_NAME, LINKS_MODULE),
         (SECRETS_NAME, SECRETS_MODULE),
+        (NETWORK_NAME, NETWORK_MODULE),
     ] {
         let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')

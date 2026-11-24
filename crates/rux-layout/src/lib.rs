@@ -3832,13 +3832,29 @@ pub enum Gesture {
     ContextMenu,
     /// Two taps close in time and place. Reports after the second `@tap`.
     DoubleTap,
+    /// Two fingers have landed on the box: a pinch, a rotate or a pan begins.
+    /// `@gesturestart`, `@gesturechange` and `@gestureend` are one two-finger
+    /// gesture and never start a press.
+    GestureStart,
+    /// Either finger moved: how far the pair has scaled and turned.
+    GestureChange,
+    /// One of the two fingers lifted, or the system took them.
+    GestureEnd,
 }
 
 impl Gesture {
     /// Whether this is part of a press (`@press` to `@drag`). The two finished
     /// events are routed by their own owners and never start a press.
     pub fn starts_press(self) -> bool {
-        !matches!(self, Gesture::ContextMenu | Gesture::DoubleTap)
+        !matches!(
+            self,
+            Gesture::ContextMenu | Gesture::DoubleTap | Gesture::GestureStart | Gesture::GestureChange | Gesture::GestureEnd
+        )
+    }
+
+    /// Whether this is one of the three of the two-finger gesture.
+    pub fn is_two_finger(self) -> bool {
+        matches!(self, Gesture::GestureStart | Gesture::GestureChange | Gesture::GestureEnd)
     }
 
     /// The attribute that declares it, without the `@`.
@@ -3851,6 +3867,9 @@ impl Gesture {
             "drag" => Some(Gesture::Drag),
             "contextmenu" => Some(Gesture::ContextMenu),
             "doubletap" => Some(Gesture::DoubleTap),
+            "gesturestart" => Some(Gesture::GestureStart),
+            "gesturechange" => Some(Gesture::GestureChange),
+            "gestureend" => Some(Gesture::GestureEnd),
             _ => None,
         }
     }
@@ -4009,6 +4028,9 @@ pub struct Owners {
     /// The nearest element above with `@contextmenu`, and with `@doubletap`.
     pub context: Option<u32>,
     pub double: Option<u32>,
+    /// The nearest element above with any of `@gesturestart`, `@gesturechange`
+    /// and `@gestureend`.
+    pub pinch: Option<u32>,
     /// A text field, a select or a field's label, or something inside one.
     pub field: bool,
 }
@@ -4036,6 +4058,11 @@ impl Owners {
                 Some(seq)
             } else {
                 above.double
+            },
+            pinch: if node.gestures.iter().any(|(g, _)| g.is_two_finger()) {
+                Some(seq)
+            } else {
+                above.pinch
             },
             field: above.field || field,
         }
@@ -4092,6 +4119,18 @@ pub fn gesture_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
 /// point reaches: the topmost box's own, else the nearest ancestor's.
 pub fn context_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
     finished_at(hits, x, y, Gesture::ContextMenu, |o| o.context)
+}
+
+/// The region whose `@gesture*` two fingers landing around a point reach: the
+/// topmost box's own, else the nearest ancestor's.
+pub fn pinch_at(hits: &[HitRegion], x: f32, y: f32) -> Option<&HitRegion> {
+    let top = hit_at(hits, x, y)?;
+    let has = |h: &HitRegion| h.gestures.iter().any(|(g, _)| g.is_two_finger());
+    if has(top) {
+        return Some(top);
+    }
+    let seq = top.owners.pinch?;
+    hits.iter().rev().find(|h| h.seq == seq && has(h))
 }
 
 /// The region whose `@doubletap` a second tap at a point reaches.
