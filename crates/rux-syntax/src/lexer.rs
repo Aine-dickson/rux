@@ -653,13 +653,36 @@ impl<'s> Lexer<'s> {
                         _ => 8,
                     };
                     let mut value: u32 = 0;
-                    for _ in 0..len {
-                        let digit = self.peek().and_then(|d| d.to_digit(16));
-                        let Some(digit) = digit else {
-                            return Err(self.error(format!("`\\{c}` needs {len} hex digits after it"), start));
-                        };
+                    if c == 'u' && self.peek() == Some('{') {
+                        // `\u{2190}`: one to six hex digits in braces, as
+                        // JavaScript and Rust write a character past `￿`.
                         self.i += 1;
-                        value = value * 16 + digit;
+                        let mut digits = 0;
+                        loop {
+                            match self.peek() {
+                                Some('}') if digits > 0 => {
+                                    self.i += 1;
+                                    break;
+                                }
+                                Some(d) if d.is_ascii_hexdigit() && digits < 6 => {
+                                    self.i += 1;
+                                    digits += 1;
+                                    value = value * 16 + d.to_digit(16).unwrap_or(0);
+                                }
+                                _ => {
+                                    return Err(self.error("`\\u{` takes one to six hex digits and a closing `}`", start));
+                                }
+                            }
+                        }
+                    } else {
+                        for _ in 0..len {
+                            let digit = self.peek().and_then(|d| d.to_digit(16));
+                            let Some(digit) = digit else {
+                                return Err(self.error(format!("`\\{c}` needs {len} hex digits after it"), start));
+                            };
+                            self.i += 1;
+                            value = value * 16 + digit;
+                        }
                     }
                     let Some(ch) = char::from_u32(value) else {
                         return Err(self.error(format!("`\\{c}{value:X}` is not a character"), start));
@@ -769,6 +792,17 @@ mod tests {
         assert_eq!(toks("'x'")[0], Tok::Char('x'));
         assert!(lex("'xy'").is_err());
         assert!(lex("\"open\nclosed\"").is_err());
+    }
+
+    #[test]
+    fn a_braced_unicode_escape_takes_one_to_six_hex_digits() {
+        assert_eq!(toks(r#""\u{2190} back""#)[0], Tok::Str("\u{2190} back".into()));
+        assert_eq!(toks(r#""\u{41}\u{1F600}""#)[0], Tok::Str("A\u{1F600}".into()));
+        // The four-digit form is unchanged.
+        assert_eq!(toks(r#""←""#)[0], Tok::Str("\u{2190}".into()));
+        for bad in [r#""\u{}""#, r#""\u{2190""#, r#""\u{1234567}""#, r#""\u{xyz}""#, r#""\u{D800}""#] {
+            assert!(lex(bad).is_err(), "{bad}");
+        }
     }
 
     #[test]

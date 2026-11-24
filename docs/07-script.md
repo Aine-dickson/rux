@@ -140,8 +140,10 @@ cannot hold text: name a function and call it from the attribute.
 **Not built:** `'text'` as a string of any length. There is no character type.
 
 Escapes in strings: `\n`, `\r`, `\t`, `\\`, `\"`, `\'`, `` \` ``, `\$`, `\xHH`,
-`\uHHHH` and `\UHHHHHHHH` (fixed width, no braces). A backtick string decodes
-the same escapes. Spreading anything but an array or a string in an array
+`\uHHHH`, `\u{H...}` (one to six hex digits in braces, as JavaScript and Rust
+write a character past `￿`: `"\u{2190} back"`) and `\UHHHHHHHH`. A
+backtick string decodes the same escapes, and so does a string inside a
+template's `{{ }}`. Spreading anything but an array or a string in an array
 literal is an error.
 
 **A number literal has no suffix** and no leading `+`. `-1` is the unary minus

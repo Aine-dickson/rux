@@ -983,7 +983,7 @@ impl Parser {
             if self.starts_with("</") {
                 break; // closing tag, caller consumes it
             }
-            if self.peek() == Some('<') {
+            if self.at_tag() {
                 let el = self.parse_element()?;
                 nodes.push(Node::Element(el));
                 continue;
@@ -1026,11 +1026,29 @@ impl Parser {
         }
     }
 
+    /// Whether a `<` here starts a tag: one followed by a letter (a tag), `/`
+    /// (a closing tag) or `!` (a comment), as HTML reads it. `<45 min` is text.
+    fn at_tag(&self) -> bool {
+        self.peek() == Some('<') && matches!(self.chars.get(self.pos + 1), Some(c) if c.is_ascii_alphabetic() || *c == '/' || *c == '!')
+    }
+
+    /// Text up to the next tag. A `{{ ... }}` span is taken whole, so a `<`
+    /// inside an expression (`{{ "<45 min" }}`) is never read as a tag.
     fn read_text(&mut self) -> String {
         let mut s = String::new();
         while let Some(c) = self.peek() {
-            if c == '<' {
+            if self.at_tag() {
                 break;
+            }
+            if self.starts_with("{{") {
+                while self.peek().is_some() {
+                    s.push(self.chars[self.pos]);
+                    self.pos += 1;
+                    if s.ends_with("}}") && s.len() >= 4 {
+                        break;
+                    }
+                }
+                continue;
             }
             s.push(c);
             self.pos += 1;
@@ -1204,6 +1222,25 @@ mod tests {
     }
 
     /// The slash stays legal: every file in `examples/` is written that way.
+    /// A `<` that is not the start of a tag is text, as HTML reads it, and
+    /// nothing inside `{{ }}` is a tag.
+    #[test]
+    fn a_less_than_that_starts_no_tag_is_text() {
+        for src in [
+            "<template><view><text>{{ \"<45 min\" }}</text></view></template>",
+            "<template><view><text>under <45 min</text></view></template>",
+            "<template><view><text>{{ a < b }} and {{ b <c }}</text></view></template>",
+        ] {
+            let sfc = parse_sfc(src).unwrap_or_else(|e| panic!("{src}: {e}"));
+            let Node::Element(text) = &sfc.template.children[0] else { panic!("an element: {src}") };
+            assert_eq!(text.tag, "text", "{src}");
+            assert!(text.children.iter().all(|c| matches!(c, Node::Text(..))), "{src}: {:?}", text.children);
+        }
+        // Tags, closing tags and comments still are.
+        let sfc = parse_sfc("<template><view><!-- c --><text>a</text></view></template>").unwrap();
+        assert_eq!(sfc.template.children.len(), 1);
+    }
+
     #[test]
     fn a_void_tag_may_still_be_written_self_closing() {
         let src = "<template><view><image src=\"a.png\" /></view></template>";
