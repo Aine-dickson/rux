@@ -3142,6 +3142,7 @@ impl Document {
                     key: key.clone(),
                     name: modules::name_of(&comp_path, &project_root),
                     functions,
+                    script: comp_script.clone(),
                     aliases: Vec::new(),
                 });
                 let comp_script_line = comp_sfc.script_line;

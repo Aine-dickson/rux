@@ -266,6 +266,10 @@ pub struct ComponentSource {
     pub name: String,
     /// Its `fn` declarations, as text.
     pub functions: String,
+    /// Its whole script, for the names it declares: a built-in module
+    /// (`network`, `location`) is linked into its functions only when none of
+    /// its `let`s, `computed`s, props or functions has that name.
+    pub script: String,
     /// What it imports from modules.
     pub aliases: Vec<link::Alias>,
 }
@@ -416,7 +420,10 @@ impl Builder {
             m.aliases.extend(extra);
         }
         for c in &mut self.components {
-            let extra = native::builtin_aliases(&c.functions, &c.aliases);
+            // Its `let`s and `computed`s are not among its functions, and a
+            // `network` of its own read in a `fn` was taken for the built-in
+            // (Urbandrop's partner app).
+            let extra = native::builtin_aliases(&format!("{}\n{}", c.script, c.functions), &c.aliases);
             c.aliases.extend(extra);
         }
         // Each module on its own, in order: what it exports is what the next
