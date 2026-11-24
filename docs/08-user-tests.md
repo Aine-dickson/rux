@@ -3784,7 +3784,22 @@ its header, every frame. Sizes are now read once per path and forgotten on each 
 line, in the block, in `mounted`, and in a `fn` (once, not twice).
 
 **Not driven:** the client app itself with a CLI built from this tree (sign-in during a booking, desktop and
-Android); tiles on a phone or the emulator; tiles from the network; a real drag or pinch over the tiles.
+Android); tiles on a phone or the emulator; a real drag or pinch over the tiles.
+
+**A map that keeps panning, tiles from the network.** Probe `rux-harness/tiles-perf/map.rux`: the 20 tiles under
+an 800 x 600 view in a keyed `r-for`, placed with `left`/`top`, from `tile_server.py` (a local server drawing any
+`/z/x/y.png`, 100 ms before each answer), panned 24 px a frame for 2,500 frames; `stress.ps1` samples the process
+every 5 s. The installed CLI from `431787e`.
+
+| Case | Result |
+|---|---|
+| 1,300 distinct tiles over 40 s | memory 215 MB at 5 s, then about 11 MB a second, 635 MB at the end, never given back (about 330 KB per tile seen: a decoded 256 px picture is 256 KB). Threads 18 to 27. `patch` 1.3 ms, `layout` 0.2 ms; `gpu` 9 to 14 ms; no frame over 16.7 ms after the first second; tiles drawn in place |
+| The same pan over 16 repeating URLs (control) | memory 183 to 201 MB over 25 s (a creep of about 0.7 MB a second, not explained); `gpu` 2.5 ms |
+
+So a map is not limited by layout or patching. It is limited by memory: every answer from the network
+(`remote.rs`) and every decoded picture (`rux_paint::ImageCache`) is kept for the life of the process, with no cap.
+A few minutes of panning on a phone would end with the system killing the app. New pictures also cost the GPU
+about 4x a frame while they arrive (not investigated).
 
 ## Standing gaps
 
