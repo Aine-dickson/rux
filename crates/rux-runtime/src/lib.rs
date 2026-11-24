@@ -4333,6 +4333,9 @@ impl Document {
         instance: Option<&str>,
         value: &rux_reactive::Value,
     ) {
+        if self.instance_gone(instance) {
+            return;
+        }
         let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
             let locals = self.locals_for(model, row, None);
             // Through the row's place in its list, not its loop variable,
@@ -4390,6 +4393,9 @@ impl Document {
     }
 
     pub fn value_in(&mut self, model: &str, row: Option<&str>, instance: Option<&str>) -> String {
+        if self.instance_gone(instance) {
+            return String::new();
+        }
         let locals = self.scope_for(model, row, instance);
         self.engine.get_string_in(model, &locals)
     }
@@ -4402,8 +4408,21 @@ impl Document {
         row: Option<&str>,
         instance: Option<&str>,
     ) -> Option<rux_reactive::Value> {
+        if self.instance_gone(instance) {
+            return None;
+        }
         let locals = self.scope_for(model, row, instance);
         self.engine.eval_value(model, &locals)
+    }
+
+    /// Whether a field names a component instance that no longer exists. The
+    /// shell holds a field's identity past the frame that removed it (an
+    /// autofill list, an input method's last commit, a late picker), and its
+    /// model read in the page's scope failed as "not defined", or wrote a page
+    /// signal of the same name. Such a field reads as nothing and takes no
+    /// writes.
+    fn instance_gone(&self, instance: Option<&str>) -> bool {
+        instance.is_some_and(|k| !self.instances.contains_key(k))
     }
 
     /// Everything that was in scope where this input was built: the component
