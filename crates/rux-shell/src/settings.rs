@@ -151,6 +151,8 @@ mod store {
         *DIR.lock().unwrap_or_else(|e| e.into_inner()) = Some(dir);
     }
 
+    /// Read only by Windows' [`data_dir`](super::data_dir).
+    #[cfg_attr(not(windows), allow(dead_code))]
     pub(crate) fn file_path() -> Option<PathBuf> {
         file()
     }

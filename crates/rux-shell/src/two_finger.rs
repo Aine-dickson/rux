@@ -62,11 +62,6 @@ impl TwoFinger {
         }
     }
 
-    /// Where the middle was when they landed.
-    pub fn center(&self) -> (f32, f32) {
-        self.last_center
-    }
-
     /// The fingers are now at `a` and `b`, the same two as at the start.
     pub fn update(&mut self, a: (f32, f32), b: (f32, f32)) -> Update {
         let scale = distance(a, b) / self.start_distance;

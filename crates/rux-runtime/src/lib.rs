@@ -12425,8 +12425,13 @@ fn flip() { rts_flag.on = true; }</script>",
         // The frames drawn while it waits read what Rust set, as the shell's do.
         rux_native::notify();
         let _ = doc.refresh_native_signals();
-        std::thread::sleep(std::time::Duration::from_millis(40));
-        assert!(doc.settle_tasks());
+        // Until the answer comes, not a fixed 40 ms: with the whole suite
+        // running at once, a 10 ms answer sometimes took longer.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !doc.settle_tasks() {
+            assert!(std::time::Instant::now() < deadline, "the answer never came");
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
         assert_eq!(text_of(&doc.root).join("|"), "Send|[200]");
     }
 

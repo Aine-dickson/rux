@@ -8,7 +8,7 @@ weight = 4
 
 Every property below is one the runtime interprets, and the list is written by the runtime: a property is on this page exactly when the runtime honors it, and is described in the words the editor shows on hover. Anything else is parsed, ignored and reported once on stderr. [Honored CSS](/reference/css/) says how each one behaves in detail, and [where Rux differs from CSS](/reference/css-differences/) lists the places Rux behaves differently and what to write there.
 
-250 properties and 28 pseudo-classes, as of `rux 0.9.0-dev`.
+251 properties and 28 pseudo-classes, as of `rux 0.9.0-dev`.
 
 ## Properties
 
@@ -97,6 +97,7 @@ Every property below is one the runtime interprets, and the list is written by t
 | `flex-shrink` | **how readily this item gives room up.** `0` stops it shrinking below its content.For example `.icon { flex-shrink: 0; }` |  |  |
 | `flex-basis` | **the size to start from before growing.** `auto` uses the item's own size; a length overrides it.For example `.col { flex-basis: 200px; }` | `auto` `content` |  |
 | `flex-wrap` | **whether items may move onto another line.** `wrap` or `wrap-reverse` allow it; anything else keeps one line.For example `.tags { display: flex; flex-wrap: wrap; }` | `nowrap` `wrap` `wrap-reverse` |  |
+| `flex-flow` | **`flex-direction` and `flex-wrap` in one.** Either order, each optional: `row wrap`, `column`. The one left out goes back to its default (`row`, `nowrap`).For example `.tags { display: flex; flex-flow: row wrap; }` | `row` `column` `row wrap` `column wrap` `nowrap` `wrap` |  |
 | `flex-direction` | **which way the children are laid out.** `row` (the default) or `column`. This is the axis every alignment property below is described against.For example `.app { display: flex; flex-direction: column; }` | `row` `column` |  |
 | `justify-content` | **alignment along the main axis.** The axis `flex-direction` set. On a `row`, this is horizontal.For example `.row { display: flex; justify-content: space-between; }` | `flex-start` `start` `center` `flex-end` `end` `space-between` `space-around` |  |
 | `align-items` | **alignment across the main axis.** On a `row`, this is vertical. Defaults to `stretch`, as in CSS, so a child fills the cross axis. `align-self: flex-start` makes one child hug.For example `.row { display: flex; align-items: center; }` | `flex-start` `start` `center` `flex-end` `end` `stretch` |  |

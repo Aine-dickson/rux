@@ -49,6 +49,8 @@ mod filter;
 mod clipboard;
 mod permissions;
 mod settings;
+// The title bar Rux draws itself: Windows' and macOS's only.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
 mod caption;
 mod dnd;
 mod dnd_session;

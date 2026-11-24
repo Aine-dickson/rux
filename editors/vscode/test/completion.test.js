@@ -118,6 +118,8 @@ test('an input type offers the kinds the runtime accepts and nothing else', () =
       'search',
       'number',
       'date',
+      'datetime-local',
+      'time',
       'select',
       'checkbox',
       'switch',
