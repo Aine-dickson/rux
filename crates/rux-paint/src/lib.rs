@@ -1454,10 +1454,44 @@ fn build(
                 scene.fill(Fill::NonZero, cur, to_color(*color), None, &shape);
                 let (hx, hy, hw, hh) = *hole;
                 if hw > 0.0 && hh > 0.0 {
-                    scene.push_layer(Fill::NonZero, PenikoBlend::new(Mix::Normal, Compose::DestOut), 1.0, cur, &shape);
-                    let rect = Rect::new(hx as f64, hy as f64, (hx + hw) as f64, (hy + hh) as f64);
-                    let std_dev = (*blur as f64 / 2.0).max(0.0);
-                    scene.draw_blurred_rounded_rect(cur, rect, Color::BLACK, *hole_radius as f64, std_dev);
+                    // A shadow with no blur and square corners is cut with a hard
+                    // edge, and a side where the hole meets the box's own edge
+                    // is pushed out past it. A blurred cut puts half its
+                    // strength on its edge, which left half the shadow along
+                    // an edge the hole shares with the box (a faint line down
+                    // a tab's side). The cut is clipped to the box's bounds and
+                    // a margin, not to its shape, for the same reason: the
+                    // shape's anti-aliased edge would clip the cut as it
+                    // clipped the fill. Nothing outside the box has shadow to cut.
+                    let bounds = Rect::new(
+                        *x as f64 - 2.0,
+                        *y as f64 - 2.0,
+                        (*x + *width) as f64 + 2.0,
+                        (*y + *height) as f64 + 2.0,
+                    );
+                    scene.push_layer(Fill::NonZero, PenikoBlend::new(Mix::Normal, Compose::DestOut), 1.0, cur, &bounds);
+                    if *blur <= 0.0 && *hole_radius <= 0.0 {
+                        let (bx0, by0, bx1, by1) = (*x, *y, *x + *width, *y + *height);
+                        let (mut l, mut t, mut r, mut b) = (hx, hy, hx + hw, hy + hh);
+                        if l <= bx0 + 0.01 {
+                            l = bx0 - 2.0;
+                        }
+                        if t <= by0 + 0.01 {
+                            t = by0 - 2.0;
+                        }
+                        if r >= bx1 - 0.01 {
+                            r = bx1 + 2.0;
+                        }
+                        if b >= by1 - 0.01 {
+                            b = by1 + 2.0;
+                        }
+                        let cut = Rect::new(l as f64, t as f64, r as f64, b as f64);
+                        scene.fill(Fill::NonZero, cur, Color::BLACK, None, &cut);
+                    } else {
+                        let rect = Rect::new(hx as f64, hy as f64, (hx + hw) as f64, (hy + hh) as f64);
+                        let std_dev = (*blur as f64 / 2.0).max(0.0);
+                        scene.draw_blurred_rounded_rect(cur, rect, Color::BLACK, *hole_radius as f64, std_dev);
+                    }
                     scene.pop_layer();
                 }
                 scene.pop_layer();
