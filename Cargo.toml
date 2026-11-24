@@ -46,8 +46,6 @@ edition = "2021"
 version = "0.9.0-dev"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/Aine-dickson/rux"
-homepage = "https://ruxlang.dev"
-documentation = "https://ruxlang.dev"
 
 # The browser bundle is downloaded before anything renders, so it is tuned for
 # size where the native build is tuned for speed. Kept as its own profile rather

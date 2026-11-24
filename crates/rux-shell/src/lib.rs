@@ -2250,6 +2250,7 @@ struct App {
     last_tap: Option<(Instant, f32, f32)>,
     /// The last press on an `app-region: drag` box, so a second one close to
     /// it maximizes the window as a native title bar does.
+    #[cfg_attr(target_arch = "wasm32", allow(dead_code, reason = "a page has no native title bar to maximize"))]
     last_drag_press: Option<(Instant, f32, f32)>,
     /// Every finger currently down, in logical px, in the order they landed.
     ///
@@ -10130,6 +10131,7 @@ impl App {
     ///
     /// The only clock in an otherwise event-driven loop used to be the caret:
     /// while an input is focused, wake every `BLINK` to toggle it.
+    #[cfg_attr(target_arch = "wasm32", allow(unused_variables, reason = "a page cannot close its own tab"))]
     fn tick(&mut self, event_loop: &ActiveEventLoop) -> Option<Instant> {
         // Whatever `@input`, `@change`, `@focus` and `@blur` the events since
         // the last wake-up queued, now that the shell is done with them.

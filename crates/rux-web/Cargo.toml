@@ -18,10 +18,12 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 rux-shell.workspace = true
-rux-highlight.workspace = true
-rux-fmt.workspace = true
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+# The playground editor's highlighting and indenting, used only by the wasm
+# module (`mod web`), so a native build does not carry them unused.
+rux-highlight.workspace = true
+rux-fmt.workspace = true
 wasm-bindgen = "0.2"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement", "console"] }
 

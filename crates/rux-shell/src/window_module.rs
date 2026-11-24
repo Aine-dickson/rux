@@ -95,6 +95,7 @@ fn current() -> Option<WindowId> {
 /// A window an app opened, as script holds it: `isOpen` follows it, `close()`
 /// and `focus()` ask the shell. A resource, so script can keep it in a signal.
 pub(crate) struct WindowHandle {
+    #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code, reason = "read by `close()` and `focus()`, desktop only"))]
     pub(crate) id: u64,
     open: std::sync::atomic::AtomicBool,
 }
@@ -350,6 +351,7 @@ pub(crate) fn attach(window: &std::sync::Arc<winit::window::Window>) {
 }
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+#[cfg_attr(target_arch = "wasm32", allow(dead_code, reason = "the web opens its one window elsewhere"))]
 pub(crate) fn attach(_window: &std::sync::Arc<winit::window::Window>) {}
 
 /// A window is gone: its calls have nothing to act on.

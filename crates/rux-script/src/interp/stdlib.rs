@@ -523,27 +523,26 @@ impl Interp {
                 }
             }
             ("now", 0) => V::Float(crate::now_ms()),
-            ("Date.now", 0) => V::Int(chrono::Utc::now().timestamp_millis()),
+            ("Date.now", 0) => V::Int(crate::wall_clock_ms()),
             (
                 "Date.time" | "Date.date" | "Date.hours" | "Date.minutes" | "Date.seconds" | "Date.day" | "Date.month"
                 | "Date.year" | "Date.weekday",
                 1,
             ) => {
-                use chrono::{Datelike, TimeZone, Timelike};
                 let ms = number(&argv[0])?;
-                let Some(at) = chrono::Local.timestamp_millis_opt(ms as i64).single().filter(|_| ms.is_finite()) else {
+                let Some(at) = Some(ms).filter(|ms| ms.is_finite()).and_then(|ms| crate::LocalTime::at(ms as i64)) else {
                     return fail(format!("`{name}` takes milliseconds since 1970, as `Date.now()` gives; {ms} is not a time"));
                 };
                 match name {
-                    "Date.time" => V::Str(at.format("%H:%M").to_string().into()),
-                    "Date.date" => V::Str(at.format("%-d %b %Y").to_string().into()),
-                    "Date.hours" => V::Int(at.hour() as i64),
-                    "Date.minutes" => V::Int(at.minute() as i64),
-                    "Date.seconds" => V::Int(at.second() as i64),
-                    "Date.day" => V::Int(at.day() as i64),
-                    "Date.month" => V::Int(at.month() as i64),
-                    "Date.year" => V::Int(at.year() as i64),
-                    _ => V::Int(at.weekday().num_days_from_sunday() as i64),
+                    "Date.time" => V::Str(at.clock().into()),
+                    "Date.date" => V::Str(at.date().into()),
+                    "Date.hours" => V::Int(at.hour),
+                    "Date.minutes" => V::Int(at.minute),
+                    "Date.seconds" => V::Int(at.second),
+                    "Date.day" => V::Int(at.day),
+                    "Date.month" => V::Int(at.month),
+                    "Date.year" => V::Int(at.year),
+                    _ => V::Int(at.weekday),
                 }
             }
             ("Math.sqrt", 1) => V::Float(number(&argv[0])?.sqrt()),

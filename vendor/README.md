@@ -44,6 +44,11 @@ with its tests); `WgpuEngine::trim_pool` lets go of buffers of a length no
 longer asked for. The web keeps vello's path, since a frame there cannot wait
 for the GPU. Every change is marked with a `Rux:` comment.
 
+Also marked `Rux:`: six `#[expect(single_use_lifetimes)]` in `vello/src/scene.rs`
+and `vello_encoding/src/encoding.rs` are `#[allow]`. Rust newer than 1.94 no longer
+raises the false positive they expected, and an unmet `expect` is a warning,
+which fails the warning-clean release build.
+
 The lengths `Sizing` asks for are the parts the GPU counts. Two buffers also
 hold a part it does not, which `RenderConfig::new_sized` adds from the frame
 and the scene: `ptcl` starts with 64 words for every tile, and `bin_data` with

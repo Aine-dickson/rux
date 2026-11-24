@@ -19,11 +19,23 @@ rux-ir.workspace = true
 # Native modules: the boundary value and the registry. docs/archive/language-build-log.md, step 8.
 rux-native.workspace = true
 # `now()`'s clock: `std::time::Instant` on native, the browser's on the web,
-# where `Instant` panics. The shell already depends on it.
+# where `Instant` panics. The shell already depends on it. Also `Date.now()`'s
+# wall clock, for the same reason.
 web-time = "1.1"
-# `Date.time(ms)` and the rest: the wall clock read in the local time zone,
-# which std cannot find. `wasmbind` asks the browser for it on the web.
-chrono = { version = "0.4", default-features = false, features = ["clock", "std", "wasmbind"] }
+
+# `Date.time(ms)` and the rest: a time's parts in the local time zone, which
+# std cannot find. jiff reads the system's zone on Windows, macOS, Linux and
+# Android (`tzdb-bundle-platform` carries the zone database on Windows only,
+# which has none of its own in that form).
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+jiff = { version = "1", default-features = false, features = ["std", "tz-system", "tz-fat", "tzdb-bundle-platform", "tzdb-zoneinfo", "tzdb-concatenated"] }
+
+# On the web the browser's `Date` gives the offset at an instant, and jiff
+# does the calendar with no zone database in the bundle.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+jiff = { version = "1", default-features = false, features = ["std"] }
+js-sys = "0.3"
+wasm-bindgen = "0.2"
 
 [dev-dependencies]
 # The attributes, for tests written as an app writes its native/ crate.

@@ -681,6 +681,75 @@ pub fn now_ms() -> f64 {
     START.get_or_init(web_time::Instant::now).elapsed().as_secs_f64() * 1000.0
 }
 
+/// `Date.now()`: the wall clock, in milliseconds since 1970. `web_time`
+/// reads the browser's on the web, where std's clock panics.
+pub(crate) fn wall_clock_ms() -> i64 {
+    let since = web_time::SystemTime::now().duration_since(web_time::UNIX_EPOCH);
+    match since {
+        Ok(d) => d.as_millis() as i64,
+        Err(before) => -(before.duration().as_millis() as i64),
+    }
+}
+
+/// A time's parts in the local time zone, for `Date.time(ms)` and the rest.
+pub(crate) struct LocalTime {
+    pub year: i64,
+    /// 1 to 12.
+    pub month: i64,
+    pub day: i64,
+    pub hour: i64,
+    pub minute: i64,
+    pub second: i64,
+    /// 0 for Sunday to 6 for Saturday, as JavaScript's `getDay()`.
+    pub weekday: i64,
+}
+
+impl LocalTime {
+    /// `ms` since 1970, in this device's time zone. `None` for a time out of
+    /// the calendar's range (years -9999 to 9999).
+    pub fn at(ms: i64) -> Option<LocalTime> {
+        let at = jiff::Timestamp::from_millisecond(ms).ok()?.to_zoned_datetime(local_zone(ms));
+        Some(LocalTime {
+            year: at.year().into(),
+            month: at.month().into(),
+            day: at.day().into(),
+            hour: at.hour().into(),
+            minute: at.minute().into(),
+            second: at.second().into(),
+            weekday: at.weekday().to_sunday_zero_offset().into(),
+        })
+    }
+
+    /// `Date.time`: `14:05`.
+    pub fn clock(&self) -> String {
+        format!("{:02}:{:02}", self.hour, self.minute)
+    }
+
+    /// `Date.date`: `3 Nov 2026`.
+    pub fn date(&self) -> String {
+        const MONTHS: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        format!("{} {} {}", self.day, MONTHS[(self.month - 1) as usize], self.year)
+    }
+}
+
+/// The device's time zone: the system's on native (jiff reads it on Windows,
+/// macOS, Linux and Android).
+#[cfg(not(target_arch = "wasm32"))]
+fn local_zone(_ms: i64) -> jiff::tz::TimeZone {
+    jiff::tz::TimeZone::system()
+}
+
+/// On the web, the browser's offset at that instant, from its `Date`. Asking
+/// jiff for the zone's name would bundle the whole time zone database (about
+/// 230 KB) into the page.
+#[cfg(target_arch = "wasm32")]
+fn local_zone(ms: i64) -> jiff::tz::TimeZone {
+    // `getTimezoneOffset` is minutes *behind* UTC: -60 is UTC+1.
+    let behind = js_sys::Date::new(&wasm_bindgen::JsValue::from_f64(ms as f64)).get_timezone_offset();
+    let ahead = (-behind * 60.0) as i32;
+    jiff::tz::Offset::from_seconds(ahead).map(jiff::tz::TimeZone::fixed).unwrap_or(jiff::tz::TimeZone::UTC)
+}
+
 /// JavaScript's `Number(text)`: the whole text, trimmed, as a number, 0 for
 /// nothing, `NaN` for anything that is not one. `Infinity` is JS's word for
 /// it; Rust's `inf` and `nan` are not, so they are `NaN` here as there.

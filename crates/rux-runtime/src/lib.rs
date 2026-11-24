@@ -11621,19 +11621,18 @@ let open = signal(true);
     /// zone, from milliseconds since 1970.
     #[test]
     fn date_reads_the_wall_clock_and_a_times_parts() {
-        use chrono::{Datelike, TimeZone, Timelike};
         let ms: i64 = 1_793_345_000_000;
-        let at = chrono::Local.timestamp_millis_opt(ms).single().unwrap();
+        let at = jiff::Timestamp::from_millisecond(ms).unwrap().to_zoned_datetime(jiff::tz::TimeZone::system());
         let cases: Vec<(&str, String)> = vec![
-            ("Date.time(at)", at.format("%H:%M").to_string()),
-            ("Date.date(at)", at.format("%-d %b %Y").to_string()),
+            ("Date.time(at)", at.strftime("%H:%M").to_string()),
+            ("Date.date(at)", at.strftime("%-d %b %Y").to_string()),
             ("Date.hours(at)", at.hour().to_string()),
             ("Date.minutes(at)", at.minute().to_string()),
             ("Date.seconds(at)", at.second().to_string()),
             ("Date.day(at)", at.day().to_string()),
             ("Date.month(at)", at.month().to_string()),
             ("Date.year(at)", at.year().to_string()),
-            ("Date.weekday(at)", at.weekday().num_days_from_sunday().to_string()),
+            ("Date.weekday(at)", at.weekday().to_sunday_zero_offset().to_string()),
             ("intDiv(at + 180000 - at, 60000)", "3".into()),
             ("Date.now() > 1700000000000", "true".into()),
         ];

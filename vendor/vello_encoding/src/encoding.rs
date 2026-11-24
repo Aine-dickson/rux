@@ -271,7 +271,8 @@ impl Encoding {
     }
 
     /// Encodes a brush with an optional alpha modifier.
-    #[expect(
+    // Rux: `allow`, not `expect`: newer Rust fixed the false positive, and an unmet `expect` warns.
+    #[allow(
         single_use_lifetimes,
         reason = "False positive: https://github.com/rust-lang/rust/issues/129255"
     )]
