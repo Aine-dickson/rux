@@ -74,6 +74,7 @@ pub fn scan(lib: &Path) -> Scan {
         error_impls: HashMap::new(),
         structs: HashMap::new(),
         defined: HashSet::new(),
+        inline: 0,
     };
     let dir = lib.parent().unwrap_or(Path::new(".")).to_path_buf();
     s.file(lib, "", &dir, true);
@@ -103,6 +104,8 @@ struct Scanner {
     structs: HashMap<String, Vec<(String, String, bool)>>,
     /// The structs and enums this crate defines, by Rust name.
     defined: HashSet<String>,
+    /// How many inline `mod x { }` blocks the items being read are inside.
+    inline: usize,
 }
 
 /// What `impl rux::IntoError for X` says script can see of an `X`.
@@ -163,11 +166,28 @@ impl Scanner {
                     let reach = reachable && is_pub(&m.vis);
                     let dir = child_dir.join(m.ident.to_string());
                     if let Some((_, inner)) = &m.content {
+                        self.inline += 1;
                         self.items(inner, &sub, &dir, file, reach);
+                        self.inline -= 1;
                         continue;
                     }
-                    if m.attrs.iter().any(|a| a.path().is_ident("path")) {
-                        self.problem(file, m.span(), "a `#[path]` module is not read for exports; name the file after the module");
+                    if let Some(attr) = m.attrs.iter().find(|a| a.path().is_ident("path")) {
+                        // The file a `#[path = "..."]` names, relative to the directory of the file
+                        // holding the declaration (Rust's rule), or of the inline modules around it.
+                        // This is how two apps compile, and so export, one shared source file.
+                        let Some(named) = path_attr(attr) else {
+                            self.problem(file, m.span(), "`#[path]` takes a string: `#[path = \"../shared/session.rs\"]`");
+                            continue;
+                        };
+                        let base = if self.inline > 0 { child_dir.to_path_buf() } else { file.parent().unwrap_or(child_dir).to_path_buf() };
+                        let target = base.join(&named);
+                        if !target.is_file() {
+                            self.problem(file, m.span(), format!("no file for `#[path = {named:?}] mod {}`: looked for {}", m.ident, target.display()));
+                            continue;
+                        }
+                        // A file named this way holds its own `mod x;` lines beside itself.
+                        let own = target.parent().unwrap_or(&base).to_path_buf();
+                        self.file(&target, &sub, &own, reach);
                         continue;
                     }
                     let a = child_dir.join(format!("{}.rs", m.ident));
@@ -494,6 +514,17 @@ fn flatten(ts: proc_macro2::TokenStream, out: &mut Vec<Tok>) {
     }
 }
 
+/// The string of a `#[path = "..."]`.
+fn path_attr(attr: &syn::Attribute) -> Option<String> {
+    match &attr.meta {
+        syn::Meta::NameValue(nv) => match &nv.value {
+            syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(s), .. }) => Some(s.value()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn unreachable_message(what: &str, name: &str) -> String {
     format!(
         "the {what} `{name}` is exported to Rux but cannot be reached from the crate root: \
@@ -603,6 +634,27 @@ mod tests {
         assert_eq!(of("c"), Some("{ message: string, kind: string }"));
         assert_eq!(of("d"), Some("{ message: string, kind: string }"));
         assert_eq!(of("e"), None);
+    }
+
+    #[test]
+    fn a_path_module_is_read_from_the_file_it_names() {
+        // Two apps compile one shared source file: `native/lib.rs` names it.
+        let (dir, _) = crate_with(&[
+            ("app/native/lib.rs", "#[path = \"../../shared/session.rs\"]\npub mod session;\n"),
+            ("shared/session.rs", "#[rux::export]\npub fn restore(token: String) -> bool { true }\n"),
+        ]);
+        let scan = scan(&dir.0.join("app/native/lib.rs"));
+        assert_eq!(scan.problems, vec![]);
+        let session = scan.modules.iter().find(|m| m.path == "session").expect("the shared module is read");
+        assert_eq!(session.registrations, ["session::__rux_export_restore"]);
+        assert!(session.items.iter().any(|f| matches!(f, Found::Fn { name, .. } if name == "restore")));
+    }
+
+    #[test]
+    fn a_path_module_with_no_file_is_said() {
+        let (_d, s) = crate_with(&[("lib.rs", "#[path = \"gone.rs\"]\npub mod x;\n")]);
+        assert_eq!(s.problems.len(), 1);
+        assert!(s.problems[0].message.contains("no file for `#[path"), "{}", s.problems[0].message);
     }
 
     #[test]

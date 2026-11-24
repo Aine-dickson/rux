@@ -1467,6 +1467,15 @@ pub fn open_till() -> Till { … }
   any string is allowed. A function returning `Result<T, rux::Error>` throws the
   error as it is. A type with no Rux meaning in an exported signature is a compile error at the
   export, saying why, never dropped silently.
+- **Two apps can share one file of exports with `#[path]`.** In each app's
+  `native/src/lib.rs`: `#[path = "../../shared/session.rs"] pub mod session;`.
+  The file is Rust's own `#[path]` (relative to the file that holds the
+  declaration), so it compiles into each app's own crate and its
+  `#[rux::export]`s are read and registered as for any module of that crate;
+  `rux check` sees them without a build. There is no dependency crate and no
+  second registry. `rux run` may not rebuild when a shared file outside
+  `native/` changes (not checked): touch a file under `native/`. Exports from a
+  dependency crate are not read (UD-015, assessed and parked).
 - **`rux::Any` is the boundary value** (`None`, `Bool`, `Int`, `Float`, `Str`, `Array`,
   `Map`, `Resource`); a Rust function taking or giving it is typed `any`.
 - **`#[rux::init]`** marks one function run once before the first document loads,

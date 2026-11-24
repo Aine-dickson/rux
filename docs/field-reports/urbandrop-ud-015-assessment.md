@@ -1,5 +1,7 @@
 # UD-015 assessment: sharing code between two Rux apps
 
+**Update 2026-11-24:** the owner approved the `#[path]` step (building block 1 below) and it is built: the scanner follows `#[path = "..."] mod x;`, with tests in `rux-bindgen` and `the_native_seam`, documented in `07-script.md` (Native code). The dependency-crate and `.rux` halves stay parked.
+
 Written 2026-11-24 under the owner's rule: a field report is not a spec. First ask how necessary the request is,
 what it costs and risks, and whether a smaller general building block serves it. Nothing here is built.
 

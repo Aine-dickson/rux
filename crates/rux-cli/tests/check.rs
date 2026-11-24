@@ -679,6 +679,27 @@ pub async fn upload(file: rux::File) -> Result<i64, rux::Error> { Ok(file.bytes(
         assert_eq!((code, said.as_str()), (0, ""), "{said}");
     }
 
+    /// UD-015: two apps share one source file of exports with `#[path]`.
+    #[test]
+    fn an_export_in_a_file_named_by_path_is_seen() {
+        let app = "<template><screen><text>x</text></screen></template>\n<script>\nuse native::session;\nlet ok: bool = session.restore(\"t\");\nlet bad: bool = session.restore(1);\n</script>";
+        let dir = fixture(
+            "seam-path",
+            &[
+                ("rux.toml", "[app]\nname = \"seam\"\n"),
+                ("app.rux", app),
+                ("native/Cargo.toml", "[package]\nname = \"seam-native\"\nversion = \"0.1.0\"\nedition = \"2021\"\n"),
+                ("native/src/lib.rs", "#[path = \"../../shared/session.rs\"]\npub mod session;\n"),
+                ("shared/session.rs", "#[rux::export]\npub fn restore(token: String) -> bool { !token.is_empty() }\n"),
+            ],
+        );
+        let out = check(&[dir.to_str().unwrap()]);
+        let said = stdout(&out);
+        assert_eq!(out.status.code(), Some(1), "{said}");
+        assert!(said.contains("app.rux:5") && said.contains("expected"), "only the wrong call is reported: {said}");
+        assert!(!said.contains("app.rux:4"), "{said}");
+    }
+
     /// UD-004: an export can take the `File` a script holds.
     #[test]
     fn a_file_is_passed_to_an_export_that_takes_one() {
