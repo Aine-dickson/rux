@@ -3821,8 +3821,19 @@ temporary counting allocator in the CLI found what the stores did not explain.
 The rest outside the Rust heap (about 190 to 290 MB) fits vello's image atlas, which grows to 8192 x 8192 (256 MB)
 before it evicts anything: upstream behaviour, a report for Linebender, not a Rux change.
 
-**Not driven:** the emulator or a phone (the Android build of this change, the 64 MB budget, Android's cache
-directory), a real server's `Cache-Control`, the web.
+**Android emulator** `rux_test` (Android 15, x86_64), probe `rux-harness/tiles-and` (the same pan, built with
+`target/release/rux.exe` from `c962f8c`, `RUX_PROFILE=1` baked in), the tile server reached through
+`adb reverse tcp:8765 tcp:8765`, `stress-and.ps1` reading `dumpsys meminfo` every 10 s.
+
+| Case | Result |
+|---|---|
+| The build | compiles and installs (the plain `cargo check` for Android needs the NDK that `rux build` sets up) |
+| 96 px a step for 240 s, 4,200 tiles | native heap 37 MB at 10 s, 97 MB at 30 s (the 64 MB picture budget full), then about 9 KB a tile to 135 MB: the network-bytes budget filling (tiles average 8 KB here), which stops at 32 MB. Total PSS 191 MB at the end. Before this change the same pan kept every picture |
+| Disk cache | 4,209 files, 34 MB in `cache/rux-images`; every tile fetched (server 4,200) |
+| Frames | about 230 ms each (`patch` 69 ms, `gpu` 150 ms): the emulator's software GPU and translated CPU, not a phone; no speed claim is made from it |
+| The screen after 240 s | tiles drawn; Android's "System UI isn't responding" over them (the system's own process, starved by the emulator's load, not the probe's) |
+
+**Not driven:** a phone (speed and memory there), a real server's `Cache-Control`, the web.
 
 ## Standing gaps
 
