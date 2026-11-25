@@ -1,7 +1,7 @@
 # Handoff
 
 Read this first. Keep it short; history goes to an archive, not here.
-Last updated 2026-11-11.
+Last updated 2026-11-25.
 
 ## Objective
 
@@ -294,21 +294,19 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next action
 
-**2026-11-25, newest.** The owner confirmed `build/v0.10` and told a session to start on steps 0 and 1 below. Done so far: `build/v0.10` checked out from `origin/build/v0.10`; the `wasm32-unknown-unknown` target installed with rustup on the owner's PC. Not finished (the PC was about to lose power): the baseline `cargo test --workspace -j 2` and `cargo check -p rux-web --target wasm32-unknown-unknown -j 2` were both still building, so neither result is known. Reading the code suggests step 1 may already be fixed: `window_settings` is a field of `App` (`rux-shell/src/lib.rs` about lines 2114 and 2540) and `Instant` is `web_time::Instant` (line 74). Confirm with the wasm check before changing anything.
+**2026-11-25, newest.** A session on another PC started on the 2026-11-12 order below without the State entries of 11-23 and 11-24, so most of that order is already done. Where v0.10 stands, by the 11-12 order's steps:
 
-To do, in the owner's proposed order (each group its own Opus plan the owner approves, then Sonnet builds):
+0. Baseline: done. CI is green on `ad2185d`, `fe31587` and `4f96fee`; local `./scripts/release.sh verify` passed on `fe31587` (1,848 tests).
+1. Web build: fixed 2026-11-23 (State, permissions entry) and driven in Edge. On the other PC, the `wasm32-unknown-unknown` target is now installed; its `cargo check -p rux-web --target wasm32-unknown-unknown` had not finished, so run it once there to confirm that machine builds.
+2. UD-013, UD-014, UD-005: built (11-23, 11-24).
+3. UD-001, UD-004, UD-007: built. UD-015: only the `#[path]` step; its other halves are held on the owner's rule (assess first; do not plan or start without asking).
+4. The capability model (roadmap v0.10 item 2): not started.
+5. UD-002, UD-003: built (11-23), so the question of location and notifications first is settled.
+6. Later: UD-006 assessed (a tile map is workable in the app, pinch built, image memory bounded); UD-016 assessed (a server PDF opened with `links.open`); the open v0.9 items moved to v0.10 are still open.
 
-0. Baseline: `cargo test --workspace -j 2` green on `build/v0.10`.
-1. Web build: make `cargo check -p rux-web --target wasm32-unknown-unknown` pass (see the 2026-11-12 note below); a bug fix, so a test that failed before; then run the web build to see it work.
-2. Web-standard Urbandrop items: UD-013, UD-014, UD-005 parts 1 to 3.
-3. The Rust boundary: UD-001, UD-004, UD-007, UD-015.
-4. The capability model (roadmap v0.10 item 2); before step 5.
-5. Platform services: UD-002, UD-003.
-6. Later: UD-006, UD-016, and the open v0.9 items moved to v0.10.
+**Next:** the small follow-up first: `rux check` reported nothing where a component load failed (State, 2026-11-24). Then the owner picks the next group; proposed, an Opus plan for error boundaries (v0.10 item 1), or the capability model. Also open with the owner: whether a removed component's queued handler should stop running at page level (State, 2026-11-24).
 
-Small follow-up to do before the big work: `rux check` reported nothing where a component load failed (see State, 2026-11-24).
-
-Still open with the owner: whether location and notifications (needed now) go before step 2.
+The 2026-11-12 block below is history: the branch was made on 2026-11-23 and its order is covered above.
 
 **2026-11-12, read this first.** The owner froze v0.9: it is not released before v0.8, which waits for a
 phone to test its Android features. New work goes on the next version (v0.10). Two decisions are open with
