@@ -165,6 +165,12 @@ pub struct Document {
     effect_writers: HashMap<String, Vec<usize>>,
     /// The same for components' effects, by instance key and index.
     instance_effect_writers: HashMap<String, Vec<(String, usize)>>,
+    /// A `<boundary>` was failed since the tree was built, so the next
+    /// settling rebuilds it into its fallback: see [`Document::attribute_fault`].
+    boundary_dirty: bool,
+    /// The failure count a boundary was last asked about, so a failure
+    /// belongs to the innermost call that saw it and not to the ones around.
+    fault_attributed: u64,
     /// The document's own `mounted` / `unmounted` bodies.
     hooks: Hooks,
     /// Each component's `mounted` / `unmounted` bodies, by tag. Shared by every
@@ -3339,6 +3345,8 @@ impl Document {
             effects,
             effect_writers: HashMap::new(),
             instance_effect_writers: HashMap::new(),
+            boundary_dirty: false,
+            fault_attributed: 0,
             hooks,
             component_hooks,
             component_computeds,
@@ -3496,6 +3504,8 @@ impl Document {
             effects,
             effect_writers: HashMap::new(),
             instance_effect_writers: HashMap::new(),
+            boundary_dirty: false,
+            fault_attributed: 0,
             hooks,
             // No imports were resolved here, so there are no components and
             // nothing can declare a component hook, computed or effect.
@@ -5540,7 +5550,42 @@ impl Document {
     /// emitted and asked for applied the same way.
     fn dispatch(&mut self, run: Run<'_>, instance: Option<&str>, depth: usize, event: Option<&rux_reactive::Value>) -> bool {
         let resolver = self.element_resolver();
-        rux_script::with_elements(resolver, || self.dispatch_handler_inner(run, instance, depth, event))
+        let before = rux_script::faults();
+        let ran = rux_script::with_elements(resolver, || self.dispatch_handler_inner(run, instance, depth, event));
+        self.attribute_fault(instance, before);
+        self.settle_boundaries() || ran
+    }
+
+    /// A failure since `before` in `instance`'s code fails the `<boundary>`
+    /// around that instance, when there is one: its next build shows the
+    /// fallback. The innermost call to see a failure takes it, so a listener's
+    /// failure is its caller's and not the emitter's.
+    fn attribute_fault(&mut self, instance: Option<&str>, before: u64) {
+        let now = rux_script::faults();
+        if now <= before || now <= self.fault_attributed {
+            return;
+        }
+        self.fault_attributed = now;
+        let Some(boundary) = instance.and_then(|k| self.instances.get(k)).and_then(|i| i.boundary.clone()) else {
+            return;
+        };
+        if self.engine.boundary_error(&boundary).is_some() {
+            return;
+        }
+        if let Some(error) = rux_script::last_fault() {
+            self.engine.fail_boundary(&boundary, error);
+            self.boundary_dirty = true;
+        }
+    }
+
+    /// Build again if a boundary was failed since the last build. Says whether
+    /// it did.
+    fn settle_boundaries(&mut self) -> bool {
+        if !std::mem::take(&mut self.boundary_dirty) {
+            return false;
+        }
+        self.rebuild();
+        true
     }
 
     /// The body of [`Document::dispatch_handler`], split out so the element
@@ -5998,8 +6043,10 @@ impl Document {
                 // task nobody owns is never resumed, and one filed under the
                 // wrong instance goes on in its scope (UD-012).
                 let earlier = self.engine.take_started_tasks();
+                let faults_before = rux_script::faults();
                 let (after, wrote, mut reads) =
                     self.engine.run_scoped_effect(&effect.body, &locals);
+                self.attribute_fault(Some(&key), faults_before);
                 let started = self.engine.take_started_tasks();
                 self.own_tasks(started, Some(&key));
                 self.engine.put_back_started_tasks(earlier);
@@ -6722,8 +6769,14 @@ impl Document {
         let computeds_moved = self.refresh_instance_computeds(Some(&changed));
         // A patch is chosen by which document signals moved, and instance state
         // is not among them, so what a computed moved is patched on its own.
-        let patched =
+        let faults_before = rux_script::faults();
+        let mut patched =
             self.patch(&changed) && (computeds_moved.is_empty() || self.patch_instances(&before));
+        // A binding that failed while it was patched in place may sit inside a
+        // `<boundary>`; only a build says which, and it shows the fallback.
+        if patched && rux_script::faults() > faults_before && !self.registry.boundaries.is_empty() {
+            patched = false;
+        }
         if !patched {
             self.rebuild();
         }
@@ -6755,6 +6808,8 @@ impl Document {
                 self.rebuild();
             }
         }
+        // An effect that failed inside a `<boundary>` has failed it.
+        self.settle_boundaries();
         if !writes.is_empty() {
             if depth + 1 >= MAX_EFFECT_ROUNDS {
                 let mut names: Vec<&str> = writes.iter().map(String::as_str).collect();

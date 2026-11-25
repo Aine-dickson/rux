@@ -116,7 +116,12 @@ impl Interp {
                 self.started.push(tid);
             }
             Outcome::Done(_) => {}
-            Outcome::Failed(f) => self.failed.push((task.name, f)),
+            Outcome::Failed(f) => {
+                // A boundary around the component that started it hears of
+                // this as of any failure.
+                crate::note_fault(crate::fault_value(&f));
+                self.failed.push((task.name, f))
+            }
         }
     }
 

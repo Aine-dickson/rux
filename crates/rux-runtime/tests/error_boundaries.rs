@@ -217,3 +217,140 @@ fn a_fallback_that_is_not_the_last_child_or_that_comes_twice_is_an_error() {
         assert!(errors.iter().any(|m| m.contains("one `<fallback>`, as its last child")), "{name}: {errors:?}");
     }
 }
+
+// ── Failures after the first build ───────────────────────────────────────────
+
+fn tap(doc: &mut Document, label: &str) {
+    fn texts_of(n: &rux_layout::Node) -> Vec<String> {
+        let mut out: Vec<String> = n.text.iter().map(|t| t.text.trim().to_string()).collect();
+        for c in &n.children {
+            out.extend(texts_of(c));
+        }
+        out
+    }
+    fn find<'a>(n: &'a rux_layout::Node, l: &str) -> Option<&'a rux_layout::Node> {
+        if n.on_tap.is_some() && texts_of(n).iter().any(|t| t == l) {
+            return Some(n);
+        }
+        n.children.iter().find_map(|c| find(c, l))
+    }
+    let node = find(&doc.root, label).unwrap_or_else(|| panic!("nothing says {label}: {}", shown(doc))).clone();
+    doc.apply_handler_in(&node.on_tap.clone().unwrap(), node.instance.as_deref());
+}
+
+#[test]
+fn a_binding_that_starts_failing_after_a_change_shows_the_fallback() {
+    let mut doc = load(
+        "later-binding",
+        r#"<view @tap="n = 0"><text>break</text></view>
+<boundary>
+  <text>[{{ show(n) }}]</text>
+  <fallback><text>broken: {{ error.message }}</text></fallback>
+</boundary>"#,
+        &format!("{FAILS}\nlet n = signal(1);"),
+        &[],
+    );
+    assert!(shown(&doc).contains("[row1]"), "{}", shown(&doc));
+    tap(&mut doc, "break");
+    let s = shown(&doc);
+    assert!(s.contains("broken: zero") && !s.contains("[row"), "{s}");
+}
+
+const CRASHY: &str = "<template><view @tap=\"go()\"><text>crash</text></view></template>\n\
+<script>\nfn go() { throw \"oops\"; }\n</script>";
+
+#[test]
+fn a_components_failing_handler_shows_the_fallback() {
+    let mut doc = load(
+        "later-handler",
+        r#"<boundary>
+  <crashy />
+  <fallback><text>failed: {{ error.message }}</text></fallback>
+</boundary>"#,
+        "use components::crashy;",
+        &[("components/crashy.rux", CRASHY)],
+    );
+    assert!(shown(&doc).contains("crash") && !shown(&doc).contains("failed"), "{}", shown(&doc));
+    tap(&mut doc, "crash");
+    let s = shown(&doc);
+    assert!(s.contains("failed: oops") && !s.contains("crash|") && !s.starts_with("crash"), "{s}");
+}
+
+#[test]
+fn a_pages_own_failing_handler_is_not_caught_by_a_boundary_around_its_markup() {
+    let mut doc = load(
+        "page-handler",
+        r#"<boundary>
+  <view @tap="boom()"><text>page crash</text></view>
+  <fallback><text>failed</text></fallback>
+</boundary>"#,
+        FAILS,
+        &[],
+    );
+    tap(&mut doc, "page crash");
+    let s = shown(&doc);
+    assert!(s.contains("page crash") && !s.contains("failed"), "{s}");
+}
+
+#[test]
+fn a_failing_async_fn_of_a_component_shows_the_fallback() {
+    let mut doc = load(
+        "later-async",
+        r#"<boundary>
+  <loader />
+  <fallback><text>load failed: {{ error.message }}</text></fallback>
+</boundary>"#,
+        "use components::loader;",
+        &[(
+            "components/loader.rux",
+            "<template><view @tap=\"load()\"><text>load</text></view></template>\n\
+             <script>\nasync fn load() { throw \"no network\"; }\n</script>",
+        )],
+    );
+    tap(&mut doc, "load");
+    assert!(shown(&doc).contains("load failed: no network"), "{}", shown(&doc));
+}
+
+#[test]
+fn a_components_failing_effect_shows_the_fallback() {
+    let mut doc = load(
+        "later-effect",
+        r#"<view @tap="go = 1"><text>trigger</text></view>
+<boundary>
+  <watcher :go="go" />
+  <fallback><text>watch failed: {{ error.message }}</text></fallback>
+</boundary>"#,
+        "use components::watcher;\nlet go = signal(0);",
+        &[(
+            "components/watcher.rux",
+            "<template><text>watching</text></template>\n\
+             <script>\nprop go: int;\neffect { if go == 1 { throw \"effect broke\"; } }\n</script>",
+        )],
+    );
+    assert!(shown(&doc).contains("watching"), "{}", shown(&doc));
+    tap(&mut doc, "trigger");
+    assert!(shown(&doc).contains("watch failed: effect broke"), "{}", shown(&doc));
+}
+
+#[test]
+fn the_instances_in_a_failed_boundary_unmount() {
+    let mut doc = load(
+        "unmounts",
+        r#"<boundary>
+  <crashy />
+  <fallback><text>failed</text></fallback>
+</boundary>"#,
+        "use components::crashy;",
+        &[(
+            "components/crashy.rux",
+            "<template><view @tap=\"go()\"><text>crash</text></view></template>\n\
+             <script>\nmounted { print(\"up\"); }\nunmounted { print(\"down\"); }\nfn go() { throw \"oops\"; }\n</script>",
+        )],
+    );
+    // What `mounted` printed while loading is not what is asked about.
+    let _ = rux_runtime::take_prints();
+    tap(&mut doc, "crash");
+    let printed = format!("{:?} {:?}", doc.diagnostics().prints, rux_runtime::take_prints());
+    assert!(printed.contains("down"), "{printed}");
+    assert!(shown(&doc).contains("failed"), "{}", shown(&doc));
+}

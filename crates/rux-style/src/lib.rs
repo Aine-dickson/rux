@@ -398,6 +398,10 @@ pub struct BindingRegistry {
     pub toggles: Vec<ToggleBinding>,
     pub components: Vec<ComponentBinding>,
     pub styled: Vec<StyledBinding>,
+    /// The `<boundary>`s showing their children, by key. A failure while the
+    /// document is patched or a component runs may belong to one of them, and
+    /// only a build can say which; with none here there is nothing to ask.
+    pub boundaries: Vec<String>,
     /// Signals read by any non-patchable, non-reconcilable site. A change touching
     /// one of these means the runtime must rebuild rather than patch. (Empty now,
     /// kept as a safety net for any future non-reconcilable binding.)
@@ -423,6 +427,7 @@ struct RegistryMark {
     toggles: usize,
     components: usize,
     styled: usize,
+    boundaries: usize,
     elements: usize,
 }
 
@@ -438,6 +443,7 @@ impl BindingRegistry {
             toggles: self.toggles.len(),
             components: self.components.len(),
             styled: self.styled.len(),
+            boundaries: self.boundaries.len(),
             elements: self.elements.entries.len(),
         }
     }
@@ -454,6 +460,7 @@ impl BindingRegistry {
         self.toggles.truncate(mark.toggles);
         self.components.truncate(mark.components);
         self.styled.truncate(mark.styled);
+        self.boundaries.truncate(mark.boundaries);
         self.elements.entries.truncate(mark.elements);
     }
 }
@@ -840,6 +847,10 @@ pub struct Instance {
     /// went away. Cleared at the start of a build and checked at the end, which
     /// is the only moment both facts are known.
     pub touched: bool,
+    /// The `<boundary>` this instance was expanded inside, the innermost: a
+    /// failure of its code (a handler, an effect, a timer, an `async fn`)
+    /// fails that boundary. Re-derived by each build, as the caller is.
+    pub boundary: Option<String>,
 }
 
 /// Every live component instance, by identity. Owned by the runtime so it
@@ -1233,6 +1244,12 @@ pub fn take_lifecycle() -> (Vec<Lifecycle>, Vec<Lifecycle>) {
         MOUNTS.with(|m| std::mem::take(&mut *m.borrow_mut())),
         UNMOUNTS.with(|u| std::mem::take(&mut *u.borrow_mut())),
     )
+}
+
+thread_local! {
+    /// The `<boundary>`s whose children are being built, innermost last. An
+    /// instance expanded now belongs to the innermost one.
+    static OPEN_BOUNDARIES: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// The local a `<fallback>`'s handlers carry: the key of the `<boundary>`
@@ -10184,6 +10201,9 @@ fn expand_component(
         ..Instance::default()
     });
     entry.touched = true;
+    // Re-derived each build, as the caller is: the boundary around the place
+    // it is expanded now, or none.
+    entry.boundary = OPEN_BOUNDARIES.with(|b| b.borrow().last().cloned());
     if fresh {
         MOUNTS.with(|m| {
             m.borrow_mut().push(Lifecycle {
@@ -11203,12 +11223,17 @@ fn build_children_from(
                     instances.iter().filter(|(_, i)| i.touched).map(|(k, _)| k.clone()).collect();
                 let mounts = pending_mounts();
                 rux_script::push_boundary();
+                OPEN_BOUNDARIES.with(|b| b.borrow_mut().push(key.clone()));
                 let (nodes, deps) = build_children_from(
                     &shown_kids, rules, comps, ancestors, inherited, engine, locals, path, &bp, reg, state,
                     instances, swaps, instance, slot, outlet, row, Some(out.len()),
                 );
+                OPEN_BOUNDARIES.with(|b| b.borrow_mut().pop());
                 match rux_script::pop_boundary() {
-                    None => shown = Some((nodes, deps)),
+                    None => {
+                        reg.boundaries.push(key.clone());
+                        shown = Some((nodes, deps))
+                    }
                     Some(error) => {
                         // Thrown away: what the children registered, the
                         // instances they made (and the mounts those were owed),
@@ -12343,6 +12368,7 @@ impl BindingRegistry {
             toggles,
             components,
             styled,
+            boundaries,
             structural,
             elements,
         } = fresh;
@@ -12357,6 +12383,7 @@ impl BindingRegistry {
         self.styled.splice(at[8]..at[8], styled);
         self.elements.entries.splice(at[9]..at[9], elements.entries);
         self.structural.extend(structural);
+        self.boundaries.extend(boundaries);
         if let Some(i) = self.structural_parents.iter().position(|b| b.tree_path == parent) {
             if deps.is_empty() {
                 self.structural_parents.remove(i);
@@ -12820,7 +12847,7 @@ fn merge_rows(
         out.sort_by_key(|entry| read(entry).get(depth).copied().unwrap_or(usize::MAX));
         out
     }
-    let BindingRegistry { text, value, show, src, options, structural_parents, toggles, components, styled, structural: _, elements } = live;
+    let BindingRegistry { text, value, show, src, options, structural_parents, toggles, components, styled, boundaries, structural: _, elements } = live;
     let mut f = fresh;
     BindingRegistry {
         text: merge(text, std::mem::take(&mut f.text), depth, olds, &from, |b| &mut b.path, |b| &b.path, |b, o| fix(&mut b.locals, o)),
@@ -12832,6 +12859,7 @@ fn merge_rows(
         toggles: merge(toggles, std::mem::take(&mut f.toggles), depth, olds, &from, |b| &mut b.path, |b| &b.path, |_, _| {}),
         components: merge(components, std::mem::take(&mut f.components), depth, olds, &from, |b| &mut b.path, |b| &b.path, |_, _| {}),
         styled: merge(styled, std::mem::take(&mut f.styled), depth, olds, &from, |b| &mut b.path, |b| &b.path, |_, _| {}),
+        boundaries: boundaries.into_iter().chain(std::mem::take(&mut f.boundaries)).collect(),
         structural: f.structural,
         elements: ElementIndex {
             entries: merge(elements.entries, std::mem::take(&mut f.elements.entries), depth, olds, &from, |e| &mut e.path, |e| &e.path, |_, _| {}),
@@ -12908,6 +12936,7 @@ impl Marks {
             toggles: reg.toggles[self.toggles..].to_vec(),
             components: reg.components[self.components..].to_vec(),
             styled: reg.styled[self.styled..].to_vec(),
+            boundaries: Vec::new(),
             structural: HashSet::new(),
             elements: ElementIndex { entries: reg.elements.entries[self.elements..].to_vec() },
         }
