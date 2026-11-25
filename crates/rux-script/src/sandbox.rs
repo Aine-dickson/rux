@@ -56,10 +56,30 @@ pub struct Sandbox {
     pub limits: Limits,
 }
 
+/// Every grant that names something Rux gives every script: the built-in modules,
+/// the file dialogs and sounds, and `images`, which lets an `<image>` come from the network.
+pub const BUILTIN_GRANTS: &[&str] = &[
+    "clipboard", "settings", "window", "permissions", "app", "notifications", "background",
+    "location", "links", "secrets", "network", "files", "images",
+];
+
 impl Sandbox {
     /// The default limits and no grants.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// What the playground runs its source on: the default limits, and every
+    /// built-in granted, since the browser tab is already the outer sandbox and
+    /// asks the person itself. It has no app modules to grant.
+    pub fn playground() -> Self {
+        BUILTIN_GRANTS.iter().fold(Self::new(), |s, g| s.grant(g))
+    }
+
+    /// Whether `name` is something a grant can name: a built-in, or an app's own
+    /// module written as `native::name`.
+    pub fn is_known_grant(name: &str) -> bool {
+        BUILTIN_GRANTS.contains(&name) || name.starts_with("native::")
     }
 
     /// Allow the document `module`.
@@ -121,5 +141,28 @@ impl Sandbox {
     /// Whether the native module `module` (as linked) was granted.
     pub fn allows(&self, module: &str) -> bool {
         self.grants.contains(&grant_name(module))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_playground_gets_every_built_in_and_no_app_module() {
+        let p = Sandbox::playground();
+        for module in [
+            crate::native::BUILTIN_MODULE,
+            crate::native::CLIPBOARD_MODULE,
+            crate::native::SETTINGS_MODULE,
+            crate::native::WINDOW_MODULE,
+            crate::native::LOCATION_MODULE,
+            crate::native::NETWORK_MODULE,
+        ] {
+            assert!(p.allows(module), "{module}");
+        }
+        assert!(p.grants("images"));
+        assert!(!p.allows("native/shop"));
+        assert!(!Sandbox::new().grants("images"));
     }
 }

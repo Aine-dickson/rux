@@ -884,3 +884,33 @@ fn alert() {
     assert!(text.contains("no `[background]`"), "{text}");
     assert_eq!(out.status.code(), Some(0), "warnings alone do not fail: {text}");
 }
+
+// ----- --sandbox ----------------------------------------------------------------
+
+const COPIES: &str = "<template><screen><text>hi</text></screen></template>\n<script>\nfn copy() { clipboard.writeText(\"x\"); }\n</script>";
+
+#[test]
+fn check_sandbox_reports_a_module_the_document_was_not_granted() {
+    let dir = fixture("sandbox_ungranted", &[("app.rux", COPIES)]);
+    let file = dir.join("app.rux");
+    let file = file.to_str().unwrap();
+    let out = check(&["--sandbox", file]);
+    assert_eq!(out.status.code(), Some(1), "{}{}", stdout(&out), String::from_utf8_lossy(&out.stderr));
+    assert!(stdout(&out).contains("`clipboard`"), "{}", stdout(&out));
+    // Granted, it is clean; and with no flag it never was a problem.
+    assert_eq!(check(&["--sandbox=clipboard", file]).status.code(), Some(0));
+    assert_eq!(check(&[file]).status.code(), Some(0));
+}
+
+#[test]
+fn run_sandbox_needs_a_known_grant_name_list() {
+    let dir = fixture("sandbox_flag", &[("app.rux", COPIES)]);
+    let file = dir.join("app.rux");
+    let out = Command::new(RUX).arg("run").arg(&file).arg("--sandbox=").output().expect("run");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("--sandbox"), "{}", String::from_utf8_lossy(&out.stderr));
+    // A name nothing can be granted under is said, not silently ignored.
+    let out = Command::new(RUX).arg("run").arg(&file).arg("--sandbox=clipbord").output().expect("run");
+    assert_eq!(out.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&out.stderr).contains("`clipbord`"), "{}", String::from_utf8_lossy(&out.stderr));
+}

@@ -59,10 +59,16 @@ Usage:
   rux run                    Run the workspace: its app.rux or index.rux,
                              looked for here and in every parent directory
   rux run <app.rux>          Run a named document
+      --sandbox[=a,b]       Open it as a document that is not the app's own:
+                             limits on what it may spend, and no native
+                             module unless named (clipboard, files, images,
+                             native::shop, ...). Not for an app with native/
   rux <app.rux>              The same, for a file you can name
   rux check [path...]        Check documents and report problems: every .rux
                              file in the project by default, each in its own
                              context
+      --sandbox[=a,b]       Check as a document opened with those grants,
+                             so a module it was not granted is reported
   rux fmt [path...]          Re-indent files in place, and format their CSS
                              (defaults to the current directory)
   rux build                  Build the project into something you can hand
@@ -365,9 +371,20 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
 
     let mut route = None;
     let mut preview = None;
+    let mut sandboxed = false;
     let mut rest = args.iter();
     while let Some(arg) = rest.next() {
         match arg.as_str() {
+            flag if flag == "--sandbox" || flag.starts_with("--sandbox=") => match sandbox_from_flag(flag) {
+                Ok(sandbox) => {
+                    rux_runtime::set_default_sandbox(Some(sandbox));
+                    sandboxed = true;
+                }
+                Err(why) => {
+                    eprintln!("rux: {why}");
+                    return ExitCode::from(2);
+                }
+            },
             "--route" => match rest.next() {
                 Some(value) => route = Some(value.clone()),
                 None => {
@@ -451,6 +468,13 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
     // An app with Rust of its own runs as a build of itself, since the Rust
     // has to be compiled in; its documents still hot reload from disk.
     if let Some(native) = native::find_above(&path) {
+        if sandboxed {
+            eprintln!(
+                "rux: `--sandbox` cannot run an app with Rust of its own: that code is compiled in and \
+                 has full trust, so there is nothing to sandbox"
+            );
+            return ExitCode::from(2);
+        }
         return native::run(&path, &native, route.as_deref(), preview.map(|p| p.name));
     }
     let window = match &manifest {
@@ -482,6 +506,27 @@ fn run(path: PathBuf, args: &[String]) -> ExitCode {
     ExitCode::SUCCESS
 }
 
+/// `--sandbox`, or `--sandbox=clipboard,files`: the terms a document is opened on
+/// when it is not the app's own, with the grants it names.
+fn sandbox_from_flag(flag: &str) -> Result<rux_runtime::Sandbox, String> {
+    let mut sandbox = rux_runtime::Sandbox::new();
+    let Some(list) = flag.strip_prefix("--sandbox=") else { return Ok(sandbox) };
+    if list.is_empty() {
+        return Err("`--sandbox=` needs the names to grant after the `=`, like `--sandbox=clipboard,files`; \
+                    leave the `=` off to grant nothing".to_string());
+    }
+    for name in list.split(',') {
+        if !rux_runtime::Sandbox::is_known_grant(name) {
+            return Err(format!(
+                "`--sandbox` cannot grant `{name}`; the names are {}, and `native::name` for an app's own module",
+                rux_runtime::BUILTIN_GRANTS.join(", ")
+            ));
+        }
+        sandbox = sandbox.grant(name);
+    }
+    Ok(sandbox)
+}
+
 fn check(args: &[String]) -> i32 {
     let mut options = check::Options { paths: Vec::new(), json: false, types: false, deny_warnings: false, native: false };
     let mut rest = args.iter();
@@ -490,6 +535,13 @@ fn check(args: &[String]) -> i32 {
             "--deny-warnings" => options.deny_warnings = true,
             "--types" => options.types = true,
             "--native" => options.native = true,
+            flag if flag == "--sandbox" || flag.starts_with("--sandbox=") => match sandbox_from_flag(flag) {
+                Ok(sandbox) => rux_runtime::set_default_sandbox(Some(sandbox)),
+                Err(why) => {
+                    eprintln!("rux: {why}");
+                    return 2;
+                }
+            },
             "--format" => match rest.next().map(String::as_str) {
                 Some("json") => options.json = true,
                 Some("text") => options.json = false,

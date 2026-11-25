@@ -103,7 +103,25 @@ enum Wake<'a> {
 
 /// What a document opened from somewhere that is not the app's own is run
 /// under: see [`Sandbox`].
+pub use rux_script::sandbox::BUILTIN_GRANTS;
 pub use rux_script::{Limits, Sandbox};
+
+/// What a load is run on when its opener says nothing: set once by whoever
+/// starts the process on untrusted documents (`rux run --sandbox`, the
+/// playground), `None` for an app's own.
+static DEFAULT_SANDBOX: std::sync::Mutex<Option<Sandbox>> = std::sync::Mutex::new(None);
+
+/// Open every document of this process under `sandbox`, or none: what
+/// [`Document::load_checked`], [`Document::load_window`] and
+/// [`Document::from_source_checked`] use. A hot reload and a window an app
+/// opens are loads too, so they are under it as well.
+pub fn set_default_sandbox(sandbox: Option<Sandbox>) {
+    *DEFAULT_SANDBOX.lock().unwrap_or_else(|e| e.into_inner()) = sandbox;
+}
+
+fn default_sandbox() -> Option<Sandbox> {
+    DEFAULT_SANDBOX.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
 
 thread_local! {
     /// The terms the document loaded last runs on, `None` for a trusted one.
@@ -2713,7 +2731,7 @@ impl Document {
     /// Load a document, keeping the failure's position so a checker can point at
     /// it. [`Document::load`] is this with the structure discarded.
     pub fn load_checked(path: impl AsRef<Path>) -> Result<Self, LoadError> {
-        enter_trust(None);
+        enter_trust(default_sandbox());
         Self::load_with(path.as_ref(), None)
     }
 
@@ -2734,7 +2752,7 @@ impl Document {
     /// the project root, so `use stores::project;` is the app's store, which
     /// every window shares ([`reset_shared_stores`]).
     pub fn load_window(path: impl AsRef<Path>, props: &[(String, Value)]) -> Result<Self, LoadError> {
-        enter_trust(None);
+        enter_trust(default_sandbox());
         Self::load_with(path.as_ref(), Some(props))
     }
 
@@ -3461,7 +3479,7 @@ impl Document {
     /// with no line was all it could ever show, and "something is wrong
     /// somewhere" is not much of an editor.
     pub fn from_source_checked(src: &str) -> Result<Self, LoadError> {
-        enter_trust(None);
+        enter_trust(default_sandbox());
         Self::from_source_inside(src)
     }
 

@@ -12566,6 +12566,8 @@ pub fn start_web(
 ) {
     use winit::platform::web::EventLoopExtWebSys;
 
+    // The playground runs what anyone typed: under the sandbox, whatever it loads.
+    rux_runtime::set_default_sandbox(Some(rux_runtime::Sandbox::playground()));
     install_rux_modules();
     let mut document = match Document::from_source(&source) {
         Ok(doc) => doc,
@@ -12756,6 +12758,8 @@ pub fn resize_web(w: f64, h: f64) {
 /// far more machinery for the same outcome.
 #[cfg(target_arch = "wasm32")]
 pub fn set_web_source(source: String) -> Option<String> {
+    // The playground runs what anyone typed: under the sandbox, whatever it loads.
+    rux_runtime::set_default_sandbox(Some(rux_runtime::Sandbox::playground()));
     if let Err(err) = Document::from_source(&source) {
         return Some(err.to_string());
     }
@@ -12782,6 +12786,8 @@ pub fn set_web_source(source: String) -> Option<String> {
 /// the diagnostics reported are the diagnostics shown.
 #[cfg(target_arch = "wasm32")]
 pub fn diagnose_web_source(source: String) -> String {
+    // The playground runs what anyone typed: under the sandbox, whatever it loads.
+    rux_runtime::set_default_sandbox(Some(rux_runtime::Sandbox::playground()));
     let (error, warnings) = match Document::from_source_checked(&source) {
         Err(err) => {
             let line = err.line.map(|l| l.to_string()).unwrap_or_else(|| "null".into());
