@@ -290,3 +290,50 @@ fn a_trusted_document_has_no_such_limits() {
     assert!(e.run_handler("let s = \"x\".repeat(40000000);"));
     assert!(take_warnings().is_empty());
 }
+
+// ----- state across runs -------------------------------------------------------
+
+const KEEPS: &str = "let log = [];\n";
+const KEEP_40K: &str = "log.push(\"x\".repeat(40000))";
+
+#[test]
+fn a_run_that_would_take_the_state_past_its_limit_is_undone_and_reported() {
+    let mut e = build_with(KEEPS, Some(limits(|l| l.state_bytes = 100_000))).expect("builds");
+    let _ = take_warnings();
+    for _ in 0..2 {
+        assert!(!e.run_handler_tracked(KEEP_40K).is_empty());
+    }
+    assert!(take_warnings().is_empty());
+    // The third would hold 120,000 bytes.
+    let changed = e.run_handler_tracked(KEEP_40K);
+    let said: Vec<String> = take_warnings().into_iter().map(|w| w.message).collect();
+    assert!(said.iter().any(|m| m.contains("state") && m.contains("100000")), "{said:?}");
+    assert!(changed.is_empty(), "nothing changed, since it was undone: {changed:?}");
+    assert_eq!(e.eval_display("log.length", &[]), "2");
+    // Taking something out makes room again.
+    e.run_handler_tracked("log.pop()");
+    assert!(!e.run_handler_tracked(KEEP_40K).is_empty());
+    assert!(take_warnings().is_empty());
+}
+
+#[test]
+fn a_shared_value_is_counted_once() {
+    // `a = [a, a]` thirty times is a billion entries to walk, and a few
+    // hundred bytes to hold.
+    let mut e = build_with("let a = [];\n", Some(limits(|l| l.state_bytes = 100_000))).expect("builds");
+    let _ = take_warnings();
+    let started = std::time::Instant::now();
+    assert!(!e.run_handler_tracked("let i = 0; while i < 30 { a = [a, a]; i += 1; }").is_empty());
+    assert!(take_warnings().is_empty());
+    assert!(started.elapsed() < std::time::Duration::from_secs(2));
+}
+
+#[test]
+fn a_trusted_document_keeps_what_it_likes() {
+    let mut e = build_with(KEEPS, None).expect("builds");
+    let _ = take_warnings();
+    for _ in 0..5 {
+        assert!(!e.run_handler_tracked(KEEP_40K).is_empty());
+    }
+    assert!(take_warnings().is_empty());
+}

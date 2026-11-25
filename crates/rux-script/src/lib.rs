@@ -2228,6 +2228,9 @@ impl Engine {
         self.ir.begin_track();
         let out = f(self);
         let changed = self.ir.end_track();
+        if let Some(why) = self.ir.take_state_refusal() {
+            warn(why);
+        }
         self.publish_stores(&changed);
         (out, changed)
     }

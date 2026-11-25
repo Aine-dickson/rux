@@ -97,6 +97,61 @@ pub struct Closure {
 pub type Compiled = (u32, bool, crate::aot::ClosureBody);
 
 impl V {
+    /// About how many bytes this value holds, counting what several places
+    /// share once, and giving up as soon as it is past `stop_at` (the answer
+    /// is then only known to be more). Walked with a stack of its own, since a
+    /// value can nest as deep as a loop made it.
+    pub(crate) fn estimate_bytes(&self, stop_at: usize) -> usize {
+        const ENTRY: usize = 32;
+        let mut seen = std::collections::HashSet::new();
+        let mut stack: Vec<&V> = vec![self];
+        let mut total = 0usize;
+        while let Some(v) = stack.pop() {
+            if total > stop_at {
+                break;
+            }
+            match v {
+                V::Str(s) => {
+                    if seen.insert(Rc::as_ptr(s) as *const u8 as usize) {
+                        total += s.len() + 16;
+                    }
+                }
+                V::Array(a) => {
+                    if seen.insert(Rc::as_ptr(a) as *const u8 as usize) {
+                        total += 24 + a.len() * ENTRY;
+                        stack.extend(a.iter());
+                    }
+                }
+                V::Map(m) => {
+                    if seen.insert(Rc::as_ptr(m) as *const u8 as usize) {
+                        total += 48;
+                        for (k, x) in m.iter() {
+                            total += k.len() + ENTRY;
+                            stack.push(x);
+                        }
+                    }
+                }
+                V::Rec(r) => {
+                    if seen.insert(Rc::as_ptr(r) as *const u8 as usize) {
+                        total += 24 + r.vals.len() * ENTRY;
+                        stack.extend(r.vals.iter());
+                    }
+                }
+                V::Fn(c) => {
+                    if seen.insert(Rc::as_ptr(c) as *const u8 as usize) {
+                        total += 64;
+                        stack.extend(c.captured.iter());
+                    }
+                }
+                V::Element(_) | V::Native(_) => total += 64,
+                V::None | V::Bool(_) | V::Int(_) | V::Float(_) | V::Range(..) => total += 16,
+            }
+        }
+        total
+    }
+}
+
+impl V {
     pub fn str(s: impl Into<Rc<str>>) -> V {
         V::Str(s.into())
     }

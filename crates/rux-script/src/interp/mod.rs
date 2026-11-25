@@ -197,6 +197,11 @@ pub struct Interp {
     sandbox: Option<crate::Sandbox>,
     /// What the run has built so far, estimated, under a sandbox's `run_alloc_bytes`.
     alloc: usize,
+    /// How big each global was last measured to be, by global, for a sandbox's
+    /// `state_bytes`.
+    state_sizes: HashMap<u32, usize>,
+    /// Set when a run's changes were undone for taking the state too far.
+    state_refused: Option<String>,
     /// Started `async fn`s that are waiting, by task id. See [`task`].
     tasks: HashMap<u64, task::Task>,
     /// Each `async fn`'s ops, compiled when first started, by function.
@@ -293,6 +298,8 @@ impl Interp {
             max_ops: MAX_OPERATIONS,
             sandbox: None,
             alloc: 0,
+            state_sizes: HashMap::new(),
+            state_refused: None,
             tasks: HashMap::new(),
             flats: HashMap::new(),
             started: Vec::new(),
@@ -881,14 +888,61 @@ impl Interp {
         self.tracks.push(Track::default());
     }
 
+    /// After the outermost tracked run of a sandboxed document: if what it
+    /// wrote takes the document's state past `state_bytes`, put every global it
+    /// changed back as it was, and say why (see [`Interp::take_state_refusal`]).
+    /// Only the globals a run changed are measured again, so a run that wrote
+    /// little pays little.
+    fn keep_state_within_limit(&mut self, changed: &mut HashSet<u32>, before: HashMap<u32, V>) {
+        let Some(limit) = self.sandbox.as_ref().map(|s| s.limits.state_bytes) else { return };
+        let was: Vec<(u32, usize)> = changed.iter().map(|g| (*g, self.state_sizes.get(g).copied().unwrap_or(0))).collect();
+        for g in changed.iter() {
+            let size = self.globals[*g as usize].estimate_bytes(limit);
+            self.state_sizes.insert(*g, size);
+        }
+        let total: usize = self.state_sizes.values().sum();
+        if total <= limit {
+            return;
+        }
+        for (g, b) in before {
+            if changed.contains(&g) {
+                self.globals[g as usize] = b;
+            }
+        }
+        for (g, size) in was {
+            self.state_sizes.insert(g, size);
+        }
+        changed.clear();
+        self.state_refused = Some(format!(
+            "this run would take the document's state to {total} bytes, more than a sandboxed document may \
+             hold (at most {limit}); what it changed was undone"
+        ));
+    }
+
+    /// The reason the last tracked run's changes were undone, once.
+    pub fn take_state_refusal(&mut self) -> Option<String> {
+        self.state_refused.take()
+    }
+
     /// Stop, and report which globals changed since the matching
     /// [`Interp::begin_track`].
     pub fn end_track(&mut self) -> HashSet<String> {
         let track = self.tracks.pop().expect("a track begun");
         let mut changed: HashSet<u32> = track.changed;
-        for (g, before) in track.before {
-            if self.globals[g as usize] != before {
-                changed.insert(g);
+        for (g, before) in &track.before {
+            if self.globals[*g as usize] != *before {
+                changed.insert(*g);
+            }
+        }
+        if self.sandbox.is_some() {
+            match self.tracks.last_mut() {
+                // What an inner run wrote is the outer run's to undo too.
+                Some(outer) => {
+                    for (g, before) in track.before {
+                        outer.before.entry(g).or_insert(before);
+                    }
+                }
+                None => self.keep_state_within_limit(&mut changed, track.before),
             }
         }
         if let Some(outer) = self.tracks.last_mut() {
