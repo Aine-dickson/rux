@@ -678,11 +678,12 @@ impl Interp {
     }
 
     /// What `JSON.parse` may read: how deep, and how many entries in one list
-    /// or object. Unlimited for a trusted document.
+    /// or object. A trusted document has a fixed depth and any number of
+    /// entries.
     fn json_limits(&self) -> (usize, usize) {
         match &self.sandbox {
             Some(s) => (s.limits.max_nesting, s.limits.max_items),
-            None => (usize::MAX, usize::MAX),
+            None => (super::json::TRUSTED_MAX_DEPTH, usize::MAX),
         }
     }
 

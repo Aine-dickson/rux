@@ -291,6 +291,18 @@ fn a_trusted_document_has_no_such_limits() {
     assert!(take_warnings().is_empty());
 }
 
+#[test]
+fn a_trusted_json_parse_still_has_a_depth_it_stops_at() {
+    let deep = |n: usize| format!("let v = JSON.parse(\"{}1{}\");", "[".repeat(n), "]".repeat(n));
+    let mut e = build_with(SCRIPT, None).expect("builds");
+    let _ = take_warnings();
+    assert!(e.run_handler(&deep(300)));
+    assert!(take_warnings().is_empty());
+    assert!(!e.run_handler(&deep(100_000)));
+    let said: Vec<String> = take_warnings().into_iter().map(|w| w.message).collect();
+    assert!(said.join("; ").contains("nested more than 512 deep"), "{said:?}");
+}
+
 // ----- state across runs -------------------------------------------------------
 
 const KEEPS: &str = "let log = [];\n";

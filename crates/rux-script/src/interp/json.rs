@@ -90,6 +90,12 @@ fn quote(s: &str, out: &mut String) {
     out.push('"');
 }
 
+/// How deep `JSON.parse` reads in a trusted document. A text from the network
+/// is not checked by anyone first, and each level is a call on the stack, so
+/// even an unsandboxed document needs some bound; 512 is far past what real
+/// data nests and well inside a 1 MiB stack, reading, writing and dropping.
+pub(crate) const TRUSTED_MAX_DEPTH: usize = 512;
+
 /// The value `text` holds, or what is wrong with it and where.
 pub(crate) fn read(text: &str, (max_depth, max_items): (usize, usize)) -> Result<V, String> {
     let mut r = Reader { s: text.as_bytes(), at: 0, depth: 0, max_depth, max_items };
@@ -104,7 +110,7 @@ pub(crate) fn read(text: &str, (max_depth, max_items): (usize, usize)) -> Result
 struct Reader<'a> {
     s: &'a [u8],
     at: usize,
-    /// How deep the value being read is, and the most a sandbox lets it be.
+    /// How deep the value being read is, and the most it may be.
     depth: usize,
     max_depth: usize,
     /// The most entries one list or object may hold.
@@ -150,7 +156,7 @@ impl Reader<'_> {
     fn value(&mut self) -> Result<V, String> {
         self.depth += 1;
         if self.depth > self.max_depth {
-            return Err(format!("nested more than {} deep, the most a sandboxed document may read", self.max_depth));
+            return Err(format!("nested more than {} deep, the most this document may read", self.max_depth));
         }
         let out = self.value_inside();
         self.depth -= 1;
@@ -290,5 +296,36 @@ impl Reader<'_> {
                 c => out.push(c),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn nested(depth: usize) -> String {
+        format!("{}1{}", "[".repeat(depth - 1), "]".repeat(depth - 1))
+    }
+
+    #[test]
+    fn a_trusted_parse_reads_to_its_cap_on_a_small_stack_and_no_further() {
+        // 1 MiB, the stack of a Windows main thread.
+        std::thread::Builder::new()
+            .stack_size(1 << 20)
+            .spawn(|| {
+                let limits = (TRUSTED_MAX_DEPTH, usize::MAX);
+                let v = read(&nested(TRUSTED_MAX_DEPTH), limits).expect("reads at the cap");
+                let mut out = String::new();
+                write(&v, "", 0, &mut out);
+                assert_eq!(out, nested(TRUSTED_MAX_DEPTH).replace(' ', ""));
+                drop(v);
+                let e = read(&nested(TRUSTED_MAX_DEPTH + 1), limits).unwrap_err();
+                assert_eq!(e, "nested more than 512 deep, the most this document may read");
+                let e = read(&nested(100_000), limits).unwrap_err();
+                assert!(e.contains("512"), "{e}");
+            })
+            .unwrap()
+            .join()
+            .unwrap();
     }
 }

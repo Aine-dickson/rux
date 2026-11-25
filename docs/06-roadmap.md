@@ -145,8 +145,6 @@ images. Open:
      object-capability grants, where a script is handed only the objects it
      may use instead of names gated by a list.
    - **A limit on every element**, not just rows, and on timers and tasks.
-   - **A nesting limit for a trusted `JSON.parse`**: a deeply nested text from
-     the network can overflow the stack.
    - **Markup that reads an ungranted `window`** fails as "not defined", not
      with the sentence a script gets.
    - **Native code hardened against the model** is v1.0 item 3.

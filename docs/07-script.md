@@ -1697,7 +1697,8 @@ JavaScript's answers:
   `Math.min`, `Math.floor`, `Math.ceil`, `Math.round`, `Math.trunc`,
   `Math.abs`, `Math.sign`, `Math.sqrt`, `Math.pow`, `Math.log` and the rest,
   with `Math.PI` and `Math.E`; `JSON.stringify(v)`, `JSON.stringify(v, none,
-  2)` indented, and `JSON.parse(text)`; `Object.keys`, `Object.values` and
+  2)` indented, and `JSON.parse(text)`, which reads a text nested at most
+  512 deep (a sandbox's `max_nesting` is lower); `Object.keys`, `Object.values` and
   `Object.entries`; `Array.from` and `Array.isArray`. A file that declares a
   `Math` of its own keeps it.
 - **`Date`, as functions on a time**: `Date.now()` is the wall clock, an

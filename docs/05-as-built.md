@@ -3463,7 +3463,8 @@ and charge what a run builds to `run_alloc_bytes` (reset where the step count
 resets); they sit in `binary`, a template, `+=` on a list and `method`'s
 `guard_method` (`push`, `insert`, `unshift`, `concat`, `repeat`, the pads,
 `replace`, `replaceAll`, map `set`), and a copy of a kilobyte costs a step.
-`JSON.parse` takes a depth and an entry limit. After the outermost tracked run
+`JSON.parse` takes a depth and an entry limit; a trusted document reads to
+`json::TRUSTED_MAX_DEPTH` (512) deep, with no entry limit. After the outermost tracked run
 `Interp::end_track` measures the globals it changed (`V::estimate_bytes`,
 shared values once, an explicit stack) and, past `state_bytes`, puts them
 back and reports it. In `rux-runtime`, `Document::from_source_sandboxed`,
