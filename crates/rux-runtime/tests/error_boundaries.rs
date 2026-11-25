@@ -354,3 +354,100 @@ fn the_instances_in_a_failed_boundary_unmount() {
     assert!(printed.contains("down"), "{printed}");
     assert!(shown(&doc).contains("failed"), "{}", shown(&doc));
 }
+
+// ── retry() ──────────────────────────────────────────────────────────────────
+
+const RETRY_PAGE: &str = r#"<view @tap="n = 0"><text>break</text></view>
+<boundary>
+  <text>[{{ show(n) }}]</text>
+  <fallback>
+    <text>broken: {{ error.message }}</text>
+    <view @tap="n = 1; retry()"><text>fix and retry</text></view>
+    <view @tap="retry()"><text>retry as it is</text></view>
+  </fallback>
+</boundary>"#;
+
+#[test]
+fn retry_builds_the_children_again() {
+    let mut doc = load("retry", RETRY_PAGE, &format!("{FAILS}\nlet n = signal(1);"), &[]);
+    tap(&mut doc, "break");
+    assert!(shown(&doc).contains("broken: zero"), "{}", shown(&doc));
+    tap(&mut doc, "fix and retry");
+    let s = shown(&doc);
+    assert!(s.contains("[row1]") && !s.contains("broken"), "{s}");
+}
+
+#[test]
+fn a_retry_that_fails_again_shows_the_fallback_again() {
+    let mut doc = load("retry-again", RETRY_PAGE, &format!("{FAILS}\nlet n = signal(1);"), &[]);
+    tap(&mut doc, "break");
+    tap(&mut doc, "retry as it is");
+    let s = shown(&doc);
+    assert!(s.contains("broken: zero") && !s.contains("[row"), "{s}");
+}
+
+#[test]
+fn a_retry_makes_new_instances_that_mount_again() {
+    let mut doc = load(
+        "retry-mounts",
+        r#"<boundary>
+  <crashy />
+  <fallback><view @tap="retry()"><text>again</text></view></fallback>
+</boundary>"#,
+        "use components::crashy;",
+        &[(
+            "components/crashy.rux",
+            "<template><view @tap=\"go()\"><text>crash</text></view></template>\n\
+             <script>\nmounted { print(\"up\"); }\nfn go() { throw \"oops\"; }\n</script>",
+        )],
+    );
+    let _ = rux_runtime::take_prints();
+    tap(&mut doc, "crash");
+    tap(&mut doc, "again");
+    let printed = format!("{:?} {:?}", doc.diagnostics().prints, rux_runtime::take_prints());
+    assert!(printed.contains("up"), "{printed}");
+    assert!(shown(&doc).contains("crash"), "{}", shown(&doc));
+}
+
+#[test]
+fn retry_outside_a_fallback_does_nothing() {
+    let mut doc = load(
+        "retry-outside",
+        r#"<view @tap="retry()"><text>retry</text></view><boundary><text>[{{ fine() }}]</text></boundary>"#,
+        FAILS,
+        &[],
+    );
+    tap(&mut doc, "retry");
+    assert!(shown(&doc).contains("[fine]"), "{}", shown(&doc));
+}
+
+#[test]
+fn a_retry_in_a_nested_fallback_retries_the_innermost_boundary() {
+    let mut doc = load(
+        "retry-nested",
+        r#"<view @tap="n = 0"><text>break</text></view>
+<boundary>
+  <text>outer ok</text>
+  <boundary>
+    <text>[{{ show(n) }}]</text>
+    <fallback><view @tap="n = 1; retry()"><text>inner retry</text></view></fallback>
+  </boundary>
+  <fallback><text>outer failed</text></fallback>
+</boundary>"#,
+        &format!("{FAILS}\nlet n = signal(1);"),
+        &[],
+    );
+    tap(&mut doc, "break");
+    assert!(shown(&doc).contains("outer ok") && !shown(&doc).contains("outer failed"), "{}", shown(&doc));
+    tap(&mut doc, "inner retry");
+    assert!(shown(&doc).contains("[row1]"), "{}", shown(&doc));
+}
+
+#[test]
+fn the_boundary_a_handler_sits_in_is_read_back_from_its_prelude() {
+    let one = "let __boundary = \"|0.1.#a\\\"b\"; let error = 1; retry()";
+    assert_eq!(rux_style::boundary_of_handler(one), Some("|0.1.#a\"b".to_string()));
+    let nested = "let __boundary = \"outer\"; let __boundary = \"inner\"; retry()";
+    assert_eq!(rux_style::boundary_of_handler(nested), Some("inner".to_string()));
+    assert_eq!(rux_style::boundary_of_handler("count = count + 1"), None);
+}

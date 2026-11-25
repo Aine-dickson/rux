@@ -5551,8 +5551,22 @@ impl Document {
     fn dispatch(&mut self, run: Run<'_>, instance: Option<&str>, depth: usize, event: Option<&rux_reactive::Value>) -> bool {
         let resolver = self.element_resolver();
         let before = rux_script::faults();
+        // A `retry()` is told which boundary by the handler's own source, where
+        // the build wrote it.
+        let boundary = match &run {
+            Run::Handler(src) => rux_style::boundary_of_handler(src),
+            _ => None,
+        };
+        let _ = rux_script::take_retries();
         let ran = rux_script::with_elements(resolver, || self.dispatch_handler_inner(run, instance, depth, event));
         self.attribute_fault(instance, before);
+        if rux_script::take_retries() > 0 {
+            if let Some(key) = boundary {
+                if self.engine.retry_boundary(&key) {
+                    self.boundary_dirty = true;
+                }
+            }
+        }
         self.settle_boundaries() || ran
     }
 

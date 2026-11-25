@@ -1256,6 +1256,30 @@ thread_local! {
 /// around them, which `retry()` is run against.
 pub const BOUNDARY_LOCAL: &str = "__boundary";
 
+/// The `<boundary>` a `<fallback>`'s handler sits in, read back from the
+/// local [`bind_locals`] wrote into its source: the innermost one when
+/// fallbacks nest, which is the last such local written. `None` for a handler
+/// that is in no fallback.
+pub fn boundary_of_handler(src: &str) -> Option<String> {
+    let marker = format!("let {BOUNDARY_LOCAL} = \"");
+    let rest = &src[src.rfind(&marker)? + marker.len()..];
+    let mut out = String::new();
+    let mut chars = rest.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => return Some(out),
+            '\\' => out.push(match chars.next()? {
+                'n' => '\n',
+                'r' => '\r',
+                't' => '\t',
+                other => other,
+            }),
+            c => out.push(c),
+        }
+    }
+    None
+}
+
 /// A `<boundary>`'s identity: the instance whose template it is in, where it
 /// sits there, and which `r-for` row it is in.
 fn boundary_key(instance: Option<&str>, tpl_path: &[usize], row: Option<&str>) -> String {
