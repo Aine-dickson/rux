@@ -55,10 +55,124 @@ pub fn parse(src: &str, opts: Options) -> Result<ast::Script, SyntaxError> {
     parser::Parser::new(&tokens, src, opts).script()
 }
 
+/// Where `src` first nests deeper than `max`, or `None`: brackets, blocks and
+/// the `${ }` of a template count one level each, and a run of prefix
+/// operators (`!!!!x`) counts one level per operator.
+///
+/// Read before the text is lexed, since the lexer and the parser both recurse
+/// on nesting, and a sandbox must refuse a hostile document before either one
+/// can overflow Rust's stack. It skips strings, character literals and
+/// comments, so a `(` inside text counts for nothing.
+pub fn nests_deeper_than(src: &str, max: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    // One entry per open bracket; `true` for the `${` of a template.
+    let mut stack: Vec<bool> = Vec::new();
+    let mut prefix = 0usize;
+    let mut in_template = false;
+    let mut i = 0;
+    while i < b.len() {
+        if in_template {
+            match b[i] {
+                b'\\' => i += 2,
+                b'`' => {
+                    in_template = false;
+                    i += 1;
+                }
+                b'$' if b.get(i + 1) == Some(&b'{') => {
+                    stack.push(true);
+                    in_template = false;
+                    i += 2;
+                    if stack.len() > max {
+                        return Some(i - 2);
+                    }
+                }
+                _ => i += 1,
+            }
+            continue;
+        }
+        let c = b[i];
+        if c.is_ascii_whitespace() {
+            i += 1;
+            continue;
+        }
+        match c {
+            b'/' if b.get(i + 1) == Some(&b'/') => {
+                while i < b.len() && b[i] != b'\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            b'/' if b.get(i + 1) == Some(&b'*') => {
+                let mut open = 1;
+                i += 2;
+                while i < b.len() && open > 0 {
+                    if b[i] == b'/' && b.get(i + 1) == Some(&b'*') {
+                        open += 1;
+                        i += 2;
+                    } else if b[i] == b'*' && b.get(i + 1) == Some(&b'/') {
+                        open -= 1;
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                continue;
+            }
+            b'"' | b'\'' => {
+                i += 1;
+                while i < b.len() && b[i] != c && b[i] != b'\n' {
+                    i += if b[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'`' => {
+                in_template = true;
+                i += 1;
+            }
+            b'(' | b'[' | b'{' => {
+                stack.push(false);
+                i += 1;
+                if stack.len() + prefix > max {
+                    return Some(i - 1);
+                }
+            }
+            b')' | b']' | b'}' => {
+                if c == b'}' && stack.last() == Some(&true) {
+                    in_template = true;
+                }
+                stack.pop();
+                i += 1;
+            }
+            b'!' | b'-' | b'+' => {
+                prefix += 1;
+                i += 1;
+                if stack.len() + prefix > max {
+                    return Some(i - 1);
+                }
+                continue;
+            }
+            _ => i += 1,
+        }
+        prefix = 0;
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use ast::*;
+
+    #[test]
+    fn nesting_counts_brackets_templates_and_prefix_runs_but_not_text() {
+        assert_eq!(nests_deeper_than("[[[1]]]", 3), None);
+        assert_eq!(nests_deeper_than("[[[[1]]]]", 3), Some(3));
+        assert_eq!(nests_deeper_than("\"((((((\" // ((((((\n/* [[[[[[ */ 1", 2), None);
+        assert_eq!(nests_deeper_than("`a${ `b${ `c${ 1 }` }` }`", 3), None);
+        assert!(nests_deeper_than("`a${ `b${ `c${ `d${ 1 }` }` }` }`", 3).is_some());
+        assert!(nests_deeper_than("!!!!!!x", 5).is_some());
+        assert_eq!(nests_deeper_than("a != b && c - d", 2), None);
+    }
 
     fn ok(src: &str) -> Script {
         parse(src, Options::default()).unwrap_or_else(|e| panic!("{src:?}: {e} at {:?}", e.line_col(src)))

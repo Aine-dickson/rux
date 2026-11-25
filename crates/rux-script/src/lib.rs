@@ -20,7 +20,9 @@ pub mod link;
 pub mod lower;
 pub mod native;
 pub mod profile;
+pub mod sandbox;
 pub mod shared;
+pub use sandbox::{Limits, Sandbox};
 pub use rux_ir::types;
 pub mod validate;
 
@@ -248,6 +250,9 @@ pub struct Builder {
     interpreted: bool,
     /// The types the document imports with `use type`. See [`Builder::types`].
     types: Vec<(String, String)>,
+    /// What the document may spend and reach, when it is not the app's own.
+    /// `None` is a trusted document. See [`Sandbox`].
+    sandbox: Option<Sandbox>,
 }
 
 /// The name of the local an instance's state carries to say which component
@@ -359,7 +364,17 @@ impl Builder {
             components: Vec::new(),
             interpreted: false,
             types: Vec::new(),
+            sandbox: None,
         }
+    }
+
+    /// Run the document under `sandbox`: its limits, and no native module it
+    /// was not granted. Only whoever opens a document says so; a file cannot.
+    /// A sandboxed document is always interpreted, since compiled code does not
+    /// check what it spends.
+    pub fn sandbox(&mut self, sandbox: Sandbox) -> &mut Self {
+        self.sandbox = Some(sandbox);
+        self
     }
 
     /// The types the document's script imports with `use type`, as name and
@@ -408,6 +423,21 @@ impl Builder {
     /// column a syntax error names, or the start of the statement that
     /// failed. See [`ScriptError`].
     pub fn build(mut self, script: &str) -> Result<Engine, ScriptError> {
+        // Before anything reads the text: a sandboxed document's size and
+        // nesting, so a hostile one cannot overflow a parser's stack.
+        if let Some(sandbox) = &self.sandbox {
+            if let Some((at, message)) = sandbox.refuse(script) {
+                return Err(ScriptError::at(message, script, at));
+            }
+            let others = self.modules.iter().map(|m| (m.name.as_str(), m.script.as_str())).chain(
+                self.components.iter().flat_map(|c| [(c.name.as_str(), c.script.as_str()), (c.name.as_str(), c.functions.as_str())]),
+            );
+            for (name, text) in others {
+                if let Some((_, message)) = sandbox.refuse(text) {
+                    return Err(ScriptError::plain(format!("{name}: {message}")));
+                }
+            }
+        }
         // Rux's own native functions (the file dialogs) need no `use`: each
         // scope that calls one gets the import it would have written.
         // Declared for a check that runs without a shell, which installs the
@@ -547,7 +577,10 @@ impl Builder {
                 // build hashes on one machine and runs on another.
                 .chain(self.components.iter().flat_map(|c| [c.name.as_str(), c.functions.as_str()])),
         );
-        let table = aot::lookup(hash).filter(|_| !self.interpreted);
+        let table = aot::lookup(hash).filter(|_| !self.interpreted && self.sandbox.is_none());
+        if let Some(sandbox) = &self.sandbox {
+            ir.set_max_operations(sandbox.limits.steps_per_run);
+        }
         // `RUX_AOT_REPORT=1`: say whether this text runs compiled, which is
         // otherwise invisible by design.
         if std::env::var("RUX_AOT_REPORT").is_ok_and(|v| v == "1") {
@@ -1759,9 +1792,11 @@ fn explain(message: &str) -> String {
 /// The advice matters as much as the wording. Each rewrite says what to do next,
 /// since these are all failures with exactly one sensible fix.
 fn rux_phrasing(message: &str) -> String {
-    if message.starts_with("Too many operations") {
+    if let Some(budget) = message.strip_prefix("Too many operations: more than ") {
+        // The budget the run had: the default's, or a sandbox's own.
+        let steps = budget.trim().parse::<u64>().unwrap_or(MAX_OPERATIONS);
         return format!(
-            "stopped after {MAX_OPERATIONS} steps without finishing; a loop that \
+            "stopped after {steps} steps without finishing; a loop that \
              never ends, or work too big for one handler"
         );
     }
@@ -3690,6 +3725,26 @@ mod tests {
             "a closure capturing a local compiles to `curry`, which is rhai's own"
         );
         assert_eq!(e.unknown_calls("out = nothing_here(1)").len(), 1, "a typo is still a typo");
+    }
+
+    /// Compiled code does not check what it spends, so a sandboxed document
+    /// never runs it, even for text it was generated from.
+    #[test]
+    fn a_sandboxed_document_runs_interpreted_even_where_compiled_code_is_registered() {
+        const TEXT: &str = "fn sandbox_probe_one(): int { return 1; }\n";
+        fn body(_: &mut aot::Cx, _: Vec<aot::V>) -> aot::R<aot::V> {
+            Ok(aot::V::Int(1))
+        }
+        static FNS: &[aot::Entry] = &[(0, 0, false, body)];
+        aot::register(aot::source_hash([TEXT]), FNS, &[]);
+
+        let trusted = Builder::new().build(TEXT).expect("builds");
+        assert_eq!(trusted.compiled_functions(), 1, "registered code runs for a trusted document");
+
+        let mut b = Builder::new();
+        b.sandbox(Sandbox::new());
+        let sandboxed = b.build(TEXT).expect("builds");
+        assert_eq!(sandboxed.compiled_functions(), 0);
     }
 
     /// A handler that never finishes is stopped and says so, instead of
