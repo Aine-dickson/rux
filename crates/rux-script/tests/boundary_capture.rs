@@ -99,3 +99,15 @@ fn retry_is_counted_for_the_runtime_to_take() {
     assert_eq!(take_retries(), 1);
     assert_eq!(take_retries(), 0);
 }
+
+#[test]
+fn an_apps_own_retry_function_is_not_the_builtin() {
+    let mut b = Builder::new();
+    b.interpreted();
+    let mut e = b
+        .build("let tries = signal(0);\nfn retry(): string { tries = tries + 1; return \"mine\"; }")
+        .expect("builds");
+    let _ = take_retries();
+    assert_eq!(e.eval_display("retry()", &[]), "mine");
+    assert_eq!(take_retries(), 0);
+}

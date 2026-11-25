@@ -51,7 +51,7 @@ const VOID_TAGS: &[&str] = &[
 /// defines, which is what this list is for.
 const ELEMENT_TAGS: &[&str] = &[
     "screen", "view", "text", "image", "icon", "path", "button", "input", "audio", "video", //
-    "slot", "router", "route", "router-view",
+    "slot", "router", "route", "router-view", "boundary", "fallback",
 ];
 
 /// Whether `tag` is one of Rux's own elements rather than a component.

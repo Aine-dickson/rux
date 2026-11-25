@@ -411,6 +411,53 @@ pub struct BindingRegistry {
 }
 
 
+/// How long each list of a [`BindingRegistry`] was, to cut back to when what a
+/// `<boundary>` built has to be thrown away.
+struct RegistryMark {
+    text: usize,
+    value: usize,
+    show: usize,
+    src: usize,
+    options: usize,
+    structural_parents: usize,
+    toggles: usize,
+    components: usize,
+    styled: usize,
+    elements: usize,
+}
+
+impl BindingRegistry {
+    fn mark(&self) -> RegistryMark {
+        RegistryMark {
+            text: self.text.len(),
+            value: self.value.len(),
+            show: self.show.len(),
+            src: self.src.len(),
+            options: self.options.len(),
+            structural_parents: self.structural_parents.len(),
+            toggles: self.toggles.len(),
+            components: self.components.len(),
+            styled: self.styled.len(),
+            elements: self.elements.entries.len(),
+        }
+    }
+
+    /// Forget what was registered since `mark`: the nodes it belonged to are
+    /// not in the tree.
+    fn cut_to(&mut self, mark: &RegistryMark) {
+        self.text.truncate(mark.text);
+        self.value.truncate(mark.value);
+        self.show.truncate(mark.show);
+        self.src.truncate(mark.src);
+        self.options.truncate(mark.options);
+        self.structural_parents.truncate(mark.structural_parents);
+        self.toggles.truncate(mark.toggles);
+        self.components.truncate(mark.components);
+        self.styled.truncate(mark.styled);
+        self.elements.entries.truncate(mark.elements);
+    }
+}
+
 /// Bake the active `r-for` loop bindings into a handler as a `let` prelude, so it
 /// still resolves them when it runs later in global scope (the loop variables are
 /// gone by then). With no locals the handler is returned unchanged.
@@ -1186,6 +1233,31 @@ pub fn take_lifecycle() -> (Vec<Lifecycle>, Vec<Lifecycle>) {
         MOUNTS.with(|m| std::mem::take(&mut *m.borrow_mut())),
         UNMOUNTS.with(|u| std::mem::take(&mut *u.borrow_mut())),
     )
+}
+
+/// The local a `<fallback>`'s handlers carry: the key of the `<boundary>`
+/// around them, which `retry()` is run against.
+pub const BOUNDARY_LOCAL: &str = "__boundary";
+
+/// A `<boundary>`'s identity: the instance whose template it is in, where it
+/// sits there, and which `r-for` row it is in.
+fn boundary_key(instance: Option<&str>, tpl_path: &[usize], row: Option<&str>) -> String {
+    format!("{}|{}", instance.unwrap_or(""), instance_key(tpl_path, row))
+}
+
+/// The name a parent's reconcile is woken by when a boundary fails or retries.
+pub fn boundary_signal(key: &str) -> String {
+    format!("boundary#{key}")
+}
+
+/// How many mounts are waiting to be taken, to cut back to.
+fn pending_mounts() -> usize {
+    MOUNTS.with(|m| m.borrow().len())
+}
+
+/// Forget the mounts queued since `len`: their instances were thrown away.
+fn cut_mounts(len: usize) {
+    MOUNTS.with(|m| m.borrow_mut().truncate(len));
 }
 
 /// A component instance's identity: where it sits in the template, and which
@@ -11096,6 +11168,91 @@ fn build_children_from(
                 ))
             });
         }
+        // `<boundary>` renders its children, or its last child `<fallback>`
+        // in their place once something inside has failed. It leaves no box of
+        // its own, as `<slot>` leaves none.
+        if el.tag == "boundary" {
+            in_chain = false;
+            // Which of its two sides shows depends on a failure, which a reused
+            // row would not see again.
+            UNREPLAYABLE.with(|u| u.set(u.get() + 1));
+            let bp = child_tpl(ti);
+            let key = boundary_key(instance, &bp, row);
+            let kids = element_children(el);
+            let fallbacks = kids.iter().filter(|c| c.tag == "fallback").count();
+            let shown_kids: Vec<&Element> = kids.iter().copied().filter(|c| c.tag != "fallback").collect();
+            // Its children keep their place in the template only when the
+            // fallback is the last of them, which is what a path into the
+            // template is read against.
+            let fallback_at = kids.len().checked_sub(1).filter(|&last| kids[last].tag == "fallback");
+            if fallbacks > 1 || (fallbacks == 1 && fallback_at.is_none()) {
+                located(Some(el.line), || {
+                    error(
+                        "a `<boundary>` takes one `<fallback>`, as its last child".to_string(),
+                    )
+                });
+            }
+            let fallback = kids.iter().rev().find(|c| c.tag == "fallback").copied();
+            // What reads this boundary's key moves when it fails or retries.
+            structural_deps.insert(boundary_signal(&key));
+            let mut shown = None;
+            if engine.boundary_error(&key).is_none() {
+                let reg_mark = reg.mark();
+                let known: HashSet<String> = instances.keys().cloned().collect();
+                let touched: HashSet<String> =
+                    instances.iter().filter(|(_, i)| i.touched).map(|(k, _)| k.clone()).collect();
+                let mounts = pending_mounts();
+                rux_script::push_boundary();
+                let (nodes, deps) = build_children_from(
+                    &shown_kids, rules, comps, ancestors, inherited, engine, locals, path, &bp, reg, state,
+                    instances, swaps, instance, slot, outlet, row, Some(out.len()),
+                );
+                match rux_script::pop_boundary() {
+                    None => shown = Some((nodes, deps)),
+                    Some(error) => {
+                        // Thrown away: what the children registered, the
+                        // instances they made (and the mounts those were owed),
+                        // and the ones that already existed stop being reached,
+                        // so the build unmounts them as it does for an `r-if`.
+                        reg.cut_to(&reg_mark);
+                        cut_mounts(mounts);
+                        instances.retain(|k, _| known.contains(k));
+                        for (k, i) in instances.iter_mut() {
+                            if i.touched && !touched.contains(k) {
+                                i.touched = false;
+                            }
+                        }
+                        engine.fail_boundary(&key, error);
+                    }
+                }
+            }
+            match shown {
+                Some((nodes, deps)) => {
+                    structural_deps.extend(deps);
+                    out.extend(nodes);
+                    prev.extend(shown_kids.iter().map(|c| ElemDesc::of(c)));
+                }
+                None => {
+                    if let (Some(fallback), Some(error)) = (fallback, engine.boundary_error(&key).cloned()) {
+                        let mut fb_locals = locals.clone();
+                        fb_locals.push(("error".to_string(), error));
+                        fb_locals.push((BOUNDARY_LOCAL.to_string(), Value::Text(key.clone())));
+                        let mut fb_tpl = bp.clone();
+                        fb_tpl.push(kids.len().saturating_sub(1));
+                        let fb_kids = element_children(fallback);
+                        let (nodes, deps) = build_children_from(
+                            &fb_kids, rules, comps, ancestors, inherited, engine, &fb_locals, path, &fb_tpl, reg,
+                            state, instances, swaps, instance, slot, outlet, row, Some(out.len()),
+                        );
+                        structural_deps.extend(deps);
+                        out.extend(nodes);
+                        prev.extend(fb_kids.iter().map(|c| ElemDesc::of(c)));
+                    }
+                }
+            }
+            continue;
+        }
+
         // `<slot />` is where the caller's children land. It is not an element
         // of its own: it renders them (or its own children as a fallback) and
         // leaves nothing behind, so a component adds no wrapper box the author
@@ -11638,6 +11795,12 @@ fn count_rendered(
         } else if el.tag == "router-view" {
             in_chain = false;
             n += outlet.is_some_and(|o| !o.rest.is_empty()) as usize;
+        } else if el.tag == "boundary" {
+            // Its children, as if it failed nowhere: whether it fails is
+            // known only once they are built.
+            in_chain = false;
+            let kids: Vec<&Element> = element_children(el).into_iter().filter(|c| c.tag != "fallback").collect();
+            n += count_rendered(&kids, engine, locals, slot, outlet);
         } else if el.tag == "router" {
             in_chain = false;
             let current = engine
@@ -12099,7 +12262,7 @@ fn plain_subtree(el: &Element, document: Option<&Namespace>) -> bool {
     !component
         // Each of these expands something a whole build keeps track of: a
         // slot's content, a route's view (a component), the outlet.
-        && !matches!(tag, "slot" | "router" | "route" | "router-view")
+        && !matches!(tag, "slot" | "router" | "route" | "router-view" | "boundary" | "fallback")
         && el.attr("r-transition").is_none()
         && el.attr("for").is_none()
         && element_children(el).into_iter().all(|c| plain_subtree(c, document))

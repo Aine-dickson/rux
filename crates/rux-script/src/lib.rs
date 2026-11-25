@@ -1004,6 +1004,10 @@ pub struct Engine {
     /// order, by the component's key. A new instance computes them as it is
     /// made: see [`Engine::init_component_with`].
     component_computeds: HashMap<String, Vec<(String, String)>>,
+    /// The `<boundary>`s showing their fallback, by key, and the `Error` each
+    /// caught. Here because every build is handed the engine, and the
+    /// document's builds and its patches read and write the same map.
+    boundaries: HashMap<String, Value>,
 }
 
 // ── Warning collection ──────────────────────────────────────────────────────
@@ -1883,7 +1887,30 @@ impl Engine {
             check_scope: std::cell::RefCell::new(None),
             store_epoch: 0,
             component_computeds: HashMap::new(),
+            boundaries: HashMap::new(),
         }
+    }
+
+    /// The error a `<boundary>` caught, when it is showing its fallback.
+    pub fn boundary_error(&self, key: &str) -> Option<&Value> {
+        self.boundaries.get(key)
+    }
+
+    /// A `<boundary>` caught `error`: it shows its fallback from the next
+    /// build on. The first failure stands until a retry.
+    pub fn fail_boundary(&mut self, key: &str, error: Value) {
+        self.boundaries.entry(key.to_string()).or_insert(error);
+    }
+
+    /// A `<boundary>` is to try its children again. Whether it was showing its
+    /// fallback.
+    pub fn retry_boundary(&mut self, key: &str) -> bool {
+        self.boundaries.remove(key).is_some()
+    }
+
+    /// The keys of the boundaries showing a fallback.
+    pub fn failed_boundaries(&self) -> Vec<String> {
+        self.boundaries.keys().cloned().collect()
     }
 
     /// Record a component's `computed`s, as (name, expression) in declaration

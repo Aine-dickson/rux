@@ -93,9 +93,11 @@ front of it. Built so far from this milestone: `async fn` handles, tasks, a
 settings store (`settings.get`, `set`, `remove`), `pickFile`, and network
 images. Open:
 
-1. **Error boundaries.** A failing expression is reported and the document
-   carries on; an author cannot catch one and show a fallback for that subtree.
-   Once a document talks to a network, the common failure is no longer a typo.
+1. **Error boundaries.** In progress (`<boundary>` and `<fallback>`, see
+   `07-script`, "Error boundaries"). A failing expression is reported and the
+   document carries on; an author could not catch one and show a fallback for
+   that subtree. Once a document talks to a network, the common failure is no
+   longer a typo.
 2. **A capability model for native code.** Compiled app code has full trust.
    The interpreter is the sandbox for anything untrusted (the playground,
    fetched or over-the-air documents), with step and memory limits and no

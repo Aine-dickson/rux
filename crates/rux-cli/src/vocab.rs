@@ -125,6 +125,21 @@ const ELEMENTS: &[Entry] = &[
               the caller passed nothing.",
     },
     Entry {
+        name: "boundary",
+        detail: "shows its fallback when something inside it fails",
+        doc: "Renders its children, and its last child `<fallback>` instead when something \
+              inside fails: a binding, a component's script, or the code of a component \
+              inside it. In the fallback, `error` is the failure (`message`, `kind`) and \
+              `retry()` builds the children again. Leaves no box of its own. The failure is \
+              still reported to the overlay and `rux check`.",
+    },
+    Entry {
+        name: "fallback",
+        detail: "what a boundary shows when it fails",
+        doc: "The last child of a `<boundary>`. In it `error` is what failed and `retry()` \
+              tries the boundary's children again.",
+    },
+    Entry {
         name: "router",
         detail: "renders the one matching route",
         doc: "Renders the first `<route>` whose path matches. Leaves no box of \
@@ -418,6 +433,7 @@ const SCRIPT_GLOBALS: &[Entry] = &[
     Entry { name: "close", detail: "close()", doc: "Close the app for good, without asking `@close` again: the app has decided. Every `unmounted` runs first. Does nothing on the web, where a page cannot close its own tab." },
     Entry { name: "pathFor", detail: "pathFor(\"route\", { … })", doc: "Build a path from a named route and its parameters." },
     Entry { name: "emit", detail: "emit(\"name\", payload)", doc: "A component telling its caller something happened." },
+    Entry { name: "retry", detail: "retry()", doc: "In a `<fallback>`: build the `<boundary>`'s children again, as new instances (their `mounted` runs again). Does nothing outside a `<fallback>`." },
     Entry { name: "blur", detail: "blur()", doc: "Drop focus. Free-standing rather than a method on an element, because there is only one focused element: blurring \"this one\" would either do nothing or take focus from something else." },
     Entry { name: "setInterval", detail: "setInterval(ms) { … }", doc: "Run a block on a period, handing back a handle. A **block, not a callback**: `setInterval(1000) { seconds++ }`. Stop it with `clearInterval(handle)`." },
     Entry { name: "clearInterval", detail: "clearInterval(handle)", doc: "Stop a timer started by `setInterval`. The handle is what `setInterval` returned." },

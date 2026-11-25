@@ -1109,6 +1109,54 @@ app.rux:10: error: `r-model`: the field writes `float` into `name`, which holds 
 checked with the document; a component's template is checked when the
 component is the file, with its props typed as it declares them.
 
+## Error boundaries
+
+A failing expression is reported and the document carries on: the binding
+shows nothing, the handler stops. Once a screen talks to a network, a failure
+is not a typo, and the person looking at it should see more than a hole.
+`<boundary>` is how a subtree says what to show instead.
+
+```xml
+<boundary>
+  <order-list :orders="orders" />
+  <fallback>
+    <text>Could not show the orders: {{ error.message }}</text>
+    <button @tap="retry()"><text>Try again</text></button>
+  </fallback>
+</boundary>
+```
+
+- **`<boundary>` shows its children; `<fallback>` takes their place when
+  something inside fails.** It leaves no box of its own, as `<slot>` leaves
+  none. `<fallback>` is the boundary's last child, and there is one. A
+  boundary without one shows nothing when it fails.
+- **What fails it:** a binding or a condition in its children, the script of a
+  component inside it, and, for a component inside it, a handler, an `async
+  fn`, an `effect` or a `setInterval` block that fails with nothing to catch
+  it. A `try` that catches the failure is not one: `try` stays the way to
+  handle a failure that is expected.
+- **The innermost boundary catches.** A failure inside a `<fallback>` goes to
+  the boundary around it. With none, the failure is reported and nothing else
+  happens, as before.
+- **In a `<fallback>`, `error` is what failed**, the same `Error` a `catch e`
+  binds: `error.message`, `error.kind`, and the fields a native error carries.
+  `retry()` builds the boundary's children again, as new instances, so their
+  `mounted` runs again and an `async fn` that loaded them runs again. It does
+  nothing outside a `<fallback>`, and an app's own function named `retry` is
+  called instead of it.
+- **A failure is still reported.** The overlay shows it and `rux check`
+  finds it: a boundary changes what the person sees, not what the author is
+  told.
+- **A first build shows no flash:** what failed is thrown away in the same
+  build, and the fallback is built in its place. The instances inside are
+  dropped, their `unmounted` runs as when an `r-if` closes over them.
+- **Not caught:** a handler written in the page itself (it belongs to the
+  page, not to anything inside), a syntax error (the document does not load),
+  and a failure a `try` caught.
+- **Not checked while hidden.** The names in a `<fallback>` are read when it
+  shows, as in any branch that is not showing: `error.mesage` is found on the
+  first failure, not by `rux check`.
+
 ## Props
 
 ```rux
