@@ -188,6 +188,9 @@ pub struct Interp {
     ops: u64,
     /// The most steps one run may take: [`MAX_OPERATIONS`] unless lowered.
     max_ops: u64,
+    /// The terms a document not the app's own is run on: what native code
+    /// it may call. `None` is a trusted document.
+    sandbox: Option<crate::Sandbox>,
     /// Started `async fn`s that are waiting, by task id. See [`task`].
     tasks: HashMap<u64, task::Task>,
     /// Each `async fn`'s ops, compiled when first started, by function.
@@ -282,6 +285,7 @@ impl Interp {
             tracks: Vec::new(),
             ops: 0,
             max_ops: MAX_OPERATIONS,
+            sandbox: None,
             tasks: HashMap::new(),
             flats: HashMap::new(),
             started: Vec::new(),
@@ -348,6 +352,11 @@ impl Interp {
     /// Stop a run after `n` steps rather than [`MAX_OPERATIONS`].
     pub fn set_max_operations(&mut self, n: u64) {
         self.max_ops = n;
+    }
+
+    /// Run under `sandbox`: a native call whose module it did not grant fails.
+    pub fn set_sandbox(&mut self, sandbox: crate::Sandbox) {
+        self.sandbox = Some(sandbox);
     }
 
     pub fn unit(&self) -> &Unit {
@@ -1951,6 +1960,15 @@ impl Interp {
 
     /// How to call native export `key`, asked of the registry once.
     fn native(&mut self, key: &str) -> R<rux_native::Call> {
+        // Asked of every call, whatever name reached it: what a handler or a
+        // binding builds at run time never passed the load check.
+        if let Some(sandbox) = &self.sandbox {
+            if let Some((module, _)) = crate::link::split(key) {
+                if !sandbox.allows(module) {
+                    return fail(crate::sandbox::not_granted(&crate::sandbox::grant_name(module)));
+                }
+            }
+        }
         if let Some(c) = self.natives.get(key) {
             return Ok(c.clone());
         }

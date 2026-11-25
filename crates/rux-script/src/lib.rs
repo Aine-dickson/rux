@@ -443,17 +443,39 @@ impl Builder {
         // Declared for a check that runs without a shell, which installs the
         // code; `use native::rux::{pickFile}` written out works the same.
         native::ensure_builtins();
-        let extra = native::builtin_aliases(script, &self.aliases);
+        let sandbox = self.sandbox.clone();
+        let sandbox = sandbox.as_ref();
+        // What a sandboxed document imports from native code by name, and was
+        // not granted, stops here, at the line of its import.
+        if let Some(sb) = sandbox {
+            let imports = self
+                .aliases
+                .iter()
+                .chain(self.modules.iter().flat_map(|m| &m.aliases))
+                .chain(self.components.iter().flat_map(|c| &c.aliases));
+            for a in imports {
+                let (link::Target::Module(m) | link::Target::Member(m, _)) = &a.target;
+                if native::is_native(m) && !sb.allows(m) {
+                    let message = sandbox::not_granted(&sandbox::grant_name(m));
+                    return Err(ScriptError { message, line: Some(a.line), column: None });
+                }
+            }
+        }
+        let extra = native::builtin_aliases(script, &self.aliases, sandbox)
+            .map_err(|(at, message)| ScriptError::at(message, script, at))?;
         self.aliases.extend(extra);
         for m in &mut self.modules {
-            let extra = native::builtin_aliases(&m.script, &m.aliases);
+            let extra = native::builtin_aliases(&m.script, &m.aliases, sandbox)
+                .map_err(|(at, message)| ScriptError::at(format!("{}: {message}", m.name), &m.script, at))?;
             m.aliases.extend(extra);
         }
         for c in &mut self.components {
             // Its `let`s and `computed`s are not among its functions, and a
             // `network` of its own read in a `fn` was taken for the built-in
             // (Urbandrop's partner app).
-            let extra = native::builtin_aliases(&format!("{}\n{}", c.script, c.functions), &c.aliases);
+            let text = format!("{}\n{}", c.script, c.functions);
+            let extra = native::builtin_aliases(&text, &c.aliases, sandbox)
+                .map_err(|(at, message)| ScriptError::at(format!("{}: {message}", c.name), &text, at))?;
             c.aliases.extend(extra);
         }
         // Each module on its own, in order: what it exports is what the next
@@ -580,6 +602,7 @@ impl Builder {
         let table = aot::lookup(hash).filter(|_| !self.interpreted && self.sandbox.is_none());
         if let Some(sandbox) = &self.sandbox {
             ir.set_max_operations(sandbox.limits.steps_per_run);
+            ir.set_sandbox(sandbox.clone());
         }
         // `RUX_AOT_REPORT=1`: say whether this text runs compiled, which is
         // otherwise invisible by design.
@@ -3745,6 +3768,31 @@ mod tests {
         b.sandbox(Sandbox::new());
         let sandboxed = b.build(TEXT).expect("builds");
         assert_eq!(sandboxed.compiled_functions(), 0);
+    }
+
+    /// What a binding or handler builds at run time never passed the load
+    /// check, so every native call asks again, whatever name reached it.
+    #[test]
+    fn a_native_call_is_refused_at_run_time_unless_its_module_was_granted() {
+        let key = "native/rux/clipboard::writeText";
+        let refused = |sandbox: Option<Sandbox>| {
+            let mut b = Builder::new();
+            b.interpreted();
+            if let Some(s) = sandbox {
+                b.sandbox(s);
+            }
+            let mut e = b.build("let level = signal(0);\n").expect("builds");
+            let said = match e.ir.native_pub(key, vec![interp::V::str("x")]) {
+                Ok(_) => String::new(),
+                Err(interp::Flow::Fault(f)) => f.message,
+                Err(_) => String::new(),
+            };
+            said.contains("not available")
+        };
+        assert!(!refused(None), "a trusted document is never refused");
+        assert!(refused(Some(Sandbox::new())));
+        assert!(!refused(Some(Sandbox::new().grant("clipboard"))));
+        assert!(refused(Some(Sandbox::new().grant("settings"))));
     }
 
     /// A handler that never finishes is stopped and says so, instead of

@@ -630,8 +630,17 @@ pub fn ensure_builtins() {
 /// The imports a scope gets for free: each built-in function its code calls
 /// and does not declare itself, linked to [`BUILTIN_MODULE`] as an explicit
 /// `use native::rux::{pickFile};` would link it.
-pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate::link::Alias> {
-    let mut out = builtin_fn_aliases(code, aliases);
+///
+/// Under a sandbox only what it granted is given. A built-in the code uses and
+/// was not granted is refused, with the offset of its first use; `window` and
+/// `app`, which a trusted document always has for markup to read, are simply
+/// left out.
+pub fn builtin_aliases(
+    code: &str,
+    aliases: &[crate::link::Alias],
+    sandbox: Option<&crate::Sandbox>,
+) -> Result<Vec<crate::link::Alias>, (usize, String)> {
+    let mut out = builtin_fn_aliases(code, aliases, sandbox)?;
     // `settings.get(…)`, `clipboard.writeText(…)`: each a whole module,
     // unless the file has one of that name of its own (a `use
     // native::settings;`, a `let settings`).
@@ -648,7 +657,7 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         (SECRETS_NAME, SECRETS_MODULE),
         (NETWORK_NAME, NETWORK_MODULE),
     ] {
-        let uses = code.match_indices(&format!("{name}.")).any(|(at, _)| {
+        let first_use = code.match_indices(&format!("{name}.")).map(|(at, _)| at).find(|&at| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
         });
         let own = ["let ", "fn ", "const ", "prop "].iter().any(|d| code.contains(&format!("{d}{name}")))
@@ -657,7 +666,15 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
         // `window` and `app` are read in markup (`{{ window.maximized }}`,
         // `{{ app.state }}`), which this scan of the script cannot see, so
         // they are always there to be read.
-        if (uses || name == WINDOW_NAME || name == APP_NAME) && !own {
+        let always = name == WINDOW_NAME || name == APP_NAME;
+        let granted = sandbox.is_none_or(|s| s.allows(module));
+        if (first_use.is_some() || always) && !own {
+            if !granted {
+                match first_use {
+                    Some(at) => return Err((at, crate::sandbox::not_granted(name))),
+                    None => continue,
+                }
+            }
             out.push(crate::link::Alias {
                 local: name.to_string(),
                 target: crate::link::Target::Module(module.to_string()),
@@ -665,27 +682,36 @@ pub fn builtin_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate:
             });
         }
     }
-    out
+    Ok(out)
 }
 
-fn builtin_fn_aliases(code: &str, aliases: &[crate::link::Alias]) -> Vec<crate::link::Alias> {
-    BUILTIN_FNS
-        .iter()
-        .filter(|name| {
-            let called = code.match_indices(*name).any(|(at, _)| {
-                let before = code[..at].chars().next_back();
-                let after = code[at + name.len()..].trim_start().chars().next();
-                !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') && after == Some('(')
-            });
-            let declared = code.contains(&format!("fn {name}"));
-            called && !declared && !aliases.iter().any(|a| a.local == **name)
-        })
-        .map(|name| crate::link::Alias {
+fn builtin_fn_aliases(
+    code: &str,
+    aliases: &[crate::link::Alias],
+    sandbox: Option<&crate::Sandbox>,
+) -> Result<Vec<crate::link::Alias>, (usize, String)> {
+    let mut out = Vec::new();
+    for name in BUILTIN_FNS {
+        let first_call = code.match_indices(*name).map(|(at, _)| at).find(|&at| {
+            let before = code[..at].chars().next_back();
+            let after = code[at + name.len()..].trim_start().chars().next();
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.') && after == Some('(')
+        });
+        let declared = code.contains(&format!("fn {name}"));
+        let Some(at) = first_call else { continue };
+        if declared || aliases.iter().any(|a| a.local == *name) {
+            continue;
+        }
+        if sandbox.is_some_and(|s| !s.allows(BUILTIN_MODULE)) {
+            return Err((at, crate::sandbox::not_granted("files")));
+        }
+        out.push(crate::link::Alias {
             local: name.to_string(),
             target: crate::link::Target::Member(BUILTIN_MODULE.to_string(), name.to_string()),
             line: 0,
-        })
-        .collect()
+        });
+    }
+    Ok(out)
 }
 
 /// Whether a linked module name is a native one: `native`, `native/shop`.

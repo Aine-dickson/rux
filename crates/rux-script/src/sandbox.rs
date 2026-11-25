@@ -93,3 +93,33 @@ impl Sandbox {
         })
     }
 }
+
+/// The name a grant uses for native module `module` (as linked): `clipboard`
+/// for `native/rux/clipboard`, `files` for the dialogs and sounds Rux gives
+/// every script by bare name (`native/rux`), and the path an app's own module
+/// is imported by (`native::shop`) for the rest.
+pub fn grant_name(module: &str) -> String {
+    if module == crate::native::BUILTIN_MODULE {
+        return "files".to_string();
+    }
+    match module.strip_prefix("native/rux/") {
+        Some(name) => name.to_string(),
+        None => module.replace('/', "::"),
+    }
+}
+
+/// What a document is told when it uses what it was not granted: what to
+/// call it, and who can change it.
+pub fn not_granted(name: &str) -> String {
+    format!(
+        "`{name}` is not available in this document: whoever opens it has to grant it \
+         (`.grant(\"{name}\")`)"
+    )
+}
+
+impl Sandbox {
+    /// Whether the native module `module` (as linked) was granted.
+    pub fn allows(&self, module: &str) -> bool {
+        self.grants.contains(&grant_name(module))
+    }
+}

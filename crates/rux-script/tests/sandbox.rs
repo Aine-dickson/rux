@@ -84,3 +84,83 @@ fn nesting_within_the_limit_loads() {
     b.sandbox(limits(|l| l.max_nesting = 64));
     assert!(b.build(&ok).is_ok());
 }
+
+// ----- grants ---------------------------------------------------------------
+
+fn build_with(script: &str, sandbox: Option<Sandbox>) -> Result<Engine, rux_script::ScriptError> {
+    let mut b = Builder::new();
+    b.interpreted();
+    if let Some(s) = sandbox {
+        b.sandbox(s);
+    }
+    b.build(script)
+}
+
+const COPY: &str = "let level = signal(0);\nfn copy() {\n    clipboard.writeText(\"x\");\n}\n";
+
+#[test]
+fn an_ungranted_module_is_refused_at_load_at_the_line_that_uses_it() {
+    let err = build_with(COPY, Some(Sandbox::new())).err().expect("refused");
+    assert!(err.message.contains("`clipboard`"), "names the module: {}", err.message);
+    assert!(err.message.contains("grant"), "says who can fix it: {}", err.message);
+    assert_eq!(err.line, Some(3), "the line of the first use");
+}
+
+#[test]
+fn a_granted_module_loads() {
+    assert!(build_with(COPY, Some(Sandbox::new().grant("clipboard"))).is_ok());
+}
+
+#[test]
+fn a_grant_is_for_the_module_it_names() {
+    let err = build_with(COPY, Some(Sandbox::new().grant("settings"))).err().expect("refused");
+    assert!(err.message.contains("`clipboard`"), "{}", err.message);
+}
+
+#[test]
+fn no_sandbox_means_no_refusal() {
+    assert!(build_with(COPY, None).is_ok());
+}
+
+#[test]
+fn the_file_dialogs_are_granted_as_files() {
+    let script = "fn pick() {\n    let f = pickFile({});\n}\n";
+    let err = build_with(script, Some(Sandbox::new())).err().expect("refused");
+    assert!(err.message.contains("`files`"), "{}", err.message);
+    assert!(build_with(script, Some(Sandbox::new().grant("files"))).is_ok());
+}
+
+#[test]
+fn an_app_module_is_refused_unless_granted_by_its_path() {
+    let alias = || rux_script::link::Alias {
+        local: "shop".into(),
+        target: rux_script::link::Target::Module("native/shop".into()),
+        line: 2,
+    };
+    let script = "let level = signal(0);\n";
+    let mut b = Builder::new();
+    b.interpreted().aliases(vec![alias()]).sandbox(Sandbox::new());
+    let err = b.build(script).err().expect("refused");
+    assert!(err.message.contains("`native::shop`"), "{}", err.message);
+    assert_eq!(err.line, Some(2));
+    // Granted, the refusal is gone (the module itself is not installed here).
+    let mut b = Builder::new();
+    b.interpreted().aliases(vec![alias()]).sandbox(Sandbox::new().grant("native::shop"));
+    let result = b.build(script);
+    assert!(!result.err().is_some_and(|e| e.message.contains("grant")), "the grant was ignored");
+}
+
+#[test]
+fn window_and_app_are_in_scope_only_when_granted() {
+    // A trusted document always has them, for markup to read. In a sandbox
+    // each is there only when granted.
+    let read = |sandbox: Option<Sandbox>| {
+        let mut e = build_with(SCRIPT, sandbox).expect("builds");
+        let _ = take_warnings();
+        e.eval_display("window.maximized", &[]);
+        take_warnings().is_empty()
+    };
+    assert!(read(None));
+    assert!(!read(Some(Sandbox::new())));
+    assert!(read(Some(Sandbox::new().grant("window"))));
+}
