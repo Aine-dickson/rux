@@ -294,6 +294,22 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next action
 
+**2026-11-25, newest.** The owner confirmed `build/v0.10` and told a session to start on steps 0 and 1 below. Done so far: `build/v0.10` checked out from `origin/build/v0.10`; the `wasm32-unknown-unknown` target installed with rustup on the owner's PC. Not finished (the PC was about to lose power): the baseline `cargo test --workspace -j 2` and `cargo check -p rux-web --target wasm32-unknown-unknown -j 2` were both still building, so neither result is known. Reading the code suggests step 1 may already be fixed: `window_settings` is a field of `App` (`rux-shell/src/lib.rs` about lines 2114 and 2540) and `Instant` is `web_time::Instant` (line 74). Confirm with the wasm check before changing anything.
+
+To do, in the owner's proposed order (each group its own Opus plan the owner approves, then Sonnet builds):
+
+0. Baseline: `cargo test --workspace -j 2` green on `build/v0.10`.
+1. Web build: make `cargo check -p rux-web --target wasm32-unknown-unknown` pass (see the 2026-11-12 note below); a bug fix, so a test that failed before; then run the web build to see it work.
+2. Web-standard Urbandrop items: UD-013, UD-014, UD-005 parts 1 to 3.
+3. The Rust boundary: UD-001, UD-004, UD-007, UD-015.
+4. The capability model (roadmap v0.10 item 2); before step 5.
+5. Platform services: UD-002, UD-003.
+6. Later: UD-006, UD-016, and the open v0.9 items moved to v0.10.
+
+Small follow-up to do before the big work: `rux check` reported nothing where a component load failed (see State, 2026-11-24).
+
+Still open with the owner: whether location and notifications (needed now) go before step 2.
+
 **2026-11-12, read this first.** The owner froze v0.9: it is not released before v0.8, which waits for a
 phone to test its Android features. New work goes on the next version (v0.10). Two decisions are open with
 the owner before any v0.10 work:
