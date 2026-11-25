@@ -164,3 +164,129 @@ fn window_and_app_are_in_scope_only_when_granted() {
     assert!(!read(Some(Sandbox::new())));
     assert!(read(Some(Sandbox::new().grant("window"))));
 }
+
+// ----- memory ---------------------------------------------------------------
+
+/// Run `handler` under a sandbox, and say what it was stopped with, if it was.
+fn stopped_with(sandbox: Sandbox, handler: &str) -> Option<String> {
+    let mut e = build_with(SCRIPT, Some(sandbox)).expect("builds");
+    let _ = take_warnings();
+    let ok = e.run_handler(handler);
+    let said: Vec<String> = take_warnings().into_iter().map(|w| w.message).collect();
+    if ok {
+        assert!(said.is_empty(), "{said:?}");
+        None
+    } else {
+        Some(said.join("; "))
+    }
+}
+
+#[test]
+fn a_huge_repeat_is_refused_before_it_allocates() {
+    let started = std::time::Instant::now();
+    let said = stopped_with(Sandbox::new(), "let s = \"x\".repeat(100000000);").expect("stopped");
+    assert!(said.contains("sandboxed"), "{said}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(1), "it built the text first");
+}
+
+#[test]
+fn a_string_that_doubles_is_stopped_at_the_text_limit() {
+    let said = stopped_with(limits(|l| l.max_text_bytes = 1 << 20), "let s = \"x\"; while true { s = s + s; }")
+        .expect("stopped");
+    assert!(said.contains("longer than"), "{said}");
+}
+
+#[test]
+fn a_template_past_the_text_limit_is_stopped() {
+    let said = stopped_with(
+        limits(|l| l.max_text_bytes = 100),
+        "let s = \"x\".repeat(60); let t = `${s}${s}`;",
+    )
+    .expect("stopped");
+    assert!(said.contains("longer than"), "{said}");
+}
+
+#[test]
+fn padding_past_the_text_limit_is_stopped() {
+    let said = stopped_with(limits(|l| l.max_text_bytes = 1000), "let s = \"a\".padStart(100000, \"-\");").expect("stopped");
+    assert!(said.contains("longer than"), "{said}");
+}
+
+#[test]
+fn pushing_past_the_item_limit_is_stopped() {
+    let said = stopped_with(
+        limits(|l| l.max_items = 100),
+        "let a = [0]; let i = 0; while i < 1000 { a.push(i); i += 1; }",
+    )
+    .expect("stopped");
+    assert!(said.contains("entries"), "{said}");
+}
+
+#[test]
+fn adding_to_a_list_with_plus_equals_is_counted_too() {
+    let said = stopped_with(
+        limits(|l| l.max_items = 100),
+        "let a = [0]; let i = 0; while i < 1000 { a += i; i += 1; }",
+    )
+    .expect("stopped");
+    assert!(said.contains("entries"), "{said}");
+}
+
+#[test]
+fn a_map_that_grows_past_the_item_limit_is_stopped() {
+    let said = stopped_with(
+        limits(|l| l.max_items = 100),
+        "let m = {}; let i = 0; while i < 1000 { m.set(`k${i}`, i); i += 1; }",
+    )
+    .expect("stopped");
+    assert!(said.contains("entries"), "{said}");
+}
+
+#[test]
+fn what_one_run_builds_is_capped_even_when_no_one_piece_is_too_big() {
+    let said = stopped_with(
+        limits(|l| l.run_alloc_bytes = 10_000),
+        "let all = []; let i = 0; while i < 1000 { all.push([1, 2, 3]); i += 1; }",
+    )
+    .expect("stopped");
+    assert!(said.contains("in one run"), "{said}");
+}
+
+#[test]
+fn json_nested_past_the_limit_fails_the_parse() {
+    let deep = format!("{}1{}", "[".repeat(20), "]".repeat(20));
+    let handler = format!("let v = JSON.parse(\"{deep}\");");
+    let said = stopped_with(limits(|l| l.max_nesting = 8), &handler).expect("stopped");
+    assert!(said.contains("nested more than 8"), "{said}");
+    assert!(stopped_with(limits(|l| l.max_nesting = 64), &handler).is_none());
+}
+
+#[test]
+fn json_with_more_entries_than_the_limit_fails_the_parse() {
+    let said = stopped_with(
+        limits(|l| l.max_items = 5),
+        "let v = JSON.parse(\"[1,2,3,4,5,6,7,8,9]\");",
+    )
+    .expect("stopped");
+    assert!(said.contains("entries"), "{said}");
+}
+
+#[test]
+fn ordinary_work_is_not_counted_as_too_much() {
+    // A long string built a character at a time is the usual shape of a
+    // legitimate loop: what it copies is not what it holds.
+    assert!(stopped_with(
+        Sandbox::new(),
+        "let s = \"\"; let i = 0; while i < 20000 { s += \"x\"; i += 1; }"
+    )
+    .is_none());
+    assert!(stopped_with(Sandbox::new(), "let a = []; let i = 0; while i < 20000 { a.push(i); i += 1; }").is_none());
+}
+
+#[test]
+fn a_trusted_document_has_no_such_limits() {
+    let mut e = build_with(SCRIPT, None).expect("builds");
+    let _ = take_warnings();
+    assert!(e.run_handler("let s = \"x\".repeat(40000000);"));
+    assert!(take_warnings().is_empty());
+}

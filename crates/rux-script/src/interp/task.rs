@@ -499,6 +499,7 @@ impl Interp {
         let given: Vec<V> = locals.iter().map(|(_, v)| V::from_value(v)).collect();
         self.enter(&piece, given);
         self.ops = 0;
+        self.alloc = 0;
         self.driving.push(id);
         let out = crate::quiet_reads(|| self.drive(id, &mut task, Some(input)));
         self.driving.pop();

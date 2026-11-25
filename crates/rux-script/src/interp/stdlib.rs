@@ -618,7 +618,7 @@ impl Interp {
                 super::json::write(&argv[0], &indent, 0, &mut out);
                 V::str(out)
             }
-            ("JSON.parse", 1) => match super::json::read(&text(&argv[0])?) {
+            ("JSON.parse", 1) => match super::json::read(&text(&argv[0])?, self.json_limits()) {
                 Ok(v) => v,
                 Err(e) => return fail(format!("JSON.parse: {e}")),
             },
@@ -626,9 +626,72 @@ impl Interp {
         })
     }
 
+    /// What the sandbox's limits need to know before a method builds: how long
+    /// the text or list will be, and how much of that is new. Only asked under a
+    /// sandbox.
+    fn guard_method(&mut self, recv: &V, name: &str, argv: &[V]) -> R<()> {
+        match recv {
+            V::Array(items) => {
+                let len = items.len();
+                match name {
+                    "push" | "insert" => self.grow_items(len + 1, 1),
+                    "unshift" => self.grow_items(len + argv.len(), argv.len()),
+                    "concat" => {
+                        let more: usize = argv.iter().map(|a| if let V::Array(m) = a { m.len() } else { 1 }).sum();
+                        self.grow_items(len + more, more)
+                    }
+                    _ => Ok(()),
+                }
+            }
+            V::Str(s) => match (name, argv.first()) {
+                ("repeat", Some(n)) => {
+                    let times = number(n)?.max(0.0) as usize;
+                    let total = s.len().saturating_mul(times);
+                    self.grow_text(total, total)
+                }
+                ("padStart" | "padEnd", Some(n)) => {
+                    let to = number(n)?.max(0.0) as usize;
+                    let widest = match argv.get(1) {
+                        Some(V::Str(w)) => w.chars().map(char::len_utf8).max().unwrap_or(1),
+                        _ => 1,
+                    };
+                    let total = s.len().max(to.saturating_mul(widest));
+                    self.grow_text(total, total.saturating_sub(s.len()))
+                }
+                ("replace" | "replaceAll", Some(V::Str(from))) => {
+                    let Some(V::Str(to)) = argv.get(1) else { return Ok(()) };
+                    // The most it can come to: every match replaced (and, for
+                    // an empty pattern, a replacement between every character).
+                    let matches = if from.is_empty() { s.chars().count() + 1 } else { s.len() / from.len() };
+                    let matches = if name == "replace" { matches.min(1) } else { matches };
+                    let total = (s.len() + matches.saturating_mul(to.len().saturating_sub(from.len()))).max(s.len());
+                    self.grow_text(total, total - s.len())
+                }
+                _ => Ok(()),
+            },
+            V::Map(m) if name == "set" => match argv.first() {
+                Some(V::Str(k)) if !m.contains_key(&**k) => self.grow_items(m.len() + 1, 1),
+                _ => Ok(()),
+            },
+            _ => Ok(()),
+        }
+    }
+
+    /// What `JSON.parse` may read: how deep, and how many entries in one list
+    /// or object. Unlimited for a trusted document.
+    fn json_limits(&self) -> (usize, usize) {
+        match &self.sandbox {
+            Some(s) => (s.limits.max_nesting, s.limits.max_items),
+            None => (usize::MAX, usize::MAX),
+        }
+    }
+
     /// A method of the language's on `recv`, which it may change. `None` when
     /// there is no such method for that kind of value.
     pub(super) fn method(&mut self, recv: &mut V, name: &str, argv: &[V]) -> R<Option<V>> {
+        if self.sandbox.is_some() {
+            self.guard_method(recv, name, argv)?;
+        }
         let n = argv.len();
         let out = match recv {
             V::Array(items) => match (name, n) {

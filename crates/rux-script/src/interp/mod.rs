@@ -39,6 +39,10 @@ use crate::MAX_OPERATIONS;
 /// (`tests/stack.rs`), so [`STACK_BUDGET`] holds about 495 of the largest;
 /// 400 leaves room. The stack, not this number, is what stops a release
 /// build short of Dart's 57 000.
+/// What one entry of a list or map is counted as, in bytes: a value and its
+/// share of the allocation around it.
+const ENTRY_BYTES: usize = 32;
+
 pub(crate) const MAX_DEPTH: usize = if cfg!(debug_assertions) { 128 } else { 400 };
 
 /// How much of Rust's stack a run may use, measured from where it began.
@@ -191,6 +195,8 @@ pub struct Interp {
     /// The terms a document not the app's own is run on: what native code
     /// it may call. `None` is a trusted document.
     sandbox: Option<crate::Sandbox>,
+    /// What the run has built so far, estimated, under a sandbox's `run_alloc_bytes`.
+    alloc: usize,
     /// Started `async fn`s that are waiting, by task id. See [`task`].
     tasks: HashMap<u64, task::Task>,
     /// Each `async fn`'s ops, compiled when first started, by function.
@@ -286,6 +292,7 @@ impl Interp {
             ops: 0,
             max_ops: MAX_OPERATIONS,
             sandbox: None,
+            alloc: 0,
             tasks: HashMap::new(),
             flats: HashMap::new(),
             started: Vec::new(),
@@ -359,6 +366,57 @@ impl Interp {
         self.sandbox = Some(sandbox);
     }
 
+    /// Text that will be `total` bytes long, `added` of them new, is about to
+    /// be built. Under a sandbox it is refused past the text limit, charged to
+    /// the run, and paid for in steps (a copy of a megabyte is not one step);
+    /// a trusted document pays one test.
+    #[inline]
+    pub(crate) fn grow_text(&mut self, total: usize, added: usize) -> R<()> {
+        let Some(sandbox) = &self.sandbox else { return Ok(()) };
+        let max = sandbox.limits.max_text_bytes;
+        if total > max {
+            return fail(format!("text of {total} bytes is longer than a sandboxed document may build (at most {max})"));
+        }
+        self.charge(added, total)
+    }
+
+    /// A list or map that will hold `total` entries, `added` of them new.
+    #[inline]
+    pub(crate) fn grow_items(&mut self, total: usize, added: usize) -> R<()> {
+        let Some(sandbox) = &self.sandbox else { return Ok(()) };
+        let max = sandbox.limits.max_items;
+        if total > max {
+            return fail(format!("{total} entries are more than a sandboxed document may hold in one list (at most {max})"));
+        }
+        self.charge(added.saturating_mul(ENTRY_BYTES), added.saturating_mul(ENTRY_BYTES))
+    }
+
+    /// `bytes` built, charged to the run; `copied` bytes touched, charged as steps.
+    fn charge(&mut self, bytes: usize, copied: usize) -> R<()> {
+        let Some(sandbox) = &self.sandbox else { return Ok(()) };
+        self.alloc = self.alloc.saturating_add(bytes);
+        self.ops = self.ops.saturating_add((copied >> 10) as u64);
+        let max = sandbox.limits.run_alloc_bytes;
+        if self.alloc > max {
+            return fail(format!("this run has built more than a sandboxed document may in one run (at most {max} bytes)"));
+        }
+        Ok(())
+    }
+
+    /// What `a op b` is about to build, for the operators that make text or
+    /// lists longer.
+    fn guard_binary(&mut self, op: BinOp, a: &V, b: &V) -> R<()> {
+        match (a, b) {
+            (V::Str(x), V::Str(y)) if matches!(op, BinOp::Concat | BinOp::AddInt | BinOp::AddFloat | BinOp::Dyn("+")) => {
+                self.grow_text(x.len() + y.len(), y.len())
+            }
+            (V::Array(x), V::Array(y)) if matches!(op, BinOp::ConcatArray | BinOp::Dyn("+")) => {
+                self.grow_items(x.len() + y.len(), y.len())
+            }
+            _ => Ok(()),
+        }
+    }
+
     pub fn unit(&self) -> &Unit {
         &self.unit
     }
@@ -367,6 +425,7 @@ impl Interp {
     pub fn init(&mut self) -> Result<(), Fault> {
         let unit = Rc::clone(&self.unit);
         self.ops = 0;
+        self.alloc = 0;
         let out = self.run_body(&unit.init, Vec::new(), Vec::new());
         // A top-level `let x;` is state that holds `none`, as the fork had it.
         for (i, g) in unit.globals.iter().enumerate() {
@@ -746,6 +805,7 @@ impl Interp {
 
     fn run_piece(&mut self, piece: Rc<Compiled>, given: Vec<V>) -> (Result<V, Fault>, Vec<V>, Vec<(String, V)>) {
         self.ops = 0;
+        self.alloc = 0;
         let unsupported = piece.lowered.unsupported.first().map(|u| u.what.clone());
         self.enter(&piece, given);
         let out = match unsupported {
@@ -1418,6 +1478,13 @@ impl Interp {
             None => Ok(v),
             // `list += item` adds the item, as the fork's `+=` did.
             Some(BinOp::Dyn("+") | BinOp::ConcatArray) if matches!(target, V::Array(_)) && !matches!(v, V::Array(_)) => {
+                let n = match &target {
+                    V::Array(items) => items.len() + 1,
+                    _ => 0,
+                };
+                if let Err(e) = self.grow_items(n, 1) {
+                    return Err((e, target));
+                }
                 if let V::Array(items) = &mut target {
                     Rc::make_mut(items).push(v);
                 }
@@ -1750,7 +1817,9 @@ impl Interp {
                         ExprKind::Str(t) => out.push_str(t),
                         _ => self.expr(p)?.display_into(&mut out),
                     }
+                    self.grow_text(out.len(), 0)?;
                 }
+                self.grow_text(out.len(), out.len())?;
                 V::str(out)
             }
             ExprKind::Array(items) => {
@@ -2105,6 +2174,9 @@ impl Interp {
 
     fn binary(&mut self, op: BinOp, a: V, b: V) -> R<V> {
         use BinOp::*;
+        if self.sandbox.is_some() {
+            self.guard_binary(op, &a, &b)?;
+        }
         Ok(match (op, &a, &b) {
             (AddInt, V::Int(x), V::Int(y)) => V::Int(x.checked_add(*y).ok_or_else(overflow)?),
             (SubInt, V::Int(x), V::Int(y)) => V::Int(x.checked_sub(*y).ok_or_else(overflow)?),
@@ -2117,6 +2189,7 @@ impl Interp {
             (Concat, _, _) => {
                 let mut s = a.display();
                 s.push_str(&b.display());
+                self.grow_text(s.len(), s.len())?;
                 V::str(s)
             }
             (AddInt | AddFloat | ConcatArray, ..) => dynamic("+", a, b)?,

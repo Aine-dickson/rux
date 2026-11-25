@@ -91,8 +91,8 @@ fn quote(s: &str, out: &mut String) {
 }
 
 /// The value `text` holds, or what is wrong with it and where.
-pub(crate) fn read(text: &str) -> Result<V, String> {
-    let mut r = Reader { s: text.as_bytes(), at: 0 };
+pub(crate) fn read(text: &str, (max_depth, max_items): (usize, usize)) -> Result<V, String> {
+    let mut r = Reader { s: text.as_bytes(), at: 0, depth: 0, max_depth, max_items };
     let v = r.value()?;
     r.space();
     if r.at < r.s.len() {
@@ -104,6 +104,11 @@ pub(crate) fn read(text: &str) -> Result<V, String> {
 struct Reader<'a> {
     s: &'a [u8],
     at: usize,
+    /// How deep the value being read is, and the most a sandbox lets it be.
+    depth: usize,
+    max_depth: usize,
+    /// The most entries one list or object may hold.
+    max_items: usize,
 }
 
 impl Reader<'_> {
@@ -143,6 +148,20 @@ impl Reader<'_> {
     }
 
     fn value(&mut self) -> Result<V, String> {
+        self.depth += 1;
+        if self.depth > self.max_depth {
+            return Err(format!("nested more than {} deep, the most a sandboxed document may read", self.max_depth));
+        }
+        let out = self.value_inside();
+        self.depth -= 1;
+        out
+    }
+
+    fn too_many(&self) -> String {
+        format!("more than {} entries in one list or object, the most a sandboxed document may read", self.max_items)
+    }
+
+    fn value_inside(&mut self) -> Result<V, String> {
         self.space();
         match self.s.get(self.at) {
             Some(b'{') => {
@@ -162,6 +181,9 @@ impl Reader<'_> {
                     }
                     let v = self.value()?;
                     m.insert(k, v);
+                    if m.len() > self.max_items {
+                        return Err(self.too_many());
+                    }
                     if self.eat(b'}') {
                         return Ok(V::Map(Rc::new(m)));
                     }
@@ -178,6 +200,9 @@ impl Reader<'_> {
                 }
                 loop {
                     items.push(self.value()?);
+                    if items.len() > self.max_items {
+                        return Err(self.too_many());
+                    }
                     if self.eat(b']') {
                         return Ok(V::array(items));
                     }
