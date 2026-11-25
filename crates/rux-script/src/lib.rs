@@ -1326,6 +1326,26 @@ pub fn set_stderr_echo(on: bool) {
     ECHO.with(|e| e.set(on));
 }
 
+/// How many failures the sink holds, to ask about what came after.
+pub fn warning_count() -> usize {
+    WARNINGS.with(|w| w.borrow().len())
+}
+
+/// Drop, from what was raised since the sink held `since`, the failures that
+/// say a field is missing from a value: for a value whose fields only the
+/// running program knows.
+pub fn drop_missing_fields_since(since: usize) {
+    WARNINGS.with(|w| {
+        let mut w = w.borrow_mut();
+        let since = since.min(w.len());
+        let tail = w.split_off(since);
+        w.extend(
+            tail.into_iter()
+                .filter(|x| !(x.message.contains(": there is no `") && x.message.contains("` on that value"))),
+        );
+    });
+}
+
 /// Take the expression failures raised since the last call, emptying the sink.
 pub fn take_warnings() -> Vec<Warning> {
     WARNINGS.with(|w| std::mem::take(&mut *w.borrow_mut()))

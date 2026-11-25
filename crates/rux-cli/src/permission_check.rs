@@ -196,6 +196,56 @@ pub fn undeclared_location(text: &str, undeclared: Option<&str>) -> Vec<(usize, 
     out
 }
 
+/// `(line, message)` for each `retry()` written in a template outside every
+/// `<fallback>`. `retry()` builds a `<boundary>`'s children again, and only a
+/// handler written in a fallback knows which boundary; anywhere else it does
+/// nothing. Not read in a script (a function a fallback's handler calls may use
+/// it), and not at all in a file that declares a `retry` of its own, which is
+/// called instead of the builtin.
+pub fn stray_retry(text: &str) -> Vec<(usize, String)> {
+    let word = |at: usize, len: usize| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + len..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_') && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    };
+    for declared in ["fn retry", "let retry", "computed retry", "prop retry", "const retry"] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(declared) {
+            let at = from + at;
+            from = at + declared.len();
+            if word(at, declared.len()) {
+                return Vec::new();
+            }
+        }
+    }
+    let (Some(start), Some(end)) = (text.find("<template"), text.rfind("</template>")) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < end {
+        let rest = &text[i..end];
+        if rest.starts_with("</fallback") {
+            depth = depth.saturating_sub(1);
+            i += "</fallback".len();
+        } else if rest.starts_with("<fallback") && rest["<fallback".len()..].starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace()) {
+            depth += 1;
+            i += "<fallback".len();
+        } else if depth == 0 && rest.starts_with("retry(") && word(i, "retry".len()) && !text[..i].ends_with('.') {
+            let line = text[..i].matches('\n').count() + 1;
+            out.push((
+                line,
+                "`retry()` outside a `<fallback>` does nothing: it builds a `<boundary>`'s children again, \
+                 and only a handler written in a fallback knows which boundary"
+                    .to_string(),
+            ));
+            i += "retry(".len();
+        } else {
+            i += rest.chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    out
+}
+
 /// `(line, message)` for each `links.open("...")`, `links.dial("...")` or
 /// `links.sms("...", ...)` call (or `links::` in the app's Rust) whose first
 /// argument is a literal Rux would refuse when the program runs: a scheme that

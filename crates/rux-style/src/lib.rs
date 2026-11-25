@@ -1261,7 +1261,70 @@ pub const BOUNDARY_LOCAL: &str = "__boundary";
 /// fallbacks nest, which is the last such local written. `None` for a handler
 /// that is in no fallback.
 pub fn boundary_of_handler(src: &str) -> Option<String> {
-    let marker = format!("let {BOUNDARY_LOCAL} = \"");
+    baked_text(src, BOUNDARY_LOCAL)
+}
+
+thread_local! {
+    /// Whether a `<boundary>` that does not fail also builds its `<fallback>`
+    /// once, to be read and thrown away: set by `rux check`, so what a
+    /// fallback says is looked at before the day it shows.
+    static CHECK_HIDDEN_FALLBACKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Have every `<boundary>` build its `<fallback>` once, with a stand-in error,
+/// and throw it away: for `rux check`.
+pub fn check_hidden_fallbacks(on: bool) {
+    CHECK_HIDDEN_FALLBACKS.with(|c| c.set(on));
+}
+
+/// What a build of a `<boundary>`'s children (or its checked fallback) left
+/// behind, to cut back if it is thrown away.
+struct BuiltMark {
+    reg: RegistryMark,
+    known: HashSet<String>,
+    touched: HashSet<String>,
+    mounts: usize,
+}
+
+impl BuiltMark {
+    fn take(reg: &BindingRegistry, instances: &Instances) -> BuiltMark {
+        BuiltMark {
+            reg: reg.mark(),
+            known: instances.keys().cloned().collect(),
+            touched: instances.iter().filter(|(_, i)| i.touched).map(|(k, _)| k.clone()).collect(),
+            mounts: pending_mounts(),
+        }
+    }
+
+    /// Thrown away: what was registered, the instances made (and the mounts
+    /// those were owed); the ones that already existed stop being reached, so
+    /// the build unmounts them as it does for an `r-if`.
+    fn discard(self, reg: &mut BindingRegistry, instances: &mut Instances) {
+        reg.cut_to(&self.reg);
+        cut_mounts(self.mounts);
+        instances.retain(|k, _| self.known.contains(k));
+        for (k, i) in instances.iter_mut() {
+            if i.touched && !self.touched.contains(k) {
+                i.touched = false;
+            }
+        }
+    }
+}
+
+/// The local every handler written in a `<boundary>`'s children carries: the
+/// key of that boundary, so a failure of the handler can fail it.
+pub const CAUGHT_LOCAL: &str = "__caught_by";
+
+/// The `<boundary>` whose children a handler was written in, the innermost: a
+/// failure of the handler fails it. `None` for a handler outside every one.
+pub fn catcher_of_handler(src: &str) -> Option<String> {
+    baked_text(src, CAUGHT_LOCAL)
+}
+
+/// The text local `name` that [`bind_locals`] wrote into a handler's source,
+/// the last one written. `None` when the handler has none.
+fn baked_text(src: &str, name: &str) -> Option<String> {
+    let marker = format!("let {name} = \"");
     let rest = &src[src.rfind(&marker)? + marker.len()..];
     let mut out = String::new();
     let mut chars = rest.chars();
@@ -11241,15 +11304,16 @@ fn build_children_from(
             structural_deps.insert(boundary_signal(&key));
             let mut shown = None;
             if engine.boundary_error(&key).is_none() {
-                let reg_mark = reg.mark();
-                let known: HashSet<String> = instances.keys().cloned().collect();
-                let touched: HashSet<String> =
-                    instances.iter().filter(|(_, i)| i.touched).map(|(k, _)| k.clone()).collect();
-                let mounts = pending_mounts();
+                let built = BuiltMark::take(reg, instances);
                 rux_script::push_boundary();
                 OPEN_BOUNDARIES.with(|b| b.borrow_mut().push(key.clone()));
+                // A handler written in the children is baked with the key, so
+                // that its failure, which reaches the runtime as source text
+                // with no place in the tree, still fails this boundary.
+                let mut caught_locals = locals.clone();
+                caught_locals.push((CAUGHT_LOCAL.to_string(), Value::Text(key.clone())));
                 let (nodes, deps) = build_children_from(
-                    &shown_kids, rules, comps, ancestors, inherited, engine, locals, path, &bp, reg, state,
+                    &shown_kids, rules, comps, ancestors, inherited, engine, &caught_locals, path, &bp, reg, state,
                     instances, swaps, instance, slot, outlet, row, Some(out.len()),
                 );
                 OPEN_BOUNDARIES.with(|b| b.borrow_mut().pop());
@@ -11259,20 +11323,39 @@ fn build_children_from(
                         shown = Some((nodes, deps))
                     }
                     Some(error) => {
-                        // Thrown away: what the children registered, the
-                        // instances they made (and the mounts those were owed),
-                        // and the ones that already existed stop being reached,
-                        // so the build unmounts them as it does for an `r-if`.
-                        reg.cut_to(&reg_mark);
-                        cut_mounts(mounts);
-                        instances.retain(|k, _| known.contains(k));
-                        for (k, i) in instances.iter_mut() {
-                            if i.touched && !touched.contains(k) {
-                                i.touched = false;
-                            }
-                        }
+                        built.discard(reg, instances);
                         engine.fail_boundary(&key, error);
                     }
+                }
+            }
+            // `rux check`: the fallback of a boundary that is not failing is
+            // never built, so what it says would be read for the first time on
+            // the worst day. Built once, with an error that has what every
+            // error has, and thrown away.
+            if shown.is_some() && CHECK_HIDDEN_FALLBACKS.with(std::cell::Cell::get) {
+                if let Some(fallback) = fallback {
+                    let built = BuiltMark::take(reg, instances);
+                    let raised = rux_script::warning_count();
+                    rux_script::push_boundary();
+                    let stand_in = Value::Map(vec![
+                        ("message".to_string(), Value::Text(String::new())),
+                        ("kind".to_string(), Value::Text("error".to_string())),
+                    ]);
+                    let mut fb_locals = locals.clone();
+                    fb_locals.push(("error".to_string(), stand_in));
+                    fb_locals.push((BOUNDARY_LOCAL.to_string(), Value::Text(key.clone())));
+                    let mut fb_tpl = bp.clone();
+                    fb_tpl.push(kids.len().saturating_sub(1));
+                    let fb_kids = element_children(fallback);
+                    let _ = build_children_from(
+                        &fb_kids, rules, comps, ancestors, inherited, engine, &fb_locals, path, &fb_tpl, reg,
+                        state, instances, swaps, instance, slot, outlet, row, Some(out.len()),
+                    );
+                    let _ = rux_script::pop_boundary();
+                    // A native error carries fields the stand-in does not, so a
+                    // missing one is not a finding here.
+                    rux_script::drop_missing_fields_since(raised);
+                    built.discard(reg, instances);
                 }
             }
             match shown {

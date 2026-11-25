@@ -70,6 +70,7 @@ pub fn run(options: Options) -> i32 {
     // each warning to stderr as prose.
     rux_runtime::set_stderr_echo(false);
     rux_runtime::record_types(options.types);
+    rux_runtime::check_hidden_fallbacks(true);
     if options.native {
         eprintln!("rux: --native runs cargo check on native/, which can take several minutes");
     }
@@ -208,6 +209,15 @@ pub fn run(options: Options) -> i32 {
     // A call asking for a permission `rux.toml` does not declare. Only inside a
     // project: a loose file has no manifest to be held to.
     found.extend(undeclared_permissions(&files));
+
+    // `retry()` written where no `<fallback>` is: it does nothing there. Read
+    // from the documents alone, so it needs no manifest.
+    for file in &files {
+        let Ok(text) = std::fs::read_to_string(file) else { continue };
+        for (line, message) in crate::permission_check::stray_retry(&text) {
+            found.push(Diagnostic { file: file.clone(), line: Some(line), column: None, severity: Severity::Warning, message });
+        }
+    }
 
     // A component is read on its own and through whatever uses it, so the same
     // finding can come twice; once is enough.

@@ -277,19 +277,54 @@ fn a_components_failing_handler_shows_the_fallback() {
 }
 
 #[test]
-fn a_pages_own_failing_handler_is_not_caught_by_a_boundary_around_its_markup() {
+fn a_pages_own_failing_handler_inside_a_boundary_shows_the_fallback() {
     let mut doc = load(
         "page-handler",
-        r#"<boundary>
+        r#"<text>outside</text>
+<boundary>
   <view @tap="boom()"><text>page crash</text></view>
-  <fallback><text>failed</text></fallback>
+  <fallback><text>failed: {{ error.message }}</text></fallback>
 </boundary>"#,
         FAILS,
         &[],
     );
     tap(&mut doc, "page crash");
     let s = shown(&doc);
-    assert!(s.contains("page crash") && !s.contains("failed"), "{s}");
+    assert!(s.contains("failed: no orders") && !s.contains("page crash") && s.contains("outside"), "{s}");
+}
+
+#[test]
+fn a_pages_handler_outside_every_boundary_still_only_reports() {
+    let mut doc = load(
+        "page-handler-outside",
+        r#"<view @tap="boom()"><text>outside crash</text></view>
+<boundary><text>[{{ fine() }}]</text><fallback><text>failed</text></fallback></boundary>"#,
+        FAILS,
+        &[],
+    );
+    tap(&mut doc, "outside crash");
+    let s = shown(&doc);
+    assert!(s.contains("outside crash") && s.contains("[fine]") && !s.contains("failed"), "{s}");
+}
+
+#[test]
+fn a_page_handler_in_a_nested_boundary_fails_the_innermost() {
+    let mut doc = load(
+        "page-handler-nested",
+        r#"<boundary>
+  <text>outer ok</text>
+  <boundary>
+    <view @tap="boom()"><text>inner crash</text></view>
+    <fallback><text>inner failed</text></fallback>
+  </boundary>
+  <fallback><text>outer failed</text></fallback>
+</boundary>"#,
+        FAILS,
+        &[],
+    );
+    tap(&mut doc, "inner crash");
+    let s = shown(&doc);
+    assert!(s.contains("outer ok") && s.contains("inner failed") && !s.contains("outer failed"), "{s}");
 }
 
 #[test]

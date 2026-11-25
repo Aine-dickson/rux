@@ -2088,6 +2088,12 @@ thread_local! {
 /// What `rux check --types` prints. See [`record_types`].
 pub type TypeTable = rux_script::check::Table;
 
+/// Have each `<boundary>` build its `<fallback>` once and throw it away, so
+/// that `rux check` reads what a fallback says before it shows.
+pub fn check_hidden_fallbacks(on: bool) {
+    rux_style::check_hidden_fallbacks(on);
+}
+
 /// Keep (or stop keeping) the types the checker works out, for `rux check
 /// --types`. See `docs/07-script.md`, "Editor".
 pub fn record_types(on: bool) {
@@ -5553,13 +5559,13 @@ impl Document {
         let before = rux_script::faults();
         // A `retry()` is told which boundary by the handler's own source, where
         // the build wrote it.
-        let boundary = match &run {
-            Run::Handler(src) => rux_style::boundary_of_handler(src),
-            _ => None,
+        let (boundary, catcher) = match &run {
+            Run::Handler(src) => (rux_style::boundary_of_handler(src), rux_style::catcher_of_handler(src)),
+            _ => (None, None),
         };
         let _ = rux_script::take_retries();
         let ran = rux_script::with_elements(resolver, || self.dispatch_handler_inner(run, instance, depth, event));
-        self.attribute_fault(instance, before);
+        self.attribute_fault(instance, catcher.as_deref(), before);
         if rux_script::take_retries() > 0 {
             if let Some(key) = boundary {
                 if self.engine.retry_boundary(&key) {
@@ -5574,13 +5580,19 @@ impl Document {
     /// around that instance, when there is one: its next build shows the
     /// fallback. The innermost call to see a failure takes it, so a listener's
     /// failure is its caller's and not the emitter's.
-    fn attribute_fault(&mut self, instance: Option<&str>, before: u64) {
+    ///
+    /// `catcher` is the boundary a handler was written in, read from its own
+    /// source: the innermost one, so it wins over the instance's.
+    fn attribute_fault(&mut self, instance: Option<&str>, catcher: Option<&str>, before: u64) {
         let now = rux_script::faults();
         if now <= before || now <= self.fault_attributed {
             return;
         }
         self.fault_attributed = now;
-        let Some(boundary) = instance.and_then(|k| self.instances.get(k)).and_then(|i| i.boundary.clone()) else {
+        let Some(boundary) = catcher
+            .map(str::to_string)
+            .or_else(|| instance.and_then(|k| self.instances.get(k)).and_then(|i| i.boundary.clone()))
+        else {
             return;
         };
         if self.engine.boundary_error(&boundary).is_some() {
@@ -6060,7 +6072,7 @@ impl Document {
                 let faults_before = rux_script::faults();
                 let (after, wrote, mut reads) =
                     self.engine.run_scoped_effect(&effect.body, &locals);
-                self.attribute_fault(Some(&key), faults_before);
+                self.attribute_fault(Some(&key), None, faults_before);
                 let started = self.engine.take_started_tasks();
                 self.own_tasks(started, Some(&key));
                 self.engine.put_back_started_tasks(earlier);

@@ -99,6 +99,30 @@ images. Open:
    document carries on; an author could not catch one and show a fallback for
    that subtree. Once a document talks to a network, the common failure is no
    longer a typo.
+   **Error boundaries, future improvements.** Built and driven on the desktop;
+   these are known, named and not yet done. Do not lose them.
+   - **EB-1. No rebuild per failing patch.** A binding that fails while it is
+     patched, with any boundary open, rebuilds the whole document so the build
+     can say which boundary it belongs to; a failing binding outside every
+     boundary therefore rebuilds on each patch of its signals. A map of which
+     boundary covers which part of the tree would attribute it without a
+     rebuild.
+   - **EB-2. `:last-child` and the rest that count from the end** treat a
+     boundary as if it never failed (`count_rendered` has no boundary key).
+   - **EB-3. A failing `mounted` hook** of a component is not attributed to its
+     boundary (handlers, effects, timers, `async fn`s and bindings are).
+   - **EB-4. Timers** requested by an instance that is thrown away with its
+     boundary are not dropped when it goes; only the owner's later run is.
+   - **EB-5. `error` fields are unchecked.** `rux check` cannot tell a typo
+     such as `error.mesage` from a field a native error adds, so it reports
+     neither until the fallback shows. Types for a native error's fields
+     (from `rux::IntoError`) would let it report the typo.
+   - **EB-6. An `async fn` a page's handler started** belongs to no instance,
+     so its failure reaches no boundary.
+   - **EB-7. Not driven** on Android or the web, or with a real network call.
+   - **EB-8. A missing store function** (`shop.nope()` in a component `fn`)
+     reports three errors and a warning for one line; found while testing
+     boundaries, a checker problem of its own.
 2. **A capability model for native code.** Compiled app code has full trust.
    The interpreter is the sandbox for anything untrusted (the playground,
    fetched or over-the-air documents), with step and memory limits and no

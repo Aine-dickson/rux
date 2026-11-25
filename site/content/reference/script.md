@@ -1157,12 +1157,19 @@ is not a typo, and the person looking at it should see more than a hole.
 - **A first build shows no flash:** what failed is thrown away in the same
   build, and the fallback is built in its place. The instances inside are
   dropped, their `unmounted` runs as when an `r-if` closes over them.
-- **Not caught:** a handler written in the page itself (it belongs to the
-  page, not to anything inside), a syntax error (the document does not load),
-  and a failure a `try` caught.
-- **Not checked while hidden.** The names in a `<fallback>` are read when it
-  shows, as in any branch that is not showing: `error.mesage` is found on the
-  first failure, not by `rux check`.
+- **A handler written in a boundary's children fails it too**, the page's or a
+  component's: a tap on a button inside the boundary that throws shows the
+  fallback. A handler outside every boundary only reports, as before.
+- **Not caught:** a syntax error (the document does not load), a failure a
+  `try` caught, and a failure of an `async fn` that a page's handler (not a
+  component's) started, which belongs to no instance.
+- **`rux check` reads a fallback before it shows.** It builds each fallback
+  once, with an error that has a `message` and a `kind`, and throws it away:
+  an undefined name or a bad call in it is a finding. A missing field of
+  `error` is not one, since a native error carries fields the stand-in lacks:
+  `error.mesage` is found when it fails, not before. `rux check` also warns on
+  a `retry()` written in a template outside every `<fallback>`, and says
+  nothing in a file that declares a `retry` of its own.
 
 ## Props
 

@@ -3437,7 +3437,14 @@ rebuilds (`Document::attribute_fault`, `settle_boundaries`). A binding that
 fails while patched, with a boundary open, rebuilds too, and the build says
 which boundary. `retry()` counts in a sink the runtime takes after a handler;
 the boundary is read back from the `__boundary` local the build baked into the
-fallback's handler (`rux_style::boundary_of_handler`). Reference: `07-script`,
+fallback's handler (`rux_style::boundary_of_handler`). A handler written in a
+boundary's children is baked with `__caught_by`, the boundary's key
+(`rux_style::catcher_of_handler`), which wins over its instance's boundary, so
+a page's own handler fails the boundary around it. `rux check` builds each
+fallback once with a stand-in error (`rux_style::check_hidden_fallbacks`) and
+cuts it back; `drop_missing_fields_since` removes "no field" findings from that
+build, and `stray_retry` (`rux-cli/src/permission_check.rs`) warns on a
+`retry()` in a template outside every `<fallback>`. Reference: `07-script`,
 "Error boundaries".
 
 **A component has its own state.** Its `<script>`'s top-level `let`s run **once

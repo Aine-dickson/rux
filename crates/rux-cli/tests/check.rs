@@ -222,6 +222,73 @@ fn a_component_that_fails_only_inside_its_caller_is_reported() {
     assert!(stdout(&out).contains("toFixed"), "{}", stdout(&out));
 }
 
+/// A `<fallback>` shows only after a failure, so `rux check` builds it once
+/// anyway: a name it never declares is found now, not on the worst day.
+#[test]
+fn a_hidden_fallback_is_checked() {
+    let page = |fallback: &str| {
+        format!(
+            "<template><screen><boundary><text>{{{{ fine() }}}}</text><fallback>{fallback}</fallback></boundary></screen></template>
+             <script>
+fn fine(): string {{ return \"fine\"; }}
+</script>"
+        )
+    };
+    // A name that is declared nowhere.
+    let dir = fixture("hidden-fallback-bad", &[("app.rux", &page("<text>{{ eror.message }}</text>"))]);
+    let out = check(&[dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(stdout(&out).contains("eror"), "{}", stdout(&out));
+
+    // What every error has, a field only a native error adds, and `retry()`.
+    let good = page(
+        "<text>{{ error.message }} {{ error.kind }} {{ error.status }}</text>         <view @tap=\"retry()\"><text>again</text></view>",
+    );
+    let dir = fixture("hidden-fallback-good", &[("app.rux", &good)]);
+    let out = check(&[dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
+}
+
+/// `retry()` builds a boundary's children again, and only a handler written in
+/// a `<fallback>` knows which boundary. Anywhere else it does nothing, which
+/// `rux check` says; an app's own function of the name is not the builtin.
+#[test]
+fn retry_outside_a_fallback_is_warned() {
+    let doc = |template: &str, script: &str| {
+        format!("<template><screen>{template}</screen></template>
+<script>
+{script}
+</script>")
+    };
+    let warned = |name: &str, template: &str, script: &str| {
+        let dir = fixture(name, &[("app.rux", &doc(template, script))]);
+        let out = check(&[dir.to_str().unwrap()]);
+        assert_eq!(out.status.code(), Some(0), "{name}: warnings do not fail: {}", stdout(&out));
+        stdout(&out).contains("`retry()` outside a `<fallback>`")
+    };
+    let boundary = |inside: &str| {
+        format!("<boundary><text>x</text><fallback>{inside}</fallback></boundary>")
+    };
+    // Outside every fallback.
+    assert!(warned("retry-outside", "<view @tap=\"retry()\"><text>go</text></view>", ""));
+    // In a boundary's children, not its fallback.
+    assert!(warned(
+        "retry-in-children",
+        "<boundary><view @tap=\"retry()\"><text>go</text></view><fallback><text>f</text></fallback></boundary>",
+        "",
+    ));
+    // In a fallback, however deep.
+    assert!(!warned("retry-in-fallback", &boundary("<view><view @tap=\"retry()\"><text>go</text></view></view>"), ""));
+    // In a script function a fallback's handler calls.
+    assert!(!warned("retry-in-script", &boundary("<view @tap=\"again()\"><text>go</text></view>"), "fn again() { retry(); }"));
+    // The app's own function of that name is not the builtin.
+    assert!(!warned(
+        "retry-own",
+        "<view @tap=\"retry()\"><text>go</text></view>",
+        "fn retry() { print(\"mine\"); }",
+    ));
+}
+
 /// A store nothing imports is still a script with a scope, and is checked.
 #[test]
 fn a_store_nothing_imports_is_checked() {
