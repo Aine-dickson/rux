@@ -3423,6 +3423,23 @@ position comes from the component. An unfilled slot falls back to its own
 children, as in HTML. A `<slot>` emits no box of its own, so a component adds
 no wrapper nobody wrote. Driven in `examples/slots.rux`.
 
+**Error boundaries.** `<boundary>` shows its children, and its last child
+`<fallback>` instead once something inside fails; `error` and `retry()` are in
+scope in the fallback. It leaves no box of its own. The build runs the children
+inside a failure frame (`rux_script::push_boundary` / `pop_boundary`); on a
+failure it cuts back what they registered (`BindingRegistry::cut_to`), the
+instances they made and their pending mounts, and builds the fallback. The
+`Engine` keeps which boundaries are showing a fallback (`fail_boundary`,
+`retry_boundary`). A component instance records the boundary it was expanded
+in (`Instance::boundary`); a failure of its handler, effect, timer or `async fn`
+(counted by `rux_script::faults`) fails that boundary and the document
+rebuilds (`Document::attribute_fault`, `settle_boundaries`). A binding that
+fails while patched, with a boundary open, rebuilds too, and the build says
+which boundary. `retry()` counts in a sink the runtime takes after a handler;
+the boundary is read back from the `__boundary` local the build baked into the
+fallback's handler (`rux_style::boundary_of_handler`). Reference: `07-script`,
+"Error boundaries".
+
 **A component has its own state.** Its `<script>`'s top-level `let`s run **once
 per instance**, so three `<counter>` elements are three counts:
 ```rux

@@ -3845,6 +3845,20 @@ Desktop, `target/debug/rux check <dir>`, probes in the session scratchpad (an ap
 | `prop amount = 0;` and `{{ amount.toFixed(2) }}`, the caller passing `amount="ten"` | "no problems found", exit 0, while `rux check app.rux` reported the error | `components/row.rux:1: error`, exit 1 (test `a_component_that_fails_only_inside_its_caller_is_reported`) |
 | A call to a store function that does not exist, `shop.nope()` in a component's `fn` | three errors and a warning on line 4 for one mistake ("declared nowhere" beside "does not export `nope`") | unchanged: noise around a real mistake, left for later |
 
+## Error boundaries, 2026-11-25
+
+Desktop window, `rux run` with `--preview phone`, probe `C:/Users/USER/Mobile/rux-harness/boundary` (`shoot.ps1` takes three captures; the page taps its own buttons with `query(...).tap()` from `mounted` and a `setInterval`, since injected clicks do not reach the window).
+
+| Case | Result |
+|---|---|
+| A component inside `<boundary>` whose `@tap` handler throws `{ message, kind }` | The orders drop out and the fallback shows "Could not show the orders: the server did not answer" and a Try again button; the title and the footer outside the boundary stay. stderr still says "handler `load()` failed" |
+| Try again (`retry()`) 4 s later | The orders are back, as new instances |
+| The crash button tapped again | The fallback shows again |
+
+Tests: `crates/rux-script/tests/boundary_capture.rs`, `crates/rux-runtime/tests/error_boundaries.rs` (a failing binding, a component's script, a handler, an effect, an `async fn`, nesting, rows, retry, unmounts).
+
+**Not driven:** Android and the web; a failure from a real network call; a boundary inside an `r-for` in a window; an `unmounted` hook beyond its test; the overlay's own panel for a caught failure (the failure reaches stderr and `diagnostics()`, and the screenshots show no panel).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

@@ -93,8 +93,9 @@ front of it. Built so far from this milestone: `async fn` handles, tasks, a
 settings store (`settings.get`, `set`, `remove`), `pickFile`, and network
 images. Open:
 
-1. **Error boundaries.** In progress (`<boundary>` and `<fallback>`, see
-   `07-script`, "Error boundaries"). A failing expression is reported and the
+1. **Error boundaries.** Built 2026-11-25 (`<boundary>` and `<fallback>`, see
+   `07-script`, "Error boundaries"; driven on the desktop only). A failing
+   expression is reported and the
    document carries on; an author could not catch one and show a fallback for
    that subtree. Once a document talks to a network, the common failure is no
    longer a typo.

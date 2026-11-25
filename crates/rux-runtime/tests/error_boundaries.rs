@@ -451,3 +451,35 @@ fn the_boundary_a_handler_sits_in_is_read_back_from_its_prelude() {
     assert_eq!(rux_style::boundary_of_handler(nested), Some("inner".to_string()));
     assert_eq!(rux_style::boundary_of_handler("count = count + 1"), None);
 }
+
+#[test]
+fn a_failure_after_the_first_build_is_still_reported_once_the_fallback_shows() {
+    let mut doc = load(
+        "later-reported",
+        r#"<boundary>
+  <crashy />
+  <fallback><text>failed</text></fallback>
+</boundary>"#,
+        "use components::crashy;",
+        &[("components/crashy.rux", CRASHY)],
+    );
+    tap(&mut doc, "crash");
+    assert!(shown(&doc).contains("failed"), "{}", shown(&doc));
+    let said: Vec<String> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+    assert!(said.iter().any(|m| m.contains("oops")), "{said:?}");
+}
+
+#[test]
+fn a_binding_failure_after_a_change_is_still_reported_once_the_fallback_shows() {
+    let mut doc = load(
+        "later-binding-reported",
+        r#"<view @tap="n = 0"><text>break</text></view>
+<boundary><text>[{{ show(n) }}]</text><fallback><text>failed</text></fallback></boundary>"#,
+        &format!("{FAILS}\nlet n = signal(1);"),
+        &[],
+    );
+    tap(&mut doc, "break");
+    assert!(shown(&doc).contains("failed"), "{}", shown(&doc));
+    let said: Vec<String> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+    assert!(said.iter().any(|m| m.contains("zero")), "{said:?}");
+}
