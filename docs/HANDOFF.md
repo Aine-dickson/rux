@@ -294,19 +294,16 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 
 ## Next action
 
-**2026-11-25, newest.** A session on another PC started on the 2026-11-12 order below without the State entries of 11-23 and 11-24, so most of that order is already done. Where v0.10 stands, by the 11-12 order's steps:
+**2026-11-25, newest: the v0.10 to-do list.** Only this PC is used from now on. Built on v0.10 so far: permissions, UD-001 to UD-005, UD-007, UD-012 to UD-014, pinch and rotate, bounded image memory and the disk cache, and the `#[path]` step of UD-015. CI is green on `4f96fee`. In order:
 
-0. Baseline: done. CI is green on `ad2185d`, `fe31587` and `4f96fee`; local `./scripts/release.sh verify` passed on `fe31587` (1,848 tests).
-1. Web build: fixed 2026-11-23 (State, permissions entry) and driven in Edge. On the other PC, the `wasm32-unknown-unknown` target is now installed; its `cargo check -p rux-web --target wasm32-unknown-unknown` had not finished, so run it once there to confirm that machine builds.
-2. UD-013, UD-014, UD-005: built (11-23, 11-24).
-3. UD-001, UD-004, UD-007: built. UD-015: only the `#[path]` step; its other halves are held on the owner's rule (assess first; do not plan or start without asking).
-4. The capability model (roadmap v0.10 item 2): not started.
-5. UD-002, UD-003: built (11-23), so the question of location and notifications first is settled.
-6. Later: UD-006 assessed (a tile map is workable in the app, pinch built, image memory bounded); UD-016 assessed (a server PDF opened with `links.open`); the open v0.9 items moved to v0.10 are still open.
+1. ~~**`rux check` reports a component that fails to load**~~ **done 2026-11-25.** The cause was not the component path: walking a project, `rux check` dropped what a caller's load said about a used component and left it to the component's own read, which loads it as a document (not linked as its caller links it, and with prop defaults instead of the caller's values). Now held and kept unless the own read reported that line (`through_callers` in `crates/rux-cli/src/check.rs`). Test `a_component_that_fails_only_inside_its_caller_is_reported` (failed before). Found on the way, not fixed: one missing store function (`shop.nope()` in a component `fn`) gives three errors and a warning on one line.
+2. **Error boundaries** (roadmap v0.10 item 1). Opus plan the owner approves, then Sonnet builds.
+3. **The capability model's sandbox half** (roadmap v0.10 item 2: step and memory limits, no native access unless granted). Opus plan; the default for an unmarked file is a 1.0 question for the owner.
+4. **Owner decision:** whether a removed component's queued handler stops running at page level (State, 2026-11-24).
+5. **Open v0.9 items moved to v0.10** (roadmap, v0.9 section): physics, live regions, `rux doctor` device survey (needs a phone), `hyphens: auto` (owner said not now), video on macOS and Linux, child windows on macOS and Linux.
+6. **Held:** UD-015's dependency-crate and `.rux` halves (ask before planning); UD-006 and UD-016 need nothing from Rux now (assessed).
 
-**Next:** the small follow-up first: `rux check` reported nothing where a component load failed (State, 2026-11-24). Then the owner picks the next group; proposed, an Opus plan for error boundaries (v0.10 item 1), or the capability model. Also open with the owner: whether a removed component's queued handler should stop running at page level (State, 2026-11-24).
-
-The 2026-11-12 block below is history: the branch was made on 2026-11-23 and its order is covered above.
+The 2026-11-12 block below is history: the branch was made on 2026-11-23 and its order is done or listed above.
 
 **2026-11-12, read this first.** The owner froze v0.9: it is not released before v0.8, which waits for a
 phone to test its Android features. New work goes on the next version (v0.10). Two decisions are open with

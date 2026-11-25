@@ -3835,6 +3835,16 @@ before it evicts anything: upstream behaviour, a report for Linebender, not a Ru
 
 **Not driven:** a phone (speed and memory there), a real server's `Cache-Control`, the web.
 
+## `rux check` over a project with a component that fails in its caller, 2026-11-25
+
+Desktop, `target/debug/rux check <dir>`, probes in the session scratchpad (an app routing to one page that uses `components/owner_fields.rux`).
+
+| Case | Before | After |
+|---|---|---|
+| The component's own `let network` read in a `fn`, with the 2026-11-24 shadowing fix taken out | "no problems found", exit 0; `Document::load` failed with "`network` is what line 0 imports" | not rerun with the fix out; the rule below covers it (the caller's load is what found it) |
+| `prop amount = 0;` and `{{ amount.toFixed(2) }}`, the caller passing `amount="ten"` | "no problems found", exit 0, while `rux check app.rux` reported the error | `components/row.rux:1: error`, exit 1 (test `a_component_that_fails_only_inside_its_caller_is_reported`) |
+| A call to a store function that does not exist, `shop.nope()` in a component's `fn` | three errors and a warning on line 4 for one mistake ("declared nowhere" beside "does not export `nope`") | unchanged: noise around a real mistake, left for later |
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

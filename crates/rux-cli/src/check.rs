@@ -141,6 +141,7 @@ pub fn run(options: Options) -> i32 {
     let mut found = crate::native::declare_for(&files);
     let mut tables: Vec<(PathBuf, rux_runtime::TypeTable)> = Vec::new();
     let mut reached: Vec<PathBuf> = Vec::new();
+    let mut through_callers: Vec<Diagnostic> = Vec::new();
     for file in &files {
         // Whether anything in this project writes this file as a tag, which is
         // what decides whether a name it never declares is a mistake or a prop
@@ -154,13 +155,21 @@ pub fn run(options: Options) -> i32 {
             options.paths.iter().filter(|p| p.is_dir() && file.starts_with(p)).max_by_key(|p| p.components().count()).cloned(),
         );
         let checked = check_file(file);
-        // What a document says about a file that is read on its own anyway is
-        // left to that read: through its caller the same mistake is worded for
-        // a page, without the hint that a prop may be what is missing.
-        found.extend(checked.diagnostics.into_iter().filter(|d| {
-            same_file(&d.file, file)
-                || !files.iter().any(|f| same_file(f, &d.file) && collected.used.contains(&rux_runtime::same_file_key(f)))
-        }));
+        // What a document says about a component that is read on its own
+        // anyway waits for that read: through its caller the same mistake is
+        // worded for a page, without the hint that a prop may be what is
+        // missing. Held, not dropped: the caller links the component in a way
+        // its own read does not, and builds it with the caller's props, so
+        // some mistakes show only there.
+        for d in checked.diagnostics {
+            let read_alone = !same_file(&d.file, file)
+                && files.iter().any(|f| same_file(f, &d.file) && collected.used.contains(&rux_runtime::same_file_key(f)));
+            if read_alone {
+                through_callers.push(d);
+            } else {
+                found.push(d);
+            }
+        }
         if options.types {
             // Only the document's own script is checked for types, so what was
             // kept is all this file's.
@@ -174,6 +183,16 @@ pub fn run(options: Options) -> i32 {
     }
     rux_runtime::set_may_have_caller(false);
     rux_runtime::set_loose_root(None);
+    // A caller's finding the component's own read said nothing about at that
+    // line is the only report of it (a component that loads alone and fails
+    // inside its caller was once called clean).
+    let mut kept: Vec<Diagnostic> = Vec::new();
+    for d in through_callers {
+        if !found.iter().any(|f| same_file(&f.file, &d.file) && f.line == d.line) {
+            kept.push(d);
+        }
+    }
+    found.extend(kept);
     // The ones read on their own as a component: something uses them, and they
     // are not a script module (that has no template to be a component of).
     let components = files

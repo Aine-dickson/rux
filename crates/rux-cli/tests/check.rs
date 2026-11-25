@@ -194,6 +194,34 @@ fn a_components_prop_is_held_to_its_declared_type() {
     }
 }
 
+/// A component that loads on its own and fails inside its caller is reported:
+/// walking the project once called this clean while `rux check app.rux` and
+/// `rux run` failed. Its own read has only the prop's default; the caller's
+/// value is what breaks it.
+#[test]
+fn a_component_that_fails_only_inside_its_caller_is_reported() {
+    let dir = fixture(
+        "component-fails-in-caller",
+        &[
+            (
+                "app.rux",
+                r#"<template><screen><row amount="ten" /></screen></template>
+<script>
+  use components::row;
+</script>"#,
+            ),
+            (
+                "components/row.rux",
+                "<template><view><text>{{ amount.toFixed(2) }}</text></view></template>\n<script>\n  prop amount = 0;\n</script>",
+            ),
+        ],
+    );
+    let out = check(&[dir.to_str().unwrap()]);
+    assert_eq!(out.status.code(), Some(1), "{}", stdout(&out));
+    assert!(stdout(&out).contains("components/row.rux:1: error"), "{}", stdout(&out));
+    assert!(stdout(&out).contains("toFixed"), "{}", stdout(&out));
+}
+
 /// A store nothing imports is still a script with a scope, and is checked.
 #[test]
 fn a_store_nothing_imports_is_checked() {
