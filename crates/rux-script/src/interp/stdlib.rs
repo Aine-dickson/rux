@@ -13,7 +13,7 @@ use crate::{ElementAction, ElementHandle, Nav};
 /// Every function [`Interp::builtin`] answers, for a check that a call can
 /// resolve at all. A test holds the two together.
 pub const FUNCTIONS: &[&str] = &[
-    "print", "debug", "signal", "emit", "navigate", "replace", "back", "forward", "close", "pathFor", "blur",
+    "print", "debug", "signal", "emit", "retry", "navigate", "replace", "back", "forward", "close", "pathFor", "blur",
     crate::SUBMIT_FN, crate::ANSWER_FN, crate::MEDIA_FN, crate::MEDIA_ASK_FN, "query", "clearInterval", "setInterval", "cancel", crate::lower::SPREAD_FN, "__interval", "Ok", "Err", "Number", "parseInt",
     "parseFloat", "String", "isNaN", "intDiv", "toFloat", "keys", "values", "now",
     // JavaScript's namespaces, written as JavaScript writes them: see
@@ -336,6 +336,10 @@ impl Interp {
                 let name = text(&a.next().unwrap_or(V::None))?;
                 let payload = a.next().map(|p| p.to_value());
                 crate::EMISSIONS.with(|e| e.borrow_mut().push((name.to_string(), payload)));
+                V::None
+            }
+            ("retry", 0) => {
+                crate::RETRIES.with(|r| r.set(r.get() + 1));
                 V::None
             }
             ("navigate", 1) => {

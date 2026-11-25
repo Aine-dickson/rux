@@ -3190,7 +3190,7 @@ impl<'a> Checker<'a> {
                     _ => Type::Any,
                 }));
             }
-            ("print" | "debug" | "emit" | "navigate" | "replace" | "back" | "forward" | "close" | crate::ANSWER_FN | "blur"
+            ("print" | "debug" | "emit" | "retry" | "navigate" | "replace" | "back" | "forward" | "close" | crate::ANSWER_FN | "blur"
             | "clearInterval" | "cancel", _) => {
                 self.infer_all(args);
                 return Type::Null;

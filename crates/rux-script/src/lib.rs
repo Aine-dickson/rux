@@ -1217,6 +1217,66 @@ pub fn without_effects<T>(f: impl FnOnce() -> T) -> T {
     out
 }
 
+thread_local! {
+    /// How many failures there have been, for a caller with no frame of its
+    /// own (a patch, a handler's dispatch) to tell "this run failed" by a
+    /// number that moved.
+    static FAULTS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    /// The latest failure, as the `Error` a `catch e` would bind.
+    static LAST_FAULT: RefCell<Option<Value>> = const { RefCell::new(None) };
+    /// One slot per `<boundary>` being built, innermost last: the first failure
+    /// inside it.
+    static BOUNDARY_FRAMES: RefCell<Vec<Option<Value>>> = const { RefCell::new(Vec::new()) };
+    /// `retry()` calls since they were last taken.
+    static RETRIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Start a frame for the failures of what is built next: a `<boundary>`'s
+/// children. Paired with [`pop_boundary`].
+pub fn push_boundary() {
+    BOUNDARY_FRAMES.with(|f| f.borrow_mut().push(None));
+}
+
+/// End the innermost frame and hand back the first failure inside it, as the
+/// `Error` a `catch e` would bind: `{ message, kind, ...fields }`.
+pub fn pop_boundary() -> Option<Value> {
+    BOUNDARY_FRAMES.with(|f| f.borrow_mut().pop()).flatten()
+}
+
+/// How many failures there have been. Equal before and after a run means it
+/// did not fail.
+pub fn faults() -> u64 {
+    FAULTS.with(std::cell::Cell::get)
+}
+
+/// The latest failure, as the `Error` a `catch e` would bind.
+pub fn last_fault() -> Option<Value> {
+    LAST_FAULT.with(|l| l.borrow().clone())
+}
+
+/// How many times `retry()` ran since the last call; the runtime reads it
+/// after a handler and rebuilds the boundary the handler sat in.
+pub fn take_retries() -> u64 {
+    RETRIES.with(|r| r.replace(0))
+}
+
+/// What a failure is to a boundary: the `Error` `catch e` would bind for it.
+fn fault_value(f: &interp::Fault) -> Value {
+    interp::Interp::caught_pub(f).to_value()
+}
+
+/// Keep a failure for the boundary being built (the innermost only: one
+/// inside another's fallback belongs to the next out) and count it.
+fn note_fault(error: Value) {
+    FAULTS.with(|c| c.set(c.get() + 1));
+    BOUNDARY_FRAMES.with(|f| {
+        if let Some(top) = f.borrow_mut().last_mut() {
+            top.get_or_insert_with(|| error.clone());
+        }
+    });
+    LAST_FAULT.with(|l| *l.borrow_mut() = Some(error));
+}
+
 fn raise(message: String, level: rux_reactive::Level) {
     RAISED.with(|r| r.set(r.get() + 1));
     let at = AT_LINE.with(|l| l.get());
@@ -1872,11 +1932,13 @@ impl Engine {
     pub fn init_component(&mut self, key: &str, script: &str) -> Vec<(String, Value)> {
         match self.ir.run_instance_init(script, key) {
             Err(e) => {
+                note_fault(fault_value(&interp::Fault::new(explain(&e.message))));
                 warn(format!("a component's script failed to compile: {}", explain(&e.message)));
                 vec![(SCOPE_LOCAL.to_string(), Value::Text(key.to_string()))]
             }
             Ok((result, top)) => {
                 if let Err(f) = result {
+                    note_fault(fault_value(&f));
                     warn(format!("a component's script failed to run: {}", explain(&f.message)));
                 }
                 top.into_iter().map(|(n, v)| (n, v.to_value())).collect()
@@ -1972,6 +2034,7 @@ impl Engine {
         let (out, after) = match self.ir.run(src, locals, true) {
             Err(e) => {
                 let message = format!("failed to compile: {}", explain(&e.message));
+                note_fault(fault_value(&interp::Fault::new(message.clone())));
                 self.report(src, &message, &message, said);
                 (None, locals.iter().map(|(_, v)| v.clone()).collect())
             }
@@ -1987,6 +2050,7 @@ impl Engine {
                     Ok(v) => (Some(v), after),
                     Err(f) => {
                         if !is_owed_prop(&f.message) {
+                            note_fault(fault_value(&f));
                             self.report(src, &format!("failed: {}", explain(&f.message)), &f.message, said);
                         }
                         (None, after)
@@ -2583,6 +2647,7 @@ impl Engine {
         let (ran, changed) = self.tracking(|e| match e.ir.call_value_pub(f, Vec::new()) {
             Ok(_) => true,
             Err(interp::Flow::Fault(f)) => {
+                note_fault(fault_value(&f));
                 warn(format!("a callback failed: {}", explain(&f.message)));
                 false
             }
@@ -2697,11 +2762,13 @@ impl Engine {
     pub fn init_scope(&mut self, script: &str) -> Vec<(String, Value)> {
         match self.ir.run(script, &[], false) {
             Err(e) => {
+                note_fault(fault_value(&interp::Fault::new(explain(&e.message))));
                 warn(format!("a component's script failed to compile: {}", explain(&e.message)));
                 Vec::new()
             }
             Ok((result, _, top)) => {
                 if let Err(f) = result {
+                    note_fault(fault_value(&f));
                     warn(format!("a component's script failed to run: {}", explain(&f.message)));
                 }
                 top.into_iter().map(|(n, v)| (n, v.to_value())).collect()
