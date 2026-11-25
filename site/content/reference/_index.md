@@ -1439,9 +1439,9 @@ the order and the reasons.
   keyboard physically rising) were driven on the Android emulator or under
   browser touch emulation, not on hardware. `rux doctor` reports the toolchain,
   not the attached device.
-- **Error boundaries.** A failing expression is reported and the document
-  carries on; a subtree cannot catch one and show a fallback.
 - **A capability model for native code.** A native module has full trust.
+  The sandbox for untrusted documents is built; what is left of it is listed
+  in the roadmap, v0.10 item 2.
 - **Dropping files from the system.** A file dragged onto the window from the
   desktop or a file manager is not received; drag and drop between elements is
   built (see `07-script`, "Drag and drop").

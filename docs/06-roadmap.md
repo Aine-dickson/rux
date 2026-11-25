@@ -130,9 +130,26 @@ images. Open:
    app declares what it asks for in `rux.toml`'s `[permissions]`, with a
    reason for each, the Android manifest is written from it, and script asks
    at run time with `permissions` (and the app's Rust with `rux::permissions`).
-   Nothing is inferred. What is not built is the sandbox half: the default an
-   unmarked file gets is a 1.0 question, because it is the promise being
-   frozen.
+   Nothing is inferred. The sandbox half is built (2026-11-25): a file shipped
+   in the app has full trust, anything opened from elsewhere runs under a
+   `Sandbox` its opener hands over, with step, memory, state, size and nesting
+   limits and no native module unless granted by name (`07-script`,
+   "Security"). The default an unmarked file gets, trusted, is the promise
+   1.0 freezes. What is not built:
+   - **Fetching and over-the-air delivery** of documents, and the API an app
+     uses to open one sandboxed. Only the playground, `rux run --sandbox` and
+     Rust calling `Document::from_source_sandboxed` open one today.
+   - **Per-document terms.** The row limit, `images` and the grants follow the
+     document loaded last in a process.
+   - **Grants narrower than a module** (one host for `links.open`), and
+     object-capability grants, where a script is handed only the objects it
+     may use instead of names gated by a list.
+   - **A limit on every element**, not just rows, and on timers and tasks.
+   - **A nesting limit for a trusted `JSON.parse`**: a deeply nested text from
+     the network can overflow the stack.
+   - **Markup that reads an ungranted `window`** fails as "not defined", not
+     with the sentence a script gets.
+   - **Native code hardened against the model** is v1.0 item 3.
 3. **Whatever else "the outside world" turns out to mean** once the above is
    in use. File dialogs other than the file picker are not built.
 

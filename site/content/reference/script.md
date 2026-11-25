@@ -3096,15 +3096,52 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
 
 ## Security
 
-- **Compiled app code has full trust**, as any compiled application does.
-- **The interpreter is the sandbox** for anything untrusted: the playground and
-  documents fetched at run time. A script that never finishes is stopped at a
-  step budget, in the interpreter and in compiled code alike.
+- **Compiled app code has full trust**, as any compiled application does, and
+  so does every file shipped in the app. Nothing marks a file as trusted:
+  trust is what an app's own files have when nobody says otherwise.
+- **A document that is not the app's own is sandboxed**, and whoever opens it
+  says so. A file cannot mark itself trusted. The opener is the playground,
+  `rux run --sandbox`, `rux check --sandbox`, or Rust calling
+  `Document::from_source_sandboxed`, `Document::load_sandboxed` or
+  `rux_runtime::set_default_sandbox`. The interpreter is the sandbox: a
+  sandboxed document is always interpreted, since compiled code does not check
+  what it spends.
+- **What a sandbox limits.** Every limit is checked before the work it limits,
+  and a document that passes one is stopped with a message that names the
+  limit. In a `<boundary>` the message is `error.message`.
+
+  | Limit | Default | What happens past it |
+  |---|---|---|
+  | `steps_per_run` | 5,000,000 | the run is stopped ("stopped after N steps") |
+  | `max_text_bytes` | 16 MiB | the text is not built |
+  | `max_items` | 1,000,000 | the list or map does not grow; `JSON.parse` fails |
+  | `run_alloc_bytes` | 64 MiB | what one run newly builds, summed; the run is stopped |
+  | `state_bytes` | 64 MiB | the run's changes are undone and reported |
+  | `max_nodes` | 50,000 | rows of an `r-for` past it are left out, with a warning |
+  | `max_source_bytes` | 1 MiB | a file is refused before it is parsed |
+  | `max_nesting` | 64 | brackets, blocks, elements, prefix operators and JSON nest no deeper |
+
+  A run that only copies (`s += "x"` in a loop) is charged for what it adds,
+  not for the copy, but a big copy costs steps.
+- **No native module unless granted.** A sandbox grants by the name script
+  uses: `clipboard`, `settings`, `window`, `permissions`, `app`,
+  `notifications`, `background`, `location`, `links`, `secrets`, `network`,
+  `files` (the file dialogs and sounds), `images` (an `<image>` from the
+  network), and `native::shop` for an app's own module. A document that uses
+  one it was not granted is refused when it loads, at the line, and every
+  native call asks again when it runs. `window` and `app` are in scope only
+  when granted. The playground grants every built-in and no app module.
+  `rux run --sandbox=clipboard,files` grants those two.
 - **Native code is reached only through an import.** The playground and
   `rux check` have no native code, and a resource handle cannot be forged from
   script.
-- **Not built:** a native module declaring the platform permissions it needs,
-  and an Android manifest generated from those declarations.
+- **What it is not.** A sandbox is as strong as the Rust interpreter under it:
+  it is no defence against a memory-safety bug there or against timing side
+  channels. It is per process, not per document: the terms of the document
+  loaded last apply to the row limit and `images`. The row limit counts rows,
+  not every element. A grant is for a whole module, not part of one.
+- **Platform permissions** are the app's, not the document's: `rux.toml`'s
+  `[permissions]`, with a reason for each, and the manifest is written from it.
 
 ## If you know JavaScript
 

@@ -133,7 +133,7 @@ pub fn grant_name(module: &str) -> String {
 pub fn not_granted(name: &str) -> String {
     format!(
         "`{name}` is not available in this document: whoever opens it has to grant it \
-         (`.grant(\"{name}\")`)"
+         (`--sandbox={name}` on the command line, `.grant(\"{name}\")` in Rust)"
     )
 }
 

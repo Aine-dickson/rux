@@ -3447,6 +3447,34 @@ build, and `stray_retry` (`rux-cli/src/permission_check.rs`) warns on a
 `retry()` in a template outside every `<fallback>`. Reference: `07-script`,
 "Error boundaries".
 
+**The sandbox.** A document that is not the app's own is opened under a
+`rux_script::Sandbox` (`sandbox.rs`): `Limits` and the set of granted module
+names. `Builder::sandbox` takes it; with none a document is trusted. At build
+it refuses a file past `max_source_bytes` or `max_nesting`
+(`rux_syntax::nests_deeper_than`, read before the lexer, skipping strings and
+comments), sets `max_ops` from `steps_per_run`, and leaves compiled code out.
+`native::builtin_aliases` takes the sandbox: a built-in the code uses and was
+not granted is an error at its first use, and `window` and `app`, normally
+always in scope, are left out unless granted. Explicit imports are checked at
+their line. `Interp::native` asks again for every native call, the one place
+all of them pass. Memory is checked before the work: `Interp::grow_text` and
+`grow_items` (no-ops without a sandbox) refuse past the text and item limits
+and charge what a run builds to `run_alloc_bytes` (reset where the step count
+resets); they sit in `binary`, a template, `+=` on a list and `method`'s
+`guard_method` (`push`, `insert`, `unshift`, `concat`, `repeat`, the pads,
+`replace`, `replaceAll`, map `set`), and a copy of a kilobyte costs a step.
+`JSON.parse` takes a depth and an entry limit. After the outermost tracked run
+`Interp::end_track` measures the globals it changed (`V::estimate_bytes`,
+shared values once, an explicit stack) and, past `state_bytes`, puts them
+back and reports it. In `rux-runtime`, `Document::from_source_sandboxed`,
+`load_sandboxed` and `set_default_sandbox` set a thread-local the build reads;
+each file is refused before parsing when it is too big or its elements nest too
+deep (`rux_parser::element_nesting_exceeds`); `rux_style::set_row_limit` cuts
+the rows an `r-for` expands per whole build; `image_bytes` refuses a network
+image without `images`. The playground (`start_web`, `set_web_source`,
+`diagnose_web_source`) sets `Sandbox::playground()`. Reference: `07-script`,
+"Security".
+
 **A component has its own state.** Its `<script>`'s top-level `let`s run **once
 per instance**, so three `<counter>` elements are three counts:
 ```rux
@@ -4012,9 +4040,9 @@ the order and the reasons.
   keyboard physically rising) were driven on the Android emulator or under
   browser touch emulation, not on hardware. `rux doctor` reports the toolchain,
   not the attached device.
-- **Error boundaries.** A failing expression is reported and the document
-  carries on; a subtree cannot catch one and show a fallback.
 - **A capability model for native code.** A native module has full trust.
+  The sandbox for untrusted documents is built; what is left of it is listed
+  in the roadmap, v0.10 item 2.
 - **Dropping files from the system.** A file dragged onto the window from the
   desktop or a file manager is not received; drag and drop between elements is
   built (see `07-script`, "Drag and drop").

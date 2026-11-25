@@ -3859,6 +3859,23 @@ Tests: `crates/rux-script/tests/boundary_capture.rs`, `crates/rux-runtime/tests/
 
 **Not driven:** Android and the web; a failure from a real network call; a boundary inside an `r-for` in a window; an `unmounted` hook beyond its test; the overlay's own panel for a caught failure (the failure reaches stderr and `diagnostics()`, and the screenshots show no panel).
 
+## The sandbox, 2026-11-25
+
+Desktop window, debug `rux` built from this tree, `--preview phone`, probe `C:/Users/USER/Mobile/rux-harness/sandbox` (`shoot.ps1 -Doc -Flag -Name -First`; a page taps its own button from `mounted`, since injected clicks do not reach the window).
+
+| Case | Result |
+|---|---|
+| `rux run copy.rux --sandbox`, the page calls `clipboard.writeText` | no window; stderr: "failed to load copy.rux: `clipboard` is not available in this document: whoever opens it has to grant it (`--sandbox=clipboard` on the command line, `.grant("clipboard")` in Rust)" |
+| `rux run copy.rux --sandbox=clipboard`, the page taps Copy | the page shows "copied" |
+| `rux run copy.rux`, no flag | the page shows "copied", as before |
+| `--sandbox`, a handler in a `<boundary>` doubles a string in a loop | the fallback shows "Stopped: text of 33554432 bytes is longer than a sandboxed document may build (at most 16777216)", with Try again, and the footer outside stays; the text was refused before it was built |
+| `--sandbox`, a handler in a `<boundary>` loops for ever | the fallback shows "Stopped: stopped after 5000000 steps without finishing; a loop that never ends, or work too big for one handler" |
+| `rux run copy.rux --sandbox=clipbord` | exit 2, "`--sandbox` cannot grant `clipbord`; the names are clipboard, settings, ...", no window |
+
+Tests: `crates/rux-script/tests/sandbox.rs` (limits, grants, memory, state), `crates/rux-runtime/tests/sandbox.rs` and `default_sandbox.rs` (documents, rows, image grant, the process default), `crates/rux-cli/tests/check.rs` (`--sandbox`), and one each in `rux-syntax` and `rux-parser` for the nesting scans. Benchmark of the trusted path before and after the memory checks: the same within noise (`interp_cost`, release, three runs each).
+
+**Not driven:** the playground in a browser (its build is checked with `cargo check -p rux-web --target wasm32-unknown-unknown`, and the grants are tested); Android; a sandboxed document opened from the network (not built); `rux check --sandbox` over a whole project beyond its test; the row limit and the state limit in a window (tested through `Document`).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
