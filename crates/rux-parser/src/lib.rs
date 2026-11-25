@@ -434,6 +434,68 @@ impl fmt::Display for ParseError {
 
 impl std::error::Error for ParseError {}
 
+/// Where the elements of `src` first nest deeper than `max`, or `None`.
+///
+/// Read before the file is parsed, since parsing recurses on nesting and a
+/// sandbox must refuse a hostile document before it can overflow Rust's
+/// stack. An opening tag adds a level and a closing one takes it away; a tag
+/// ending in `/>` neither. The bodies of `<script>` and `<style>`, comments
+/// and quoted attribute values are skipped, so a `<` in a comparison or a `>`
+/// in a handler counts for nothing.
+pub fn element_nesting_exceeds(src: &str, max: usize) -> Option<usize> {
+    let b = src.as_bytes();
+    let mut depth = 0usize;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] != b'<' {
+            i += 1;
+            continue;
+        }
+        if src[i..].starts_with("<!--") {
+            i = src[i..].find("-->").map_or(b.len(), |end| i + end + 3);
+            continue;
+        }
+        match b.get(i + 1) {
+            Some(b'/') => {
+                depth = depth.saturating_sub(1);
+                i = src[i..].find('>').map_or(b.len(), |end| i + end + 1);
+            }
+            Some(c) if c.is_ascii_alphabetic() => {
+                let start = i;
+                let name_end = (i + 1..b.len()).find(|&k| !(b[k].is_ascii_alphanumeric() || b[k] == b'-')).unwrap_or(b.len());
+                let name = &src[i + 1..name_end];
+                // To the `>` that ends the tag, past any quoted value.
+                let mut k = name_end;
+                let mut quote = None;
+                while k < b.len() {
+                    match (quote, b[k]) {
+                        (None, b'"' | b'\'') => quote = Some(b[k]),
+                        (Some(q), c) if c == q => quote = None,
+                        (None, b'>') => break,
+                        _ => {}
+                    }
+                    k += 1;
+                }
+                let self_closing = k > 0 && b.get(k - 1) == Some(&b'/');
+                i = (k + 1).min(b.len());
+                if matches!(name, "script" | "style") && !self_closing {
+                    let close = format!("</{name}");
+                    i = src[i..].find(&close).map_or(b.len(), |end| i + end);
+                    continue;
+                }
+                if !self_closing {
+                    depth += 1;
+                    if depth > max {
+                        return Some(start);
+                    }
+                }
+            }
+            _ => i += 1,
+        }
+    }
+    None
+}
+
 /// Parse a full `.rux` source into an [`Sfc`].
 pub fn parse_sfc(src: &str) -> Result<Sfc, ParseError> {
     // A file holding only a `<script>`, or only script with no tags at all,
@@ -1200,6 +1262,20 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Elements nest by opening and closing tags; what is inside a quoted
+    /// value, a comment, a `<script>` or a `<style>` is not markup.
+    #[test]
+    fn element_nesting_counts_tags_and_nothing_else() {
+        assert_eq!(element_nesting_exceeds("<a><b><c/></b></a>", 2), None);
+        assert_eq!(element_nesting_exceeds("<a><b><c></c></b></a>", 2), Some(6));
+        assert_eq!(element_nesting_exceeds("<a @tap=\"x > 1\"><b/></a>", 1), None);
+        assert_eq!(element_nesting_exceeds("<!-- <a><a><a> --><a/>", 0), None);
+        assert_eq!(element_nesting_exceeds("<script>if (a < b) { <a><a><a> }</script><a/>", 0), None);
+        assert_eq!(element_nesting_exceeds("<style>a<b{}</style>", 0), None);
+        // A close with nothing open does not go below nothing.
+        assert_eq!(element_nesting_exceeds("</a></a><b><c></c></b>", 2), None);
+    }
 
     /// `<input type="text">` is how anyone writes a text field, and Rux has no
     /// `</input>` for it to be missing. Until void tags reached the parser this

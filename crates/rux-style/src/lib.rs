@@ -3155,6 +3155,7 @@ pub fn build_styled_tree_stateful(
     state: &InteractionState,
     env: Environment,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
+    begin_rows();
     // The document's own `<style>` knows where it is in its file, so its
     // warnings get a line. So does a component's, read in its own file (see
     // [`parse_component_rules`]): until 2026-10-28 it was read in the
@@ -11648,7 +11649,7 @@ fn build_children_from(
                 structural_deps.extend(deps);
                 // Taken, not copied: the value is this build's own.
                 let items = value.and_then(|v| match v {
-                    Value::List(items) => Some(items),
+                    Value::List(items) => Some(take_rows(items)),
                     _ => None,
                 });
                 if let Some(items) = items {
@@ -11979,9 +11980,43 @@ fn count_rendered(
     n
 }
 
+// ── Capping list rows ───────────────────────────────────────────────────────
+
+/// Let a build expand at most `limit` rows of `r-for`, or any number for `None`.
+/// A sandboxed document sets it when it loads; every load sets it again.
+pub fn set_row_limit(limit: Option<usize>) {
+    ROW_LIMIT.with(|l| l.set(limit));
+    ROWS_LEFT.with(|l| l.set(limit));
+}
+
+/// A whole build is starting: its rows are counted from the limit again.
+fn begin_rows() {
+    ROWS_LEFT.with(|l| l.set(ROW_LIMIT.with(std::cell::Cell::get)));
+}
+
+/// The rows an `r-for` may build of `items`: all of them, or what is left
+/// of the limit, saying so when some were left out.
+fn take_rows(mut items: std::rc::Rc<[Value]>) -> std::rc::Rc<[Value]> {
+    let Some(left) = ROWS_LEFT.with(std::cell::Cell::get) else { return items };
+    if items.len() > left {
+        warn(format!(
+            "a list of {} rows was cut to {left}: a sandboxed document may build at most {} elements",
+            items.len(),
+            ROW_LIMIT.with(std::cell::Cell::get).unwrap_or(0)
+        ));
+        items = items[..left].into();
+    }
+    ROWS_LEFT.with(|l| l.set(Some(left - items.len())));
+    items
+}
+
 // ── Reusing list rows ───────────────────────────────────────────────────────
 
 thread_local! {
+    /// The most rows a whole build may expand, and how many it may still, or `None`:
+    /// a sandboxed document's `max_nodes`. Every row is at least one element.
+    static ROW_LIMIT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
+    static ROWS_LEFT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
     /// Bumped by everything a build does that a reused row would skip: an
     /// instance expanded, a swap consulted, a slot or an outlet filled. A row
     /// whose build moved it is never kept.
@@ -12145,6 +12180,7 @@ pub fn build_styled_tree_cached(
     env: Environment,
     cache: &mut RowCache,
 ) -> Result<(LayoutNode, BindingRegistry), String> {
+    begin_rows();
     if cache.env != Some(env) {
         cache.rows.clear();
         cache.env = Some(env);

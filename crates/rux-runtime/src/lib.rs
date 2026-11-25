@@ -101,6 +101,52 @@ enum Wake<'a> {
     Own(&'a str, &'a HashSet<String>),
 }
 
+/// What a document opened from somewhere that is not the app's own is run
+/// under: see [`Sandbox`].
+pub use rux_script::{Limits, Sandbox};
+
+thread_local! {
+    /// The terms the document loaded last runs on, `None` for a trusted one.
+    /// Every load sets it, so it is the latest document's: a process that
+    /// holds a sandboxed document beside a trusted one is not what this is
+    /// for (the playground and `rux run --sandbox` hold one).
+    static CURRENT_SANDBOX: std::cell::RefCell<Option<Sandbox>> = const { std::cell::RefCell::new(None) };
+}
+
+/// A document is about to load, under `sandbox` or with none: what the rest of
+/// the load and the builds after it consult.
+fn enter_trust(sandbox: Option<Sandbox>) {
+    rux_style::set_row_limit(sandbox.as_ref().map(|s| s.limits.max_nodes));
+    CURRENT_SANDBOX.with(|s| *s.borrow_mut() = sandbox);
+}
+
+/// Whether the document loaded last may fetch an `<image>` from the network:
+/// a trusted one always may, a sandboxed one when it was granted `images`.
+pub fn remote_images_allowed() -> bool {
+    CURRENT_SANDBOX.with(|s| s.borrow().as_ref().is_none_or(|s| s.grants("images")))
+}
+
+/// Why `src`, one file of a sandboxed document, may not be parsed: too big, or
+/// its elements nest too deep. Read before the parser sees it, since parsing
+/// recurses on nesting. `None` when the document is trusted or `src` is fine.
+fn refuse_markup(src: &str) -> Option<String> {
+    CURRENT_SANDBOX.with(|s| {
+        let s = s.borrow();
+        let s = s.as_ref()?;
+        let limits = &s.limits;
+        if src.len() > limits.max_source_bytes {
+            return Some(format!(
+                "this file is {} bytes; a sandboxed document may be at most {}",
+                src.len(),
+                limits.max_source_bytes
+            ));
+        }
+        rux_parser::element_nesting_exceeds(src, limits.max_nesting).map(|_| {
+            format!("elements are nested more than {} deep, the most a sandboxed document may have", limits.max_nesting)
+        })
+    })
+}
+
 /// A loaded `.rux` document: parsed source, imported components (by tag), the
 /// script engine, and the current tree.
 pub struct Document {
@@ -2347,6 +2393,9 @@ fn image_bytes(src: &str) -> std::io::Result<Vec<u8>> {
     // From the network: the first ask starts it, and until it comes this is
     // `WouldBlock`, which the callers take as "not yet" rather than missing.
     if remote::is_remote(src) {
+        if !remote_images_allowed() {
+            return Err(std::io::Error::other("images from the network are not available in this document: whoever opens it has to grant `images`"));
+        }
         return match remote::bytes(src) {
             Some(Ok(bytes)) => Ok(bytes.to_vec()),
             Some(Err(why)) => Err(std::io::Error::other(why)),
@@ -2664,6 +2713,15 @@ impl Document {
     /// Load a document, keeping the failure's position so a checker can point at
     /// it. [`Document::load`] is this with the structure discarded.
     pub fn load_checked(path: impl AsRef<Path>) -> Result<Self, LoadError> {
+        enter_trust(None);
+        Self::load_with(path.as_ref(), None)
+    }
+
+    /// [`Document::load_checked`] for a document that is not the app's own:
+    /// run under `sandbox`, which says what it may spend and which native
+    /// modules it may reach. Its components and modules are under it too.
+    pub fn load_sandboxed(path: impl AsRef<Path>, sandbox: Sandbox) -> Result<Self, LoadError> {
+        enter_trust(Some(sandbox));
         Self::load_with(path.as_ref(), None)
     }
 
@@ -2676,6 +2734,7 @@ impl Document {
     /// the project root, so `use stores::project;` is the app's store, which
     /// every window shares ([`reset_shared_stores`]).
     pub fn load_window(path: impl AsRef<Path>, props: &[(String, Value)]) -> Result<Self, LoadError> {
+        enter_trust(None);
         Self::load_with(path.as_ref(), Some(props))
     }
 
@@ -2688,6 +2747,9 @@ impl Document {
         rux_layout::set_image_reader(std::rc::Rc::new(|src: &str| image_bytes(src).ok()));
         let src = source::read_text(path)
             .map_err(|e| LoadError::plain(format!("reading {}: {e}", path.display())))?;
+        if let Some(why) = refuse_markup(&src) {
+            return Err(LoadError::plain(format!("{}: {why}", path.display())));
+        }
         let mut sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(path)))?;
 
         // Resolve `use module::component;` imports relative to this file.
@@ -2992,6 +3054,9 @@ impl Document {
                     let src = source::read_text(&comp_path).map_err(|e| {
                         LoadError::at_line(format!("reading {}: {e}", comp_path.display()), at, &job.owner_path)
                     })?;
+                    if let Some(why) = refuse_markup(&src) {
+                        return Err(LoadError::at_line(format!("{}: {why}", comp_path.display()), at, &job.owner_path));
+                    }
                     let sfc = rux_parser::parse_sfc(&src).map_err(|e| LoadError::parse(e, Some(&comp_path)))?;
                     if sfc.module {
                         let (script, nested) = extract_imports(&sfc.script);
@@ -3396,6 +3461,22 @@ impl Document {
     /// with no line was all it could ever show, and "something is wrong
     /// somewhere" is not much of an editor.
     pub fn from_source_checked(src: &str) -> Result<Self, LoadError> {
+        enter_trust(None);
+        Self::from_source_inside(src)
+    }
+
+    /// [`Document::from_source_checked`] for a document that is not the app's
+    /// own: the playground's source, or anything fetched. It runs under
+    /// `sandbox`: its limits, and the native modules it was granted.
+    pub fn from_source_sandboxed(src: &str, sandbox: Sandbox) -> Result<Self, LoadError> {
+        enter_trust(Some(sandbox));
+        Self::from_source_inside(src)
+    }
+
+    fn from_source_inside(src: &str) -> Result<Self, LoadError> {
+        if let Some(why) = refuse_markup(src) {
+            return Err(LoadError::plain(why));
+        }
         forget_image_sizes();
         // The painter's reader, as `load_checked` installs it: a picked
         // file's URL is all an `<image>` here can show beyond what is
@@ -7923,6 +8004,9 @@ fn build_engine_linked(
     }
     builder.aliases(aliases);
     builder.types(types);
+    if let Some(sandbox) = CURRENT_SANDBOX.with(|s| s.borrow().clone()) {
+        builder.sandbox(sandbox);
+    }
 
     let mut engine = builder.build(script)?;
     // The route has to be in scope before the first build, because a `<router>`
