@@ -111,12 +111,11 @@ images. Open:
    longer a typo.
    **Error boundaries, future improvements.** Built and driven on the desktop;
    these are known, named and not yet done. Do not lose them.
-   - **EB-1. No rebuild per failing patch.** A binding that fails while it is
-     patched, with any boundary open, rebuilds the whole document so the build
-     can say which boundary it belongs to; a failing binding outside every
-     boundary therefore rebuilds on each patch of its signals. A map of which
-     boundary covers which part of the tree would attribute it without a
-     rebuild.
+   - **EB-1. Done 2026-11-28.** Each patchable binding records the boundary it
+     was built inside, so a failing patch fails that one and a failing binding
+     outside every boundary no longer rebuilds the document. A failed boundary
+     still takes one whole build to show its fallback; building only the failed
+     boundary's subtree is not done.
    - **EB-2. Done 2026-11-28.** `:last-child` and the rest that count from the
      end count a failed boundary as its fallback, and the children of a
      boundary or a `<slot>` count their place among the siblings before them
@@ -125,10 +124,13 @@ images. Open:
      of a component fails its boundary; a test now says so.
    - **EB-4. Done 2026-11-28.** A timer or an `async fn` started by the run
      that fails its own component away is not kept.
-   - **EB-5. `error` fields are unchecked.** `rux check` cannot tell a typo
-     such as `error.mesage` from a field a native error adds, so it reports
-     neither until the fallback shows. Types for a native error's fields
-     (from `rux::IntoError`) would let it report the typo.
+   - **EB-5. Done 2026-11-28, typos only (owner's choice).** `rux check` reads
+     `error.name` in each `<fallback>` and errors when `name` is no field any
+     error in the app has (`message`, `kind`, the scan's native error types,
+     `.with("name", ..)` in the app's Rust, `throw { .. }` records) and is a
+     near miss of one that is. Another unknown field is not reported, since
+     the Rust can add fields the text scan cannot see. Not done: typing
+     `error` per boundary (which native call failed is unknown at the fallback).
    - **EB-6. Done 2026-11-28.** An `async fn` fails the boundary its handler
      was written in, also after an `await`, a page's included.
    - **EB-7. Not driven** on Android or the web, or with a real network call.
@@ -155,8 +157,13 @@ images. Open:
      opens one on Android (`rux run --device` takes no `--sandbox`). Held by
      the owner (2026-11-27); the first step offered was a Rust and command-line
      way in, with no new script or markup.
-   - **Grants narrower than a module** (one host for `links.open`), and
-     object-capability grants, where a script is handed only the objects it
+   - **Grants narrower than a module: done 2026-11-28** (a function:
+     `links.open`, `native::shop.search`; a host for `links.open` and
+     `images`: `links.open@example.com`); `rux check --sandbox` reports a
+     function or a written-out address the grant leaves out (`Context::sandbox`,
+     `Checker::check_granted`). Not built: other argument rules (a settings
+     key, a secret name); a computed address or a resource method reported
+     before it runs; and object-capability grants, where a script is handed only the objects it
      may use instead of names gated by a list.
    - **A limit on every element**, not just rows, and on timers and tasks.
    - **Native code hardened against the model** is v1.0 item 3.

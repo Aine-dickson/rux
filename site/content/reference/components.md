@@ -179,9 +179,14 @@ instances they made and their pending mounts, and builds the fallback. The
 `retry_boundary`). A component instance records the boundary it was expanded
 in (`Instance::boundary`); a failure of its handler, effect, timer or `async fn`
 (counted by `rux_script::faults`) fails that boundary and the document
-rebuilds (`Document::attribute_fault`, `settle_boundaries`). A binding that
-fails while patched, with a boundary open, rebuilds too, and the build says
-which boundary. An `async fn` remembers the boundary its handler was written
+rebuilds (`Document::attribute_fault`, `settle_boundaries`). Every patchable binding
+(`TextBinding`, `ValueBinding`, `ShowBinding`, `AttrBinding`) and every
+`StructuralParent` records the boundary it was built inside (`boundary`);
+`patch_values` and `reconcile_lists` run each in its own failure frame and
+fail that boundary (`Engine::boundary_open`, `Document::fail_caught`), so
+only a binding that really failed one triggers the rebuild, and a failing
+binding outside every boundary only reports (`Document::whole_builds` counts
+whole builds for the tests). An `async fn` remembers the boundary its handler was written
 in (`Document::task_catchers`, read back when the task goes on), so a failure
 after an `await` reaches it, a page's included. A run that fails its own
 instance away leaves nothing behind: `apply_timer_requests` and `own_tasks`
@@ -210,8 +215,20 @@ always in scope, are left out unless granted. Markup reads them where the
 scan cannot see, so the build also records each ungranted built-in name in
 the thread-local `WITHHELD`, and `rux_phrasing` turns a "not defined" (or a
 missing `pickFile`) for one into `sandbox::not_granted`. Explicit imports are checked at
-their line. `Interp::native` asks again for every native call, the one place
-all of them pass. Memory is checked before the work: `Interp::grow_text` and
+their line (`Sandbox::allows`: anything of the module granted). A grant is a
+string, `module`, `module.function` or, for `links.open` and `images`,
+`...@host` (`Grant`, `check_grant`, `host_of`, `url_on` in `sandbox.rs`).
+`Interp::native` asks again for every native call, the one place all of them
+pass (sync, a method found by value, an awaited call), with the call's first
+argument: `Sandbox::allows_call`. An image is asked by its URL
+(`rux_runtime::remote_image_allowed`, `Sandbox::allows_image`). A host grant
+matches the host or a subdomain of an `http(s)` address read as a browser does
+(userinfo, port, case, a trailing dot; a backslash, a space, an IP literal or
+another scheme never matches). `rux check` asks the same before the run:
+`Engine::linked_context` copies the document's sandbox into
+`check::Context::sandbox`, and `Checker::check_granted` calls
+`Sandbox::could_call` for each linked native call, with the first argument
+when it is written out (a computed one is left to the run). Memory is checked before the work: `Interp::grow_text` and
 `grow_items` (no-ops without a sandbox) refuse past the text and item limits
 and charge what a run builds to `run_alloc_bytes` (reset where the step count
 resets); they sit in `binary`, a template, `+=` on a list and `method`'s

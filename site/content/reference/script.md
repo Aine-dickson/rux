@@ -1170,8 +1170,13 @@ is not a typo, and the person looking at it should see more than a hole.
 - **`rux check` reads a fallback before it shows.** It builds each fallback
   once, with an error that has a `message` and a `kind`, and throws it away:
   an undefined name or a bad call in it is a finding. A missing field of
-  `error` is not one, since a native error carries fields the stand-in lacks:
-  `error.mesage` is found when it fails, not before. `rux check` also warns on
+  `error` is not one, since a native error carries fields the stand-in lacks.
+  A typo is found by name instead: `error.mesage` is an error when `mesage` is
+  no field any error in the app has (`message`, `kind`, what the app's Rust
+  adds through `rux::IntoError` and `.with("name", ..)`, what a `throw { .. }`
+  record has) and is a letter or so from one that is. A field nothing is seen
+  to add (`error.details` with no `details` anywhere) is not reported, since
+  the app's Rust may add it in a way the check cannot read. `rux check` also warns on
   a `retry()` written in a template outside every `<fallback>`, and says
   nothing in a file that declares a `retry` of its own.
 
@@ -3132,7 +3137,15 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   uses: `clipboard`, `settings`, `window`, `permissions`, `app`,
   `notifications`, `background`, `location`, `links`, `secrets`, `network`,
   `files` (the file dialogs and sounds), `images` (an `<image>` from the
-  network), and `native::shop` for an app's own module. A document that uses
+  network), and `native::shop` for an app's own module. A grant can be
+  narrower than a module: one function (`links.open`, `native::shop.search`),
+  and for `links.open` and `images` one host (`links.open@example.com`,
+  `images@cdn.example.com`: that host or a subdomain, for an `http(s)` address;
+  repeat the grant for more hosts). A call a grant leaves out fails when it
+  runs, naming what was granted; `rux check --sandbox=...` reports a function,
+  or an address written out, that the grant leaves out, at the call. An
+  address that is not written out, and a method on a resource, are left to the
+  run. A document that uses
   one it was not granted is refused when it loads, at the line, and every
   native call asks again when it runs. `window` and `app` are in scope only
   when granted; markup that reads one ungranted gets the same sentence when
@@ -3146,7 +3159,9 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   channels. The terms are the document's own, also when a process holds
   several: a window of an app serves its own, and a window a sandboxed document
   opens is sandboxed under the same terms. The row limit counts rows, not every
-  element. A grant is for a whole module, not part of one.
+  element. A host grant limits the address a document may name, not where that
+  server sends the request next (an image host that redirects is followed) and
+  not what the browser does with a link.
 - **Platform permissions** are the app's, not the document's: `rux.toml`'s
   `[permissions]`, with a reason for each, and the manifest is written from it.
 

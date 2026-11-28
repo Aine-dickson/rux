@@ -3937,6 +3937,18 @@ Tested through `Document`, not driven: two windows with different terms need a s
 
 Tests: `crates/rux-runtime/tests/sandbox.rs`. Each of the first three fails with `make_current` emptied.
 
+## Boundary attribution and narrow grants, 2026-11-28
+
+Desktop window, debug `rux` built from this tree, `--preview phone`, `RUX_TRACE=1`, probes `C:/Users/USER/Mobile/rux-harness/eb1-out`, `eb1-in` and `grants` (`shoot-any.ps1 -Doc -Out -Extra`; each page changes its state from `mounted`, since injected clicks do not reach the window).
+
+| Case | Result |
+|---|---|
+| A binding outside every boundary fails after a change, a boundary elsewhere on the page (EB-1) | trace: `change ["n"] -> patched in place (no rebuild)`; the boundary still shows its children; the failure is on the overlay panel |
+| The same binding inside the boundary | trace: `rebuilt (structural)`; the fallback shows, the text outside it stays |
+| `--sandbox=links.open@example.com`, the page calls `links.dial("123")`, `links.open("https://evil.com")` and `links.open("https://example.com")` in `try` | the first says it was granted `links.open@example.com`, not `links.dial`; the second says it may only reach example.com; the third runs and the browser opens example.com |
+
+Not driven: `images@host` against a real image server, and a window opened with two different grants.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
