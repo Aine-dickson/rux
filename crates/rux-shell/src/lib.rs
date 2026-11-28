@@ -2250,7 +2250,10 @@ struct App {
     last_tap: Option<(Instant, f32, f32)>,
     /// The last press on an `app-region: drag` box, so a second one close to
     /// it maximizes the window as a native title bar does.
-    #[cfg_attr(target_arch = "wasm32", allow(dead_code, reason = "a page has no native title bar to maximize"))]
+    #[cfg_attr(
+        any(target_arch = "wasm32", target_os = "android"),
+        allow(dead_code, reason = "a page or a phone has no native title bar to maximize")
+    )]
     last_drag_press: Option<(Instant, f32, f32)>,
     /// Every finger currently down, in logical px, in the order they landed.
     ///
