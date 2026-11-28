@@ -3924,6 +3924,19 @@ Tests: `crates/rux-runtime/tests/error_boundaries.rs` (a failing `mounted`, a ti
 
 **Not driven:** the timer and `async fn` cases in a window (tested through `Document`); Android and the web (EB-7).
 
+## Sandbox terms per document, 2026-11-28
+
+Tested through `Document`, not driven: two windows with different terms need a sandboxed app and a trusted one in one process, which nothing in the shell opens yet (fetching documents is held).
+
+| Case | Result |
+|---|---|
+| A 20-row list loaded sandboxed (cap 5) and trusted, in both load orders, each made current and rebuilt | 5 rows and 20 rows, and back to 5 |
+| `remote_images_allowed` for a document without `images`, with it and a trusted one, switching between them | false, true, true, false |
+| A sandboxed document that reads `window` in a handler, with a trusted one loaded after it | "`window` is not available in this document" (not "not defined") |
+| A window opened from a sandboxed document | sandboxed, 5 rows; from a trusted one, trusted, 20 rows |
+
+Tests: `crates/rux-runtime/tests/sandbox.rs`. Each of the first three fails with `make_current` emptied.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

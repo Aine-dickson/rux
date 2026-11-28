@@ -3143,9 +3143,10 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   script.
 - **What it is not.** A sandbox is as strong as the Rust interpreter under it:
   it is no defence against a memory-safety bug there or against timing side
-  channels. It is per process, not per document: the terms of the document
-  loaded last apply to the row limit and `images`. The row limit counts rows,
-  not every element. A grant is for a whole module, not part of one.
+  channels. The terms are the document's own, also when a process holds
+  several: a window of an app serves its own, and a window a sandboxed document
+  opens is sandboxed under the same terms. The row limit counts rows, not every
+  element. A grant is for a whole module, not part of one.
 - **Platform permissions** are the app's, not the document's: `rux.toml`'s
   `[permissions]`, with a reason for each, and the manifest is written from it.
 

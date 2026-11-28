@@ -3482,8 +3482,15 @@ resets); they sit in `binary`, a template, `+=` on a list and `method`'s
 `Interp::end_track` measures the globals it changed (`V::estimate_bytes`,
 shared values once, an explicit stack) and, past `state_bytes`, puts them
 back and reports it. In `rux-runtime`, `Document::from_source_sandboxed`,
-`load_sandboxed` and `set_default_sandbox` set a thread-local the build reads;
-each file is refused before parsing when it is too big or its elements nest too
+`load_sandboxed` and `set_default_sandbox` set a thread-local the build reads
+(`CURRENT_SANDBOX`, with the row limit and the engine's withheld built-ins); a
+`Document` keeps its own terms (`terms`), and a process that holds several calls
+`Document::make_current` before it builds, runs or paints one: the shell does at
+`App::window_event`, `App::user_event`, `Shell::each` and `ask_close`. A load
+leaves its own document current, so one document needs nothing. A window a
+document opens loads under its opener's terms (`Document::load_window_from`,
+also on a reload). A missed `make_current` falls back to the document loaded
+last. Each file is refused before parsing when it is too big or its elements nest too
 deep (`rux_parser::element_nesting_exceeds`); `rux_style::set_row_limit` cuts
 the rows an `r-for` expands per whole build; `image_bytes` refuses a network
 image without `images`. The playground (`start_web`, `set_web_source`,

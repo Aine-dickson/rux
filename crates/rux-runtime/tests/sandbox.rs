@@ -193,3 +193,100 @@ fn a_tap_caught_by_a_boundary_is_still_listed_after_the_press_is_restyled() {
     doc.set_interaction(InteractionState::default());
     assert!(warnings(&doc).contains("no orders"), "kept past the restyle: {}", warnings(&doc));
 }
+
+// One thread, several documents: each runs on its own terms, not those of the
+// one loaded last.
+
+fn twenty_rows() -> String {
+    let rows = (0..20).map(|n| n.to_string()).collect::<Vec<_>>().join(", ");
+    source("<text r-for=\"n in rows\">row</text>", &format!("let rows = [{rows}];"))
+}
+
+fn row_count(doc: &Document) -> usize {
+    shown(doc).iter().filter(|t| *t == "row").count()
+}
+
+fn capped(rows: usize) -> Sandbox {
+    let mut sandbox = Sandbox::new();
+    sandbox.limits.max_nodes = rows;
+    sandbox
+}
+
+#[test]
+fn each_document_builds_with_its_own_row_limit_whichever_loaded_last() {
+    let src = twenty_rows();
+    for sandboxed_first in [true, false] {
+        let (mut sandboxed, mut trusted) = if sandboxed_first {
+            let a = Document::from_source_sandboxed(&src, capped(5)).expect("loads");
+            (a, Document::from_source(&src).expect("loads"))
+        } else {
+            let b = Document::from_source(&src).expect("loads");
+            (Document::from_source_sandboxed(&src, capped(5)).expect("loads"), b)
+        };
+        sandboxed.make_current();
+        sandboxed.rebuild();
+        assert_eq!(row_count(&sandboxed), 5, "sandboxed first: {sandboxed_first}");
+        trusted.make_current();
+        trusted.rebuild();
+        assert_eq!(row_count(&trusted), 20, "sandboxed first: {sandboxed_first}");
+        // And back: the cap is not left behind on the thread.
+        sandboxed.make_current();
+        sandboxed.rebuild();
+        assert_eq!(row_count(&sandboxed), 5, "sandboxed first: {sandboxed_first}");
+    }
+}
+
+#[test]
+fn each_document_has_its_own_say_on_network_images() {
+    let src = source("<image src=\"https://example.invalid/a.png\" />", "let a = 1;");
+    let without = Document::from_source_sandboxed(&src, Sandbox::new()).expect("loads");
+    let with = Document::from_source_sandboxed(&src, Sandbox::new().grant("images")).expect("loads");
+    let trusted = Document::from_source(&src).expect("loads");
+    for (doc, allowed, name) in [(&without, false, "without"), (&with, true, "with"), (&trusted, true, "trusted"), (&without, false, "without again")] {
+        doc.make_current();
+        assert_eq!(rux_runtime::remote_images_allowed(), allowed, "{name}");
+    }
+}
+
+#[test]
+fn a_document_is_told_who_grants_a_built_in_after_another_loaded() {
+    let src = source("<text>{{ n }}</text>", "let n = signal(0);");
+    let mut sandboxed = Document::from_source_sandboxed(&src, Sandbox::new()).expect("loads");
+    let _trusted_last = Document::from_source(&src).expect("loads");
+    sandboxed.make_current();
+    let _ = rux_script::take_warnings();
+    sandboxed.apply_handler_in("n = window.maximized", None);
+    let said = warnings(&sandboxed);
+    assert!(said.contains("`window` is not available in this document"), "{said}");
+}
+
+fn write(dir: &std::path::Path, rel: &str, text: &str) -> std::path::PathBuf {
+    let path = dir.join(rel);
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, text).unwrap();
+    path
+}
+
+#[test]
+fn a_window_a_sandboxed_document_opens_is_sandboxed_too() {
+    let dir = std::env::temp_dir().join(format!("rux_sandbox_child_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let src = twenty_rows();
+    let app = write(&dir, "app.rux", &src);
+    let child = write(&dir, "child.rux", &src);
+
+    let opener = Document::load_sandboxed(&app, capped(5)).expect("loads");
+    let mut window = Document::load_window_from(&opener, &child, &[]).expect("loads");
+    assert!(window.terms().is_some(), "the child has its opener's terms");
+    window.make_current();
+    window.rebuild();
+    assert_eq!(row_count(&window), 5);
+
+    // An app's own opener leaves it as it was.
+    let opener = Document::load(&app).expect("loads");
+    let mut window = Document::load_window_from(&opener, &child, &[]).expect("loads");
+    assert!(window.terms().is_none());
+    window.make_current();
+    window.rebuild();
+    assert_eq!(row_count(&window), 20);
+}

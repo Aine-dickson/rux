@@ -138,8 +138,10 @@ fn enter_trust(sandbox: Option<Sandbox>) {
     CURRENT_SANDBOX.with(|s| *s.borrow_mut() = sandbox);
 }
 
-/// Whether the document loaded last may fetch an `<image>` from the network:
-/// a trusted one always may, a sandboxed one when it was granted `images`.
+/// Whether the current document may fetch an `<image>` from the network: a
+/// trusted one always may, a sandboxed one when it was granted `images`. The
+/// current one is the one loaded last until [`Document::make_current`] says
+/// another.
 pub fn remote_images_allowed() -> bool {
     CURRENT_SANDBOX.with(|s| s.borrow().as_ref().is_none_or(|s| s.grants("images")))
 }
@@ -247,6 +249,10 @@ pub struct Document {
     /// so a failure after an `await` reaches the same boundary the handler's
     /// own would have.
     task_catchers: HashMap<u64, String>,
+    /// What this document runs under, `None` for an app's own: the terms it was
+    /// loaded with, kept so that a process holding more than one can say which
+    /// is current. See [`Document::make_current`].
+    terms: Option<Sandbox>,
     /// The catcher of the run that was dispatched last, for the tasks it
     /// started: they are registered when the caller finishes up.
     last_catcher: Option<String>,
@@ -2745,6 +2751,23 @@ impl Document {
         Self::load_checked(path).map_err(|e| e.to_string())
     }
 
+    /// Make this document's terms the ones the thread works under: its row
+    /// limit, whether it may fetch network images, and which built-ins it was
+    /// not granted. A load leaves its own document current, so a process with
+    /// one document never needs this. One that serves several (a window for
+    /// each, a sandboxed one beside the app's own) calls it before it builds,
+    /// runs or paints the one an event is for.
+    pub fn make_current(&self) {
+        rux_style::set_row_limit(self.terms.as_ref().map(|s| s.limits.max_nodes));
+        CURRENT_SANDBOX.with(|s| *s.borrow_mut() = self.terms.clone());
+        self.engine.apply_terms();
+    }
+
+    /// The terms this document runs under, `None` for an app's own.
+    pub fn terms(&self) -> Option<&Sandbox> {
+        self.terms.as_ref()
+    }
+
     /// Load a document, keeping the failure's position so a checker can point at
     /// it. [`Document::load`] is this with the structure discarded.
     pub fn load_checked(path: impl AsRef<Path>) -> Result<Self, LoadError> {
@@ -2770,6 +2793,19 @@ impl Document {
     /// every window shares ([`reset_shared_stores`]).
     pub fn load_window(path: impl AsRef<Path>, props: &[(String, Value)]) -> Result<Self, LoadError> {
         enter_trust(default_sandbox());
+        Self::load_with(path.as_ref(), Some(props))
+    }
+
+    /// [`Document::load_window`] for a window `opener` opened: it runs under
+    /// the opener's terms when the opener has any, so a sandboxed document
+    /// cannot open a window that is not. An app's own opener leaves it to the
+    /// process default, as before.
+    pub fn load_window_from(
+        opener: &Document,
+        path: impl AsRef<Path>,
+        props: &[(String, Value)],
+    ) -> Result<Self, LoadError> {
+        enter_trust(opener.terms.clone().or_else(default_sandbox));
         Self::load_with(path.as_ref(), Some(props))
     }
 
@@ -3456,6 +3492,7 @@ impl Document {
             boundary_dirty: false,
             fault_attributed: 0,
             task_catchers: HashMap::new(),
+            terms: CURRENT_SANDBOX.with(|s| s.borrow().clone()),
             last_catcher: None,
             hooks,
             component_hooks,
@@ -3638,6 +3675,7 @@ impl Document {
             boundary_dirty: false,
             fault_attributed: 0,
             task_catchers: HashMap::new(),
+            terms: CURRENT_SANDBOX.with(|s| s.borrow().clone()),
             last_catcher: None,
             hooks,
             // No imports were resolved here, so there are no components and

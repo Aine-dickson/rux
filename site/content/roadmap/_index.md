@@ -155,8 +155,6 @@ images. Open:
      opens one on Android (`rux run --device` takes no `--sandbox`). Held by
      the owner (2026-11-27); the first step offered was a Rust and command-line
      way in, with no new script or markup.
-   - **Per-document terms.** The row limit, `images` and the grants follow the
-     document loaded last in a process.
    - **Grants narrower than a module** (one host for `links.open`), and
      object-capability grants, where a script is handed only the objects it
      may use instead of names gated by a list.

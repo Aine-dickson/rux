@@ -2758,7 +2758,8 @@ impl App {
         // the new document would adopt the old state in place of what its own
         // source says.)
         let loaded = match &self.window_props {
-            Some(props) => Document::load_window(&self.path, props).map_err(|e| e.to_string()),
+            // Under the terms it has: a sandboxed window stays sandboxed.
+            Some(props) => Document::load_window_from(&self.document, &self.path, props).map_err(|e| e.to_string()),
             None => Document::load(&self.path),
         };
         match loaded {
@@ -9207,6 +9208,8 @@ impl ApplicationHandler<RuxEvent> for App {
     }
 
     fn user_event(&mut self, _event_loop: &ActiveEventLoop, event: RuxEvent) {
+        // This window's own terms, whichever window loaded last.
+        self.document.make_current();
         match event {
             // An `await`'s answer came, or native code set a signal: the
             // same wake-up, since both are Rust telling the document
@@ -9558,6 +9561,10 @@ impl ApplicationHandler<RuxEvent> for App {
         id: WindowId,
         event: WindowEvent,
     ) {
+        // This window's own terms (its row limit, its grants) for the build,
+        // the run and the paint this event brings, whichever window loaded
+        // last.
+        self.document.make_current();
         // The adapter needs to see window events (focus, resize) to keep the
         // platform's view of the window in step. It observes; we still handle
         // every event ourselves below.
@@ -10386,7 +10393,11 @@ impl Shell {
     fn each(&mut self, mut f: impl FnMut(&mut App)) {
         for app in self.apps() {
             let id = app.state.as_ref().map(|s| s.window.id());
-            window_module::as_window(id, || f(app));
+            window_module::as_window(id, || {
+                // Its own terms, not those of the window loaded last.
+                app.document.make_current();
+                f(app)
+            });
         }
     }
 
@@ -10479,8 +10490,13 @@ impl Shell {
         // `rux check` reads it.
         let dir = main.path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(std::path::Path::new("."));
         let path = rux_runtime::project_root(dir).unwrap_or_else(|| dir.to_path_buf()).join(&open.path);
-        // Loaded as no window's document: it has none yet.
-        let loaded = window_module::as_window(None, || Document::load_window(&path, &open.props));
+        // Loaded as no window's document: it has none yet. Under its opener's
+        // terms, so a sandboxed document cannot open a window that is not.
+        let opener_doc = opener.and_then(|id| self.windows.get(&id)).map(|app| &app.document);
+        let loaded = window_module::as_window(None, || match opener_doc {
+            Some(opener) => Document::load_window_from(opener, &path, &open.props),
+            None => Document::load_window(&path, &open.props),
+        });
         let document = match loaded {
             Ok(document) => document,
             Err(err) => {
@@ -10710,7 +10726,10 @@ impl ApplicationHandler<RuxEvent> for Shell {
             // Its own `@close` may keep it (a `false`); the answer is drawn.
             let app = self.windows.get_mut(&id);
             let leave = app.map_or(true, |app| {
-                let leave = window_module::as_window(Some(id), || app.document.ask_close());
+                let leave = window_module::as_window(Some(id), || {
+                    app.document.make_current();
+                    app.document.ask_close()
+                });
                 if !leave {
                     app.request_redraw();
                 }

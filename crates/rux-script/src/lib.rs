@@ -1069,6 +1069,10 @@ pub struct Engine {
     /// Where the shared stores were when this engine last looked: see
     /// [`shared`].
     store_epoch: u64,
+    /// The built-in names this document was not granted, with the grant each
+    /// needs: what a sandboxed build found, kept so that it is this
+    /// document's whichever was built last. See [`Engine::apply_terms`].
+    withheld: Vec<(String, String)>,
     /// Each component's `computed`s as (name, expression), in declaration
     /// order, by the component's key. A new instance computes them as it is
     /// made: see [`Engine::init_component_with`].
@@ -1166,8 +1170,8 @@ thread_local! {
     /// name it would read and the grant that gives it. Markup reads `window`
     /// and `app` where the script's scan cannot see, so a read of one is
     /// found only when it runs; this lets it say who grants it instead of
-    /// "not defined". Follows the document built last, as the sandbox's other
-    /// per-process terms do.
+    /// "not defined". The document built last sets it, and
+    /// [`Engine::apply_terms`] sets it again for another.
     static WITHHELD: std::cell::RefCell<Vec<(String, String)>> =
         const { std::cell::RefCell::new(Vec::new()) };
 }
@@ -1999,9 +2003,17 @@ impl Engine {
             source_hash: 0,
             check_scope: std::cell::RefCell::new(None),
             store_epoch: 0,
+            withheld: WITHHELD.with(|w| w.borrow().clone()),
             component_computeds: HashMap::new(),
             boundaries: HashMap::new(),
         }
+    }
+
+    /// Make this document's withheld built-ins the ones a "not defined" is
+    /// phrased against, as the build of it did. A process that holds more than
+    /// one document calls this before it runs one.
+    pub fn apply_terms(&self) {
+        WITHHELD.with(|w| *w.borrow_mut() = self.withheld.clone());
     }
 
     /// The error a `<boundary>` caught, when it is showing its fallback.
