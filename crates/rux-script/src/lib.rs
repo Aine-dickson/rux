@@ -2021,6 +2021,17 @@ impl Engine {
         self.boundaries.get(key)
     }
 
+    /// Open a frame for the failures of a binding written inside `boundary`,
+    /// when it is one that has not failed. Whether one was opened, which
+    /// [`pop_boundary`] closes.
+    pub fn boundary_open(&self, boundary: Option<&str>) -> bool {
+        let open = boundary.is_some_and(|k| self.boundary_error(k).is_none());
+        if open {
+            push_boundary();
+        }
+        open
+    }
+
     /// A `<boundary>` caught `error`: it shows its fallback from the next
     /// build on. The first failure stands until a retry.
     pub fn fail_boundary(&mut self, key: &str, error: Value) {

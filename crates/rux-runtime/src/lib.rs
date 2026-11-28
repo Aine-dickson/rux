@@ -230,6 +230,8 @@ pub struct Document {
     rows: rux_style::RowCache,
     /// How many reconciles built only their lists. See [`Document::reconcile_lists`].
     lists_alone: usize,
+    /// How many whole-document builds so far. See [`Document::whole_builds`].
+    whole: usize,
     /// `computed` declarations, in declaration order, so one may read another
     /// declared above it and a single pass refreshes them all.
     computeds: Vec<Computed>,
@@ -3506,6 +3508,7 @@ impl Document {
             swaps,
             rows,
             lists_alone: 0,
+            whole: 0,
             mounted_instances: HashSet::new(),
             close_asked: false,
             native_epoch: rux_native::signal_epoch(),
@@ -3691,6 +3694,7 @@ impl Document {
             swaps,
             rows,
             lists_alone: 0,
+            whole: 0,
             mounted_instances: HashSet::new(),
             close_asked: false,
             native_epoch: rux_native::signal_epoch(),
@@ -3724,6 +3728,12 @@ impl Document {
     /// built. See [`rux_style::RowCache`].
     pub fn row_reuse(&self) -> (usize, usize) {
         (self.rows.hits, self.rows.misses)
+    }
+
+    /// How many times the whole document has been built so far, a load
+    /// included. A change that patches in place adds none.
+    pub fn whole_builds(&self) -> usize {
+        self.whole
     }
 
     /// How many reconciles so far built only the lists that changed rather
@@ -4050,6 +4060,7 @@ impl Document {
         // A rebuild is asked for when something a row is built from may have
         // changed without a signal saying so, so no kept row is trusted.
         self.rows.clear();
+        self.whole += 1;
         if let Ok((mut root, registry)) = rux_style::build_styled_tree_stateful(
             &self.sfc,
             &self.components,
@@ -4116,13 +4127,17 @@ impl Document {
     /// Re-evaluate the value bindings (text `{{ }}`, input values, `r-show`) whose
     /// deps changed and write them into their nodes, no shape change.
     fn patch_values(&mut self, changed: &HashSet<String>) {
+        // What failed, by the boundary it sits in: given to them at the end.
+        let mut caught: Vec<(String, rux_reactive::Value)> = Vec::new();
         for binding in &mut self.registry.text {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
             // What it reads now, which a branch may have changed: a sound
             // loaded since is read through from here on.
+            let frame = self.engine.boundary_open(binding.boundary.as_deref());
             let (text, deps) = rux_style::eval_text_binding_tracked(binding, &mut self.engine);
+            caught.extend(frame_end(frame, binding.boundary.as_deref()));
             binding.deps = deps;
             if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 if let Some(content) = node.text.as_mut() {
@@ -4137,7 +4152,9 @@ impl Document {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
+            let frame = self.engine.boundary_open(binding.boundary.as_deref());
             let (mut text, color) = rux_style::eval_value_binding(binding, &mut self.engine);
+            caught.extend(frame_end(frame, binding.boundary.as_deref()));
             if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 // A select shows its chosen option's label, not the value it holds.
                 if let (Some(meta), Some(options)) = (&node.option_meta, &node.options) {
@@ -4177,7 +4194,9 @@ impl Document {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
+            let frame = self.engine.boundary_open(binding.boundary.as_deref());
             let visible = self.engine.eval_bool(&binding.cond, &binding.locals);
+            caught.extend(frame_end(frame, binding.boundary.as_deref()));
             if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 node.hidden = !visible;
             }
@@ -4188,7 +4207,9 @@ impl Document {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
+            let frame = self.engine.boundary_open(binding.boundary.as_deref());
             let raw = rux_style::eval_src_binding(binding, &mut self.engine);
+            caught.extend(frame_end(frame, binding.boundary.as_deref()));
             if let Some(node) = node_at_mut(self.root.get_mut(), &binding.path) {
                 if node.path.is_some() {
                     node.path = Some(rux_layout::PathContent::parse(&raw));
@@ -4205,7 +4226,9 @@ impl Document {
             if binding.deps.is_disjoint(changed) {
                 continue;
             }
+            let frame = self.engine.boundary_open(binding.boundary.as_deref());
             let (opts, meta) = rux_style::eval_options_binding(binding, &mut self.engine);
+            caught.extend(frame_end(frame, binding.boundary.as_deref()));
             // The shown label may have moved with the list: the select's own
             // value binding says what it holds now.
             let held = self
@@ -4225,6 +4248,16 @@ impl Document {
                     }
                 }
             }
+        }
+        self.fail_caught(caught);
+    }
+
+    /// Give each failure caught while patching to the `<boundary>` the binding
+    /// that raised it sits in: the next build shows its fallback.
+    fn fail_caught(&mut self, caught: Vec<(String, rux_reactive::Value)>) {
+        for (key, error) in caught {
+            self.engine.fail_boundary(&key, error);
+            self.boundary_dirty = true;
         }
     }
 
@@ -4281,6 +4314,7 @@ impl Document {
             return;
         }
 
+        let failed_before = self.engine.failed_boundaries().len();
         let Ok((mut fresh_root, fresh_reg)) = rux_style::build_styled_tree_cached(
             &self.sfc,
             &self.components,
@@ -4294,6 +4328,11 @@ impl Document {
         ) else {
             return;
         };
+        // A boundary this build failed shows its fallback only where the
+        // splice below reaches; the next build shows it everywhere.
+        if self.engine.failed_boundaries().len() > failed_before {
+            self.boundary_dirty = true;
+        }
         resolve_images(&mut fresh_root, &self.base);
         // Structural parents: replace the affected parent's children wholesale.
         for p in &roots {
@@ -4396,13 +4435,15 @@ impl Document {
         }
         #[cfg(debug_assertions)]
         let before = rux_layout::self_checking().then(|| LayoutNode::clone(&self.root));
+        let mut caught: Vec<(String, rux_reactive::Value)> = Vec::new();
         for parent in &parents {
             let p = &parent.tree_path;
             // The rows being replaced go to the build, which moves the ones
             // it reuses back into place instead of copying them.
             let live_children = node_at_mut(self.root.get_mut(), p).map(|n| std::mem::take(&mut n.children)).unwrap_or_default();
             let taken = self.registry.take_under(p);
-            let Some(rebuilt) = rux_style::rebuild_children(
+            let frame = self.engine.boundary_open(parent.boundary.as_deref());
+            let built = rux_style::rebuild_children(
                 &self.sfc,
                 &self.namespaces,
                 &mut self.engine,
@@ -4414,7 +4455,9 @@ impl Document {
                 parent,
                 live_children,
                 taken.reg,
-            ) else {
+            );
+            caught.extend(frame_end(frame, parent.boundary.as_deref()));
+            let Some(rebuilt) = built else {
                 // Checked above; nothing between can change the answer.
                 unreachable!("a list that could be rebuilt alone was refused");
             };
@@ -4431,8 +4474,12 @@ impl Document {
             self.registry.put_under(p, &taken.place, rebuilt.reg, rebuilt.deps);
         }
         self.diagnostics.warnings = self.fresh_warnings();
+        // A failed boundary is shown by the next build, which the proof's
+        // whole build would already have shown.
+        let failed = !caught.is_empty();
+        self.fail_caught(caught);
         #[cfg(debug_assertions)]
-        if let Some(before) = before {
+        if let Some(before) = before.filter(|_| !failed) {
             self.prove_lists(before, roots);
         }
         self.lists_alone += 1;
@@ -7052,12 +7099,12 @@ impl Document {
         let computeds_moved = self.refresh_instance_computeds(Some(&changed));
         // A patch is chosen by which document signals moved, and instance state
         // is not among them, so what a computed moved is patched on its own.
-        let faults_before = rux_script::faults();
         let mut patched =
             self.patch(&changed) && (computeds_moved.is_empty() || self.patch_instances(&before));
-        // A binding that failed while it was patched in place may sit inside a
-        // `<boundary>`; only a build says which, and it shows the fallback.
-        if patched && rux_script::faults() > faults_before && !self.registry.boundaries.is_empty() {
+        // A binding that failed while it was patched in place failed the
+        // `<boundary>` it sits in (each remembers its own): that one shows its
+        // fallback, which takes a build.
+        if std::mem::take(&mut self.boundary_dirty) {
             patched = false;
         }
         if !patched {
@@ -7117,6 +7164,15 @@ impl Document {
             );
         }
     }
+}
+
+/// What a binding caught while it was evaluated inside a boundary's frame:
+/// the boundary and the first failure, when there was one.
+fn frame_end(open: bool, boundary: Option<&str>) -> Option<(String, rux_reactive::Value)> {
+    if !open {
+        return None;
+    }
+    rux_script::pop_boundary().map(|e| (boundary.unwrap_or_default().to_string(), e))
 }
 
 /// Follow a child-index path from the root to a node.

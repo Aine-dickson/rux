@@ -3439,9 +3439,14 @@ instances they made and their pending mounts, and builds the fallback. The
 `retry_boundary`). A component instance records the boundary it was expanded
 in (`Instance::boundary`); a failure of its handler, effect, timer or `async fn`
 (counted by `rux_script::faults`) fails that boundary and the document
-rebuilds (`Document::attribute_fault`, `settle_boundaries`). A binding that
-fails while patched, with a boundary open, rebuilds too, and the build says
-which boundary. An `async fn` remembers the boundary its handler was written
+rebuilds (`Document::attribute_fault`, `settle_boundaries`). Every patchable binding
+(`TextBinding`, `ValueBinding`, `ShowBinding`, `AttrBinding`) and every
+`StructuralParent` records the boundary it was built inside (`boundary`);
+`patch_values` and `reconcile_lists` run each in its own failure frame and
+fail that boundary (`Engine::boundary_open`, `Document::fail_caught`), so
+only a binding that really failed one triggers the rebuild, and a failing
+binding outside every boundary only reports (`Document::whole_builds` counts
+whole builds for the tests). An `async fn` remembers the boundary its handler was written
 in (`Document::task_catchers`, read back when the task goes on), so a failure
 after an `await` reaches it, a page's included. A run that fails its own
 instance away leaves nothing behind: `apply_timer_requests` and `own_tasks`

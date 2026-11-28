@@ -233,6 +233,9 @@ pub struct TextBinding {
     /// `None` for a run of a sentence, whose spaces are collapsed with the
     /// runs beside it when the layout joins them.
     pub white_space: Option<WhiteSpace>,
+    /// The `<boundary>` it was built inside, innermost: a failure while it is
+    /// patched fails that one.
+    pub boundary: Option<String>,
 }
 
 /// An `<input>`'s displayed value, patchable in place: the input node's path, the
@@ -273,6 +276,8 @@ pub struct ValueBinding {
     /// what the person typed. Masking here, at the one place the shown string
     /// is computed, is what keeps that true on all three platforms at once.
     pub secret: bool,
+    /// The `<boundary>` it was built inside. See [`TextBinding::boundary`].
+    pub boundary: Option<String>,
 }
 
 use rux_layout::mask;
@@ -290,6 +295,8 @@ pub struct ShowBinding {
     pub locals: Vec<(String, Value)>,
     /// Signals the condition reads.
     pub deps: HashSet<String>,
+    /// The `<boundary>` it was built inside. See [`TextBinding::boundary`].
+    pub boundary: Option<String>,
 }
 
 /// A parent element that holds structural directives (`r-if`/`r-elif`/`r-else`/
@@ -308,6 +315,9 @@ pub struct StructuralParent {
     /// What its children were built from, when they may be built again on
     /// their own. See [`rebuild_children`].
     pub ctx: Option<Rc<ListCtx>>,
+    /// The `<boundary>` this parent sits inside, which what is built again
+    /// under it is built inside too.
+    pub boundary: Option<String>,
 }
 
 /// Everything a parent's children are built from besides the template and
@@ -378,6 +388,13 @@ pub struct AttrBinding {
     pub locals: Vec<(String, Value)>,
     /// Signals the expression reads.
     pub deps: HashSet<String>,
+    /// The `<boundary>` it was built inside. See [`TextBinding::boundary`].
+    pub boundary: Option<String>,
+}
+
+/// The innermost `<boundary>` being built, if any.
+fn open_boundary() -> Option<String> {
+    OPEN_BOUNDARIES.with(|b| b.borrow().last().cloned())
 }
 
 /// What a build discovered about reactivity: the patchable bindings (text `{{ }}`,
@@ -398,9 +415,8 @@ pub struct BindingRegistry {
     pub toggles: Vec<ToggleBinding>,
     pub components: Vec<ComponentBinding>,
     pub styled: Vec<StyledBinding>,
-    /// The `<boundary>`s showing their children, by key. A failure while the
-    /// document is patched or a component runs may belong to one of them, and
-    /// only a build can say which; with none here there is nothing to ask.
+    /// The `<boundary>`s showing their children, by key. Bindings carry their
+    /// own boundary now; nothing in the runtime reads this list any more.
     pub boundaries: Vec<String>,
     /// Signals read by any non-patchable, non-reconcilable site. A change touching
     /// one of these means the runtime must rebuild rather than patch. (Empty now,
@@ -3494,7 +3510,14 @@ fn build_run(
         located(Some(text_line(el)), || interpolate_tracked(&template, engine, locals));
     if template.contains("{{") {
         // Uncollapsed: the layout collapses it with the runs beside it.
-        reg.text.push(TextBinding { path: path.to_vec(), template, locals: locals.clone(), deps, white_space: None });
+        reg.text.push(TextBinding {
+            path: path.to_vec(),
+            template,
+            locals: locals.clone(),
+            deps,
+            white_space: None,
+            boundary: open_boundary(),
+        });
     }
     let mut node = LayoutNode::text(
         rux_layout::Style::default(),
@@ -8271,6 +8294,7 @@ fn build_text(
             locals: locals.clone(),
             deps,
             white_space: collapse,
+            boundary: open_boundary(),
         });
     }
     let mut node = LayoutNode::text(
@@ -8371,6 +8395,7 @@ fn build_text(
                 tpl_path: tpl_path.to_vec(),
                 deps: structural_deps,
                 ctx,
+                boundary: open_boundary(),
             });
         }
         node.children = children;
@@ -9133,6 +9158,7 @@ fn build_node_inner(
             cond: e.to_string(),
             locals: locals.clone(),
             deps,
+            boundary: open_boundary(),
         });
         !v
     });
@@ -9289,6 +9315,7 @@ fn build_node_inner(
                     expr: e.to_string(),
                     locals: locals.clone(),
                     deps,
+                    boundary: open_boundary(),
                 });
                 v
             })
@@ -9382,7 +9409,13 @@ fn build_node_inner(
                 if style.transitions.iter().any(|t| t.property == rux_layout::AnimProp::PathData) {
                     reg.structural.extend(deps);
                 } else {
-                    reg.src.push(AttrBinding { path: path.to_vec(), expr: e.to_string(), locals: locals.clone(), deps });
+                    reg.src.push(AttrBinding {
+                        path: path.to_vec(),
+                        expr: e.to_string(),
+                        locals: locals.clone(),
+                        deps,
+                        boundary: open_boundary(),
+                    });
                 }
                 v
             })
@@ -9788,6 +9821,7 @@ fn build_node_inner(
                         expr: e.to_string(),
                         locals: locals.clone(),
                         deps,
+                        boundary: open_boundary(),
                     });
                     v
                 })
@@ -9819,6 +9853,7 @@ fn build_node_inner(
                     locals: locals.clone(),
                     deps,
                     secret,
+                    boundary: open_boundary(),
                 });
                 v
             })
@@ -10024,6 +10059,7 @@ fn build_node_inner(
             tpl_path: tpl_path.to_vec(),
             deps: structural_deps,
             ctx,
+            boundary: open_boundary(),
         });
     }
 
@@ -12389,6 +12425,12 @@ pub fn rebuild_children(
     let comps = Components::new();
     let mut ancestors = ctx.ancestors.clone();
     let mut reg = BindingRegistry::default();
+    // What the parent sits inside, which a whole build had open here: what is
+    // built records it, and a failure is the runtime's to give to it.
+    let inside = parent.boundary.clone();
+    if let Some(key) = &inside {
+        OPEN_BOUNDARIES.with(|b| b.borrow_mut().push(key.clone()));
+    }
     let (mut children, deps) = build_children(
         &element_children(el),
         &rules,
@@ -12408,6 +12450,9 @@ pub fn rebuild_children(
         None,
         ctx.row.as_deref(),
     );
+    if inside.is_some() {
+        OPEN_BOUNDARIES.with(|b| b.borrow_mut().pop());
+    }
     swaps.end_part(&parent.tpl_path);
     let origins = ORIGINS.with(|o| std::mem::take(&mut *o.borrow_mut()));
     let reg = merge_rows(live_reg, reg, depth, olds, &origins, children.len());
@@ -12598,7 +12643,7 @@ pub fn registry_digest(reg: &BindingRegistry) -> String {
     };
     let mut out = String::new();
     for b in &reg.text {
-        out += &format!("text {:?} {:?} {:?} {}\n", b.path, b.template, b.locals, deps(&b.deps));
+        out += &format!("text {:?} {:?} {:?} {} {:?}\n", b.path, b.template, b.locals, deps(&b.deps), b.boundary);
     }
     for b in &reg.value {
         out += &format!(
@@ -12615,7 +12660,7 @@ pub fn registry_digest(reg: &BindingRegistry) -> String {
         }
     }
     for b in &reg.structural_parents {
-        out += &format!("parent {:?} {:?} {}\n", b.tree_path, b.tpl_path, deps(&b.deps));
+        out += &format!("parent {:?} {:?} {} {:?}\n", b.tree_path, b.tpl_path, deps(&b.deps), b.boundary);
     }
     for b in &reg.toggles {
         out += &format!("toggle {:?} {}\n", b.path, deps(&b.deps));

@@ -101,12 +101,11 @@ images. Open:
    longer a typo.
    **Error boundaries, future improvements.** Built and driven on the desktop;
    these are known, named and not yet done. Do not lose them.
-   - **EB-1. No rebuild per failing patch.** A binding that fails while it is
-     patched, with any boundary open, rebuilds the whole document so the build
-     can say which boundary it belongs to; a failing binding outside every
-     boundary therefore rebuilds on each patch of its signals. A map of which
-     boundary covers which part of the tree would attribute it without a
-     rebuild.
+   - **EB-1. Done 2026-11-28.** Each patchable binding records the boundary it
+     was built inside, so a failing patch fails that one and a failing binding
+     outside every boundary no longer rebuilds the document. A failed boundary
+     still takes one whole build to show its fallback; building only the failed
+     boundary's subtree is not done.
    - **EB-2. Done 2026-11-28.** `:last-child` and the rest that count from the
      end count a failed boundary as its fallback, and the children of a
      boundary or a `<slot>` count their place among the siblings before them

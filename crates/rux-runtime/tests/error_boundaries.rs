@@ -764,3 +764,100 @@ fn the_children_of_a_boundary_count_their_place_among_its_siblings() {
     assert_eq!(q.style.width, Some(rux_layout::Len::Px(2.0)), "second child, not first");
     assert_eq!(q.style.height, Some(rux_layout::Len::Px(7.0)), "and the last");
 }
+
+// ----- EB-1: a failing patch finds its boundary without a rebuild -----------
+
+/// A failing binding outside every boundary only reports. With a boundary on
+/// the page it used to rebuild the whole document each time its signal moved.
+#[test]
+fn a_failing_binding_outside_every_boundary_does_not_rebuild() {
+    let mut doc = load(
+        "eb1-outside",
+        r#"<view @tap="n = 0"><text>break</text></view>
+<text>[{{ show(n) }}]</text>
+<boundary><text>{{ fine() }}</text><fallback><text>failed</text></fallback></boundary>"#,
+        &format!("{FAILS}\nlet n = signal(1);"),
+        &[],
+    );
+    let builds = doc.whole_builds();
+    tap(&mut doc, "break");
+    assert_eq!(doc.whole_builds(), builds, "a patch that only reports builds nothing: {}", shown(&doc));
+    let said: Vec<String> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
+    assert!(said.iter().any(|m| m.contains("zero")), "still reported: {said:?}");
+    assert!(shown(&doc).contains("fine") && !shown(&doc).contains("failed"), "{}", shown(&doc));
+}
+
+/// A failing binding in one boundary fails that one, with one whole build.
+#[test]
+fn a_failing_binding_fails_the_boundary_it_is_in_with_one_build() {
+    let mut doc = load(
+        "eb1-inside",
+        r#"<view @tap="n = 0"><text>break</text></view>
+<boundary><text>[{{ show(n) }}]</text><fallback><text>failed one</text></fallback></boundary>
+<boundary><text>{{ fine() }}</text><fallback><text>failed two</text></fallback></boundary>"#,
+        &format!("{FAILS}\nlet n = signal(1);"),
+        &[],
+    );
+    let builds = doc.whole_builds();
+    tap(&mut doc, "break");
+    let s = shown(&doc);
+    assert!(s.contains("failed one") && !s.contains("failed two") && s.contains("fine"), "{s}");
+    assert_eq!(doc.whole_builds(), builds + 1, "{s}");
+}
+
+/// The innermost of nested boundaries takes a failing patch.
+#[test]
+fn a_failing_patch_fails_the_innermost_of_nested_boundaries() {
+    let mut doc = load(
+        "eb1-nested",
+        r#"<view @tap="n = 0"><text>break</text></view>
+<boundary>
+  <text>{{ fine() }}</text>
+  <boundary><text>[{{ show(n) }}]</text><fallback><text>inner failed</text></fallback></boundary>
+  <fallback><text>outer failed</text></fallback>
+</boundary>"#,
+        &format!("{FAILS}\nlet n = signal(1);"),
+        &[],
+    );
+    tap(&mut doc, "break");
+    let s = shown(&doc);
+    assert!(s.contains("inner failed") && !s.contains("outer failed") && s.contains("fine"), "{s}");
+}
+
+/// A list inside a boundary, built again on its own, still fails the boundary
+/// when a new row fails.
+#[test]
+fn a_list_built_alone_inside_a_boundary_fails_it() {
+    let mut doc = load(
+        "eb1-list",
+        r#"<view @tap="items = [1, 0]"><text>add</text></view>
+<boundary>
+  <view><view r-for="x in items" r-key="x"><text>[{{ show(x) }}]</text></view></view>
+  <fallback><text>list failed</text></fallback>
+</boundary>"#,
+        &format!("{FAILS}
+let items = signal([1, 2]);"),
+        &[],
+    );
+    assert!(shown(&doc).contains("[row1]"), "{}", shown(&doc));
+    tap(&mut doc, "add");
+    let s = shown(&doc);
+    assert!(s.contains("list failed") && !s.contains("[row"), "{s}");
+    assert_eq!(doc.lists_built_alone(), 1, "the list was built on its own: {s}");
+}
+
+/// An `r-show` that fails inside a boundary fails it.
+#[test]
+fn a_failing_r_show_inside_a_boundary_shows_the_fallback() {
+    let mut doc = load(
+        "eb1-show",
+        r#"<view @tap="n = 0"><text>break</text></view>
+<boundary><text r-show="show(n) == 'x'">hidden</text><text>body</text><fallback><text>show failed</text></fallback></boundary>"#,
+        &format!("{FAILS}
+let n = signal(1);"),
+        &[],
+    );
+    tap(&mut doc, "break");
+    let s = shown(&doc);
+    assert!(s.contains("show failed") && !s.contains("body"), "{s}");
+}
