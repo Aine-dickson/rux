@@ -3476,6 +3476,22 @@ document with `App::with_document`; the settings id is `fetched.<host>`.
 `--sandbox=` grants, and sets them as the process default so a window it opens
 is sandboxed too.
 
+`window.openRemote(url, options)` (`rux-shell/src/window_module.rs`
+`open_remote`) checks the address (`check_url`, kind `address`) and the options,
+works the terms out (`rux_runtime::window_open::remote_terms`: known grants,
+never `settings` or `secrets`, no more than a sandboxed opener holds, read from
+`rux_runtime::current_sandbox()`, and the opener's limits), queues
+`Request::OpenRemote` and returns a `Window` at once. The shell
+(`Shell::fetch_remote`) fetches the text on a worker thread with `fetch_text` and
+sends `RuxEvent::Fetched` through the proxy; `Shell::finish_remote` builds the
+document on the UI thread (`document_from_fetched`; a `Document` cannot cross
+threads) and ends in `seat_child`, the tail it shares with `open_child`. A
+failure calls `WindowHandle::fail` (`isOpen` false, `Window.error` set), warns on
+the opener's panel and runs `onError`. `App::fetched` stops a reload of a
+document that has no file. `rux check` reads the call in `window_open::check`
+(`remote_findings`). `fetch.rs` compiles everywhere now, `check_url` being text
+alone; the fetching half is native only.
+
 **The sandbox.** A document that is not the app's own is opened under a
 `rux_script::Sandbox` (`sandbox.rs`): `Limits` and the set of granted module
 names. `Builder::sandbox` takes it; with none a document is trusted. At build

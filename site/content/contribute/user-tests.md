@@ -3976,6 +3976,21 @@ Web: the playground built from this tree (`site/build-playground.sh`), `zola ser
 
 Not driven: the same real network call on the desktop, a phone, a slow or half-open connection.
 
+## `window.openRemote`, 2026-11-28
+
+Desktop window, debug `rux` built from this tree, a Python server on `127.0.0.1:8765` (`C:/Users/USER/Mobile/rux-harness/open-remote/server.py`: `/ok.rux`, `/big.rux` over 1 MiB, `/slow.rux` that sleeps 12 s, `/multi.rux` with a `use components::card`, anything else 404). `app.rux` calls `window.openRemote` for each from `mounted`; `drive.ps1` launches it and captures the screen at 4 s and 16 s; the callbacks `print` the handle's `error`.
+
+| Case | Result |
+|---|---|
+| `/ok.rux` with no `sandbox` | a window titled "ok", 360 by 220, appears within 4 s showing the document; its `settings.set` is refused with "`settings` is not available in this document: whoever opens it has to grant it ..." |
+| `/slow.rux` fetching at the same time | the "ok" window is up and drawing at 4 s while it is still pending: the opener and the other windows are not blocked by a fetch |
+| `/slow.rux` after 10 s | no window; `isOpen` false, `onError` ran, `w.error` is "could not fetch ...: timeout: global" |
+| `/nope.rux` (404), `/big.rux` (over 1 MiB), `/multi.rux` | no window each; `onError` ran, `w.error` says "answered 404", "is longer than a sandboxed document may be (at most 1048576 bytes)", "a fetched document is one file: `use components::card` cannot load beside it"; each also listed on the opener's panel |
+| `sandbox: ["settings"]` | throws kind `grant` at the call; `rux check` reports it at the line |
+| `http://example.com/ok.rux` | throws kind `address` at the call; `rux check` reports it at the line |
+
+Not driven: a real https server, a redirect, closing the opener while a fetch is in flight, a sandboxed opener handing a grant on (unit tests only: `rux-runtime/tests/remote_terms.rs`), a granted `clipboard` in a remote window, Android and the web (the call throws `unsupported`; compile-checked only).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

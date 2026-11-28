@@ -27,7 +27,6 @@
 mod modules;
 mod data_url;
 pub mod remote;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod fetch;
 pub mod disk_cache;
 mod source;
@@ -139,6 +138,12 @@ thread_local! {
 fn enter_trust(sandbox: Option<Sandbox>) {
     rux_style::set_row_limit(sandbox.as_ref().map(|s| s.limits.max_nodes));
     CURRENT_SANDBOX.with(|s| *s.borrow_mut() = sandbox);
+}
+
+/// The terms the document running now is under, `None` for an app's own. What
+/// a call that opens another document reads to hand on no more than it holds.
+pub fn current_sandbox() -> Option<Sandbox> {
+    CURRENT_SANDBOX.with(|s| s.borrow().clone())
 }
 
 /// Whether the current document may fetch an `<image>` from the network: a

@@ -116,3 +116,58 @@ fn a_prop_passed_as_a_variable_is_not_judged() {
     );
     assert_eq!(said(&dir), Vec::<(bool, String)>::new());
 }
+
+// ---- window.openRemote ------------------------------------------------------
+
+#[test]
+fn a_remote_call_written_out_is_clean() {
+    let dir = project(
+        "remote-clean",
+        "window.openRemote(\"https://example.com/promo.rux\", { title: \"x\", sandbox: [\"clipboard\", \"links.open@example.com\"], onClose: () => {}, onError: () => {} });",
+        &[],
+    );
+    assert_eq!(said(&dir), Vec::<(bool, String)>::new());
+}
+
+#[test]
+fn a_remote_address_that_is_not_https_is_an_error() {
+    let dir = project("remote-http", "window.openRemote(\"http://example.com/p.rux\", {});", &[]);
+    let found = said(&dir);
+    assert!(found.iter().any(|(e, m)| *e && m.contains("is not https")), "{found:?}");
+}
+
+#[test]
+fn a_remote_address_not_written_out_is_a_warning() {
+    let dir = project("remote-built", "window.openRemote(target, {});", &[]);
+    let found = said(&dir);
+    assert!(found.iter().any(|(e, m)| !*e && m.contains("not written out")), "{found:?}");
+}
+
+#[test]
+fn a_remote_call_names_an_option_it_does_not_take() {
+    let dir = project("remote-option", "window.openRemote(\"https://example.com/p.rux\", { props: { id: 1 }, nope: 2 });", &[]);
+    let found = said(&dir);
+    assert!(found.iter().any(|(e, m)| *e && m.contains("no option `props`")), "{found:?}");
+    assert!(found.iter().any(|(e, m)| *e && m.contains("no option `nope`")), "{found:?}");
+}
+
+#[test]
+fn a_remote_grant_is_checked_and_the_apps_own_stores_are_refused() {
+    let dir = project(
+        "remote-grants",
+        "window.openRemote(\"https://example.com/p.rux\", { sandbox: [\"clipboard\", \"nonsense\", \"settings\", \"secrets.get\"] });",
+        &[],
+    );
+    let found = said(&dir);
+    assert!(found.iter().any(|(e, m)| *e && m.contains("`nonsense`")), "{found:?}");
+    assert!(found.iter().any(|(e, m)| *e && m.contains("`settings`") && m.contains("the app's own")), "{found:?}");
+    assert!(found.iter().any(|(e, m)| *e && m.contains("`secrets.get`") && m.contains("the app's own")), "{found:?}");
+    assert!(!found.iter().any(|(_, m)| m.contains("`clipboard`")), "{found:?}");
+}
+
+#[test]
+fn window_open_given_an_address_points_to_open_remote() {
+    let dir = project("open-address", "window.open(\"https://example.com/p.rux\", {});", &[]);
+    let found = said(&dir);
+    assert!(found.iter().any(|(e, m)| *e && m.contains("window.openRemote")), "{found:?}");
+}

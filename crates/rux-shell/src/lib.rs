@@ -123,6 +123,10 @@ enum RuxEvent {
     /// The `.rux` file changed on disk.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     Reload,
+    /// A document `window.openRemote` asked for has come, or could not: the
+    /// text, or why not. Fetched on a worker thread, opened on this one.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    Fetched { handle: u64, result: Result<String, String> },
     /// The GPU surface finished initialising. Web only: `create_surface` is
     /// async and `resumed` is not, so setup runs as a task and wakes the loop
     /// here. The payload is parked in `App::pending` rather than carried in the
@@ -2117,6 +2121,9 @@ struct App {
     /// for the app's own window.
     #[cfg(not(target_arch = "wasm32"))]
     window_props: Option<Vec<(String, rux_reactive::Value)>>,
+    /// Fetched from an address: there is no file to load again.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fetched: bool,
     document: Document,
     /// Shared by every window: fonts are loaded once.
     text: Shared<rux_text::TextEngine>,
@@ -2543,6 +2550,8 @@ impl App {
             window_settings: WindowSettings::default(),
             #[cfg(not(target_arch = "wasm32"))]
             window_props: None,
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            fetched: false,
             document,
             text: Rc::new(RefCell::new(rux_text::TextEngine::new())),
             images: Rc::new(RefCell::new(rux_paint::ImageCache::new())),
@@ -2756,6 +2765,11 @@ impl App {
     /// [`RuxEvent::DevFiles`].
     #[cfg(not(target_arch = "wasm32"))]
     fn reload(&mut self) {
+        // A document that came from an address is shown as it came.
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        if self.fetched {
+            return;
+        }
         // A window the app opened is loaded again as a window, with the props
         // its opener gave it. (The stores start again first, in the shell, or
         // the new document would adopt the old state in place of what its own
@@ -9236,6 +9250,9 @@ impl ApplicationHandler<RuxEvent> for App {
             RuxEvent::VideoFrame => self.request_redraw(),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             RuxEvent::Reload => self.reload(),
+            // The shell, which owns the windows, opens it.
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            RuxEvent::Fetched { .. } => {}
 
             // The device that owns the surface lives in the context the task
             // built, so that context replaces the placeholder one here.
@@ -10364,6 +10381,9 @@ struct Shell {
     /// The windows the app opened with `window.open`, by their window's id.
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     children: HashMap<WindowId, Child>,
+    /// What `window.openRemote` asked for and is still fetching, by handle.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    remote: HashMap<u64, window_module::RemoteRequest>,
 }
 
 /// A window the app opened: who opened it, the handle script holds, and what
@@ -10383,6 +10403,8 @@ impl Shell {
             parked: Some(app),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             children: HashMap::new(),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            remote: HashMap::new(),
         }
     }
 
@@ -10448,6 +10470,7 @@ impl Shell {
             for request in requests {
                 match request {
                     Request::Open(open) => self.open_child(event_loop, open),
+                    Request::OpenRemote(remote) => self.fetch_remote(remote),
                     Request::Close(handle) => {
                         if let Some(id) = self.child_of(handle) {
                             self.close_child(id);
@@ -10523,13 +10546,96 @@ impl Shell {
         app.window_settings = open.settings;
         app.window_props = Some(open.props);
         let owner = if open.owned { owner } else { None };
-        app.open_window(event_loop, owner.as_deref(), open.resizable);
+        self.seat_child(event_loop, app, owner, open.resizable, opener, open.handle, open.on_close);
+    }
+
+    /// Give a child's app its window, and file it under the id that window
+    /// has, as a child of `opener`: the end of opening one, whatever it came
+    /// from. A window that did not come up reads closed.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[allow(clippy::too_many_arguments)]
+    fn seat_child(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        mut app: App,
+        owner: Option<Arc<Window>>,
+        resizable: Option<bool>,
+        opener: Option<WindowId>,
+        handle: Arc<window_module::WindowHandle>,
+        on_close: Option<rux_runtime::native::Handle>,
+    ) {
+        app.open_window(event_loop, owner.as_deref(), resizable);
         let Some(id) = app.state.as_ref().map(|s| s.window.id()) else {
-            open.handle.mark_closed();
+            handle.mark_closed();
             return;
         };
-        self.children.insert(id, Child { opener, handle: open.handle, on_close: open.on_close });
+        self.children.insert(id, Child { opener, handle, on_close });
         self.windows.insert(id, app);
+    }
+
+    /// Start fetching the document `window.openRemote` asked for, on a worker
+    /// thread: the fetch may take its whole time limit, and the window it is
+    /// asked from must keep drawing. The text comes back as
+    /// [`RuxEvent::Fetched`], and the document is built on this thread, since
+    /// a `Document` cannot cross threads.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn fetch_remote(&mut self, remote: window_module::RemoteRequest) {
+        let Some(proxy) = self.main_app().map(|m| m.proxy.clone()) else {
+            remote.handle.mark_closed();
+            return;
+        };
+        let (url, limit, handle) = (remote.url.clone(), remote.terms.limits.max_source_bytes, remote.handle.id);
+        self.remote.insert(handle, remote);
+        std::thread::spawn(move || {
+            let result = rux_runtime::fetch::fetch_text(&url, limit, rux_runtime::fetch::TIMEOUT);
+            let _ = proxy.send_event(RuxEvent::Fetched { handle, result });
+        });
+    }
+
+    /// A remote document came, or did not. Opened as a child of the window
+    /// that asked, under the terms it was granted, or told to that window.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    fn finish_remote(&mut self, event_loop: &ActiveEventLoop, handle: u64, result: Result<String, String>) {
+        let Some(remote) = self.remote.remove(&handle) else { return };
+        let opener = remote.opener.or(self.main);
+        let loaded = result.and_then(|text| {
+            window_module::as_window(None, || {
+                rux_runtime::fetch::document_from_fetched(&text, remote.terms.clone()).map_err(|e| e.to_string())
+            })
+        });
+        let document = match loaded {
+            Ok(document) => document,
+            Err(why) => {
+                let message = format!("window.openRemote could not open `{}`: {why}", remote.url);
+                eprintln!("rux: {message}");
+                remote.handle.fail(message.clone());
+                if let Some(app) = opener.and_then(|id| self.windows.get_mut(&id)) {
+                    window_module::as_window(opener, || {
+                        rux_runtime::warn_script(message);
+                        if let Some(on_error) = &remote.on_error {
+                            app.document.run_callback(on_error);
+                        }
+                    });
+                    app.request_redraw();
+                }
+                return;
+            }
+        };
+        let Some(main) = self.main_app() else {
+            remote.handle.mark_closed();
+            return;
+        };
+        let (context, text, images, proxy) =
+            (main.context.clone(), main.text.clone(), main.images.clone(), main.proxy.clone());
+        let owner = main.state.as_ref().map(|s| s.window.clone());
+        let mut app = App::with_document(PathBuf::from(&remote.url), proxy, document);
+        app.context = context;
+        app.text = text;
+        app.images = images;
+        app.window_settings = remote.settings;
+        app.fetched = true;
+        let owner = if remote.owned { owner } else { None };
+        self.seat_child(event_loop, app, owner, remote.resizable, opener, remote.handle, remote.on_close);
     }
 
     /// Close a window the app opened: drop its state and its window, say so
@@ -10656,6 +10762,8 @@ impl ApplicationHandler<RuxEvent> for Shell {
             RuxEvent::Answered => self.each(|app| app.user_event(event_loop, RuxEvent::Answered)),
             #[cfg(not(target_arch = "wasm32"))]
             RuxEvent::VideoFrame => self.each(|app| app.user_event(event_loop, RuxEvent::VideoFrame)),
+            #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+            RuxEvent::Fetched { handle, result } => self.finish_remote(event_loop, handle, result),
             #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
             RuxEvent::Reload => {
                 // The stores start again, once for every window: each one

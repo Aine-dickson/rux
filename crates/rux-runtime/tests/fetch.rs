@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::time::Duration;
 
-use rux_runtime::fetch::{check_url, fetch_document, fetch_text};
+use rux_runtime::fetch::{check_url, document_from_fetched, fetch_document, fetch_text};
 use rux_runtime::Sandbox;
 
 const DOC: &str = "<template><screen><text>hello</text></screen></template>\n<script>\nlet a = 1;\n</script>";
@@ -128,6 +128,19 @@ fn a_fetched_document_is_one_file() {
     let err = fetch_document(&url(port, "/a.rux"), Sandbox::new()).err().expect("refused");
     let said = err.to_string();
     assert!(said.contains("one file") && said.contains("components::card"), "{said}");
+}
+
+#[test]
+fn fetched_text_opens_as_one_file_without_a_second_fetch() {
+    // The half a worker thread leaves for the UI thread.
+    let src = "<template><screen><card /></screen></template>
+<script>
+use components::card;
+</script>";
+    let said = document_from_fetched(src, Sandbox::new()).err().expect("refused").to_string();
+    assert!(said.contains("one file") && said.contains("components::card"), "{said}");
+    let plain = "<template><screen><text>hi</text></screen></template>";
+    assert!(document_from_fetched(plain, Sandbox::new()).is_ok());
 }
 
 #[test]

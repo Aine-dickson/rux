@@ -9,16 +9,21 @@
 //! to come from, and is said at the line.
 //!
 //! Native only: a page has no sockets (the browser's `fetch` is the web's
-//! business, and the playground is handed its source).
+//! business, and the playground is handed its source). [`check_url`] is
+//! text alone and is there everywhere, for `rux check`.
 
+#[cfg(not(target_arch = "wasm32"))]
 use std::time::Duration;
 
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{Document, LoadError, Sandbox};
 
 /// How long a fetch may take, all of it.
+#[cfg(not(target_arch = "wasm32"))]
 pub const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// How many redirects are followed.
+#[cfg(not(target_arch = "wasm32"))]
 const MAX_REDIRECTS: usize = 3;
 
 /// The host of `url`, when it is an address a document may be fetched from:
@@ -71,6 +76,7 @@ pub fn check_url(url: &str) -> Result<String, String> {
 
 /// The text at `url`, read as a document is: at most `max_bytes` of UTF-8,
 /// within `timeout`, following up to three redirects that stay on the host.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn fetch_text(url: &str, max_bytes: usize, timeout: Duration) -> Result<String, String> {
     let first = check_url(url)?;
     let agent: ureq::Agent = ureq::Agent::config_builder()
@@ -121,9 +127,18 @@ pub fn fetch_text(url: &str, max_bytes: usize, timeout: Duration) -> Result<Stri
 /// Fetch the document at `url` and open it under `sandbox`. It is one file:
 /// a `use` of another `.rux` file is refused at its line, since nothing beside
 /// a fetched document can be read.
+#[cfg(not(target_arch = "wasm32"))]
 pub fn fetch_document(url: &str, sandbox: Sandbox) -> Result<Document, LoadError> {
     let text = fetch_text(url, sandbox.limits.max_source_bytes, TIMEOUT).map_err(LoadError::plain)?;
-    if let Ok(sfc) = rux_parser::parse_sfc(&text) {
+    document_from_fetched(&text, sandbox)
+}
+
+/// Open text that was fetched as a document under `sandbox`: the second half
+/// of [`fetch_document`], for a caller that fetched the text on another
+/// thread (a `Document` is not `Send`). One file, as there.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn document_from_fetched(text: &str, sandbox: Sandbox) -> Result<Document, LoadError> {
+    if let Ok(sfc) = rux_parser::parse_sfc(text) {
         let (_, imports) = crate::extract_imports(&sfc.script);
         for import in &imports {
             if crate::native_module_of(&import.file).is_none() {
@@ -136,5 +151,5 @@ pub fn fetch_document(url: &str, sandbox: Sandbox) -> Result<Document, LoadError
             }
         }
     }
-    Document::from_source_sandboxed(&text, sandbox)
+    Document::from_source_sandboxed(text, sandbox)
 }

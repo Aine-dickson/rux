@@ -30,6 +30,67 @@ pub const OPTIONS: &[&str] = &[
     "onClose",
 ];
 
+/// The options `window.openRemote` takes: those of `window.open` without
+/// `props` (a remote file's props cannot be checked, and what goes in is a
+/// trust question of its own), plus the grants and the failure callback.
+pub const REMOTE_OPTIONS: &[&str] = &[
+    "title",
+    "width",
+    "height",
+    "minWidth",
+    "minHeight",
+    "maximized",
+    "decorations",
+    "titleBar",
+    "resizable",
+    "owned",
+    "sandbox",
+    "onClose",
+    "onError",
+];
+
+/// Why `grant` may not be handed to a remote document, when it may not. The
+/// stores of `settings` and `secrets` are the app's own, and a remote file
+/// reading or writing them is the grant that is dangerous to give whole.
+/// Lifted when a document's stores are kept apart.
+pub fn refused_for_remote(grant: &str) -> Option<String> {
+    let module = grant.split(['.', '@']).next().unwrap_or(grant);
+    matches!(module, "settings" | "secrets").then(|| {
+        format!(
+            "`{grant}` cannot be granted to a remote document: `{module}` is the app's own, and a document from elsewhere would read and write it"
+        )
+    })
+}
+
+/// The terms a remote document opens on, from the grants its opener wrote and
+/// the terms the opener itself runs on (`None` for an app's own code). Each
+/// grant has to be a known one and not one of the app's own stores
+/// ([`refused_for_remote`]); a sandboxed opener may hand out only what it
+/// holds, a name exactly or its module granted whole, and its limits go on to
+/// the document. `Err` says which grant and why.
+pub fn remote_terms(opener: Option<&crate::Sandbox>, grants: &[String]) -> Result<crate::Sandbox, String> {
+    let mut terms = crate::Sandbox::new();
+    if let Some(opener) = opener {
+        terms.limits = opener.limits.clone();
+    }
+    for grant in grants {
+        crate::Sandbox::check(grant).map_err(|why| format!("window.openRemote cannot grant `{grant}`: {why}"))?;
+        if let Some(why) = refused_for_remote(grant) {
+            return Err(why);
+        }
+        if let Some(opener) = opener {
+            let module = grant.split(['.', '@']).next().unwrap_or(grant);
+            if !(opener.grants.contains(grant) || opener.grants(module)) {
+                return Err(format!(
+                    "window.openRemote cannot grant `{grant}`: the document that opens it was not granted it, and an opener hands out no more than it holds"
+                ));
+            }
+        }
+        terms = terms.grant(grant);
+    }
+    Ok(terms)
+}
+
 /// Check every `window.open(...)` written in `script` (the text of a `<script>`
 /// whose first line is `script_line` of its file), against the app whose
 /// folder is `root`. Findings are raised on the line of the call.
@@ -37,9 +98,11 @@ pub(super) fn check(script: &Script, text: &str, script_line: usize, root: &Path
     let lines = rux_syntax::LineIndex::new(text);
     rux_syntax::visit::exprs(script, &mut |e| {
         if let ExprKind::Method { recv, name, args, .. } = &e.kind {
-            if name.name == "open" && matches!(&recv.kind, ExprKind::Var(v) if v == "window") {
+            let remote = name.name == "openRemote";
+            if (name.name == "open" || remote) && matches!(&recv.kind, ExprKind::Var(v) if v == "window") {
                 let line = lines.line_col(text, e.span.start as usize).0 + script_line - 1;
-                for (message, is_error) in findings(args, root) {
+                let found = if remote { remote_findings(args) } else { findings(args, root) };
+                for (message, is_error) in found {
                     rux_script::located(Some(line), || {
                         if is_error {
                             rux_script::error_script(message);
@@ -84,6 +147,15 @@ fn findings(args: &[Expr], root: &Path) -> Vec<(String, bool)> {
         ));
         return out;
     };
+    if path.contains("://") {
+        out.push((
+            format!(
+                "window.open(\"{path}\") is given an address: `window.open` opens the app's own files, and a document from an address is opened with `window.openRemote(\"{path}\", {{ ... }})`"
+            ),
+            true,
+        ));
+        return out;
+    }
     let file = root.join(path);
     if !source::exists(&file) {
         out.push((
@@ -166,6 +238,60 @@ fn findings(args: &[Expr], root: &Path) -> Vec<(String, bool)> {
             )),
             None => {}
         }
+    }
+    out
+}
+
+/// What is wrong with one `window.openRemote` call, and whether it is an
+/// error: the address, the options, and the grants, as far as they are
+/// written out.
+fn remote_findings(args: &[Expr]) -> Vec<(String, bool)> {
+    let mut out = Vec::new();
+    let options = args.get(1).and_then(|a| match &a.kind {
+        ExprKind::Map { entries, .. } => Some(entries),
+        _ => None,
+    });
+    if let Some(entries) = options {
+        for entry in entries {
+            if !REMOTE_OPTIONS.contains(&entry.key.name.as_str()) {
+                out.push((
+                    format!(
+                        "window.openRemote has no option `{}`: it takes {}",
+                        entry.key.name,
+                        REMOTE_OPTIONS.join(", ")
+                    ),
+                    true,
+                ));
+            }
+            if entry.key.name == "sandbox" {
+                if let ExprKind::Array(items) = &entry.value.kind {
+                    for item in items {
+                        let ExprKind::Str(grant) = &item.kind else { continue };
+                        if let Err(why) = crate::Sandbox::check(grant) {
+                            out.push((format!("window.openRemote cannot grant `{grant}`: {why}"), true));
+                        } else if let Some(why) = refused_for_remote(grant) {
+                            out.push((why, true));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let Some(first) = args.first() else {
+        out.push(("window.openRemote takes the address of a .rux file first".to_string(), true));
+        return out;
+    };
+    match &first.kind {
+        ExprKind::Str(url) => {
+            if let Err(why) = crate::fetch::check_url(url) {
+                out.push((format!("window.openRemote(\"{url}\"): {why}"), true));
+            }
+        }
+        _ => out.push((
+            "window.openRemote is given an address that is not written out, so it is not checked: write the address as a string to have it checked"
+                .to_string(),
+            false,
+        )),
     }
     out
 }

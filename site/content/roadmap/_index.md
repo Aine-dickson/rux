@@ -155,15 +155,33 @@ images. Open:
    limits and no native module unless granted by name (`07-script`,
    "Security"). The default an unmarked file gets, trusted, is the promise
    1.0 freezes. What is not built:
-   - **Fetching documents: first step done 2026-11-28** (owner's choices:
+   - **Fetching documents: two steps done 2026-11-28** (owner's choices:
      Rust and command line, one self-contained file, https, 1 MiB, 10 s, no
      cross-host redirect): `rux_runtime::fetch::fetch_document(url, sandbox)`
-     and `rux run https://host/app.rux [--sandbox=...]`. Not built: a script
-     call or a markup element to open one, multi-file bundles (relative
+     and `rux run https://host/app.rux [--sandbox=...]`; then
+     `window.openRemote(url, options)` (the owner chose a call of its own over
+     a form of `window.open`, so the trust boundary is written at the call):
+     a window of its own, always sandboxed, grants in `sandbox`, `onClose` and
+     `onError`, desktop only. Not built: multi-file bundles (relative
      imports, a URL-aware source), caching or re-fetching (it loads once, no
-     hot reload), an integrity check beyond https, and Android and the web
+     hot reload), an integrity check beyond https, `props` for a remote
+     window, granting `settings` or `secrets` to one (refused until a
+     document's stores are kept apart), and Android and the web
      (`rux run --device` takes no `--sandbox`; a page has no sockets). Image
      paths in a fetched document still resolve from the working directory.
+   - **A `<remote src="https://...">` element: not designed.** The call above
+     opens a window, and a phone has none (`window.canOpen` is false there), so
+     this is the form that gives a phone app screens it did not ship with: a
+     promotion or onboarding card the server changes without an update, a
+     server-driven tab, a partner's confirmation card, a customer's own form.
+     It is a design of its own, since a sandboxed document sits inside a
+     trusted layout: its box and its sizing (a remote file cannot claim the
+     page), a loading and a failed state, isolation (props in as checked,
+     size-limited values; which events come out), taps, focus and a scroll
+     inside a scroll, a cap on how many are alive (each is an interpreter with
+     its own budget), and on Android the fetch itself (permission, the network
+     path), on the web the browser's `fetch`. Needs an Opus plan; reuses the
+     fetch limits, the grants and the error wording of the call.
    - **Grants narrower than a module: done 2026-11-28** (a function:
      `links.open`, `native::shop.search`; a host for `links.open` and
      `images`: `links.open@example.com`); `rux check --sandbox` reports a

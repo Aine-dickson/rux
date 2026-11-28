@@ -572,8 +572,24 @@ pub fn window_interface() -> rux_native::Interface {
                     is_async: false,
                 }),
             },
+            // A document from an address, always sandboxed:
+            // `window.openRemote(url, options)` gives a `Window` the same way.
+            Item {
+                name: "openRemote".into(),
+                kind: ItemKind::Fn(Sig {
+                    params: vec![("url".into(), "string".into()), ("options".into(), "any".into())],
+                    result: "Window".into(),
+                    is_async: false,
+                }),
+            },
             method("close"),
             method("focus"),
+            // Why a window from `openRemote` did not open: text, `none`
+            // while there is nothing wrong.
+            Item {
+                name: "error".into(),
+                kind: ItemKind::Property { on: "Window".into(), ty: "string?".into(), writable: false },
+            },
             // Whether it is still there. Follows the window as it closes.
             Item {
                 name: "isOpen".into(),

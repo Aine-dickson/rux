@@ -2010,6 +2010,60 @@ Two things to know before using it:
 - Calling `window.open` twice opens **two windows**. Keep the handle in a signal
   and test `isOpen`, or `focus()` the one that is there.
 
+**`window.openRemote(url, options)`** opens a document from an address in a
+window of its own and returns a `Window`, the same handle `window.open` gives.
+It is a call of its own and not a form of `window.open`, so the trust boundary
+is written at the call: `window.open` only ever opens the app's own files
+(trusted), `window.openRemote` only ever opens a document from elsewhere,
+**always sandboxed** and always interpreted. `window.canOpen` is `false` on
+Android and the web, where it throws `unsupported`.
+
+```rux
+<script>
+use type native::rux::window::Window;
+let promo: Window? = signal(none);
+let failed = signal(false);
+fn show() {
+  promo = window.openRemote("https://example.com/promo.rux", {
+    title: "Promo", width: 420, height: 600,
+    sandbox: ["clipboard"],
+    onClose: () => { promo = none; },
+    onError: () => { failed = true; }
+  });
+}
+</script>
+```
+
+The options are `title`, `width`, `height`, `minWidth`, `minHeight`,
+`maximized`, `decorations`, `titleBar`, `resizable`, `owned`, `sandbox`,
+`onClose` and `onError`; a name that is not one throws kind `option`. There is
+no `props`: the opener cannot check what a remote file declares, and what goes
+in is a trust question of its own.
+
+- **The call answers at once.** An address that is not `https` (plain `http`
+  only for `localhost`, `127.0.0.1` and `[::1]`) throws kind `address`; so does
+  anything else `rux run <url>` refuses. The fetch runs on another thread, so
+  the window that asked keeps drawing, and the window appears when the
+  document has come and loaded. Same limits as `rux run <url>`: one file, 1 MiB,
+  10 seconds, a redirect stays on its host.
+- **`sandbox` names what the document may use**, such as `["clipboard"]` or
+  `["links.open@example.com"]` (the forms are in "Security"). None by default.
+  It throws kind `grant` for a name that is not a grant, **and for `settings`
+  and `secrets`**: those stores are the app's own, and a document from
+  elsewhere would read and write them. (Lifted when a document's stores are
+  kept apart.)
+- **A sandboxed opener hands out no more than it holds.** Each name has to be
+  one the opener was granted, or its module granted whole; the document's limits
+  are the opener's.
+- **When it fails** (a bad answer, too big, too slow, a `use` of another file,
+  a parse error), `isOpen` reads `false`, `w.error` holds the reason as text
+  (`none` otherwise), the opener's panel says it, and `onError` runs in the
+  opener. The function takes no arguments: read the reason from the handle.
+- **`rux check`** reads a call whose address is written out: it has to be an
+  address that would be fetched, the options have to be known, and a grant
+  written out has to be one. An address that is not written out is a warning.
+  `window.open` given an address is an error that names `window.openRemote`.
+
 ## Keys
 
 **`@key`** runs when a key is pressed while focus is on the element or inside
@@ -3104,7 +3158,7 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   trust is what an app's own files have when nobody says otherwise.
 - **A document that is not the app's own is sandboxed**, and whoever opens it
   says so. A file cannot mark itself trusted. The opener is the playground,
-  `rux run --sandbox`, `rux check --sandbox`, `rux run https://host/app.rux`,
+  `rux run --sandbox`, `rux check --sandbox`, `rux run https://host/app.rux`, `window.openRemote`,
   or Rust calling `Document::from_source_sandboxed`,
   `Document::load_sandboxed`, `rux_runtime::fetch::fetch_document` or
   `rux_runtime::set_default_sandbox`. **A fetched document** is always

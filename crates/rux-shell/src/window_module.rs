@@ -78,6 +78,8 @@ pub(crate) fn install_window() {
     calls.insert("Window.close".to_string(), Call::sync(|args| ask(args, true)));
     calls.insert("Window.focus".to_string(), Call::sync(|args| ask(args, false)));
     calls.insert("Window.isOpen".to_string(), Call::sync(is_open));
+    calls.insert("Window.error".to_string(), Call::sync(error_of));
+    calls.insert("openRemote".to_string(), Call::sync(open_remote));
     calls.insert("canOpen".to_string(), Call::sync(|_args: Vec<Any>| CAN_OPEN.__read()));
     let _ = install(Module { interface, calls });
     CAN_OPEN.set(cfg!(not(any(target_arch = "wasm32", target_os = "android"))));
@@ -98,6 +100,8 @@ pub(crate) struct WindowHandle {
     #[cfg_attr(any(target_arch = "wasm32", target_os = "android"), allow(dead_code, reason = "read by `close()` and `focus()`, desktop only"))]
     pub(crate) id: u64,
     open: std::sync::atomic::AtomicBool,
+    /// Why a window from `openRemote` did not open, for `Window.error`.
+    error: std::sync::Mutex<Option<String>>,
 }
 
 impl rux_runtime::native::Resource for WindowHandle {
@@ -112,6 +116,14 @@ impl WindowHandle {
             rux_runtime::native::notify();
         }
     }
+
+    /// The window never opened, and why: `error` says it, `isOpen` is `false`.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    pub(crate) fn fail(&self, message: String) {
+        *self.error.lock().unwrap_or_else(|e| e.into_inner()) = Some(message);
+        self.mark_closed();
+        rux_runtime::native::notify();
+    }
 }
 
 /// The window a `Window` method or property was called on.
@@ -120,6 +132,10 @@ fn handle_of(args: &[Any]) -> Result<std::sync::Arc<WindowHandle>, Error> {
         Some(Any::Resource(h)) => h.get::<WindowHandle>().ok_or_else(|| Error::new("type", "that is not a Window")),
         _ => Err(Error::new("type", "that is not a Window")),
     }
+}
+
+fn error_of(args: Vec<Any>) -> Result<Any, Error> {
+    Ok(handle_of(&args)?.error.lock().unwrap_or_else(|e| e.into_inner()).clone().map_or(Any::None, Any::Str))
 }
 
 fn is_open(args: Vec<Any>) -> Result<Any, Error> {
@@ -140,6 +156,11 @@ fn ask(_args: Vec<Any>, _close: bool) -> Result<Any, Error> {
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 fn open(_args: Vec<Any>) -> Result<Any, Error> {
+    Err(unsupported())
+}
+
+#[cfg(any(target_arch = "wasm32", target_os = "android"))]
+fn open_remote(_args: Vec<Any>) -> Result<Any, Error> {
     Err(unsupported())
 }
 
@@ -165,10 +186,29 @@ pub(crate) struct OpenRequest {
     pub(crate) on_close: Option<rux_runtime::native::Handle>,
 }
 
+/// What `window.openRemote` asked for, once its options are read and the
+/// grants are held to what the opener may hand out.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub(crate) struct RemoteRequest {
+    pub(crate) handle: std::sync::Arc<WindowHandle>,
+    pub(crate) opener: Option<WindowId>,
+    pub(crate) url: String,
+    /// What the document runs on: the grants, and the opener's limits.
+    pub(crate) terms: rux_runtime::Sandbox,
+    pub(crate) settings: crate::WindowSettings,
+    pub(crate) resizable: Option<bool>,
+    pub(crate) owned: bool,
+    pub(crate) on_close: Option<rux_runtime::native::Handle>,
+    /// What to run in the opener when the document could not be fetched or
+    /// loaded. The reason is the handle's `error`.
+    pub(crate) on_error: Option<rux_runtime::native::Handle>,
+}
+
 /// What the shell is asked to do, in the order it was asked.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub(crate) enum Request {
     Open(OpenRequest),
+    OpenRemote(RemoteRequest),
     Close(u64),
     Focus(u64),
 }
@@ -255,6 +295,7 @@ fn open(args: Vec<Any>) -> Result<Any, Error> {
     let handle = std::sync::Arc::new(WindowHandle {
         id: NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         open: std::sync::atomic::AtomicBool::new(true),
+        error: std::sync::Mutex::new(None),
     });
     REQUESTS.with(|r| {
         r.borrow_mut().push(Request::Open(OpenRequest {
@@ -266,6 +307,114 @@ fn open(args: Vec<Any>) -> Result<Any, Error> {
             owned,
             props,
             on_close,
+        }))
+    });
+    Ok(Any::Resource(rux_runtime::native::Handle::from_arc(handle)))
+}
+
+/// `window.openRemote(url, options)`: fetch a document from an address and
+/// open it in a window of its own, sandboxed. The call checks the address and
+/// the options and answers at once; the shell fetches on another thread and
+/// opens the window when the document has come.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn open_remote(args: Vec<Any>) -> Result<Any, Error> {
+    let Some(Any::Str(url)) = args.first() else {
+        return Err(option_error(
+            "window.openRemote takes the address of a .rux file first: window.openRemote(\"https://example.com/app.rux\", { ... })"
+                .into(),
+        ));
+    };
+    rux_runtime::fetch::check_url(url).map_err(|why| Error::new("address", why))?;
+    let options = match args.get(1) {
+        Some(Any::Map(m)) => m.clone(),
+        None | Some(Any::None) => Default::default(),
+        Some(other) => {
+            return Err(option_error(format!("window.openRemote takes its options as a map, not a {}", other.kind())));
+        }
+    };
+    let number = |key: &str, v: &Any| match v {
+        Any::Int(i) => Ok(*i as f64),
+        Any::Float(f) => Ok(*f),
+        other => Err(option_error(format!("`{key}` takes a number, not a {}", other.kind()))),
+    };
+    let flag = |key: &str, v: &Any| match v {
+        Any::Bool(b) => Ok(*b),
+        other => Err(option_error(format!("`{key}` takes true or false, not a {}", other.kind()))),
+    };
+    let mut settings = crate::WindowSettings::default();
+    let mut resizable = None;
+    let mut owned = true;
+    let mut grants: Vec<String> = Vec::new();
+    let mut on_close = None;
+    let mut on_error = None;
+    for (key, v) in &options {
+        match (key.as_str(), v) {
+            (_, Any::None) => {}
+            ("title", Any::Str(t)) => settings.title = Some(t.clone()),
+            ("title", other) => {
+                return Err(option_error(format!("`title` takes text, not a {}", other.kind())));
+            }
+            ("width", v) => settings.width = Some(number(key, v)?),
+            ("height", v) => settings.height = Some(number(key, v)?),
+            ("minWidth", v) => settings.min_width = Some(number(key, v)?),
+            ("minHeight", v) => settings.min_height = Some(number(key, v)?),
+            ("maximized", v) => settings.maximized = flag(key, v)?,
+            ("decorations", v) => settings.frameless = !flag(key, v)?,
+            ("titleBar", Any::Str(t)) if t == "overlay" => settings.title_overlay = true,
+            ("titleBar", _) => return Err(option_error("`titleBar` takes \"overlay\"".into())),
+            ("resizable", v) => resizable = Some(flag(key, v)?),
+            ("owned", v) => owned = flag(key, v)?,
+            ("sandbox", Any::Array(items)) => {
+                for item in items {
+                    match item {
+                        Any::Str(g) => grants.push(g.clone()),
+                        other => {
+                            return Err(option_error(format!(
+                                "`sandbox` takes the names to grant as text, such as [\"clipboard\"], not a {}",
+                                other.kind()
+                            )));
+                        }
+                    }
+                }
+            }
+            ("sandbox", other) => {
+                return Err(option_error(format!(
+                    "`sandbox` takes a list of the names to grant, such as [\"clipboard\"], not a {}",
+                    other.kind()
+                )));
+            }
+            ("onClose", Any::Resource(h)) if h.type_name() == "Callback" => on_close = Some(h.clone()),
+            ("onClose", _) => return Err(option_error("`onClose` takes a function".into())),
+            ("onError", Any::Resource(h)) if h.type_name() == "Callback" => on_error = Some(h.clone()),
+            ("onError", _) => return Err(option_error("`onError` takes a function".into())),
+            (other, _) => {
+                return Err(option_error(format!(
+                    "window.openRemote has no option `{other}`: it takes {}",
+                    rux_runtime::window_open::REMOTE_OPTIONS.join(", ")
+                )));
+            }
+        }
+    }
+    // What this document runs on is what it may hand out: a sandboxed opener
+    // gives no more than it holds.
+    let terms = rux_runtime::window_open::remote_terms(rux_runtime::current_sandbox().as_ref(), &grants)
+        .map_err(|why| Error::new("grant", why))?;
+    let handle = std::sync::Arc::new(WindowHandle {
+        id: NEXT_WINDOW.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        open: std::sync::atomic::AtomicBool::new(true),
+        error: std::sync::Mutex::new(None),
+    });
+    REQUESTS.with(|r| {
+        r.borrow_mut().push(Request::OpenRemote(RemoteRequest {
+            handle: handle.clone(),
+            opener: current(),
+            url: url.clone(),
+            terms,
+            settings,
+            resizable,
+            owned,
+            on_close,
+            on_error,
         }))
     });
     Ok(Any::Resource(rux_runtime::native::Handle::from_arc(handle)))
@@ -385,3 +534,62 @@ pub(crate) fn follow(id: WindowId) {
 
 #[cfg(any(target_arch = "wasm32", target_os = "android"))]
 pub(crate) fn follow(_id: WindowId) {}
+
+#[cfg(all(test, not(any(target_arch = "wasm32", target_os = "android"))))]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn call(url: &str, options: &[(&str, Any)]) -> Result<Any, Error> {
+        let map: BTreeMap<String, Any> = options.iter().map(|(k, v)| (k.to_string(), v.clone())).collect();
+        open_remote(vec![Any::Str(url.into()), Any::Map(map)])
+    }
+
+    fn grants(names: &[&str]) -> Any {
+        Any::Array(names.iter().map(|n| Any::Str(n.to_string())).collect())
+    }
+
+    #[test]
+    fn a_bad_address_throws_at_the_call_and_asks_for_nothing() {
+        let _ = take_requests();
+        let err = call("http://example.com/a.rux", &[]).err().expect("refused");
+        assert_eq!(err.kind, "address");
+        assert!(err.message.contains("https"), "{}", err.message);
+        assert!(take_requests().is_empty());
+    }
+
+    #[test]
+    fn an_option_it_does_not_take_throws_and_props_is_one() {
+        let err = call("https://example.com/a.rux", &[("props", Any::Map(BTreeMap::new()))]).err().expect("refused");
+        assert_eq!(err.kind, "option");
+        assert!(err.message.contains("no option `props`"), "{}", err.message);
+    }
+
+    #[test]
+    fn the_apps_own_stores_and_unknown_names_cannot_be_granted() {
+        for bad in ["settings", "secrets.get", "nonsense"] {
+            let err = call("https://example.com/a.rux", &[("sandbox", grants(&[bad]))]).err().expect("refused");
+            assert_eq!(err.kind, "grant", "{bad}");
+        }
+        let err = call("https://example.com/a.rux", &[("sandbox", Any::Str("clipboard".into()))]).err().expect("refused");
+        assert_eq!(err.kind, "option");
+    }
+
+    #[test]
+    fn a_good_call_answers_with_a_window_and_queues_the_fetch() {
+        let _ = take_requests();
+        let handle = call("https://example.com/a.rux", &[("sandbox", grants(&["clipboard"])), ("title", Any::Str("P".into()))])
+            .expect("accepted");
+        assert!(matches!(handle, Any::Resource(_)));
+        let mut requests = take_requests();
+        assert_eq!(requests.len(), 1);
+        let Some(Request::OpenRemote(remote)) = requests.pop() else { panic!("an OpenRemote") };
+        assert_eq!(remote.url, "https://example.com/a.rux");
+        assert!(remote.terms.grants("clipboard"));
+        assert_eq!(remote.settings.title.as_deref(), Some("P"));
+        // A handle that failed reads closed, with the reason.
+        remote.handle.fail("no".into());
+        assert!(!remote.handle.open.load(std::sync::atomic::Ordering::Acquire));
+        assert_eq!(error_of(vec![Any::Resource(rux_runtime::native::Handle::from_arc(remote.handle.clone()))]).unwrap(), Any::Str("no".into()));
+    }
+}
