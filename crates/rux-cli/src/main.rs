@@ -65,6 +65,10 @@ Usage:
                              native::shop, ...), one function (links.open)
                              or one host (links.open@example.com).
                              Not for an app with native/
+  rux run <https://...>      Fetch one document and open it, always
+                             sandboxed with no grants unless --sandbox=a,b
+                             names some. One file, no hot reload; plain
+                             http only for localhost
   rux <app.rux>              The same, for a file you can name
   rux check [path...]        Check documents and report problems: every .rux
                              file in the project by default, each in its own
@@ -338,7 +342,60 @@ fn no_entry_message() -> String {
     )
 }
 
+/// `rux run https://example.com/app.rux`: fetch one document and open it as one
+/// that is not the app's own. Always sandboxed, with no grants unless
+/// `--sandbox=a,b` names some; one file, https (plain http only for this
+/// machine's own), no hot reload.
+fn run_url(url: &str, args: &[String]) -> ExitCode {
+    let mut sandbox = rux_runtime::Sandbox::new();
+    let mut preview = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        match arg.as_str() {
+            flag if flag == "--sandbox" || flag.starts_with("--sandbox=") => match sandbox_from_flag(flag) {
+                Ok(s) => sandbox = s,
+                Err(why) => {
+                    eprintln!("rux: {why}");
+                    return ExitCode::from(2);
+                }
+            },
+            "--preview" => match rest.next().and_then(|v| rux_shell::DeviceProfile::by_name(v)) {
+                Some(profile) => preview = Some(profile),
+                None => {
+                    eprintln!(
+                        "rux: `--preview` needs a device\n\nTry one of:\n{}",
+                        rux_shell::DeviceProfile::names_with_descriptions()
+                    );
+                    return ExitCode::from(2);
+                }
+            },
+            flag => {
+                eprintln!(
+                    "rux: `{flag}` does not go with an address: a fetched document takes `--sandbox=...` and `--preview`"
+                );
+                return ExitCode::from(2);
+            }
+        }
+    }
+    if let Err(why) = rux_runtime::fetch::check_url(url) {
+        eprintln!("rux: {why}");
+        return ExitCode::from(2);
+    }
+    // Its windows, and anything else it opens, are under the same terms.
+    rux_runtime::set_default_sandbox(Some(sandbox.clone()));
+    match rux_shell::run_fetched(url, sandbox, preview) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => {
+            eprintln!("rux: {why}");
+            ExitCode::from(1)
+        }
+    }
+}
+
 fn run(path: PathBuf, args: &[String]) -> ExitCode {
+    if let Some(url) = path.to_str().filter(|s| s.starts_with("http://") || s.starts_with("https://")) {
+        return run_url(url, args);
+    }
     // Checked here rather than left to the runtime, which starts a file watcher
     // on the path and panics when there is nothing to watch. A missing file is
     // an ordinary mistake, not a bug in Rux, and it should not read like one.

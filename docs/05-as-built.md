@@ -3463,6 +3463,19 @@ build, and `stray_retry` (`rux-cli/src/permission_check.rs`) warns on a
 `retry()` in a template outside every `<fallback>`. Reference: `07-script`,
 "Error boundaries".
 
+**Fetched documents.** `rux_runtime::fetch` (native only): `check_url` (https,
+or http for loopback; no user name, no spaces), `fetch_text` (an `ureq` agent
+with `max_redirects(0)`, up to three redirects followed by hand, each re-checked
+and held to the first host; a non-2xx is an error; the body read to
+`max_source_bytes`; UTF-8) and `fetch_document` (refuses a `use` of a non-native
+file at its line, then `Document::from_source_sandboxed`). `rux_shell::run_fetched`
+builds the event loop first, since that is what installs Rux's own native
+modules (`install_rux_modules`) that loading reads, then fetches and shows the
+document with `App::with_document`; the settings id is `fetched.<host>`.
+`rux run <url>` in `rux-cli` calls it with `Sandbox::new()` or the
+`--sandbox=` grants, and sets them as the process default so a window it opens
+is sandboxed too.
+
 **The sandbox.** A document that is not the app's own is opened under a
 `rux_script::Sandbox` (`sandbox.rs`): `Limits` and the set of granted module
 names. `Builder::sandbox` takes it; with none a document is trusted. At build

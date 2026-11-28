@@ -960,6 +960,27 @@ fn d() { links.open(url); }
     assert_eq!(check(&[file]).status.code(), Some(0), "no sandbox, nothing to report");
 }
 
+/// A fetched document is refused before a window opens: a plain `http` address
+/// that is not this machine's, a server that is not there, a flag that has no
+/// meaning with an address.
+#[test]
+fn run_an_address_says_why_it_cannot_fetch_it() {
+    let run = |args: &[&str]| Command::new(RUX).arg("run").args(args).output().expect("run");
+    let said = |o: &std::process::Output| String::from_utf8_lossy(&o.stderr).to_string();
+    let out = run(&["http://example.com/app.rux"]);
+    assert_eq!(out.status.code(), Some(2), "{}", said(&out));
+    assert!(said(&out).contains("https"), "{}", said(&out));
+    let out = run(&["http://127.0.0.1:1/app.rux"]);
+    assert_eq!(out.status.code(), Some(1), "{}", said(&out));
+    assert!(said(&out).contains("could not fetch"), "{}", said(&out));
+    let out = run(&["https://example.com/app.rux", "--route", "/x"]);
+    assert_eq!(out.status.code(), Some(2), "{}", said(&out));
+    assert!(said(&out).contains("--route"), "{}", said(&out));
+    let out = run(&["https://example.com/app.rux", "--sandbox=links@example.com"]);
+    assert_eq!(out.status.code(), Some(2), "{}", said(&out));
+    assert!(said(&out).contains("links.open@example.com"), "{}", said(&out));
+}
+
 #[test]
 fn run_sandbox_needs_a_known_grant_name_list() {
     let dir = fixture("sandbox_flag", &[("app.rux", COPIES)]);

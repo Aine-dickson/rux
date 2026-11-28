@@ -151,12 +151,15 @@ images. Open:
    limits and no native module unless granted by name (`07-script`,
    "Security"). The default an unmarked file gets, trusted, is the promise
    1.0 freezes. What is not built:
-   - **Fetching and over-the-air delivery** of documents, and the API an app
-     uses to open one sandboxed. Only the playground, `rux run --sandbox` and
-     Rust calling `Document::from_source_sandboxed` open one today, so nothing
-     opens one on Android (`rux run --device` takes no `--sandbox`). Held by
-     the owner (2026-11-27); the first step offered was a Rust and command-line
-     way in, with no new script or markup.
+   - **Fetching documents: first step done 2026-11-28** (owner's choices:
+     Rust and command line, one self-contained file, https, 1 MiB, 10 s, no
+     cross-host redirect): `rux_runtime::fetch::fetch_document(url, sandbox)`
+     and `rux run https://host/app.rux [--sandbox=...]`. Not built: a script
+     call or a markup element to open one, multi-file bundles (relative
+     imports, a URL-aware source), caching or re-fetching (it loads once, no
+     hot reload), an integrity check beyond https, and Android and the web
+     (`rux run --device` takes no `--sandbox`; a page has no sockets). Image
+     paths in a fetched document still resolve from the working directory.
    - **Grants narrower than a module: done 2026-11-28** (a function:
      `links.open`, `native::shop.search`; a host for `links.open` and
      `images`: `links.open@example.com`); `rux check --sandbox` reports a

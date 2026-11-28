@@ -27,6 +27,8 @@
 mod modules;
 mod data_url;
 pub mod remote;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fetch;
 pub mod disk_cache;
 mod source;
 pub mod tailwind;

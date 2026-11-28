@@ -3942,6 +3942,19 @@ Desktop window, debug `rux` built from this tree, `--preview phone`, `RUX_TRACE=
 
 Not driven: `images@host` against a real image server, and a window opened with two different grants.
 
+## Fetched documents, 2026-11-28
+
+Desktop window, debug `rux` built from this tree, a `python -m http.server` on `127.0.0.1:8765` serving `C:/Users/USER/Mobile/rux-harness/fetch` (`app.rux` sets a setting from `mounted`; `two-files.rux` has a `use components::card`).
+
+| Case | Result |
+|---|---|
+| `rux run http://127.0.0.1:8765/app.rux --sandbox=settings` | the window shows "fetched and sandboxed" and "settings: ran"; `%APPDATA%\fetched.127.0.0.1\settings.json` holds the value, nothing under the app's own id |
+| the same with no `--sandbox` | no window; "`settings` is not available in this document: whoever opens it has to grant it ...", exit 1 |
+| `two-files.rux` | no window; "a fetched document is one file: `use components::card` cannot load beside it", exit 1 |
+| `http://example.com/app.rux`, `http://127.0.0.1:1/app.rux` (nothing there) | exit 2 with the https rule; exit 1 with "could not fetch" (test) |
+
+Found while driving: the first build fetched before the event loop existed, and the built-in modules were not installed yet, so `settings.set` answered and kept nothing. Not driven: a real https server, a redirect in a window, Android and the web (not supported).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

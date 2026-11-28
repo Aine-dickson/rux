@@ -3111,9 +3111,16 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   trust is what an app's own files have when nobody says otherwise.
 - **A document that is not the app's own is sandboxed**, and whoever opens it
   says so. A file cannot mark itself trusted. The opener is the playground,
-  `rux run --sandbox`, `rux check --sandbox`, or Rust calling
-  `Document::from_source_sandboxed`, `Document::load_sandboxed` or
-  `rux_runtime::set_default_sandbox`. The interpreter is the sandbox: a
+  `rux run --sandbox`, `rux check --sandbox`, `rux run https://host/app.rux`,
+  or Rust calling `Document::from_source_sandboxed`,
+  `Document::load_sandboxed`, `rux_runtime::fetch::fetch_document` or
+  `rux_runtime::set_default_sandbox`. **A fetched document** is always
+  sandboxed, with no grants unless `--sandbox=a,b` names some: it is one file
+  (a `use` of another `.rux` file is refused at its line), over `https` (plain
+  `http` only for `localhost`, `127.0.0.1` and `[::1]`), at most the
+  sandbox's `max_source_bytes` (1 MiB), within 10 seconds, and a redirect has
+  to stay on the host it started on. It is shown as it came, with no hot
+  reload, and its settings are kept apart, under `fetched.<host>`. The interpreter is the sandbox: a
   sandboxed document is always interpreted, since compiled code does not check
   what it spends.
 - **What a sandbox limits.** Every limit is checked before the work it limits,

@@ -13188,6 +13188,35 @@ pub fn run_windowed(
     drop(watcher); // keep the watcher alive for the loop's lifetime
 }
 
+/// Fetch the document at `url` and open it under `sandbox` in a window, running
+/// the frame loop until it closes (`rux_runtime::fetch::fetch_document`).
+/// `Err` is why it was not fetched or did not load, before any window opened.
+/// There is no file to watch and nothing to reload from: it is shown as it
+/// came.
+///
+/// Its settings are kept under `fetched.<host>`, so two hosts' documents never
+/// share a store, and neither shares an app's. The loop is built first: it is
+/// what puts Rux's own native modules in place, which loading reads.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn run_fetched(url: &str, sandbox: rux_runtime::Sandbox, preview: Option<DeviceProfile>) -> Result<(), String> {
+    let host = rux_runtime::fetch::check_url(url)?;
+    let id: String = host.chars().map(|c| if c.is_ascii_alphanumeric() || c == '.' || c == '-' { c } else { '_' }).collect();
+    settings::app_id_or(&format!("fetched.{id}"));
+    if let Some(dir) = settings::image_cache_dir() {
+        rux_runtime::disk_cache::set_dir(dir);
+    }
+    let event_loop = EventLoop::<RuxEvent>::with_user_event()
+        .build()
+        .expect("create event loop");
+    event_loop.set_control_flow(ControlFlow::Wait);
+    wake_on_answers(&event_loop);
+    let document = rux_runtime::fetch::fetch_document(url, sandbox).map_err(|e| e.to_string())?;
+    let mut app = App::with_document(PathBuf::from(url), event_loop.create_proxy(), document);
+    app.preview = preview;
+    event_loop.run_app(&mut Shell::new(app)).expect("run app");
+    Ok(())
+}
+
 /// `android_activity`, re-exported so a generated wrapper needs one dependency.
 ///
 /// `rux build --target android` writes a crate whose whole content is an
