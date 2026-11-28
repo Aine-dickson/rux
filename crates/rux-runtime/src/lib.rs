@@ -243,6 +243,13 @@ pub struct Document {
     /// The failure count a boundary was last asked about, so a failure
     /// belongs to the innermost call that saw it and not to the ones around.
     fault_attributed: u64,
+    /// The `<boundary>` a handler was written in, by the `async fn` it started,
+    /// so a failure after an `await` reaches the same boundary the handler's
+    /// own would have.
+    task_catchers: HashMap<u64, String>,
+    /// The catcher of the run that was dispatched last, for the tasks it
+    /// started: they are registered when the caller finishes up.
+    last_catcher: Option<String>,
     /// The document's own `mounted` / `unmounted` bodies.
     hooks: Hooks,
     /// Each component's `mounted` / `unmounted` bodies, by tag. Shared by every
@@ -3448,6 +3455,8 @@ impl Document {
             instance_effect_writers: HashMap::new(),
             boundary_dirty: false,
             fault_attributed: 0,
+            task_catchers: HashMap::new(),
+            last_catcher: None,
             hooks,
             component_hooks,
             component_computeds,
@@ -3477,6 +3486,9 @@ impl Document {
             root: Root::new(root),
         };
         doc.init_reactive();
+        if rux_style::take_counts_stale() {
+            doc.rebuild();
+        }
         Ok(doc)
     }
 
@@ -3625,6 +3637,8 @@ impl Document {
             instance_effect_writers: HashMap::new(),
             boundary_dirty: false,
             fault_attributed: 0,
+            task_catchers: HashMap::new(),
+            last_catcher: None,
             hooks,
             // No imports were resolved here, so there are no components and
             // nothing can declare a component hook, computed or effect.
@@ -3656,6 +3670,9 @@ impl Document {
             root: Root::new(root),
         };
         doc.init_reactive();
+        if rux_style::take_counts_stale() {
+            doc.rebuild();
+        }
         Ok(doc)
     }
 
@@ -4010,6 +4027,13 @@ impl Document {
             apply_focus(&mut root, self.focus.as_ref(), real.as_ref());
             self.registry = registry;
             self.root.set(root);
+            // A boundary failed in this build after its siblings were counted
+            // from the end: build again, with the failure known, so what counts
+            // from the end counts the fallback it shows.
+            if rux_style::take_counts_stale() {
+                self.rebuild_untimed();
+                return;
+            }
             // Refresh what the overlay lists: a rebuild re-runs the cascade and
             // every binding, so it re-raises exactly what this document still has
             // wrong.
@@ -5720,11 +5744,15 @@ impl Document {
         // the build wrote it.
         let (boundary, catcher) = match &run {
             Run::Handler(src) => (rux_style::boundary_of_handler(src), rux_style::catcher_of_handler(src)),
+            // Going on after an `await`: the boundary the handler that started
+            // the task was written in.
+            Run::Task(id) => (None, self.task_catchers.get(id).cloned()),
             _ => (None, None),
         };
         let _ = rux_script::take_retries();
         let ran = rux_script::with_elements(resolver, || self.dispatch_handler_inner(run, instance, depth, event));
         self.attribute_fault(instance, catcher.as_deref(), before);
+        self.last_catcher = catcher;
         if rux_script::take_retries() > 0 {
             if let Some(key) = boundary {
                 if self.engine.retry_boundary(&key) {
@@ -6317,12 +6345,35 @@ impl Document {
     /// Give started tasks to `instance`, which ran the code that started
     /// them, so each goes on in its scope.
     fn own_tasks(&mut self, started: Vec<u64>, instance: Option<&str>) {
+        let gone = self.is_gone(instance);
+        let catcher = self.last_catcher.take();
+        let mut orphans = Vec::new();
         for id in started {
             // A module's function writes only the module's state, which lives
             // as long as the document: so does the task.
             let owner = if self.engine.task_is_a_modules(id) { None } else { instance.map(str::to_string) };
+            // The run that started it failed its `<boundary>`, and the build
+            // that showed the fallback threw the instance away before this
+            // ran: nobody is left to go on in.
+            if gone && owner.is_some() {
+                orphans.push(id);
+                continue;
+            }
+            if let Some(catcher) = &catcher {
+                self.task_catchers.insert(id, catcher.clone());
+            }
             self.tasks.push((id, owner));
         }
+        if !orphans.is_empty() {
+            self.engine.drop_tasks(&orphans);
+        }
+    }
+
+    /// `instance` names a component that is no longer in the tree: the run
+    /// that is being finished up failed its boundary, or removed it some other
+    /// way, and the build that followed threw it away.
+    fn is_gone(&self, instance: Option<&str>) -> bool {
+        instance.is_some_and(|k| !self.instances.contains_key(k))
     }
 
     fn apply_timer_requests(&mut self, instance: Option<&str>) {
@@ -6335,9 +6386,14 @@ impl Document {
         // And any the code just ran cancelled are gone.
         let engine = &self.engine;
         self.tasks.retain(|(id, _)| engine.has_task(*id));
+        self.task_catchers.retain(|id, _| engine.has_task(*id));
         self.report_task_failures();
+        let gone = self.is_gone(instance);
         for request in rux_script::take_timer_requests() {
             match request {
+                // An interval its own run failed the instance for belongs to
+                // nothing now, and would tick against a scope that is gone.
+                rux_script::TimerRequest::Start { .. } if gone => {}
                 rux_script::TimerRequest::Start { id, ms, body } => {
                     // A non-positive period would fire every frame forever and
                     // is more likely a mistake than an intent.
@@ -6469,6 +6525,7 @@ impl Document {
         }
         let engine = &self.engine;
         self.tasks.retain(|(id, _)| engine.has_task(*id));
+        self.task_catchers.retain(|id, _| engine.has_task(*id));
         self.report_task_failures();
         self.diagnostics.warnings.extend(collect_warnings());
         ran

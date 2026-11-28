@@ -1160,9 +1160,13 @@ is not a typo, and the person looking at it should see more than a hole.
 - **A handler written in a boundary's children fails it too**, the page's or a
   component's: a tap on a button inside the boundary that throws shows the
   fallback. A handler outside every boundary only reports, as before.
-- **Not caught:** a syntax error (the document does not load), a failure a
-  `try` caught, and a failure of an `async fn` that a page's handler (not a
-  component's) started, which belongs to no instance.
+- **An `async fn` fails the boundary of the handler that started it**, also
+  when it fails after an `await`: a page's handler and a component's alike.
+  One started outside every boundary only reports.
+- **A component that fails with its boundary takes its timers and `async fn`s
+  with it**, including ones the failing run itself started.
+- **Not caught:** a syntax error (the document does not load) and a failure a
+  `try` caught.
 - **`rux check` reads a fallback before it shows.** It builds each fallback
   once, with an error that has a `message` and a `kind`, and throws it away:
   an undefined name or a bad call in it is a finding. A missing field of

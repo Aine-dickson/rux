@@ -27,7 +27,9 @@ fn shown(doc: &Document) -> String {
 fn load(name: &str, body: &str, script: &str, parts: &[(&str, &str)]) -> Document {
     let dir = std::env::temp_dir().join(format!("rux_error_boundaries_{name}_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let app = format!("<template><screen>{body}</screen></template>\n<script>\n{script}\n</script>");
+    // A `<style>` at the end of `body` goes after the template, where it applies.
+    let (body, style) = body.split_once("<style>").map_or((body, String::new()), |(b, s)| (b, format!("<style>{s}")));
+    let app = format!("<template><screen>{body}</screen></template>\n{style}\n<script>\n{script}\n</script>");
     let mut files: Vec<(String, String)> = vec![("app.rux".into(), app)];
     files.extend(parts.iter().map(|(p, s)| (p.to_string(), s.to_string())));
     for (rel, text) in &files {
@@ -517,4 +519,248 @@ fn a_binding_failure_after_a_change_is_still_reported_once_the_fallback_shows() 
     assert!(shown(&doc).contains("failed"), "{}", shown(&doc));
     let said: Vec<String> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
     assert!(said.iter().any(|m| m.contains("zero")), "{said:?}");
+}
+
+// EB-3, EB-4, EB-6 and EB-8 of the roadmap: failures that reached no boundary,
+// or said too much.
+
+#[test]
+fn a_failing_mounted_hook_of_a_component_shows_the_fallback() {
+    let doc = load(
+        "mounted-fails",
+        r#"<text>page</text>
+<boundary>
+  <loader />
+  <fallback><text>mount failed: {{ error.message }}</text></fallback>
+</boundary>"#,
+        "use components::loader;",
+        &[(
+            "components/loader.rux",
+            "<template><text>loaded</text></template>\n<script>\nmounted { throw \"mount broke\"; }\n</script>",
+        )],
+    );
+    let s = shown(&doc);
+    assert!(s.contains("mount failed: mount broke") && !s.contains("loaded"), "{s}");
+}
+
+#[test]
+fn a_timer_of_a_component_that_fails_with_its_boundary_stops() {
+    let mut doc = load(
+        "timer-dies",
+        r#"<boundary>
+  <ticker />
+  <fallback><text>tick failed: {{ error.message }}</text></fallback>
+</boundary>"#,
+        "use components::ticker;",
+        &[(
+            "components/ticker.rux",
+            "<template><text>ticking</text></template>\n\
+             <script>\nmounted { setInterval(10) { throw \"tick broke\"; } }\n</script>",
+        )],
+    );
+    assert_eq!(doc.timer_deadline(0.0), Some(10.0));
+    doc.fire_timers(10.0);
+    let s = shown(&doc);
+    assert!(s.contains("tick failed: tick broke"), "{s}");
+    assert_eq!(doc.timer_deadline(1000.0), None, "the timer outlived its component");
+}
+
+#[test]
+fn an_async_fn_a_page_handler_started_fails_its_boundary_after_an_await() {
+    use rux_runtime::native as rn;
+    let answer = rn::Call::future(|_| async {
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        Ok(rn::Any::None)
+    });
+    rn::Module::new("eb6_net").export(rn::Export::function("get", &[], "void", answer)).install();
+    let mut doc = load(
+        "async-page",
+        r#"<boundary>
+  <view @tap="load()"><text>load</text></view>
+  <fallback><text>load failed: {{ error.message }}</text></fallback>
+</boundary>"#,
+        "use native::eb6_net;\nasync fn load() { await eb6_net.get(); throw \"late failure\"; }",
+        &[],
+    );
+    tap(&mut doc, "load");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while doc.has_waiting_tasks() {
+        let _ = doc.settle_tasks();
+        assert!(std::time::Instant::now() < deadline, "still waiting: {}", shown(&doc));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(shown(&doc).contains("load failed: late failure"), "{}", shown(&doc));
+}
+
+#[test]
+fn a_missing_store_function_is_one_error() {
+    let dir = std::env::temp_dir().join(format!("rux_error_boundaries_nostore_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    for (rel, text) in [
+        (
+            "app.rux",
+            "<template><screen><shop-row /></screen></template>\n<script>\nuse components::shop_row;\n</script>",
+        ),
+        (
+            "components/shop_row.rux",
+            "<template><view @tap=\"go()\"><text>row</text></view></template>\n\
+             <script>\nuse stores::shop;\nfn go() { shop.nope(); }\n</script>",
+        ),
+        ("stores/shop.rux", "<script>\nexport fn there() { }\n</script>"),
+    ] {
+        std::fs::create_dir_all(dir.join(rel).parent().unwrap()).unwrap();
+        std::fs::write(dir.join(rel), text).unwrap();
+    }
+    let doc = Document::load(dir.join("app.rux")).expect("loads");
+    let said: Vec<String> = doc.diagnostics().warnings.iter().map(|w| format!("{}: {}", w.is_error(), w.message)).collect();
+    assert_eq!(said.len(), 1, "{said:#?}");
+    assert!(said[0].starts_with("true:") && said[0].contains("does not export `nope`"), "{said:#?}");
+}
+
+#[test]
+fn a_component_timer_started_by_the_run_that_fails_it_is_not_kept() {
+    let mut doc = load(
+        "timer-same-run-component",
+        r#"<boundary>
+  <starter />
+  <fallback><text>failed: {{ error.message }}</text></fallback>
+</boundary>"#,
+        "use components::starter;",
+        &[(
+            "components/starter.rux",
+            "<template><view @tap=\"go()\"><text>start</text></view></template>\n\
+             <script>\nlet n = signal(0);\nfn go() { setInterval(10) { n += 1; }; throw \"after the timer\"; }\n</script>",
+        )],
+    );
+    tap(&mut doc, "start");
+    assert!(shown(&doc).contains("failed: after the timer"), "{}", shown(&doc));
+    assert_eq!(doc.timer_deadline(0.0), None, "a timer outlived the component that failed with it");
+}
+
+#[test]
+fn an_async_fn_a_component_started_fails_its_boundary_after_an_await() {
+    use rux_runtime::native as rn;
+    let answer = rn::Call::future(|_| async {
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        Ok(rn::Any::None)
+    });
+    rn::Module::new("eb6_comp_net").export(rn::Export::function("get", &[], "void", answer)).install();
+    let mut doc = load(
+        "async-component",
+        r#"<boundary>
+  <loader />
+  <fallback><text>load failed: {{ error.message }}</text></fallback>
+</boundary>"#,
+        "use components::loader;",
+        &[(
+            "components/loader.rux",
+            "<template><view @tap=\"load()\"><text>load</text></view></template>\n\
+             <script>\nuse native::eb6_comp_net;\nasync fn load() { await eb6_comp_net.get(); throw \"late failure\"; }\n</script>",
+        )],
+    );
+    tap(&mut doc, "load");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while doc.has_waiting_tasks() {
+        let _ = doc.settle_tasks();
+        assert!(std::time::Instant::now() < deadline, "still waiting: {}", shown(&doc));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(shown(&doc).contains("load failed: late failure"), "{}", shown(&doc));
+}
+
+#[test]
+fn an_async_fn_started_outside_every_boundary_does_not_borrow_the_last_ones() {
+    use rux_runtime::native as rn;
+    let answer = rn::Call::future(|_| async {
+        std::thread::sleep(std::time::Duration::from_millis(3));
+        Ok(rn::Any::None)
+    });
+    rn::Module::new("eb6_outside").export(rn::Export::function("get", &[], "void", answer)).install();
+    let mut doc = load(
+        "async-outside",
+        r#"<view @tap="load()"><text>load</text></view>
+<boundary><view @tap="n = 0"><text>inside</text></view><fallback><text>inside failed</text></fallback></boundary>"#,
+        "use native::eb6_outside;\nlet n = signal(1);\nasync fn load() { await eb6_outside.get(); throw \"late failure\"; }",
+        &[],
+    );
+    tap(&mut doc, "inside");
+    tap(&mut doc, "load");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while doc.has_waiting_tasks() {
+        let _ = doc.settle_tasks();
+        assert!(std::time::Instant::now() < deadline, "still waiting: {}", shown(&doc));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(!shown(&doc).contains("inside failed"), "{}", shown(&doc));
+}
+
+#[test]
+fn a_failed_boundary_counts_its_fallback_for_selectors_that_count_from_the_end() {
+    fn widths(n: &rux_layout::Node, out: &mut Vec<(String, Option<rux_layout::Len>)>) {
+        if let Some(t) = &n.text {
+            out.push((t.text.clone(), n.style.width));
+        }
+        for c in &n.children {
+            widths(c, out);
+        }
+    }
+    let mut doc = load(
+        "count-from-end",
+        r#"<view @tap="n = 0"><text>break</text></view>
+<view class="rows">
+  <text class="a">first</text>
+  <boundary>
+    <text class="b">[{{ show(n) }}]</text>
+    <fallback><text class="c">one</text><text class="c">two</text></fallback>
+  </boundary>
+  <text class="z">last</text>
+</view>
+<style>
+.a:nth-last-child(4) { width: 4px; }
+.a:nth-last-child(3) { width: 3px; }
+.c:nth-last-child(3) { width: 33px; }
+.z:last-child { width: 1px; }
+</style>"#,
+        &format!("{FAILS}\nlet n = signal(1);"),
+        &[],
+    );
+    let mut before = Vec::new();
+    widths(&doc.root, &mut before);
+    use rux_layout::Len::Px;
+    let width_of = |all: &[(String, Option<rux_layout::Len>)], t: &str| all.iter().find(|(x, _)| x.contains(t)).and_then(|(_, w)| *w);
+    assert_eq!(width_of(&before, "first"), Some(Px(3.0)), "{before:?}");
+    assert_eq!(width_of(&before, "last"), Some(Px(1.0)), "{before:?}");
+    tap(&mut doc, "break");
+    let mut after = Vec::new();
+    widths(&doc.root, &mut after);
+    assert_eq!(width_of(&after, "first"), Some(Px(4.0)), "{after:?}");
+    assert_eq!(width_of(&after, "one"), Some(Px(33.0)), "{after:?}");
+    assert_eq!(width_of(&after, "last"), Some(Px(1.0)), "{after:?}");
+}
+
+#[test]
+fn the_children_of_a_boundary_count_their_place_among_its_siblings() {
+    let doc = load(
+        "place-among-siblings",
+        r#"<view class="rows">
+  <text class="p">p</text>
+  <boundary><text class="q">q</text></boundary>
+</view>
+<style>
+.q:nth-child(2) { width: 2px; }
+.q:last-child { height: 7px; }
+.q:first-child { width: 9px; }
+</style>"#,
+        "",
+        &[],
+    );
+    fn find<'a>(n: &'a rux_layout::Node, t: &str) -> Option<&'a rux_layout::Node> {
+        if n.text.as_ref().is_some_and(|x| x.text == t) {
+            return Some(n);
+        }
+        n.children.iter().find_map(|c| find(c, t))
+    }
+    let q = find(&doc.root, "q").expect("q is shown");
+    assert_eq!(q.style.width, Some(rux_layout::Len::Px(2.0)), "second child, not first");
+    assert_eq!(q.style.height, Some(rux_layout::Len::Px(7.0)), "and the last");
 }

@@ -107,22 +107,25 @@ images. Open:
      boundary therefore rebuilds on each patch of its signals. A map of which
      boundary covers which part of the tree would attribute it without a
      rebuild.
-   - **EB-2. `:last-child` and the rest that count from the end** treat a
-     boundary as if it never failed (`count_rendered` has no boundary key).
-   - **EB-3. A failing `mounted` hook** of a component is not attributed to its
-     boundary (handlers, effects, timers, `async fn`s and bindings are).
-   - **EB-4. Timers** requested by an instance that is thrown away with its
-     boundary are not dropped when it goes; only the owner's later run is.
+   - **EB-2. Done 2026-11-28.** `:last-child` and the rest that count from the
+     end count a failed boundary as its fallback, and the children of a
+     boundary or a `<slot>` count their place among the siblings before them
+     (they started from 1 before). Guarded by tests, not yet driven in a window.
+   - **EB-3. Done, found already working 2026-11-28.** A failing `mounted` hook
+     of a component fails its boundary; a test now says so.
+   - **EB-4. Done 2026-11-28.** A timer or an `async fn` started by the run
+     that fails its own component away is not kept.
    - **EB-5. `error` fields are unchecked.** `rux check` cannot tell a typo
      such as `error.mesage` from a field a native error adds, so it reports
      neither until the fallback shows. Types for a native error's fields
      (from `rux::IntoError`) would let it report the typo.
-   - **EB-6. An `async fn` a page's handler started** belongs to no instance,
-     so its failure reaches no boundary.
+   - **EB-6. Done 2026-11-28.** An `async fn` fails the boundary its handler
+     was written in, also after an `await`, a page's included.
    - **EB-7. Not driven** on Android or the web, or with a real network call.
-   - **EB-8. A missing store function** (`shop.nope()` in a component `fn`)
-     reports three errors and a warning for one line; found while testing
-     boundaries, a checker problem of its own.
+   - **EB-8. Mostly done, found already working 2026-11-28.** A missing store
+     function (`shop.nope()` in a component `fn`) is one error at load. Open:
+     when the line then runs it also reports "`shop` is not defined", which
+     points away from the real mistake.
 2. **A capability model for native code.** Compiled app code has full trust.
    The interpreter is the sandbox for anything untrusted (the playground,
    fetched or over-the-air documents), with step and memory limits and no

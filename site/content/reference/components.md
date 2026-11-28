@@ -181,7 +181,12 @@ in (`Instance::boundary`); a failure of its handler, effect, timer or `async fn`
 (counted by `rux_script::faults`) fails that boundary and the document
 rebuilds (`Document::attribute_fault`, `settle_boundaries`). A binding that
 fails while patched, with a boundary open, rebuilds too, and the build says
-which boundary. `retry()` counts in a sink the runtime takes after a handler;
+which boundary. An `async fn` remembers the boundary its handler was written
+in (`Document::task_catchers`, read back when the task goes on), so a failure
+after an `await` reaches it, a page's included. A run that fails its own
+instance away leaves nothing behind: `apply_timer_requests` and `own_tasks`
+skip a timer and drop a task of an instance that is no longer in the tree
+(`Document::is_gone`). `retry()` counts in a sink the runtime takes after a handler;
 the boundary is read back from the `__boundary` local the build baked into the
 fallback's handler (`rux_style::boundary_of_handler`). A handler written in a
 boundary's children is baked with `__caught_by`, the boundary's key

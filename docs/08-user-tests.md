@@ -3905,6 +3905,18 @@ Found and fixed on the way: a failed tap was never on the panel when the tap onl
 
 **Not driven:** a sandboxed document on Android (nothing opens one there: `rux run --device` takes no `--sandbox`, and fetching is held by the owner); the ungranted-`window` read in the browser (the playground grants `window`; tested and checked from the command line).
 
+## Error boundaries: counting from the end, timers and `async fn`s, 2026-11-28
+
+Desktop window, debug `rux` built from this tree, `--preview phone`, probe `C:/Users/USER/Mobile/rux-harness/eb2` (`shoot.ps1`).
+
+| Case | Result |
+|---|---|
+| A list of `first`, a `<boundary>` whose child fails on mount (its `<fallback>` is two rows) and `last`, with `.row:last-child` pink and `.row:nth-last-child(2)` cyan | `first`, `fallback one` grey; `fallback two` cyan; `last` pink. Before, the boundary counted as one row, so the total was one short and `last` was not the last child. |
+
+Tests: `crates/rux-runtime/tests/error_boundaries.rs` (a failing `mounted`, a timer of a component that fails with its boundary, the same for a timer its own failing run started, an `async fn` of a page and of a component failing after an `await`, one started outside every boundary not borrowing another's, the count from the end, and a boundary's child counting its place among its siblings).
+
+**Not driven:** the timer and `async fn` cases in a window (tested through `Document`); Android and the web (EB-7).
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has

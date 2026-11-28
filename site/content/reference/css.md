@@ -367,7 +367,13 @@ count and a list restyles as rows come and go. **Counting from the end means
 counting first**: a parent whose rules use `:last-child` and its kind evaluates
 each `r-if` chain and each `r-for` collection once before building its
 children, then again as it builds them, so the cost is paid only where such a
-rule is written. A row held on screen while it animates out is not counted, so
+rule is written. A `<boundary>` is counted as what it shows: its children, or
+its `<fallback>`'s once it has failed (`count_rendered` finds it by the same
+key the build does). The build that finds a boundary failing has already
+counted its siblings, so it flags it (`rux_style::take_counts_stale`) and the
+runtime builds once more. The children of a `<boundary>` and the content of a
+`<slot>` start from the siblings built before them, so they count their place
+among them. A row held on screen while it animates out is not counted, so
 for the length of a leave transition `:last-child` is the last of the rows
 staying. `:not()` takes compound selectors (`.done`, `button:disabled`) and
 counts as specific as the most specific of them, as in CSS. Not yet:

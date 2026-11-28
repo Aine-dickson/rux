@@ -1349,6 +1349,19 @@ fn boundary_key(instance: Option<&str>, tpl_path: &[usize], row: Option<&str>) -
     format!("{}|{}", instance.unwrap_or(""), instance_key(tpl_path, row))
 }
 
+thread_local! {
+    /// A `<boundary>` failed in a build that counted its siblings from the end
+    /// (`:last-child` and the rest) before it was known to have failed.
+    static COUNTS_STALE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the last build counted children from the end around a `<boundary>`
+/// that failed in it, so that the counts are of the children it had and not of
+/// the fallback it shows. Says so once: build again, and they are right.
+pub fn take_counts_stale() -> bool {
+    COUNTS_STALE.with(|c| c.replace(false))
+}
+
 /// The name a parent's reconcile is woken by when a boundary fails or retries.
 pub fn boundary_signal(key: &str) -> String {
     format!("boundary#{key}")
@@ -11228,7 +11241,7 @@ fn build_children_from(
     slot: Option<Slot>,
     outlet: Option<Outlet>,
     row: Option<&str>,
-    first: Option<usize>,
+    first: Option<(usize, &[ElemDesc])>,
 ) -> (Vec<LayoutNode>, HashSet<String>) {
     let mut out = Vec::new();
     // Signals read by structural directives at this level, returned so the parent
@@ -11237,16 +11250,18 @@ fn build_children_from(
     // The identities of the rendered siblings so far, so `+`/`~` combinators can
     // see the elements preceding the one being built. (The synthetic `checked`
     // class is not reflected here, sibling combinators don't see checked state.)
-    let mut prev: Vec<ElemDesc> = Vec::new();
+    // A `<slot>`'s content and a `<boundary>`'s children land among siblings
+    // that were built before them, and are counted among them.
+    let mut prev: Vec<ElemDesc> = first.map(|(_, before)| before.to_vec()).unwrap_or_default();
     // `:last-child` and the rest that count from the end need to know how
     // many children there will be before the first is built and styled, so
     // they are counted first, only when a rule here asks. A slot's content
     // was counted with the parent's children it lands among.
     let from_end =
         first.is_none() && rules.iter().chain(slot.iter().flat_map(|s| s.rules)).any(Rule::reads_total);
-    let first = first.unwrap_or(0);
+    let first = first.map_or(0, |(at, _)| at);
     if from_end {
-        let total = count_rendered(elements, engine, locals, slot, outlet);
+        let total = count_rendered(elements, engine, locals, slot, outlet, Some(TemplatePlace { instance, tpl_path, row }));
         if let Some(parent) = ancestors.last_mut() {
             parent.child_total = Some(total);
         }
@@ -11315,7 +11330,7 @@ fn build_children_from(
                 caught_locals.push((CAUGHT_LOCAL.to_string(), Value::Text(key.clone())));
                 let (nodes, deps) = build_children_from(
                     &shown_kids, rules, comps, ancestors, inherited, engine, &caught_locals, path, &bp, reg, state,
-                    instances, swaps, instance, slot, outlet, row, Some(out.len()),
+                    instances, swaps, instance, slot, outlet, row, Some((out.len(), &prev)),
                 );
                 OPEN_BOUNDARIES.with(|b| b.borrow_mut().pop());
                 match rux_script::pop_boundary() {
@@ -11326,6 +11341,12 @@ fn build_children_from(
                     Some(error) => {
                         built.discard(reg, instances);
                         engine.fail_boundary(&key, error);
+                        // Its siblings were counted with the children it had
+                        // and are about to show a fallback: when a rule counts
+                        // from the end, the next build counts again.
+                        if rules.iter().any(Rule::reads_total) {
+                            COUNTS_STALE.with(|c| c.set(true));
+                        }
                     }
                 }
             }
@@ -11350,7 +11371,7 @@ fn build_children_from(
                     let fb_kids = element_children(fallback);
                     let _ = build_children_from(
                         &fb_kids, rules, comps, ancestors, inherited, engine, &fb_locals, path, &fb_tpl, reg,
-                        state, instances, swaps, instance, slot, outlet, row, Some(out.len()),
+                        state, instances, swaps, instance, slot, outlet, row, Some((out.len(), &prev)),
                     );
                     let _ = rux_script::pop_boundary();
                     // A native error carries fields the stand-in does not, so a
@@ -11375,7 +11396,7 @@ fn build_children_from(
                         let fb_kids = element_children(fallback);
                         let (nodes, deps) = build_children_from(
                             &fb_kids, rules, comps, ancestors, inherited, engine, &fb_locals, path, &fb_tpl, reg,
-                            state, instances, swaps, instance, slot, outlet, row, Some(out.len()),
+                            state, instances, swaps, instance, slot, outlet, row, Some((out.len(), &prev)),
                         );
                         structural_deps.extend(deps);
                         out.extend(nodes);
@@ -11410,7 +11431,7 @@ fn build_children_from(
                         in_namespace(s.namespace, || {
                             build_children_from(
                                 s.children, s.rules, comps, ancestors, inherited, engine, s.locals, path, &ctp,
-                                reg, state, instances, swaps, s.instance, None, None, row, Some(out.len()),
+                                reg, state, instances, swaps, s.instance, None, None, row, Some((out.len(), &prev)),
                             )
                         })
                     });
@@ -11899,6 +11920,15 @@ fn build_children_from(
     (out, structural_deps)
 }
 
+/// Where a run of elements sits in a template, which is what a `<boundary>`
+/// among them is known by: see [`boundary_key`].
+#[derive(Clone, Copy)]
+struct TemplatePlace<'a> {
+    instance: Option<&'a str>,
+    tpl_path: &'a [usize],
+    row: Option<&'a str>,
+}
+
 /// How many elements `build_children` will render from `elements`, counted
 /// the way it counts them into `prev`: the branch an `r-if` chain takes, each
 /// row of an `r-for`, what a `<slot>` is filled with, the route a `<router>`
@@ -11915,25 +11945,46 @@ fn count_rendered(
     locals: &Locals,
     slot: Option<Slot>,
     outlet: Option<Outlet>,
+    at: Option<TemplatePlace>,
 ) -> usize {
     let mut n = 0;
     let (mut in_chain, mut satisfied) = (false, false);
-    for el in elements {
+    for (ti, el) in elements.iter().enumerate() {
         if el.tag == "slot" {
             in_chain = false;
             n += match slot.filter(|s| !s.children.is_empty()) {
-                Some(s) => count_rendered(s.children, engine, s.locals, None, None),
+                // Written in the caller's template, which is not where this
+                // is counted from, so a boundary in it is not found by key.
+                Some(s) => count_rendered(s.children, engine, s.locals, None, None, None),
                 None => element_children(el).len(),
             };
         } else if el.tag == "router-view" {
             in_chain = false;
             n += outlet.is_some_and(|o| !o.rest.is_empty()) as usize;
         } else if el.tag == "boundary" {
-            // Its children, as if it failed nowhere: whether it fails is
-            // known only once they are built.
             in_chain = false;
-            let kids: Vec<&Element> = element_children(el).into_iter().filter(|c| c.tag != "fallback").collect();
-            n += count_rendered(&kids, engine, locals, slot, outlet);
+            let all = element_children(el);
+            let kids: Vec<&Element> = all.iter().copied().filter(|c| c.tag != "fallback").collect();
+            let bp: Vec<usize> = at.iter().flat_map(|p| p.tpl_path.iter().copied()).chain(std::iter::once(ti)).collect();
+            let place = at.map(|p| TemplatePlace { tpl_path: &bp, ..p });
+            // One that has failed shows its `<fallback>` in place of its
+            // children. One that has not is counted as if it never will:
+            // whether it fails is known only once they are built, and the
+            // build that shows the fallback counts again.
+            let failed = place
+                .and_then(|p| engine.boundary_error(&boundary_key(p.instance, p.tpl_path, p.row)).cloned());
+            n += match (failed, all.iter().rev().find(|c| c.tag == "fallback")) {
+                (Some(error), Some(fallback)) => {
+                    let mut fb_locals = locals.clone();
+                    fb_locals.push(("error".to_string(), error));
+                    let mut fb_tpl = bp.clone();
+                    fb_tpl.push(all.len().saturating_sub(1));
+                    let fb_place = place.map(|p| TemplatePlace { tpl_path: &fb_tpl, ..p });
+                    count_rendered(&element_children(fallback), engine, &fb_locals, slot, outlet, fb_place)
+                }
+                (Some(_), None) => 0,
+                (None, _) => count_rendered(&kids, engine, locals, slot, outlet, place),
+            };
         } else if el.tag == "router" {
             in_chain = false;
             let current = engine
