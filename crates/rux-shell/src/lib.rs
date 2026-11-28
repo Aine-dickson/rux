@@ -13306,7 +13306,9 @@ pub fn run_windowed(
 /// came.
 ///
 /// Its settings are kept under `fetched.<host>`, so two hosts' documents never
-/// share a store, and neither shares an app's. The loop is built first: it is
+/// share a store, and neither shares an app's. The text is fetched first, so a
+/// bad address or a server that is not there is said without needing a window
+/// (a machine with no display, a CI run); then the loop is built, since it is
 /// what puts Rux's own native modules in place, which loading reads.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn run_fetched(url: &str, sandbox: rux_runtime::Sandbox, preview: Option<DeviceProfile>) -> Result<(), String> {
@@ -13316,12 +13318,13 @@ pub fn run_fetched(url: &str, sandbox: rux_runtime::Sandbox, preview: Option<Dev
     if let Some(dir) = settings::image_cache_dir() {
         rux_runtime::disk_cache::set_dir(dir);
     }
+    let text = rux_runtime::fetch::fetch_text(url, sandbox.limits.max_source_bytes, rux_runtime::fetch::TIMEOUT)?;
     let event_loop = EventLoop::<RuxEvent>::with_user_event()
         .build()
         .expect("create event loop");
     event_loop.set_control_flow(ControlFlow::Wait);
     wake_on_answers(&event_loop);
-    let document = rux_runtime::fetch::fetch_document(url, sandbox).map_err(|e| e.to_string())?;
+    let document = rux_runtime::fetch::document_from_fetched(&text, sandbox).map_err(|e| e.to_string())?;
     let mut app = App::with_document(PathBuf::from(url), event_loop.create_proxy(), document);
     app.preview = preview;
     event_loop.run_app(&mut Shell::new(app)).expect("run app");
