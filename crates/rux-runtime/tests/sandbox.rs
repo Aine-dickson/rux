@@ -84,9 +84,8 @@ fn a_handler_that_takes_the_state_past_its_limit_is_undone() {
     let _ = rux_script::take_warnings();
     doc.apply_handler_in("log.push(\"x\".repeat(40000))", None);
     assert_eq!(shown(&doc), vec!["2".to_string()], "the third was undone");
-    // Said where any failing handler says it, until the next rebuild reads it.
-    let said: Vec<String> = rux_script::take_warnings().into_iter().map(|w| w.message).collect();
-    assert!(said.iter().any(|m| m.contains("state")), "{said:?}");
+    // Said where any failing handler says it: on the panel, after the tap.
+    assert!(warnings(&doc).contains("state"), "{}", warnings(&doc));
 }
 
 #[test]
@@ -98,4 +97,99 @@ fn a_remote_image_is_not_fetched_without_the_images_grant() {
     assert!(rux_runtime::remote_images_allowed());
     let _ = Document::from_source(&src).expect("loads");
     assert!(rux_runtime::remote_images_allowed(), "a trusted document fetches as it always did");
+}
+
+#[test]
+fn markup_that_reads_an_ungranted_window_is_told_who_grants_it() {
+    let src = source("<text>{{ window.maximized }}</text>", "let n = 1;");
+    let said = match Document::from_source_sandboxed(&src, Sandbox::new()) {
+        Err(err) => err.to_string(),
+        Ok(doc) => format!("{}; {:?}", warnings(&doc), doc.diagnostics().error),
+    };
+    assert!(said.contains("`window` is not available in this document"), "{said}");
+    assert!(!said.contains("not defined"), "{said}");
+    // Granted, it reads.
+    let doc = Document::from_source_sandboxed(&src, Sandbox::new().grant("window")).expect("loads");
+    assert!(!warnings(&doc).contains("window"), "{}", warnings(&doc));
+}
+
+#[test]
+fn a_tapped_loop_that_never_ends_is_stopped_and_said() {
+    let src = source(
+        "<text>{{ n }}</text>",
+        "let n = signal(0);\nfn spin() { while true { n = n + 1; } }",
+    );
+    let mut sandbox = Sandbox::new();
+    sandbox.limits.steps_per_run = 10_000;
+    let mut doc = Document::from_source_sandboxed(&src, sandbox).expect("loads");
+    let _ = rux_script::take_warnings();
+    doc.apply_handler_in("spin()", None);
+    // Said on the panel after the tap itself, though the tap only patched:
+    // the web has no stderr, and a stopped tap said nothing there.
+    assert!(warnings(&doc).contains("stopped after 10000 steps"), "{}", warnings(&doc));
+    // And still there after the next tap, said once.
+    doc.apply_handler_in("n = n + 1", None);
+    assert_eq!(warnings(&doc).matches("stopped after").count(), 1, "{}", warnings(&doc));
+}
+
+#[test]
+fn a_trusted_tap_that_fails_is_said_on_the_panel_too() {
+    let src = source("<text>{{ n }}</text>", "let n = signal(0);");
+    let mut doc = Document::from_source(&src).expect("loads");
+    // Says it changed something, so the shell draws a frame with the panel.
+    assert!(doc.apply_handler_in("n = nope + 1", None), "a frame is drawn for the panel");
+    assert!(warnings(&doc).contains("`nope`"), "{}", warnings(&doc));
+    // The same failure again adds nothing new to draw.
+    assert!(!doc.apply_handler_in("n = nope + 1", None));
+}
+
+#[test]
+fn a_failed_tap_stays_listed_when_the_press_is_restyled() {
+    use rux_runtime::InteractionState;
+    let src = "<template><screen><view class=\"b\" @tap=\"n = nope + 1\"><text>{{ n }}</text></view></screen></template>\n\
+               <script>\nlet n = signal(0);\n</script>\n<style>\n.b:active { opacity: 0.5; }\n</style>";
+    let mut doc = Document::from_source(src).expect("loads");
+    let pressed = InteractionState { active: Some(vec![0]), ..InteractionState::default() };
+    doc.set_interaction(pressed);
+    assert!(doc.apply_handler_in("n = nope + 1", None));
+    // The release restyles the box, which builds the list again.
+    assert!(doc.set_interaction(InteractionState::default()), "the release restyles");
+    assert!(warnings(&doc).contains("`nope`"), "kept past the restyle: {}", warnings(&doc));
+    // A later tap that raises something else replaces it.
+    doc.apply_handler_in("n = other + 1", None);
+    let said = warnings(&doc);
+    assert!(said.contains("`other`") && !said.contains("`nope`"), "{said}");
+}
+
+#[test]
+fn a_tap_that_writes_before_it_fails_stays_listed() {
+    use rux_runtime::InteractionState;
+    // The write rebuilds inside the tap, before the tap is over.
+    let src = "<template><screen><view class=\"b\"><text>{{ n }}</text></view></screen></template>\n\
+               <script>\nlet n = signal(0);\nfn go() { n = 1; let x = nope + 1; }\n</script>\n<style>\n.b:active { opacity: 0.5; }\n</style>";
+    let mut doc = Document::from_source(src).expect("loads");
+    doc.set_interaction(InteractionState { active: Some(vec![0]), ..InteractionState::default() });
+    assert!(doc.apply_handler_in("go()", None));
+    doc.set_interaction(InteractionState::default());
+    assert!(warnings(&doc).contains("`nope`"), "kept past the restyle: {}", warnings(&doc));
+    assert_eq!(shown(&doc), vec!["1".to_string()]);
+}
+
+#[test]
+fn a_tap_caught_by_a_boundary_is_still_listed_after_the_press_is_restyled() {
+    use rux_runtime::InteractionState;
+    // The boundary's rebuild runs inside the tap and reads the sinks itself.
+    let src = "<template><screen><view class=\"b\"><boundary><view @tap=\"boom()\"><text>go</text></view>\
+               <fallback><text>failed</text></fallback></boundary></view></screen></template>\n\
+               <script>\nfn boom() { throw \"no orders\"; }\n</script>\n<style>\n.b:active { opacity: 0.5; }\n</style>";
+    let mut doc = Document::from_source(src).expect("loads");
+    doc.set_interaction(InteractionState { active: Some(vec![0]), ..InteractionState::default() });
+    fn on_tap(node: &rux_layout::Node) -> Option<String> {
+        node.on_tap.clone().or_else(|| node.children.iter().find_map(on_tap))
+    }
+    let handler = on_tap(&doc.root).expect("a handler");
+    doc.apply_handler_in(&handler, None);
+    assert_eq!(shown(&doc), vec!["failed".to_string()]);
+    doc.set_interaction(InteractionState::default());
+    assert!(warnings(&doc).contains("no orders"), "kept past the restyle: {}", warnings(&doc));
 }

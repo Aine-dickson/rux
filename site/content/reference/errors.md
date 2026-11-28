@@ -61,6 +61,14 @@ app is watching.
 - **`print(x)` output waits in a corner badge.** Prints show as one line in the
   bottom right ("3 printed: …") that a tap opens into the panel, below the
   findings; a print never brings back a panel dismissed for warnings.
+- **A tap that fails is listed when it fails**, on the desktop, the web and
+  Android alike: a handler that throws, a loop stopped for taking too long, a
+  limit a sandboxed document reached. It stays listed until a later tap fails
+  differently or the file reloads, as the last print stays, and a failure a
+  `<boundary>` caught is listed too. A timer's failure is listed at the next
+  build. (Until 2026-11-27 it reached only stderr, which the web does not
+  have: a tap keeps what it raised in `tap_warnings`, held as each run ends,
+  and every build puts it back beside the load checks.)
 
 - **A handler or a `fn` that calls something which cannot exist** is reported
   at load, before anything is tapped, with the line of the call. Every `@event`,

@@ -175,6 +175,14 @@ pub struct Document {
     /// put back each time, or a document whose `mounted` or `computed` ran
     /// dropped every one of them before `rux check` or the overlay saw it.
     load_checks: Vec<Warning>,
+    /// What the last tap that raised anything raised: a failure, a stopped
+    /// loop, a sandbox limit. Put back after every build like the load checks,
+    /// since the press's own restyle replaces the list the moment the tap ends;
+    /// replaced by the next tap that raises something, as prints are.
+    tap_warnings: Vec<Warning>,
+    /// What the runs of the tap now running raised, held by
+    /// `hold_tap_warnings`; `None` outside a tap.
+    tapping: Option<Vec<Warning>>,
     /// Whether the navigation now being guarded came from outside the app.
     /// True only for the length of an [`open_link`](Self::open_link) call.
     linked: bool,
@@ -2103,7 +2111,9 @@ impl Document {
     /// The load's checks, then whatever the build just raised.
     fn fresh_warnings(&self) -> Vec<Warning> {
         let mut warnings = self.load_checks.clone();
-        warnings.extend(collect_warnings());
+        warnings.extend(self.tap_warnings.iter().cloned());
+        let tapped = |w: &Warning| self.tap_warnings.iter().any(|t| t.message == w.message);
+        warnings.extend(collect_warnings().into_iter().filter(|w| !tapped(w)));
         warnings
     }
 }
@@ -3423,6 +3433,8 @@ impl Document {
             // Whatever the build just complained about, or printed, ready for the
             // overlay.
             load_checks: load_checks.clone(),
+            tap_warnings: Vec::new(),
+            tapping: None,
             linked: false,
             diagnostics: Diagnostics {
                 warnings: built.into_iter().chain(load_checks.iter().cloned()).collect(),
@@ -3598,6 +3610,8 @@ impl Document {
             state: InteractionState::default(),
             environment: Environment::sane(),
             load_checks: load_checks.clone(),
+            tap_warnings: Vec::new(),
+            tapping: None,
             linked: false,
             diagnostics: Diagnostics {
                 warnings: built.into_iter().chain(load_checks.iter().cloned()).collect(),
@@ -4677,6 +4691,10 @@ impl Document {
         // and although a binding cannot call `query()`, an action left over
         // from an earlier handler must not be delivered to this one.
         let _ = rux_script::take_element_actions();
+        // What each run in this tap raises is held as it finishes, before a
+        // build inside the tap (a write the run made before it failed) can
+        // take it for the build's own.
+        self.tapping = Some(Vec::new());
         let ran = self.dispatch_handler(src, instance, 0, event);
         // Whatever the handler printed. Collected here as well as in `rebuild`
         // because a handler usually *patches* rather than rebuilds, so the
@@ -4684,13 +4702,15 @@ impl Document {
         // only worked when a tap happened to change the tree's shape would be
         // worse than none.
         self.collect_prints();
+        // A failed tap changes no element, but the panel has to be drawn.
+        let said = self.collect_handler_warnings();
         // Navigation is applied once, after the handler and everything it set
         // off have finished. A handler that navigates and then writes a signal
         // would otherwise render the old route with the new state in it.
         let acted = self.apply_element_actions();
         // Timers the handler started or cleared, owned by whoever ran it.
         self.apply_timer_requests(instance);
-        self.apply_navigations() || acted || ran
+        self.apply_navigations() || acted || ran || said
     }
 
     /// Move whatever the script has printed since the last collection onto the
@@ -4712,6 +4732,46 @@ impl Document {
         if !fresh.is_empty() {
             self.diagnostics.prints = fresh;
         }
+    }
+
+    /// During a tap, take what the run that just finished raised into
+    /// `tapping`. Outside one (a timer, a task resumed) the next build reads
+    /// it, as before.
+    fn hold_tap_warnings(&mut self) {
+        if let Some(held) = &mut self.tapping {
+            held.extend(rux_script::take_warnings());
+        }
+    }
+
+    /// Move what a handler raised (a failure, a stopped loop, a sandbox limit)
+    /// onto the diagnostics, for the same reason as [`Self::collect_prints`]: a
+    /// tap usually patches, so the rebuild that reads the sinks is not on the
+    /// way out of it, and a failed tap was said only on stderr, which the web
+    /// does not have. Kept as `tap_warnings`, so a build after the tap (the
+    /// press's own restyle replaces the list) puts them back; replaced by the
+    /// next tap that raises anything. Whether the list changed, so the caller
+    /// draws a frame for it.
+    fn collect_handler_warnings(&mut self) -> bool {
+        let mut raised = self.tapping.take().unwrap_or_default();
+        raised.extend(collect_warnings());
+        if raised.is_empty() {
+            return false;
+        }
+        let before = std::mem::take(&mut self.diagnostics.warnings);
+        let old_taps = std::mem::replace(&mut self.tap_warnings, raised);
+        let mut list = self.load_checks.clone();
+        list.extend(self.tap_warnings.iter().cloned());
+        // What the last build raised is kept; the last tap's is replaced.
+        let built: Vec<Warning> = before
+            .iter()
+            .filter(|w| !old_taps.iter().any(|t| t.message == w.message))
+            .filter(|w| !list.iter().any(|have| have.message == w.message))
+            .cloned()
+            .collect();
+        list.extend(built);
+        let changed = list != before;
+        self.diagnostics.warnings = list;
+        changed
     }
 
     /// Apply whatever `navigate`/`back`/`forward` the last run asked for.
@@ -5747,6 +5807,7 @@ impl Document {
                     "`emit(\"{event}\")` outside a component has no caller to receive it"
                 ));
             }
+            self.hold_tap_warnings();
             if changed.is_empty() {
                 return false;
             }
@@ -5765,6 +5826,7 @@ impl Document {
             // A callback has no component to run in: it is document-level.
             Run::Callback(id) => (locals.clone(), self.engine.run_callback(id).unwrap_or_default()),
         };
+        self.hold_tap_warnings();
 
         // Only the component's own names are written back. A prop belongs to the
         // caller: assigning to one inside a component would look like it worked
@@ -9316,7 +9378,7 @@ mod tests {
         .expect("loads");
         let button = doc.root.children[0].clone();
         doc.apply_handler_in(&button.on_tap.clone().unwrap(), None);
-        let warnings = take_warnings();
+        let warnings = doc.diagnostics().warnings.clone();
         assert!(
             warnings.iter().any(|w| w.message.contains("no caller")),
             "the warning says why nothing happened: {warnings:?}"
@@ -12263,7 +12325,7 @@ fn arm() {{ rts_callbacks.keep(\"{name}\", {{ onDone: () => {{ seen = 5; }} }});
         assert!(w.contains("levle"), "{w}");
         let mut doc = Document::from_source(&format!("{head}</script>")).expect("load");
         doc.apply_handler("m.label = \"x\"");
-        let w: Vec<String> = take_warnings().iter().map(|w| w.message.clone()).collect();
+        let w: Vec<String> = doc.diagnostics().warnings.iter().map(|w| w.message.clone()).collect();
         assert!(w.iter().any(|m| m.contains("read-only")), "{w:?}");
     }
 

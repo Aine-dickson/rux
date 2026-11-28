@@ -627,6 +627,22 @@ pub fn ensure_builtins() {
     }
 }
 
+/// The built-in modules a scope reads by name without a `use`: the name, and
+/// the module it links to.
+pub const BUILTIN_MODULES: &[(&str, &str)] = &[
+    (SETTINGS_NAME, SETTINGS_MODULE),
+    (CLIPBOARD_NAME, CLIPBOARD_MODULE),
+    (WINDOW_NAME, WINDOW_MODULE),
+    (PERMISSIONS_NAME, PERMISSIONS_MODULE),
+    (APP_NAME, APP_MODULE),
+    (NOTIFICATIONS_NAME, NOTIFICATIONS_MODULE),
+    (BACKGROUND_NAME, BACKGROUND_MODULE),
+    (LOCATION_NAME, LOCATION_MODULE),
+    (LINKS_NAME, LINKS_MODULE),
+    (SECRETS_NAME, SECRETS_MODULE),
+    (NETWORK_NAME, NETWORK_MODULE),
+];
+
 /// The imports a scope gets for free: each built-in function its code calls
 /// and does not declare itself, linked to [`BUILTIN_MODULE`] as an explicit
 /// `use native::rux::{pickFile};` would link it.
@@ -644,19 +660,7 @@ pub fn builtin_aliases(
     // `settings.get(…)`, `clipboard.writeText(…)`: each a whole module,
     // unless the file has one of that name of its own (a `use
     // native::settings;`, a `let settings`).
-    for (name, module) in [
-        (SETTINGS_NAME, SETTINGS_MODULE),
-        (CLIPBOARD_NAME, CLIPBOARD_MODULE),
-        (WINDOW_NAME, WINDOW_MODULE),
-        (PERMISSIONS_NAME, PERMISSIONS_MODULE),
-        (APP_NAME, APP_MODULE),
-        (NOTIFICATIONS_NAME, NOTIFICATIONS_MODULE),
-        (BACKGROUND_NAME, BACKGROUND_MODULE),
-        (LOCATION_NAME, LOCATION_MODULE),
-        (LINKS_NAME, LINKS_MODULE),
-        (SECRETS_NAME, SECRETS_MODULE),
-        (NETWORK_NAME, NETWORK_MODULE),
-    ] {
+    for &(name, module) in BUILTIN_MODULES {
         let first_use = code.match_indices(&format!("{name}.")).map(|(at, _)| at).find(|&at| {
             !code[..at].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
         });

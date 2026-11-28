@@ -3881,7 +3881,36 @@ Desktop window, debug `rux` built from this tree, `--preview phone`, probe `C:/U
 
 Tests: `crates/rux-script/tests/sandbox.rs` (limits, grants, memory, state), `crates/rux-runtime/tests/sandbox.rs` and `default_sandbox.rs` (documents, rows, image grant, the process default), `crates/rux-cli/tests/check.rs` (`--sandbox`), and one each in `rux-syntax` and `rux-parser` for the nesting scans. Benchmark of the trusted path before and after the memory checks: the same within noise (`interp_cost`, release, three runs each).
 
-**Not driven:** the playground in a browser (its build is checked with `cargo check -p rux-web --target wasm32-unknown-unknown`, and the grants are tested); Android; a sandboxed document opened from the network (not built); `rux check --sandbox` over a whole project beyond its test; the row limit and the state limit in a window (tested through `Document`).
+**Not driven (then; the playground and Android were driven 2026-11-27, below):** the playground in a browser (its build is checked with `cargo check -p rux-web --target wasm32-unknown-unknown`, and the grants are tested); Android; a sandboxed document opened from the network (not built); `rux check --sandbox` over a whole project beyond its test; the row limit and the state limit in a window (tested through `Document`).
+
+## The sandbox in the playground and on Android, 2026-11-27
+
+**Playground:** the real page (`zola serve`, bundle from `./site/build-playground.sh` on this tree), Brave over CDP, probe `C:/Users/USER/Mobile/rux-harness/sandbox-web` (`drive.py` sets the editor and presses Run, then reads `#pg-status`, `#pg-error`, `#pg-warnings`; `tap2.py FILE NAME x,y…` taps the canvas).
+
+| Case | Result |
+|---|---|
+| `{{ window.maximized }}` (the playground grants `window`) | shows "max false" |
+| `use native::shop;` | error "there is no native module native::shop: …", last good kept |
+| a top-level loop that never ends | error "stopped after 5000000 steps without finishing; …", last good kept |
+| a top-level string doubling | error "text of 33554432 bytes is longer than a sandboxed document may build (at most 16777216)" |
+| `r-for` over 60,000 rows | 50,000 drawn, panel and warnings box: "a list of 60000 rows was cut to 50000: …" |
+| `JSON.parse` of 2,000 `[` | error "JSON.parse: nested more than 64 deep, the most this document may read" |
+| elements nested 300 deep | error "elements are nested more than 64 deep, the most a sandboxed document may have" |
+| a button calling `clipboard.writeText` | runs (granted) |
+| a tapped `while true` | stopped; the page stays live; **before the fix nothing said so**; now the panel says "expression `spin()` failed: stopped after 5000000 steps …" |
+| a tap whose `JSON.parse` is 600 deep | panel: "… nested more than 64 deep …" |
+
+**Android:** `rux_test` emulator, `rux run --device --no-watch` from this tree, trusted app `C:/Users/USER/Mobile/rux-harness/sandbox-and` (shots in `shots/`).
+
+| Case | Result |
+|---|---|
+| tap "parse 500 deep" (a trusted `JSON.parse` 500 deep on the phone's thread) | "parsed 500 deep", no crash |
+| tap "parse 600 deep" | refused, app alive; logcat "JSON.parse: nested more than 512 deep, the most this document may read"; **before the fix no panel**, now the panel shows it |
+| tap the panel, then "fail" (`msg = nope + 1`) | the panel goes, then comes back with "`nope` is not defined; …" in place of the JSON line |
+
+Found and fixed on the way: a failed tap was never on the panel when the tap only patched, and the press's own restyle wiped it when it was (`05-as-built`, "A tap that fails is listed when it fails"). Markup reading an ungranted `window` now gets the not-granted sentence: `rux check --sandbox` says "`window` is not available in this document: whoever opens it has to grant it (`--sandbox=window` …)".
+
+**Not driven:** a sandboxed document on Android (nothing opens one there: `rux run --device` takes no `--sandbox`, and fetching is held by the owner); the ungranted-`window` read in the browser (the playground grants `window`; tested and checked from the command line).
 
 ## Standing gaps
 

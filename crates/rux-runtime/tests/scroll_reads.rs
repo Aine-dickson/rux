@@ -114,7 +114,7 @@ fn scroll_to_with_an_option_it_does_not_have_says_so() {
     frame(&mut doc, 0.0);
     doc.apply_handler("bad()");
     assert!(doc.take_scrolls().is_empty(), "nothing queued for a refused call");
-    let warned = rux_runtime::take_warnings();
+    let warned = doc.diagnostics().warnings.clone();
     assert!(warned.iter().any(|w| w.message.contains("no option `fast`")), "{warned:?}");
 }
 

@@ -3124,7 +3124,8 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   network), and `native::shop` for an app's own module. A document that uses
   one it was not granted is refused when it loads, at the line, and every
   native call asks again when it runs. `window` and `app` are in scope only
-  when granted. The playground grants every built-in and no app module.
+  when granted; markup that reads one ungranted gets the same sentence when
+  it runs, naming the grant. The playground grants every built-in and no app module.
   `rux run --sandbox=clipboard,files` grants those two.
 - **Native code is reached only through an import.** The playground and
   `rux check` have no native code, and a resource handle cannot be forged from

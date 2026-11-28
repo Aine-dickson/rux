@@ -148,15 +148,16 @@ images. Open:
    1.0 freezes. What is not built:
    - **Fetching and over-the-air delivery** of documents, and the API an app
      uses to open one sandboxed. Only the playground, `rux run --sandbox` and
-     Rust calling `Document::from_source_sandboxed` open one today.
+     Rust calling `Document::from_source_sandboxed` open one today, so nothing
+     opens one on Android (`rux run --device` takes no `--sandbox`). Held by
+     the owner (2026-11-27); the first step offered was a Rust and command-line
+     way in, with no new script or markup.
    - **Per-document terms.** The row limit, `images` and the grants follow the
      document loaded last in a process.
    - **Grants narrower than a module** (one host for `links.open`), and
      object-capability grants, where a script is handed only the objects it
      may use instead of names gated by a list.
    - **A limit on every element**, not just rows, and on timers and tasks.
-   - **Markup that reads an ungranted `window`** fails as "not defined", not
-     with the sentence a script gets.
    - **Native code hardened against the model** is v1.0 item 3.
 3. **Whatever else "the outside world" turns out to mean** once the above is
    in use. File dialogs other than the file picker are not built.

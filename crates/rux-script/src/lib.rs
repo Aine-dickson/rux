@@ -445,6 +445,19 @@ impl Builder {
         native::ensure_builtins();
         let sandbox = self.sandbox.clone();
         let sandbox = sandbox.as_ref();
+        WITHHELD.with(|w| {
+            let mut w = w.borrow_mut();
+            w.clear();
+            let Some(sb) = sandbox else { return };
+            for &(name, module) in native::BUILTIN_MODULES {
+                if !sb.allows(module) {
+                    w.push((name.to_string(), sandbox::grant_name(module)));
+                }
+            }
+            if !sb.allows(native::BUILTIN_MODULE) {
+                w.extend(native::BUILTIN_FNS.iter().map(|f| (f.to_string(), "files".to_string())));
+            }
+        });
         // What a sandboxed document imports from native code by name, and was
         // not granted, stops here, at the line of its import.
         if let Some(sb) = sandbox {
@@ -1148,6 +1161,22 @@ thread_local! {
     static IS_FRAGMENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+thread_local! {
+    /// The built-in names the document built last was not granted, as the
+    /// name it would read and the grant that gives it. Markup reads `window`
+    /// and `app` where the script's scan cannot see, so a read of one is
+    /// found only when it runs; this lets it say who grants it instead of
+    /// "not defined". Follows the document built last, as the sandbox's other
+    /// per-process terms do.
+    static WITHHELD: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The grant `name` needs, if the document built last was not given it.
+fn withheld(name: &str) -> Option<String> {
+    WITHHELD.with(|w| w.borrow().iter().find(|(n, _)| n == name).map(|(_, g)| g.clone()))
+}
+
 /// Say whether this document is a fragment. See [`IS_FRAGMENT`].
 ///
 /// Set once per load, from the document's root element. `rux-runtime` owns the
@@ -1838,6 +1867,9 @@ fn rux_phrasing(message: &str) -> String {
     // create, or a loop variable used outside its `r-for`.
     if let Some(name) = message.strip_prefix("Variable not found: ") {
         let name = name.trim();
+        if let Some(grant) = withheld(name) {
+            return sandbox::not_granted(&grant);
+        }
         // In a component the likelier miss is a prop nobody declared.
         if is_fragment() {
             return format!(
@@ -1869,6 +1901,9 @@ fn rux_phrasing(message: &str) -> String {
         };
         if let Some(hint) = interp::stdlib::retired_free(name) {
             return format!("`{name}` is retired: {hint}");
+        }
+        if let Some(grant) = withheld(name) {
+            return sandbox::not_granted(&grant);
         }
         return match args {
             Some(1) => format!("there is no function `{name}` taking 1 argument"),

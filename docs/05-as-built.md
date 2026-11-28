@@ -3455,7 +3455,10 @@ it refuses a file past `max_source_bytes` or `max_nesting`
 comments), sets `max_ops` from `steps_per_run`, and leaves compiled code out.
 `native::builtin_aliases` takes the sandbox: a built-in the code uses and was
 not granted is an error at its first use, and `window` and `app`, normally
-always in scope, are left out unless granted. Explicit imports are checked at
+always in scope, are left out unless granted. Markup reads them where the
+scan cannot see, so the build also records each ungranted built-in name in
+the thread-local `WITHHELD`, and `rux_phrasing` turns a "not defined" (or a
+missing `pickFile`) for one into `sandbox::not_granted`. Explicit imports are checked at
 their line. `Interp::native` asks again for every native call, the one place
 all of them pass. Memory is checked before the work: `Interp::grow_text` and
 `grow_items` (no-ops without a sandbox) refuse past the text and item limits
@@ -3963,6 +3966,14 @@ app is watching.
 - **`print(x)` output waits in a corner badge.** Prints show as one line in the
   bottom right ("3 printed: …") that a tap opens into the panel, below the
   findings; a print never brings back a panel dismissed for warnings.
+- **A tap that fails is listed when it fails**, on the desktop, the web and
+  Android alike: a handler that throws, a loop stopped for taking too long, a
+  limit a sandboxed document reached. It stays listed until a later tap fails
+  differently or the file reloads, as the last print stays, and a failure a
+  `<boundary>` caught is listed too. A timer's failure is listed at the next
+  build. (Until 2026-11-27 it reached only stderr, which the web does not
+  have: a tap keeps what it raised in `tap_warnings`, held as each run ends,
+  and every build puts it back beside the load checks.)
 
 - **A handler or a `fn` that calls something which cannot exist** is reported
   at load, before anything is tapped, with the line of the call. Every `@event`,
