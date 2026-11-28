@@ -141,6 +141,21 @@ impl Sandbox {
         ))
     }
 
+    /// [`allows_call`](Self::allows_call) asked before the call runs, by the
+    /// checker: an address that is not written out cannot be known yet, so a
+    /// call whose function is granted for some hosts may still be fine. The
+    /// run asks again.
+    pub fn could_call(&self, module: &str, member: &str, first: Option<&str>) -> Result<(), String> {
+        let host_limited = first.is_none()
+            && self.grants.iter().filter_map(|g| Grant::parse(g)).any(|g| {
+                g.module == module && g.member.as_deref() == Some(member) && g.host.is_some()
+            });
+        if host_limited {
+            return Ok(());
+        }
+        self.allows_call(module, member, first)
+    }
+
     /// Whether an `<image>` may be fetched from `url`.
     pub fn allows_image(&self, url: &str) -> bool {
         self.grants
@@ -375,6 +390,17 @@ mod tests {
         assert!(app.allows_call("native::shop", "search", None).is_ok());
         assert!(app.allows_call("native::shop", "checkout", None).is_err());
         assert!(app.names("native::shop") && !app.names("links"));
+    }
+
+    #[test]
+    fn the_checker_waits_for_an_address_it_cannot_read() {
+        let host = Sandbox::new().grant("links.open@example.com");
+        assert!(host.could_call("links", "open", None).is_ok(), "computed: the run decides");
+        assert!(host.could_call("links", "open", Some("https://example.com/x")).is_ok());
+        assert!(host.could_call("links", "open", Some("https://evil.com")).is_err());
+        assert!(host.could_call("links", "dial", None).is_err(), "another function");
+        assert!(Sandbox::new().grant("links.dial").could_call("links", "open", None).is_err());
+        assert!(Sandbox::new().could_call("links", "open", None).is_err(), "not granted at all");
     }
 
     #[test]

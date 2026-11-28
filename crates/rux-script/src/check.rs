@@ -100,6 +100,9 @@ pub struct Context {
     /// What the file imports, for linking its template's pieces as its
     /// script was.
     pub link: crate::link::Linking,
+    /// The terms the document is opened on when it is not the app's own: a
+    /// native call it leaves out is reported where it is written.
+    pub sandbox: Option<crate::Sandbox>,
 }
 
 /// What the checker worked out a name, a field or a function to be, for an
@@ -3008,6 +3011,21 @@ impl<'a> Checker<'a> {
         })
     }
 
+    /// A call of native export `name` that the sandbox the document is opened
+    /// on leaves out: an error at the call, since it fails when it runs. A
+    /// first argument that is not written out is left to the run.
+    fn check_granted(&mut self, name: &str, args: &[Expr], pos: Pos) {
+        let Some(sandbox) = &self.cx.sandbox else { return };
+        let Some((module, member)) = crate::link::split(name) else { return };
+        let first = match args.first().map(|a| &a.kind) {
+            Some(ExprKind::Str(s)) => Some(s.as_str()),
+            _ => None,
+        };
+        if let Err(message) = sandbox.could_call(&crate::sandbox::grant_name(module), member, first) {
+            self.error(pos, message);
+        }
+    }
+
     fn call(&mut self, callee: &[Ident], args: &[Expr]) -> Type {
         // Only this call is awaited, not the calls in its arguments.
         let awaited = std::mem::take(&mut self.awaited);
@@ -3033,6 +3051,9 @@ impl<'a> Checker<'a> {
             // A native call's error type is read from the Rust source; a
             // script module's function is not looked into.
             self.throws_type(if native { throws.as_ref() } else { None });
+            if native {
+                self.check_granted(name, args, pos);
+            }
             if native && is_async && !awaited {
                 self.error(pos, native_not_awaited(&crate::link::shown(name)));
             }

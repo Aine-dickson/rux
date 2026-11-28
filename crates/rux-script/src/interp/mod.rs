@@ -373,6 +373,11 @@ impl Interp {
         self.sandbox = Some(sandbox);
     }
 
+    /// The terms the document runs on, when it is not the app's own.
+    pub fn sandbox(&self) -> Option<&crate::Sandbox> {
+        self.sandbox.as_ref()
+    }
+
     /// Text that will be `total` bytes long, `added` of them new, is about to
     /// be built. Under a sandbox it is refused past the text limit, charged to
     /// the run, and paid for in steps (a copy of a megabyte is not one step);

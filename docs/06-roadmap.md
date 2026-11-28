@@ -149,10 +149,11 @@ images. Open:
      way in, with no new script or markup.
    - **Grants narrower than a module: done 2026-11-28** (a function:
      `links.open`, `native::shop.search`; a host for `links.open` and
-     `images`: `links.open@example.com`). Not built: other argument rules (a
-     settings key, a secret name); a function the grant leaves out reported by
-     `rux check --sandbox` at its line (it fails when called); and
-     object-capability grants, where a script is handed only the objects it
+     `images`: `links.open@example.com`); `rux check --sandbox` reports a
+     function or a written-out address the grant leaves out (`Context::sandbox`,
+     `Checker::check_granted`). Not built: other argument rules (a settings
+     key, a secret name); a computed address or a resource method reported
+     before it runs; and object-capability grants, where a script is handed only the objects it
      may use instead of names gated by a list.
    - **A limit on every element**, not just rows, and on timers and tasks.
    - **Native code hardened against the model** is v1.0 item 3.

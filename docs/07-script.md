@@ -3135,7 +3135,10 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   and for `links.open` and `images` one host (`links.open@example.com`,
   `images@cdn.example.com`: that host or a subdomain, for an `http(s)` address;
   repeat the grant for more hosts). A call a grant leaves out fails when it
-  runs, naming what was granted. A document that uses
+  runs, naming what was granted; `rux check --sandbox=...` reports a function,
+  or an address written out, that the grant leaves out, at the call. An
+  address that is not written out, and a method on a resource, are left to the
+  run. A document that uses
   one it was not granted is refused when it loads, at the line, and every
   native call asks again when it runs. `window` and `app` are in scope only
   when granted; markup that reads one ungranted gets the same sentence when

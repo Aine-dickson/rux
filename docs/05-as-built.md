@@ -3484,7 +3484,11 @@ argument: `Sandbox::allows_call`. An image is asked by its URL
 (`rux_runtime::remote_image_allowed`, `Sandbox::allows_image`). A host grant
 matches the host or a subdomain of an `http(s)` address read as a browser does
 (userinfo, port, case, a trailing dot; a backslash, a space, an IP literal or
-another scheme never matches). Memory is checked before the work: `Interp::grow_text` and
+another scheme never matches). `rux check` asks the same before the run:
+`Engine::linked_context` copies the document's sandbox into
+`check::Context::sandbox`, and `Checker::check_granted` calls
+`Sandbox::could_call` for each linked native call, with the first argument
+when it is written out (a computed one is left to the run). Memory is checked before the work: `Interp::grow_text` and
 `grow_items` (no-ops without a sandbox) refuse past the text and item limits
 and charge what a run builds to `run_alloc_bytes` (reset where the step count
 resets); they sit in `binary`, a template, `+=` on a list and `method`'s

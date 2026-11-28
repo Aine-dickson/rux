@@ -307,3 +307,20 @@ fn settle_or_not(e: &mut Engine) {
         e.resume_task(id);
     }
 }
+
+#[test]
+fn the_checker_reports_a_function_the_grant_leaves_out_at_its_line() {
+    let src = "let said = signal(0);\n\
+               fn one() { said = shop.spot().x; }\n\
+               fn two() { shop.byte(1); }\n";
+    let findings = |grant: &str| {
+        let e = engine_granted(src, grant);
+        e.check_types(&e.linked_context(&Default::default()))
+    };
+    let narrow = findings("native::nt_shop.spot");
+    let errors: Vec<_> = narrow.iter().filter(|f| f.is_error).collect();
+    assert_eq!(errors.len(), 1, "{narrow:#?}");
+    assert!(errors[0].message.contains("nt_shop.byte"), "{}", errors[0].message);
+    assert_eq!(errors[0].line, Some(3));
+    assert!(findings("native::nt_shop").iter().all(|f| !f.is_error), "a whole-module grant is clean");
+}

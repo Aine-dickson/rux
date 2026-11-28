@@ -935,6 +935,31 @@ fn check_sandbox_reports_a_module_the_document_was_not_granted() {
     assert_eq!(check(&[file]).status.code(), Some(0));
 }
 
+/// A function or a written-out address the grant leaves out is reported where
+/// the call is, not only when it runs.
+#[test]
+fn check_sandbox_reports_a_call_the_grant_leaves_out() {
+    let doc = "<template><screen><text>hi</text></screen></template>
+<script>
+let url = signal(\"https://evil.com\");
+fn a() { links.dial(\"123\"); }
+fn b() { links.open(\"https://evil.com\"); }
+fn c() { links.open(\"https://example.com/x\"); }
+fn d() { links.open(url); }
+</script>";
+    let dir = fixture("sandbox_calls", &[("app.rux", doc)]);
+    let file = dir.join("app.rux");
+    let file = file.to_str().unwrap();
+    let out = check(&["--sandbox=links.open@example.com", file]);
+    let text = stdout(&out);
+    assert_eq!(out.status.code(), Some(1), "{text}");
+    assert!(text.contains("app.rux:4") && text.contains("`links.dial`"), "{text}");
+    assert!(text.contains("app.rux:5") && text.contains("example.com"), "{text}");
+    assert!(!text.contains("app.rux:6") && !text.contains("app.rux:7"), "a granted or computed address is left to the run: {text}");
+    assert_eq!(check(&["--sandbox=links", file]).status.code(), Some(0));
+    assert_eq!(check(&[file]).status.code(), Some(0), "no sandbox, nothing to report");
+}
+
 #[test]
 fn run_sandbox_needs_a_known_grant_name_list() {
     let dir = fixture("sandbox_flag", &[("app.rux", COPIES)]);

@@ -2123,6 +2123,7 @@ impl Engine {
         let mut cx = cx.clone();
         cx.linked = self.linking.linked();
         cx.link = (*self.linking).clone();
+        cx.sandbox = self.ir.sandbox().cloned();
         cx.support_types.extend(self.module_types.iter().cloned());
         cx
     }
