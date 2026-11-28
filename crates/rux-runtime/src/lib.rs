@@ -144,7 +144,14 @@ fn enter_trust(sandbox: Option<Sandbox>) {
 /// current one is the one loaded last until [`Document::make_current`] says
 /// another.
 pub fn remote_images_allowed() -> bool {
-    CURRENT_SANDBOX.with(|s| s.borrow().as_ref().is_none_or(|s| s.grants("images")))
+    CURRENT_SANDBOX.with(|s| s.borrow().as_ref().is_none_or(|s| s.names("images")))
+}
+
+/// Whether the current document may fetch the `<image>` at `url`: a trusted
+/// one always may, a sandboxed one when it was granted `images`, or `images`
+/// on the host `url` is on.
+pub fn remote_image_allowed(url: &str) -> bool {
+    CURRENT_SANDBOX.with(|s| s.borrow().as_ref().is_none_or(|s| s.allows_image(url)))
 }
 
 /// Why `src`, one file of a sandboxed document, may not be parsed: too big, or
@@ -2437,8 +2444,12 @@ fn image_bytes(src: &str) -> std::io::Result<Vec<u8>> {
     // From the network: the first ask starts it, and until it comes this is
     // `WouldBlock`, which the callers take as "not yet" rather than missing.
     if remote::is_remote(src) {
-        if !remote_images_allowed() {
-            return Err(std::io::Error::other("images from the network are not available in this document: whoever opens it has to grant `images`"));
+        if !remote_image_allowed(src) {
+            return Err(std::io::Error::other(if remote_images_allowed() {
+                "images from this address are not available in this document: it was granted `images` for other hosts only"
+            } else {
+                "images from the network are not available in this document: whoever opens it has to grant `images`"
+            }));
         }
         return match remote::bytes(src) {
             Some(Ok(bytes)) => Ok(bytes.to_vec()),

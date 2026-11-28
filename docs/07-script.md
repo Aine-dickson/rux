@@ -3130,7 +3130,12 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   uses: `clipboard`, `settings`, `window`, `permissions`, `app`,
   `notifications`, `background`, `location`, `links`, `secrets`, `network`,
   `files` (the file dialogs and sounds), `images` (an `<image>` from the
-  network), and `native::shop` for an app's own module. A document that uses
+  network), and `native::shop` for an app's own module. A grant can be
+  narrower than a module: one function (`links.open`, `native::shop.search`),
+  and for `links.open` and `images` one host (`links.open@example.com`,
+  `images@cdn.example.com`: that host or a subdomain, for an `http(s)` address;
+  repeat the grant for more hosts). A call a grant leaves out fails when it
+  runs, naming what was granted. A document that uses
   one it was not granted is refused when it loads, at the line, and every
   native call asks again when it runs. `window` and `app` are in scope only
   when granted; markup that reads one ungranted gets the same sentence when
@@ -3144,7 +3149,9 @@ An error raised on purpose is `throw`, and one handled is `try`/`catch`; see
   channels. The terms are the document's own, also when a process holds
   several: a window of an app serves its own, and a window a sandboxed document
   opens is sandboxed under the same terms. The row limit counts rows, not every
-  element. A grant is for a whole module, not part of one.
+  element. A host grant limits the address a document may name, not where that
+  server sends the request next (an image host that redirects is followed) and
+  not what the browser does with a link.
 - **Platform permissions** are the app's, not the document's: `rux.toml`'s
   `[permissions]`, with a reason for each, and the manifest is written from it.
 

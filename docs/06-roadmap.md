@@ -147,7 +147,11 @@ images. Open:
      opens one on Android (`rux run --device` takes no `--sandbox`). Held by
      the owner (2026-11-27); the first step offered was a Rust and command-line
      way in, with no new script or markup.
-   - **Grants narrower than a module** (one host for `links.open`), and
+   - **Grants narrower than a module: done 2026-11-28** (a function:
+     `links.open`, `native::shop.search`; a host for `links.open` and
+     `images`: `links.open@example.com`). Not built: other argument rules (a
+     settings key, a secret name); a function the grant leaves out reported by
+     `rux check --sandbox` at its line (it fails when called); and
      object-capability grants, where a script is handed only the objects it
      may use instead of names gated by a list.
    - **A limit on every element**, not just rows, and on timers and tasks.

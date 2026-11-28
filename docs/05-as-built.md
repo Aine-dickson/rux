@@ -3475,8 +3475,16 @@ always in scope, are left out unless granted. Markup reads them where the
 scan cannot see, so the build also records each ungranted built-in name in
 the thread-local `WITHHELD`, and `rux_phrasing` turns a "not defined" (or a
 missing `pickFile`) for one into `sandbox::not_granted`. Explicit imports are checked at
-their line. `Interp::native` asks again for every native call, the one place
-all of them pass. Memory is checked before the work: `Interp::grow_text` and
+their line (`Sandbox::allows`: anything of the module granted). A grant is a
+string, `module`, `module.function` or, for `links.open` and `images`,
+`...@host` (`Grant`, `check_grant`, `host_of`, `url_on` in `sandbox.rs`).
+`Interp::native` asks again for every native call, the one place all of them
+pass (sync, a method found by value, an awaited call), with the call's first
+argument: `Sandbox::allows_call`. An image is asked by its URL
+(`rux_runtime::remote_image_allowed`, `Sandbox::allows_image`). A host grant
+matches the host or a subdomain of an `http(s)` address read as a browser does
+(userinfo, port, case, a trailing dot; a backslash, a space, an IP literal or
+another scheme never matches). Memory is checked before the work: `Interp::grow_text` and
 `grow_items` (no-ops without a sandbox) refuse past the text and item limits
 and charge what a run builds to `run_alloc_bytes` (reset where the step count
 resets); they sit in `binary`, a template, `+=` on a list and `method`'s

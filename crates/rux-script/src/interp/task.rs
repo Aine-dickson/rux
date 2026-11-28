@@ -244,7 +244,7 @@ impl Interp {
                             continue;
                         }
                         Callee::Native(key) => {
-                            let call = match self.native(key) {
+                            let call = match self.native(key, &argv) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     input = Some(Resume::Fault(located(fault_of(e), *at)));

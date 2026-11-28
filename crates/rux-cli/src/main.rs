@@ -62,7 +62,9 @@ Usage:
       --sandbox[=a,b]       Open it as a document that is not the app's own:
                              limits on what it may spend, and no native
                              module unless named (clipboard, files, images,
-                             native::shop, ...). Not for an app with native/
+                             native::shop, ...), one function (links.open)
+                             or one host (links.open@example.com).
+                             Not for an app with native/
   rux <app.rux>              The same, for a file you can name
   rux check [path...]        Check documents and report problems: every .rux
                              file in the project by default, each in its own
@@ -516,11 +518,8 @@ fn sandbox_from_flag(flag: &str) -> Result<rux_runtime::Sandbox, String> {
                     leave the `=` off to grant nothing".to_string());
     }
     for name in list.split(',') {
-        if !rux_runtime::Sandbox::is_known_grant(name) {
-            return Err(format!(
-                "`--sandbox` cannot grant `{name}`; the names are {}, and `native::name` for an app's own module",
-                rux_runtime::BUILTIN_GRANTS.join(", ")
-            ));
+        if let Err(why) = rux_runtime::Sandbox::check(name) {
+            return Err(format!("`--sandbox` cannot grant `{name}`: {why}"));
         }
         sandbox = sandbox.grant(name);
     }

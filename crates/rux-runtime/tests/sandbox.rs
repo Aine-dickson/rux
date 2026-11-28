@@ -290,3 +290,19 @@ fn a_window_a_sandboxed_document_opens_is_sandboxed_too() {
     window.rebuild();
     assert_eq!(row_count(&window), 20);
 }
+
+#[test]
+fn images_can_be_granted_for_one_host() {
+    let src = source("<image src=\"https://example.invalid/a.png\" />", "let a = 1;");
+    let _ = Document::from_source_sandboxed(&src, Sandbox::new().grant("images@cdn.example.com")).expect("loads");
+    assert!(rux_runtime::remote_images_allowed(), "some images are allowed");
+    assert!(rux_runtime::remote_image_allowed("https://cdn.example.com/a.png"));
+    assert!(rux_runtime::remote_image_allowed("https://tiles.cdn.example.com/a.png"));
+    assert!(!rux_runtime::remote_image_allowed("https://evil.com/a.png?x=cdn.example.com"));
+    let _ = Document::from_source_sandboxed(&src, Sandbox::new().grant("images")).expect("loads");
+    assert!(rux_runtime::remote_image_allowed("https://evil.com/a.png"), "a whole grant allows any host");
+    let _ = Document::from_source_sandboxed(&src, Sandbox::new()).expect("loads");
+    assert!(!rux_runtime::remote_image_allowed("https://cdn.example.com/a.png"));
+    let _ = Document::from_source(&src).expect("loads");
+    assert!(rux_runtime::remote_image_allowed("https://evil.com/a.png"), "trusted fetches as it always did");
+}

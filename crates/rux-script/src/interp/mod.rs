@@ -1236,7 +1236,7 @@ impl Interp {
                 return Ok(V::None);
             }
         }
-        match self.native(key)? {
+        match self.native(key, &argv)? {
             rux_native::Call::Sync(f) => self.call_native(&f, &argv),
             rux_native::Call::Async(_) => {
                 let name = key.replace('/', "::");
@@ -2082,13 +2082,19 @@ impl Interp {
     }
 
     /// How to call native export `key`, asked of the registry once.
-    fn native(&mut self, key: &str) -> R<rux_native::Call> {
+    fn native(&mut self, key: &str, args: &[V]) -> R<rux_native::Call> {
         // Asked of every call, whatever name reached it: what a handler or a
-        // binding builds at run time never passed the load check.
+        // binding builds at run time never passed the load check. A grant may
+        // be for one function, or one host, so the call is asked with its
+        // first argument.
         if let Some(sandbox) = &self.sandbox {
-            if let Some((module, _)) = crate::link::split(key) {
-                if !sandbox.allows(module) {
-                    return fail(crate::sandbox::not_granted(&crate::sandbox::grant_name(module)));
+            if let Some((module, member)) = crate::link::split(key) {
+                let first = match args.first() {
+                    Some(V::Str(s)) => Some(&**s),
+                    _ => None,
+                };
+                if let Err(message) = sandbox.allows_call(&crate::sandbox::grant_name(module), member, first) {
+                    return fail(message);
                 }
             }
         }
@@ -2201,7 +2207,7 @@ impl Interp {
                     let mut all = Vec::with_capacity(n);
                     all.push(recv.clone());
                     all.extend(argv);
-                    return match self.native(&key)? {
+                    return match self.native(&key, &all)? {
                         rux_native::Call::Sync(f) => self.call_native(&f, &all),
                         rux_native::Call::Async(_) => {
                             fail(format!("`{name}` is `async` in Rust: await it inside an `async fn`"))

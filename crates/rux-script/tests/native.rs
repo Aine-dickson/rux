@@ -258,3 +258,52 @@ fn an_untyped_call_takes_the_resource_method_too() {
     assert_eq!(show(&mut e, "cart.add(5)"), "2");
     assert_eq!(show(&mut e, "add(cart, 1)"), "script");
 }
+
+// ----- Grants narrower than a module ---------------------------------------
+
+fn engine_granted(src: &str, grant: &str) -> Engine {
+    install();
+    let alias = link::Alias { local: "shop".into(), target: link::Target::Module("native/nt_shop".into()), line: 1 };
+    let mut b = Builder::new();
+    b.interpreted().aliases(vec![alias]).sandbox(rux_script::Sandbox::new().grant(grant));
+    b.build(src).unwrap_or_else(|e| panic!("{src}\n{e:?}"))
+}
+
+#[test]
+fn a_grant_for_one_function_runs_that_function_and_refuses_the_others() {
+    let src = "let said = signal(\"\");\n\
+               fn one() { said = shop.spot().x; }\n\
+               fn two() { try { shop.byte(1); said = \"ran\"; } catch e { said = e.message; } }\n";
+    let mut e = engine_granted(src, "native::nt_shop.spot");
+    e.run_handler("one()");
+    assert_eq!(show(&mut e, "said"), "1");
+    e.run_handler("two()");
+    let said = show(&mut e, "said");
+    assert!(said.contains("native::nt_shop.byte") && said.contains("native::nt_shop.spot"), "{said}");
+    // The whole module still runs everything in it.
+    let mut e = engine_granted(src, "native::nt_shop");
+    e.run_handler("two()");
+    assert_eq!(show(&mut e, "said"), "ran");
+}
+
+#[test]
+fn an_awaited_export_is_held_to_the_same_grant() {
+    let src = "let status = signal(\"\");\n\
+               async fn load(id: int) { try { status = await shop.lookup(id); } catch e { status = e.message; } }\n";
+    let mut e = engine_granted(src, "native::nt_shop.spot");
+    e.run_handler("load(3)");
+    settle_or_not(&mut e);
+    let said = show(&mut e, "status");
+    assert!(said.contains("native::nt_shop.lookup"), "{said}");
+    let mut e = engine_granted(src, "native::nt_shop.lookup");
+    e.run_handler("load(3)");
+    settle(&mut e);
+    assert_eq!(show(&mut e, "status"), "product 3");
+}
+
+/// A refused call fails at once, with no answer to wait for.
+fn settle_or_not(e: &mut Engine) {
+    for id in e.collect_answers() {
+        e.resume_task(id);
+    }
+}

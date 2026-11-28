@@ -946,4 +946,11 @@ fn run_sandbox_needs_a_known_grant_name_list() {
     let out = Command::new(RUX).arg("run").arg(&file).arg("--sandbox=clipbord").output().expect("run");
     assert_eq!(out.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&out.stderr).contains("`clipbord`"), "{}", String::from_utf8_lossy(&out.stderr));
+    // A grant for one function or one host is a grant; a host on a function that
+    // has none to take is said, with the forms.
+    let out = Command::new(RUX).arg("run").arg(&file).arg("--sandbox=links@example.com").output().expect("run");
+    assert_eq!(out.status.code(), Some(2));
+    let said = String::from_utf8_lossy(&out.stderr);
+    assert!(said.contains("links@example.com") && said.contains("links.open@example.com"), "{said}");
+    assert_eq!(check(&["--sandbox=clipboard.writeText,links.open@example.com", file.to_str().unwrap()]).status.code(), Some(0));
 }

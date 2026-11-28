@@ -76,10 +76,14 @@ impl Sandbox {
         BUILTIN_GRANTS.iter().fold(Self::new(), |s, g| s.grant(g))
     }
 
-    /// Whether `name` is something a grant can name: a built-in, or an app's own
-    /// module written as `native::name`.
+    /// Whether `name` is something a grant can name. See [`check_grant`].
     pub fn is_known_grant(name: &str) -> bool {
-        BUILTIN_GRANTS.contains(&name) || name.starts_with("native::")
+        check_grant(name).is_ok()
+    }
+
+    /// [`check_grant`], for a caller that has only a `Sandbox` in reach.
+    pub fn check(name: &str) -> Result<(), String> {
+        check_grant(name)
     }
 
     /// Allow the document `module`.
@@ -88,9 +92,62 @@ impl Sandbox {
         self
     }
 
-    /// Whether `module` was granted.
+    /// Whether `module` was granted whole, by that exact name.
     pub fn grants(&self, module: &str) -> bool {
         self.grants.contains(module)
+    }
+
+    /// Whether anything of `module` was granted, whole or in part: what lets
+    /// the document import it. Each call is asked again by
+    /// [`allows_call`](Self::allows_call).
+    pub fn names(&self, module: &str) -> bool {
+        self.grants.iter().any(|g| Grant::parse(g).is_some_and(|g| g.module == module))
+    }
+
+    /// Whether the call `member` of `module` may run with `first`, its first
+    /// argument when that is text. `Err` is what to tell the author.
+    pub fn allows_call(&self, module: &str, member: &str, first: Option<&str>) -> Result<(), String> {
+        let mine: Vec<Grant> =
+            self.grants.iter().filter_map(|g| Grant::parse(g)).filter(|g| g.module == module).collect();
+        if mine.is_empty() {
+            return Err(not_granted(module));
+        }
+        let call = format!("{module}.{member}");
+        let mut hosts: Vec<&str> = Vec::new();
+        for g in &mine {
+            match (&g.member, &g.host) {
+                (None, _) => return Ok(()),
+                (Some(m), None) if m == member => return Ok(()),
+                (Some(m), Some(h)) if m == member => {
+                    hosts.push(h);
+                    if first.is_some_and(|url| url_on(url, h)) {
+                        return Ok(());
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !hosts.is_empty() {
+            return Err(format!(
+                "`{call}` may only reach {} in this document, and that is not where this goes",
+                hosts.join(" or ")
+            ));
+        }
+        let given: Vec<String> = mine.iter().map(|g| format!("`{}`", g.text())).collect();
+        Err(format!(
+            "`{call}` is not available in this document: it was granted {}, not `{call}` \
+             (`--sandbox={call}`, `.grant(\"{call}\")`)",
+            given.join(", ")
+        ))
+    }
+
+    /// Whether an `<image>` may be fetched from `url`.
+    pub fn allows_image(&self, url: &str) -> bool {
+        self.grants
+            .iter()
+            .filter_map(|g| Grant::parse(g))
+            .filter(|g| g.module == "images")
+            .any(|g| g.host.as_deref().is_none_or(|h| url_on(url, h)))
     }
 
     /// The first reason `text`, one file of a document, may not be loaded under
@@ -112,6 +169,99 @@ impl Sandbox {
             (at, format!("this is nested more than {} deep, the most a sandboxed document may be", l.max_nesting))
         })
     }
+}
+
+/// One grant, taken apart: `links`, `links.open`, `links.open@example.com`,
+/// `images@cdn.example.com`, `native::shop.search`.
+#[derive(Clone, Debug, PartialEq)]
+struct Grant {
+    module: String,
+    member: Option<String>,
+    host: Option<String>,
+}
+
+impl Grant {
+    fn parse(text: &str) -> Option<Grant> {
+        let (head, host) = match text.split_once('@') {
+            Some((h, host)) => (h, Some(host.to_string())),
+            None => (text, None),
+        };
+        let (module, member) = match head.split_once('.') {
+            Some((m, rest)) => (m, Some(rest.to_string())),
+            None => (head, None),
+        };
+        (!module.is_empty()).then(|| Grant { module: module.to_string(), member, host })
+    }
+
+    fn text(&self) -> String {
+        let mut out = self.module.clone();
+        if let Some(m) = &self.member {
+            out += &format!(".{m}");
+        }
+        if let Some(h) = &self.host {
+            out += &format!("@{h}");
+        }
+        out
+    }
+}
+
+/// Whether `text` is a grant: a built-in module or `native::name`, optionally
+/// narrowed to one function (`links.open`), and for `links.open` and `images`
+/// to a host (`links.open@example.com`). `Err` says what the forms are.
+pub fn check_grant(text: &str) -> Result<(), String> {
+    let forms = "a module (`links`), one of its functions (`links.open`), and for `links.open` and \
+                 `images` a host (`links.open@example.com`)";
+    let Some(g) = Grant::parse(text) else { return Err(format!("`{text}` names nothing; a grant is {forms}")) };
+    if !(BUILTIN_GRANTS.contains(&g.module.as_str()) || g.module.starts_with("native::")) {
+        return Err(format!(
+            "`{}` is not something to grant; the names are {}, and `native::name` for an app's own module",
+            g.module,
+            BUILTIN_GRANTS.join(", ")
+        ));
+    }
+    if g.member.as_deref() == Some("") {
+        return Err(format!("`{text}` has no function after the `.`; a grant is {forms}"));
+    }
+    if let Some(host) = &g.host {
+        let target = (g.module.as_str(), g.member.as_deref());
+        if !matches!(target, ("links", Some("open")) | ("images", None)) {
+            return Err(format!("`{text}`: only `links.open` and `images` take a host; a grant is {forms}"));
+        }
+        let valid = !host.is_empty()
+            && !host.starts_with(['.', '-'])
+            && host.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-');
+        if !valid {
+            return Err(format!("`{text}`: `{host}` is not a host name (letters, digits, `.` and `-`)"));
+        }
+    }
+    Ok(())
+}
+
+/// The host of an `http` or `https` address, lowercased: what a browser would
+/// connect to. `None` for anything else, and for an address a browser could
+/// read differently from this (a backslash, a space, a control character, an
+/// IP literal).
+pub fn host_of(url: &str) -> Option<String> {
+    if url.chars().any(|c| c.is_control() || c.is_whitespace() || c == '\\') {
+        return None;
+    }
+    let (scheme, rest) = url.split_once("://")?;
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return None;
+    }
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    if host.starts_with('[') {
+        return None;
+    }
+    let host = host.split(':').next()?.trim_end_matches('.').to_ascii_lowercase();
+    (!host.is_empty()).then_some(host)
+}
+
+/// Whether `url` is on `host` or a subdomain of it.
+fn url_on(url: &str, host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    host_of(url).is_some_and(|h| h == host || h.ends_with(&format!(".{host}")))
 }
 
 /// The name a grant uses for native module `module` (as linked): `clipboard`
@@ -138,9 +288,9 @@ pub fn not_granted(name: &str) -> String {
 }
 
 impl Sandbox {
-    /// Whether the native module `module` (as linked) was granted.
+    /// Whether anything of the native module `module` (as linked) was granted.
     pub fn allows(&self, module: &str) -> bool {
-        self.grants.contains(&grant_name(module))
+        self.names(&grant_name(module))
     }
 }
 
@@ -164,5 +314,75 @@ mod tests {
         assert!(p.grants("images"));
         assert!(!p.allows("native/shop"));
         assert!(!Sandbox::new().grants("images"));
+    }
+
+    #[test]
+    fn a_grant_is_a_module_a_function_or_a_function_on_a_host() {
+        for ok in [
+            "links", "links.open", "links.open@example.com", "images", "images@cdn.example.com", "native::shop",
+            "native::shop.search", "native::shop.Cart.add", "settings.get",
+        ] {
+            assert!(check_grant(ok).is_ok(), "{ok}: {:?}", check_grant(ok));
+        }
+        for bad in [
+            "links@example.com", "settings.get@example.com", "links.", "@example.com", "images@a/b", "images@",
+            "links.dial@example.com", "nothing", "links.open@.example.com", "links.open@-x",
+        ] {
+            assert!(check_grant(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_host_is_read_as_a_browser_reads_it() {
+        let on = url_on;
+        assert!(on("https://example.com/a?b=c", "example.com"));
+        assert!(on("https://EXAMPLE.com:8443/x", "example.com"));
+        assert!(on("https://sub.example.com", "example.com"));
+        assert!(on("https://example.com./", "example.com"));
+        assert!(!on("https://example.com.evil.com/", "example.com"));
+        assert!(!on("https://notexample.com/", "example.com"));
+        assert!(!on("https://example.com@evil.com/", "example.com"));
+        assert!(on("https://user:pw@example.com/", "example.com"));
+        assert!(!on("https://evil.com/?u=example.com", "example.com"));
+        assert!(!on("https://evil.com#example.com", "example.com"));
+        assert!(!on("https://evil.com\\@example.com/", "example.com"));
+        assert!(!on("http:example.com", "example.com"));
+        assert!(!on("javascript://example.com/%0aalert(1)", "example.com"));
+        assert!(!on("mailto:a@example.com", "example.com"));
+        assert!(!on("https://[::1]/", "example.com"));
+        assert!(!on("https://exa mple.com/", "example.com"));
+    }
+
+    #[test]
+    fn a_call_is_allowed_by_the_narrowest_grant_that_covers_it() {
+        let whole = Sandbox::new().grant("links");
+        assert!(whole.allows_call("links", "dial", Some("123")).is_ok());
+        let one = Sandbox::new().grant("links.open");
+        assert!(one.allows_call("links", "open", Some("https://any.org")).is_ok());
+        let e = one.allows_call("links", "dial", Some("123")).unwrap_err();
+        assert!(e.contains("links.dial") && e.contains("links.open"), "{e}");
+        let host = Sandbox::new().grant("links.open@example.com");
+        assert!(host.allows_call("links", "open", Some("https://a.example.com/x")).is_ok());
+        let e = host.allows_call("links", "open", Some("https://evil.com")).unwrap_err();
+        assert!(e.contains("example.com"), "{e}");
+        assert!(host.allows_call("links", "open", Some("tel:123")).is_err());
+        assert!(host.allows_call("links", "open", None).is_err());
+        assert!(host.allows_call("links", "dial", Some("123")).is_err());
+        let two = host.clone().grant("links.open@other.org");
+        assert!(two.allows_call("links", "open", Some("https://other.org")).is_ok());
+        assert!(Sandbox::new().allows_call("links", "open", Some("https://a.b")).is_err());
+        let app = Sandbox::new().grant("native::shop.search");
+        assert!(app.allows_call("native::shop", "search", None).is_ok());
+        assert!(app.allows_call("native::shop", "checkout", None).is_err());
+        assert!(app.names("native::shop") && !app.names("links"));
+    }
+
+    #[test]
+    fn an_image_is_allowed_by_a_whole_grant_or_its_host() {
+        assert!(Sandbox::new().grant("images").allows_image("https://anywhere.net/a.png"));
+        let host = Sandbox::new().grant("images@cdn.example.com");
+        assert!(host.allows_image("https://cdn.example.com/a.png"));
+        assert!(!host.allows_image("https://evil.com/a.png"));
+        assert!(!Sandbox::new().allows_image("https://cdn.example.com/a.png"));
     }
 }
