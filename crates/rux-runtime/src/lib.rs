@@ -5920,6 +5920,17 @@ impl Document {
             return false;
         }
 
+        // A handler or a waiting task of a component that is gone stops here.
+        // Its source is written in that component's scope, so at page level it
+        // would read names the page lacks or write a page signal of the same
+        // name. As in other frameworks, a late callback to a removed component
+        // is ignored. (A callback is document-level and passes no instance.)
+        if self.instance_gone(instance) {
+            if let Run::Task(id) = run {
+                self.engine.drop_tasks(&[id]);
+            }
+            return false;
+        }
         let Some(key) = instance.filter(|k| self.instances.contains_key(*k)) else {
             let changed = match run {
                 Run::Handler(src) => self.engine.run_handler_tracked_in(src, &event),

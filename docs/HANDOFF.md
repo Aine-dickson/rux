@@ -309,7 +309,7 @@ author draws the copy from `@dragmove` (every pointer move) and scrolls with a
 1. ~~**`rux check` reports a component that fails to load**~~ **done 2026-11-25.** The cause was not the component path: walking a project, `rux check` dropped what a caller's load said about a used component and left it to the component's own read, which loads it as a document (not linked as its caller links it, and with prop defaults instead of the caller's values). Now held and kept unless the own read reported that line (`through_callers` in `crates/rux-cli/src/check.rs`). Test `a_component_that_fails_only_inside_its_caller_is_reported` (failed before). Found on the way, not fixed: one missing store function (`shop.nope()` in a component `fn`) gives three errors and a warning on one line.
 2. ~~**Error boundaries**~~ **built 2026-11-25** (State, first entry; leftovers listed there).
 3. ~~**The capability model's sandbox half**~~ **built 2026-11-25** (State, first entry; leftovers there and in the roadmap).
-4. **Owner decision:** whether a removed component's queued handler stops running at page level (State, 2026-11-24).
+4. ~~**Owner decision:** queued handler of a removed component~~ **decided and built 2026-11-28**: it is dropped, with its waiting tasks (`dispatch_handler_inner`; test `removed_fields.rs`; author note in `09`). Work that must outlive a component goes on the page.
 5. **Open v0.9 items moved to v0.10** (roadmap, v0.9 section): physics, live regions, `rux doctor` device survey (needs a phone), `hyphens: auto` (owner said not now), video on macOS and Linux, child windows on macOS and Linux.
 6. **Held:** UD-015's dependency-crate and `.rux` halves (ask before planning); UD-006 and UD-016 need nothing from Rux now (assessed).
 

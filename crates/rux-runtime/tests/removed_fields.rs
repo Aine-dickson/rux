@@ -51,3 +51,19 @@ fn a_removed_components_field_does_not_write_the_pages_signal_of_the_same_name()
     doc.apply_edit_in("email", None, None, "page@new.com");
     assert!(shown(&doc).contains("[page@new.com]"), "{}", shown(&doc));
 }
+
+/// The same holds for a handler. Its source is written in the component's
+/// scope, so run at page level it read a name the page does not have (an
+/// error) or wrote a page signal of the same name (wrong data, no error).
+#[test]
+fn a_removed_components_handler_does_not_run_at_page_level() {
+    let mut doc = Document::from_source(PAGE).expect("loads");
+    let _ = rux_runtime::take_warnings();
+    assert!(!doc.apply_handler_in("email = \"late@handler.com\"", GONE));
+    assert!(shown(&doc).contains("[page@example.com]"), "{}", shown(&doc));
+    let warned: Vec<String> = rux_runtime::take_warnings().into_iter().map(|w| w.message).collect();
+    assert!(warned.is_empty(), "{warned:?}");
+    // The page's own handler still runs.
+    assert!(doc.apply_handler_in("email = \"page@new.com\"", None));
+    assert!(shown(&doc).contains("[page@new.com]"), "{}", shown(&doc));
+}
