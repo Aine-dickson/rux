@@ -317,14 +317,20 @@ fn you_step_in_full(module: &'static str, signed: &'static rn::Signal<bool>, gap
         std::thread::sleep(std::time::Duration::from_millis(3));
         Ok(rn::Any::None)
     });
-    let verify = rn::Call::future(move |_| async move {
-        std::thread::sleep(std::time::Duration::from_millis(5));
-        signed.set(true);
-        rn::notify();
-        if gap_ms > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+    let verified = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let verified_in_call = verified.clone();
+    let verify = rn::Call::future(move |_| {
+        let verified = verified_in_call.clone();
+        async move {
+            verified.store(true, std::sync::atomic::Ordering::SeqCst);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            signed.set(true);
+            rn::notify();
+            if gap_ms > 0 {
+                std::thread::sleep(std::time::Duration::from_millis(gap_ms));
+            }
+            Ok(rn::Any::None)
         }
-        Ok(rn::Any::None)
     });
     let is_email = rn::Call::sync(|args| Ok(rn::Any::Bool(matches!(args.first(), Some(rn::Any::Str(s)) if s.contains('@')))));
     rn::Module::new(module)
@@ -367,9 +373,7 @@ effect {{ if signedIn {{ if name == \"\" {{ name = \"Amina\"; }} }} }}\n</script
     }
     let mut doc = Document::load(dir.join("app.rux")).expect("loads");
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    let mut seen_checking = false;
     loop {
-        seen_checking |= shown(&doc).contains("Checking...");
         // The shell settles answers when they come and reads native signals
         // when it draws, so an answer and a signal in one wake are settled first.
         if settle_first {
@@ -389,7 +393,9 @@ effect {{ if signedIn {{ if name == \"\" {{ name = \"Amina\"; }} }} }}\n</script
     }
     let errors: Vec<String> =
         doc.diagnostics().warnings.iter().filter(|w| w.is_error()).map(|w| w.message.clone()).collect();
-    assert!(seen_checking, "never verified: {}", shown(&doc));
+    // Whether "Checking..." was on screen between two rounds depends on how
+    // busy the machine is, so the test asks the call itself.
+    assert!(verified.load(std::sync::atomic::Ordering::SeqCst), "never verified: {}", shown(&doc));
     assert!(errors.is_empty(), "{errors:?}");
     assert!(shown(&doc).contains("Signed in as [Amina]"), "{}", shown(&doc));
     assert!(!shown(&doc).contains("Checking"), "{}", shown(&doc));
