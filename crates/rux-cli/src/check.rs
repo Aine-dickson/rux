@@ -219,6 +219,30 @@ pub fn run(options: Options) -> i32 {
         }
     }
 
+    // `error.mesage` in a `<fallback>`: a near miss of a field an error in this
+    // app has. Only a near miss, since the app's Rust can add fields this
+    // cannot see.
+    {
+        let texts: Vec<String> = files.iter().filter_map(|f| std::fs::read_to_string(f).ok()).collect();
+        let mut rust: Vec<String> = Vec::new();
+        if let Some(first) = files.first() {
+            let start = first.canonicalize().unwrap_or_else(|_| first.clone());
+            if let Ok(manifest) = crate::manifest::Manifest::find(start.parent().unwrap_or_else(|| Path::new("."))) {
+                rust = crate::permission_check::native_sources(&manifest.root)
+                    .iter()
+                    .filter_map(|f| std::fs::read_to_string(f).ok())
+                    .collect();
+            }
+        }
+        let declared = rux_runtime::native::registry::all_throws();
+        let known = crate::permission_check::known_error_fields(&texts, &rust, &declared);
+        for (file, text) in files.iter().zip(&texts) {
+            for (line, message) in crate::permission_check::misspelt_error_fields(text, &known) {
+                found.push(Diagnostic { file: file.clone(), line: Some(line), column: None, severity: Severity::Error, message });
+            }
+        }
+    }
+
     // A component is read on its own and through whatever uses it, so the same
     // finding can come twice; once is enough.
     let mut seen = std::collections::HashSet::new();

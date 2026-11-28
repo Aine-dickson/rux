@@ -384,6 +384,11 @@ pub fn throws(module: &str, key: &str) -> Option<String> {
     thrown().get(&(module.to_string(), key.to_string())).cloned()
 }
 
+/// Every record type `declare_throws` was told of: what any export can throw.
+pub fn all_throws() -> Vec<String> {
+    thrown().values().cloned().collect()
+}
+
 /// Declare `i` as read from source, with no code of its own, unless a module
 /// of its name is installed.
 ///

@@ -246,6 +246,142 @@ pub fn stray_retry(text: &str) -> Vec<(usize, String)> {
     out
 }
 
+/// The names of the fields at the top level of a record written as text:
+/// `{ message: string, kind: "a", status?: int }` or `{ code: 4 }`.
+fn record_keys(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let chars: Vec<char> = text.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        if let Some(q) = quote {
+            if c == '\\' {
+                i += 1;
+            } else if c == q {
+                quote = None;
+            }
+        } else if matches!(c, '"' | '\'' | '`') {
+            quote = Some(c);
+        } else if matches!(c, '{' | '[' | '(') {
+            depth += 1;
+        } else if matches!(c, '}' | ']' | ')') {
+            depth = depth.saturating_sub(1);
+            if depth == 0 {
+                break;
+            }
+        } else if depth == 1 && (c.is_alphabetic() || c == '_') && (i == 0 || !(chars[i - 1].is_alphanumeric() || chars[i - 1] == '_')) {
+            let mut j = i;
+            while j < chars.len() && (chars[j].is_alphanumeric() || chars[j] == '_') {
+                j += 1;
+            }
+            let mut k = j;
+            if chars.get(k) == Some(&'?') {
+                k += 1;
+            }
+            if chars.get(k) == Some(&':') {
+                out.push(chars[i..j].iter().collect());
+            }
+            i = j;
+            continue;
+        }
+        i += 1;
+    }
+    out
+}
+
+/// Every field an error in this app can have: what every error has, what the
+/// app's Rust error types add (the scan's record types, and each
+/// `.with("name", ..)` written in its source), and what a `throw { .. }` in a
+/// document adds.
+pub fn known_error_fields(
+    documents: &[String],
+    native: &[String],
+    declared: &[String],
+) -> std::collections::BTreeSet<String> {
+    let mut known: std::collections::BTreeSet<String> = ["message", "kind"].map(String::from).into();
+    for ty in declared {
+        known.extend(record_keys(ty));
+    }
+    for text in native {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(".with(") {
+            from += at + ".with(".len();
+            if let Some(name) = text[from..].trim_start().strip_prefix('"').and_then(|r| r.split('"').next()) {
+                known.insert(name.to_string());
+            }
+        }
+    }
+    for text in documents {
+        let mut from = 0;
+        while let Some(at) = text[from..].find("throw") {
+            from += at + "throw".len();
+            if let Some(rest) = text[from..].trim_start().strip_prefix('{') {
+                known.extend(record_keys(&format!("{{{rest}")));
+            }
+        }
+    }
+    known
+}
+
+/// `(line, message)` for each `error.name` written in a `<fallback>` where
+/// `name` is no field any error in the app has but is a letter or so away from
+/// one that is. A field the app's Rust adds is not seen from here, so only a
+/// near miss is reported: `error.mesage`, not `error.code`. Nothing in a file
+/// that declares an `error` of its own.
+pub fn misspelt_error_fields(text: &str, known: &std::collections::BTreeSet<String>) -> Vec<(usize, String)> {
+    let word = |at: usize, len: usize| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + len..].chars().next();
+        !before.is_some_and(|c| c.is_alphanumeric() || c == '_' || c == '.')
+            && !after.is_some_and(|c| c.is_alphanumeric() || c == '_')
+    };
+    for declared in ["fn error", "let error", "computed error", "prop error", "const error"] {
+        let mut from = 0;
+        while let Some(at) = text[from..].find(declared) {
+            let at = from + at;
+            from = at + declared.len();
+            if word(at, declared.len()) {
+                return Vec::new();
+            }
+        }
+    }
+    let (Some(start), Some(end)) = (text.find("<template"), text.rfind("</template>")) else { return Vec::new() };
+    let names: Vec<&str> = known.iter().map(String::as_str).collect();
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut i = start;
+    while i < end {
+        let rest = &text[i..end];
+        if rest.starts_with("</fallback") {
+            depth = depth.saturating_sub(1);
+            i += "</fallback".len();
+        } else if rest.starts_with("<fallback")
+            && rest["<fallback".len()..].starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace())
+        {
+            depth += 1;
+            i += "<fallback".len();
+        } else if depth > 0 && rest.starts_with("error") && word(i, "error".len()) {
+            let after = &rest["error".len()..];
+            let after = after.strip_prefix('?').unwrap_or(after);
+            if let Some(r) = after.strip_prefix('.') {
+                let name: String = r.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                if !name.is_empty() && !known.contains(&name) {
+                    if let Some(near) = rux_runtime::near_miss(&name, &names) {
+                        let line = text[..i].matches('\n').count() + 1;
+                        out.push((line, format!("`error.{name}`: an error has no `{name}`; did you mean `{near}`?")));
+                    }
+                }
+            }
+            i += "error".len();
+        } else {
+            i += rest.chars().next().map_or(1, char::len_utf8);
+        }
+    }
+    out
+}
+
 /// `(line, message)` for each `links.open("...")`, `links.dial("...")` or
 /// `links.sms("...", ...)` call (or `links::` in the app's Rust) whose first
 /// argument is a literal Rux would refuse when the program runs: a scheme that
@@ -402,5 +538,51 @@ why = \"x\"
         assert_eq!(found.iter().map(|f| f.0).collect::<Vec<_>>(), [2, 3, 6], "{found:?}");
         assert!(found[0].1.contains("is not a scheme Rux opens"), "{}", found[0].1);
         assert!(found[1].1.contains("a phone number is digits"), "{}", found[1].1);
+    }
+
+    fn known(native: &str, declared: &str, doc: &str) -> std::collections::BTreeSet<String> {
+        known_error_fields(&[doc.to_string()], &[native.to_string()], &[declared.to_string()])
+    }
+
+    fn fallback(body: &str) -> String {
+        format!("<template>\n<boundary>\n<fallback>\n{body}\n</fallback>\n</boundary>\n</template>\n")
+    }
+
+    #[test]
+    fn a_misspelt_error_field_in_a_fallback_is_found() {
+        let k = known("", "", "");
+        let found = misspelt_error_fields(&fallback("<text>{{ error.mesage }}</text>"), &k);
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert_eq!(found[0].0, 4);
+        assert!(found[0].1.contains("did you mean `message`"), "{}", found[0].1);
+        assert!(misspelt_error_fields(&fallback("<text>{{ error.message }} {{ error?.kind }}</text>"), &k).is_empty());
+    }
+
+    #[test]
+    fn error_outside_a_fallback_is_the_apps_own_name() {
+        let text = "<template>\n<text>{{ error.mesage }}</text>\n</template>\n";
+        assert!(misspelt_error_fields(text, &known("", "", "")).is_empty());
+    }
+
+    #[test]
+    fn fields_the_apps_errors_add_are_known() {
+        let k = known("rux::Error::new(\"a\", \"b\").with(\"retries\", 1)", "{ message: string, kind: \"x\", status?: int }", "throw { message: \"m\", kind: \"k\", reason: 1 }");
+        for name in ["status", "retries", "reason"] {
+            let body = format!("{{{{ error.{name} }}}}");
+            assert!(misspelt_error_fields(&fallback(&body), &k).is_empty(), "{name}");
+        }
+        let found = misspelt_error_fields(&fallback("{{ error.stauts }}"), &k);
+        assert!(found[0].1.contains("did you mean `status`"), "{found:?}");
+    }
+
+    #[test]
+    fn an_unknown_field_that_is_no_near_miss_is_left_alone() {
+        assert!(misspelt_error_fields(&fallback("{{ error.code }}"), &known("", "", "")).is_empty());
+    }
+
+    #[test]
+    fn a_file_with_its_own_error_is_left_alone() {
+        let text = format!("<script>\nlet error = signal(none);\n</script>\n{}", fallback("{{ error.mesage }}"));
+        assert!(misspelt_error_fields(&text, &known("", "", "")).is_empty());
     }
 }

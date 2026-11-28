@@ -115,10 +115,13 @@ images. Open:
      of a component fails its boundary; a test now says so.
    - **EB-4. Done 2026-11-28.** A timer or an `async fn` started by the run
      that fails its own component away is not kept.
-   - **EB-5. `error` fields are unchecked.** `rux check` cannot tell a typo
-     such as `error.mesage` from a field a native error adds, so it reports
-     neither until the fallback shows. Types for a native error's fields
-     (from `rux::IntoError`) would let it report the typo.
+   - **EB-5. Done 2026-11-28, typos only (owner's choice).** `rux check` reads
+     `error.name` in each `<fallback>` and errors when `name` is no field any
+     error in the app has (`message`, `kind`, the scan's native error types,
+     `.with("name", ..)` in the app's Rust, `throw { .. }` records) and is a
+     near miss of one that is. Another unknown field is not reported, since
+     the Rust can add fields the text scan cannot see. Not done: typing
+     `error` per boundary (which native call failed is unknown at the fallback).
    - **EB-6. Done 2026-11-28.** An `async fn` fails the boundary its handler
      was written in, also after an `await`, a page's included.
    - **EB-7. Not driven** on Android or the web, or with a real network call.

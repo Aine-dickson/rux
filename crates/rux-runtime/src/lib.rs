@@ -104,6 +104,7 @@ enum Wake<'a> {
 /// What a document opened from somewhere that is not the app's own is run
 /// under: see [`Sandbox`].
 pub use rux_script::sandbox::BUILTIN_GRANTS;
+pub use rux_script::check::near_miss;
 pub use rux_script::{Limits, Sandbox};
 
 /// What a load is run on when its opener says nothing: set once by whoever

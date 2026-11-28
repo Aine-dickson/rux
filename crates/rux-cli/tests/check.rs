@@ -249,6 +249,39 @@ fn fine(): string {{ return \"fine\"; }}
     assert_eq!(out.status.code(), Some(0), "{}", stdout(&out));
 }
 
+/// A field of `error` one letter off a field an error has is a typo, found
+/// before the fallback shows. A field no error is seen to have is left alone:
+/// the app's Rust can add it.
+#[test]
+fn a_misspelt_error_field_in_a_fallback_is_found() {
+    let page = |fallback: &str| {
+        format!(
+            "<template><screen><boundary><text>{{{{ fine() }}}}</text><fallback>{fallback}</fallback></boundary></screen></template>
+<script>
+fn fine(): string {{ return \"fine\"; }}
+fn fail() {{ throw {{ message: \"no\", kind: \"input\", status: 4 }}; }}
+</script>"
+        )
+    };
+    let bad = |name: &str, field: &str| {
+        let dir = fixture(name, &[("app.rux", &page(&format!("<text>{{{{ error.{field} }}}}</text>")))]);
+        let out = check(&[dir.to_str().unwrap()]);
+        (out.status.code(), stdout(&out))
+    };
+    let (code, out) = bad("typo-message", "mesage");
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("did you mean `message`"), "{out}");
+    // A field a `throw` in the app adds.
+    let (code, out) = bad("typo-status", "stauts");
+    assert_eq!(code, Some(1), "{out}");
+    assert!(out.contains("did you mean `status`"), "{out}");
+    let (code, out) = bad("known-status", "status");
+    assert_eq!(code, Some(0), "{out}");
+    // No known field is near it.
+    let (code, out) = bad("unseen-field", "details");
+    assert_eq!(code, Some(0), "{out}");
+}
+
 /// `retry()` builds a boundary's children again, and only a handler written in
 /// a `<fallback>` knows which boundary. Anywhere else it does nothing, which
 /// `rux check` says; an app's own function of the name is not the builtin.

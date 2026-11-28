@@ -4305,7 +4305,7 @@ fn named_in(ty: &Type, out: &mut Vec<(String, usize)>) {
 }
 
 /// The known name closest to `name`, if one is close enough to be a typo.
-fn near_miss<'n>(name: &str, known: &[&'n str]) -> Option<&'n str> {
+pub fn near_miss<'n>(name: &str, known: &[&'n str]) -> Option<&'n str> {
     // A short name gets one edit, anything longer two: `titel` is `title`.
     let limit = if name.len() <= 3 { 1 } else { 2 };
     known

@@ -1163,8 +1163,13 @@ is not a typo, and the person looking at it should see more than a hole.
 - **`rux check` reads a fallback before it shows.** It builds each fallback
   once, with an error that has a `message` and a `kind`, and throws it away:
   an undefined name or a bad call in it is a finding. A missing field of
-  `error` is not one, since a native error carries fields the stand-in lacks:
-  `error.mesage` is found when it fails, not before. `rux check` also warns on
+  `error` is not one, since a native error carries fields the stand-in lacks.
+  A typo is found by name instead: `error.mesage` is an error when `mesage` is
+  no field any error in the app has (`message`, `kind`, what the app's Rust
+  adds through `rux::IntoError` and `.with("name", ..)`, what a `throw { .. }`
+  record has) and is a letter or so from one that is. A field nothing is seen
+  to add (`error.details` with no `details` anywhere) is not reported, since
+  the app's Rust may add it in a way the check cannot read. `rux check` also warns on
   a `retry()` written in a template outside every `<fallback>`, and says
   nothing in a file that declares a `retry` of its own.
 
