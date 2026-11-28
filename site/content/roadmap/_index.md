@@ -133,7 +133,11 @@ images. Open:
      `error` per boundary (which native call failed is unknown at the fallback).
    - **EB-6. Done 2026-11-28.** An `async fn` fails the boundary its handler
      was written in, also after an `await`, a page's included.
-   - **EB-7. Not driven** on Android or the web, or with a real network call.
+   - **EB-7. Driven 2026-11-28** on the web (the playground in Brave: a failing
+     binding, "fix" then Try again, a throwing handler) and on the Android
+     emulator with a real network call from the app's Rust (refused connection,
+     then a server started, Try again, "body: hello from the host"). Not driven:
+     the same on the desktop, a phone, a slow or half-open connection.
    - **EB-8. Mostly done, found already working 2026-11-28.** A missing store
      function (`shop.nope()` in a component `fn`) is one error at load. Open:
      when the line then runs it also reports "`shop` is not defined", which

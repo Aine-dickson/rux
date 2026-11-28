@@ -1812,10 +1812,38 @@ fn encode(s: &str) -> String {
     out
 }
 
+/// `src` without the `let __name = "...";` locals the runtime writes in front of
+/// a handler (which boundary it was written in, which one a `retry()` is for):
+/// they are plumbing, and an author reading "handler failed" wants the call.
+fn without_plumbing(src: &str) -> &str {
+    let mut src = src.trim_start();
+    while let Some(rest) = src.strip_prefix("let __") {
+        let Some(quote) = rest.find("= \"") else { break };
+        let mut chars = rest[quote + 3..].char_indices();
+        let mut end = None;
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '"' => {
+                    end = Some(quote + 3 + i + 1);
+                    break;
+                }
+                _ => {}
+            }
+        }
+        let Some(end) = end else { break };
+        let Some(after) = rest[end..].trim_start().strip_prefix(';') else { break };
+        src = after.trim_start();
+    }
+    src
+}
+
 /// Collapse an expression to one short line for a message, a handler can be a
 /// multi-line block, and the overlay has one line to spend on it.
 fn trim_expr(src: &str) -> String {
-    let flat: String = src.split_whitespace().collect::<Vec<_>>().join(" ");
+    let flat: String = without_plumbing(src).split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() > 60 {
         format!("{}…", flat.chars().take(60).collect::<String>())
     } else {
@@ -4364,6 +4392,15 @@ mod tests {
         let _ = take_warnings();
         assert_eq!(e.eval_display("query(\".card\").length", &[]), "");
         assert_eq!(take_warnings().len(), 1);
+    }
+
+    #[test]
+    fn a_report_leaves_out_the_locals_the_runtime_wrote_in_front_of_a_handler() {
+        assert_eq!(trim_expr("let __caught_by = \"|0.1.\"; go()"), "go()");
+        assert_eq!(trim_expr("let __boundary = \"a\\\"b\"; let __caught_by = \"k\"; save(item)"), "save(item)");
+        // A row's own local is the author's, and stays.
+        assert_eq!(trim_expr("let item = 3; pick(item)"), "let item = 3; pick(item)");
+        assert_eq!(trim_expr("go()"), "go()");
     }
 }
 

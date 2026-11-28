@@ -3962,6 +3962,20 @@ Desktop window, debug `rux` built from this tree, a `python -m http.server` on `
 
 Found while driving: the first build fetched before the event loop existed, and the built-in modules were not installed yet, so `settings.set` answered and kept nothing. Not driven: a real https server, a redirect in a window, Android and the web (not supported).
 
+## Error boundaries on the web and Android, 2026-11-28
+
+Web: the playground built from this tree (`site/build-playground.sh`), `zola serve`, Brave over CDP, probe `C:/Users/USER/Mobile/rux-harness/eb7-web` (`drive.py`). Android: the `rux_test` emulator, `rux build --target android` of `rux-harness/eb7-net` (a `native/` crate with `async fn get(host_port)`, a plain TCP/HTTP request), `adb shell input tap`.
+
+| Case | Result |
+|---|---|
+| Web: a binding that throws inside a `<boundary>` | the fallback "FAILED: no value yet" with Try again; the rows above and below stay |
+| Web: tap fix (`n = 1`), then Try again | the children build again: "value: row1" |
+| Web: a handler in a boundary throws | the fallback "HANDLER FAILED: boom" (the panel listed `go()`, after the fix to drop the baked `let __caught_by`) |
+| Android: `load()` inside a boundary, nothing listening on the host | "FAILED: could not reach 10.0.2.2:8770: Connection refused (os error 111)" and Try again |
+| Android: start the server, Try again, load | "body: hello from the host" |
+
+Not driven: the same real network call on the desktop, a phone, a slow or half-open connection.
+
 ## Standing gaps
 
 Cases nothing here can currently exercise. They are the shape of what v0.8 has
